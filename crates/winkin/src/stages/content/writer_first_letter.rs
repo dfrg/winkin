@@ -6,10 +6,10 @@ use super::first_letter::FirstLetterScan;
 use super::memo::StyleKey;
 use super::{
     ContainerKind, ContentFlags, ContentWriter, FirstLetter, InitialLetterUse, ItemFlags, ItemKind,
-    NodeFacts, NodeId, NodeKey, NodeKind, Open,
+    MathText, NodeFacts, NodeId, NodeKey, NodeKind, Open,
 };
 use crate::style::{
-    BidiGroup, ComputedStyle, Direction, FirstLineVariant, InitialLetter, TextCase, UnicodeBidi,
+    BidiGroup, ComputedStyle, Direction, FirstLineVariant, InitialLetter, UnicodeBidi,
     WhiteSpaceTrim,
 };
 
@@ -30,7 +30,7 @@ impl ContentWriter<'_> {
         style: &ComputedStyle<'_>,
         first_line: Option<&ComputedStyle<'_>>,
     ) {
-        if self.math_text.is_some() {
+        if matches!(self.math, MathText::Held(..)) {
             self.end_text();
         }
         if !matches!(
@@ -54,16 +54,14 @@ impl ContentWriter<'_> {
             Some(first_line) => self.key(&letter.apply(&style.pinned_first_line(first_line))),
             None => own,
         });
-        if matches!(own.text.transform.case, TextCase::MathAuto)
-            || first_line.is_some_and(|s| matches!(s.text.transform.case, TextCase::MathAuto))
-        {
-            self.content.flags.insert(ContentFlags::MATH_AUTO);
-        }
         self.first_letter = FirstLetter::Armed {
             key,
             style: own,
             first_line,
         };
+        if self.first_letter.is_math_auto() {
+            self.content.flags.insert(ContentFlags::MATH_AUTO);
+        }
     }
 
     /// Writes text from the text node `key` while the first letter is still

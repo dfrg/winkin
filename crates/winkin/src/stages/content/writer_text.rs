@@ -5,7 +5,7 @@ use alloc::boxed::Box;
 use core::mem;
 
 use super::collapse::{Anchor, Effect, Event, Run, ZWSP};
-use super::transform::{MAX_TRANSFORM_GROWTH, TextTransformer, Transforms};
+use super::transform::{TextTransformer, Transforms};
 use super::{
     Content, ContentExtras, ContentFlags, ContentWriter, FirstLetter, Item, ItemFlags, ItemId,
     ItemKind, Mirror, NodeId,
@@ -307,10 +307,10 @@ impl ContentWriter<'_> {
                 }
                 kept
             }
-            // Room for the most a transform can make of it: written whole,
+            // Room for the most this transform can make of it: written whole,
             // in its context, and each of the caller's characters mapped to
             // what it became.
-            Some(transformer) if content.len().saturating_mul(MAX_TRANSFORM_GROWTH) <= room => {
+            Some(transformer) if content.len().saturating_mul(transformer.max_growth()) <= room => {
                 transformer.write(content, before, self.words, &mut self.content.text);
                 self.extend(item);
                 if stands.is_none() {
@@ -354,7 +354,7 @@ impl ContentWriter<'_> {
             // No longer than the content's text may be; past that, which
             // only a first paragraph near the limit reaches, the first line
             // draws what it has and nothing further.
-            let most = content.len().saturating_mul(MAX_TRANSFORM_GROWTH);
+            let most = content.len().saturating_mul(transforms.max_growth());
             if self.mirror_room(most) {
                 self.mirror_content(content, kept, mark, transforms, before);
             } else {

@@ -76,6 +76,7 @@ impl WhiteSpaceTrim {
 
 /// The case or exclusive mathematical part of `text-transform`.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
+#[non_exhaustive]
 pub enum TextCase {
     /// As written. The initial value.
     #[default]
@@ -126,6 +127,12 @@ impl TextTransform {
         case: TextCase::MathAuto,
         ..Self::NONE
     };
+
+    /// Returns whether the case is `math-auto`, which excludes the other
+    /// transforms.
+    pub(crate) fn is_math_auto(self) -> bool {
+        matches!(self.case, TextCase::MathAuto)
+    }
 }
 
 /// `line-break`: how strictly CJK line-breaking rules apply.

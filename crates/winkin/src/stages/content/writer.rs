@@ -32,7 +32,7 @@
 //! never their ids. Only zero width spaces can be written while a run is
 //! pending, so this moves a few bytes and a few items at most.
 
-use super::{ContentWriter, FirstLetter, InitialLetterUse, Mirror, Open};
+use super::{ContentWriter, FirstLetter, InitialLetterUse, MathText, Mirror, Open};
 use alloc::boxed::Box;
 use alloc::string::String;
 
@@ -174,8 +174,7 @@ impl<'a> ContentWriter<'a> {
             collapser: Collapser::new(),
             last_char: ' ',
             text_node: None,
-            math_text: None,
-            math_key: None,
+            math: MathText::None,
             open_item: None,
             source: 0,
             run_unit: None,

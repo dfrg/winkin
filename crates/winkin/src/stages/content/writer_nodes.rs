@@ -1,12 +1,12 @@
 //! The writer's bookkeeping: the container stack, nodes, items and room.
 
-use core::iter;
+use core::{iter, mem};
 
 use super::collapse::Event;
 use super::writer::OpenId;
 use super::{
     BoxFlags, ContainerKind, Content, ContentFlags, ContentWriter, Item, ItemFlags, ItemId,
-    ItemKind, LoweredNode, Node, NodeId, NodeKey, NodeKind, Open,
+    ItemKind, LoweredNode, MathText, Node, NodeId, NodeKey, NodeKind, Open,
 };
 use crate::data::{TextOffset, make_text_room};
 use crate::work;
@@ -49,7 +49,7 @@ impl ContentWriter<'_> {
     /// Closes the innermost container.
     pub(super) fn pop(&mut self) {
         work::step();
-        if self.math_text.is_some() {
+        if matches!(self.math, MathText::Held(..)) {
             self.end_text();
         }
         let Some(open) = self.stack.pop() else {
@@ -90,10 +90,7 @@ impl ContentWriter<'_> {
 
     /// Ends the current text node, if any: it takes no more text.
     pub(super) fn end_text(&mut self) {
-        if self.math_text.is_some() {
-            self.end_math_text();
-        }
-        self.math_key = None;
+        self.end_math_text();
         if let Some(node) = self.text_node.take() {
             self.end_leaf(node);
         }
@@ -103,10 +100,10 @@ impl ContentWriter<'_> {
     /// Ends the source text node `math-auto` measures: a held character is
     /// written as the whole of it.
     pub(super) fn end_math_text(&mut self) {
-        if let Some((key, ch)) = self.math_text.take() {
+        if let MathText::Held(key, ch) = mem::replace(&mut self.math, MathText::None) {
             self.write_text_call(key, ch.encode_utf8(&mut [0; 4]), true);
         }
-        self.math_key = None;
+        self.math = MathText::None;
     }
 
     /// Records that `node` has all its items.

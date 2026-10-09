@@ -1265,6 +1265,38 @@ enum FirstLetter {
     Done,
 }
 
+impl FirstLetter {
+    /// Returns whether the letter is armed with `math-auto` in its own style
+    /// or its first-line style. The writer then measures text nodes for it.
+    fn is_math_auto(&self) -> bool {
+        match self {
+            FirstLetter::Armed {
+                style, first_line, ..
+            } => {
+                style.text.transform.is_math_auto()
+                    || first_line.is_some_and(|s| s.text.transform.is_math_auto())
+            }
+            _ => false,
+        }
+    }
+}
+
+/// What the writer knows of the source text node `math-auto` measures.
+///
+/// `math-auto` maps a text node only where the node is one character. The
+/// writer learns that only when the node ends, so a lone character waits.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum MathText {
+    /// No text node is being measured.
+    None,
+    /// A text node of one character so far, held unwritten until the node
+    /// continues or ends.
+    Held(NodeKey, char),
+    /// A text node known to be longer than one character: its text is
+    /// written as it comes.
+    Long(NodeKey),
+}
+
 /// A container a caller opened and has not closed.
 ///
 /// Each entry also says where calls that look past it go, so no call
@@ -1373,10 +1405,9 @@ pub(crate) struct ContentWriter<'a> {
     /// The text node `text` continues while its key is the same, until
     /// anything else is written.
     text_node: Option<NodeId>,
-    /// One character held until another call continues its node or ends it.
-    math_text: Option<(NodeKey, char)>,
-    /// A source text node already known to contain more than one character.
-    math_key: Option<NodeKey>,
+    /// The source text node `math-auto` measures, and its character while
+    /// it may yet be the only one.
+    math: MathText,
     /// That node's item text is appended to, once it has one.
     open_item: Option<ItemId>,
     /// How far the writer has got in the text the caller gave the text

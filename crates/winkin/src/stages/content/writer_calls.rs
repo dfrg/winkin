@@ -9,16 +9,16 @@ use super::transform::Transforms;
 use super::writer::OpenId;
 use super::{
     Absolute, Atomic, AtomicId, BreakClearance, ContainerKind, Content, ContentFlags,
-    ContentWriter, FirstLetter, Float, ItemFlags, ItemKind, LoweredNode, MAX_RUBY_DEPTH, Mirror,
-    NodeFacts, NodeId, NodeKey, NodeKind, OBJECT, Open, TextFlags,
+    ContentWriter, FirstLetter, Float, ItemFlags, ItemKind, LoweredNode, MAX_RUBY_DEPTH, MathText,
+    Mirror, NodeFacts, NodeId, NodeKey, NodeKind, OBJECT, Open, TextFlags,
 };
 use crate::build::{BoxSize, BuildReport, Clear, FloatSide, OriginalDisplay};
 use crate::data::{HashIndex, TextOffset, hash_one};
 use crate::style::{
-    ComputedStyle, FirstLineVariant, RubyGroup, RubyPosition, TextCase, TextCombineUpright,
-    WhiteSpaceTrim,
+    ComputedStyle, FirstLineVariant, RubyGroup, RubyPosition, TextCombineUpright, WhiteSpaceTrim,
 };
 use alloc::boxed::Box;
+use core::mem;
 
 impl ContentWriter<'_> {
     /// Writes text from the text node `key`. Where a first letter is asked
@@ -34,46 +34,42 @@ impl ContentWriter<'_> {
     /// Resolves a source node's length before writing its mathematical transform.
     #[inline(never)]
     fn math_auto_text(&mut self, key: NodeKey, text: &str) {
-        if self.math_key == Some(key) {
-            self.write_text_call(key, text, false);
-            self.math_key = Some(key);
-            return;
-        }
-        if let Some((held_key, ch)) = self.math_text.take() {
-            if held_key == key && text.is_empty() {
-                self.math_text = Some((held_key, ch));
-                return;
-            }
-            self.write_text_call(held_key, ch.encode_utf8(&mut [0; 4]), held_key != key);
-            if held_key == key {
+        match mem::replace(&mut self.math, MathText::None) {
+            MathText::Long(long) if long == key => {
                 self.write_text_call(key, text, false);
-                self.math_key = Some(key);
+                self.math = MathText::Long(key);
                 return;
             }
-        }
-        let letter_math = match self.first_letter {
-            FirstLetter::Armed {
-                style, first_line, ..
-            } => {
-                matches!(style.text.transform.case, TextCase::MathAuto)
-                    || first_line
-                        .is_some_and(|s| matches!(s.text.transform.case, TextCase::MathAuto))
+            MathText::Held(held, ch) if held == key => {
+                if text.is_empty() {
+                    self.math = MathText::Held(held, ch);
+                    return;
+                }
+                self.write_text_call(held, ch.encode_utf8(&mut [0; 4]), false);
+                self.write_text_call(key, text, false);
+                self.math = MathText::Long(key);
+                return;
             }
-            _ => false,
-        };
-        let math = self.container_transforms().has_math_auto() || letter_math;
+            MathText::Held(held, ch) => {
+                self.write_text_call(held, ch.encode_utf8(&mut [0; 4]), true);
+            }
+            MathText::Long(_) | MathText::None => {}
+        }
+        let math = self.container_transforms().has_math_auto() || self.first_letter.is_math_auto();
         if math {
             let mut chars = text.chars();
             if let Some(ch) = chars.next().filter(|_| chars.next().is_none()) {
                 if self.text_node_keyed(key).is_none() {
                     self.end_text();
                 }
-                self.math_text = Some((key, ch));
+                self.math = MathText::Held(key, ch);
                 return;
             }
         }
         self.write_text_call(key, text, false);
-        self.math_key = (math && !text.is_empty()).then_some(key);
+        if math && !text.is_empty() {
+            self.math = MathText::Long(key);
+        }
     }
 
     /// Writes one call, `single` where `text` is the whole of a one-character

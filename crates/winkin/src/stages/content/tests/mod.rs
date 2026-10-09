@@ -2137,6 +2137,75 @@ fn math_auto_uses_whole_source_text_nodes() {
     assert_eq!(text(&layout), "ℎ𝑖hij𝑖𝑖");
 }
 
+/// `math-auto` measures each source text node as given, before white space
+/// collapses, as Chrome 155 does:
+/// - ` x ` and `\nx\n` keep their letter, though each collapses to it alone;
+/// - `x<!---->y`, `x<b></b>y` and `x<wbr>y` are two nodes, each mapped;
+/// - `x` beside an empty node or a node of collapsed space is mapped;
+/// - `x ` before `<b>y</b>` keeps its letter, and the `y` is mapped.
+#[test]
+fn math_auto_measures_each_source_node_before_white_space_collapses() {
+    let math = styled(|s| s.text.transform = TextTransform::MATH_AUTO);
+    assert_eq!(transformed(&math, " x "), "x");
+    assert_eq!(transformed(&math, "\nx\n"), "x");
+    let kept = styled(|s| {
+        s.text.transform = TextTransform::MATH_AUTO;
+        s.text.white_space_collapse = WhiteSpaceCollapse::Preserve;
+    });
+    assert_eq!(transformed(&kept, " x "), " x ");
+    let in_math = |calls: &dyn Fn(&mut LayoutBuilder<'_>)| {
+        let block = ComputedBlockStyle::new(&math);
+        let layout = build_with(&block, BuildOptions::default(), calls).0;
+        text(&layout).to_string()
+    };
+    // `x<!---->y`: the comment splits the text into two nodes.
+    assert_eq!(
+        in_math(&|b| {
+            b.text(key(1), "x");
+            b.text(key(2), "y");
+        }),
+        "𝑥𝑦"
+    );
+    // `x<b></b>y`.
+    assert_eq!(
+        in_math(&|b| {
+            b.text(key(1), "x");
+            b.open_box(key(2), &math, None);
+            b.close_box();
+            b.text(key(3), "y");
+        }),
+        "𝑥𝑦"
+    );
+    // `x<wbr>y`.
+    assert_eq!(
+        in_math(&|b| {
+            b.text(key(1), "x");
+            b.break_opportunity();
+            b.text(key(2), "y");
+        }),
+        "𝑥\u{200B}𝑦"
+    );
+    // Text nodes appended one by one: `x` and an empty node, either way
+    // round, and `x` before a node of one space.
+    for (first, second) in [("x", ""), ("", "x"), ("x", " ")] {
+        let written = in_math(&|b| {
+            b.text(key(1), first);
+            b.text(key(2), second);
+        });
+        assert_eq!(written, "𝑥", "{first:?} {second:?}");
+    }
+    // `x <b>y</b>`.
+    assert_eq!(
+        in_math(&|b| {
+            b.text(key(1), "x ");
+            b.open_box(key(2), &math, None);
+            b.text(key(3), "y");
+            b.close_box();
+        }),
+        "x 𝑦"
+    );
+}
+
 #[test]
 fn math_auto_excludes_other_transforms() {
     let math = styled(|s| {
@@ -2179,6 +2248,40 @@ fn math_auto_stops_at_the_text_limit() {
     let report = b.finish(&mut no_fonts());
     assert_eq!(text(&layout), "i");
     assert_eq!(report.dropped_bytes, 1);
+}
+
+/// A case mapping or `full-width` takes room for three bytes a byte, not the
+/// four `math-auto` takes, so text whose transform just fits is written whole.
+/// - Lowercased whole, a final sigma knows it ends its word.
+/// - The first line draws its own full-width text.
+#[test]
+fn a_case_transform_at_the_text_limit_is_written_whole() {
+    let within = |block: &ComputedBlockStyle<'_>, limit: usize, text_: &str| {
+        let mut layout = Layout::new();
+        let mut b = layout.builder_within(
+            key(0),
+            block,
+            BuildOptions::default(),
+            ContentLimits::MAX.with_text(limit),
+        );
+        b.text(key(1), text_);
+        let report = b.finish(&mut no_fonts());
+        assert_eq!(report.dropped_bytes, 0);
+        layout
+    };
+    let lower = cased(TextCase::Lowercase, "el");
+    // Four bytes of Greek, with room for three times as many.
+    let layout = within(&ComputedBlockStyle::new(&lower), 12, "ΑΣ");
+    assert_eq!(text(&layout), "ας");
+    let wide = styled(|s| s.text.transform.full_width = true);
+    let plain = ComputedStyle::initial();
+    let block = ComputedBlockStyle {
+        first_line: Some(&wide),
+        ..ComputedBlockStyle::new(&plain)
+    };
+    let layout = within(&block, 6, "ab");
+    assert_eq!(text(&layout), "ab");
+    assert_eq!(first_line_text(&layout).0, "ａｂ");
 }
 
 #[test]
