@@ -361,8 +361,7 @@ fn words_around_a_stop_are_the_whole_paragraphs() {
                 let apart = cluster.get() > 0
                     && indicator(cluster.get() - 1)
                     && indicator(cluster.get() + 1);
-                if !generated
-                    && let Some(first) = text[at.start.get()..at.end.get()].chars().next()
+                if !generated && let Some(first) = text[at.start.get()..at.end.get()].chars().next()
                 {
                     firsts.push((words.len(), first));
                 }
