@@ -1,8 +1,10 @@
-//! Writing text: white space collapsing, transforms, forced breaks, the
+//! Writing text: white space collapsing, transforms, masks, forced breaks, the
 //! offset map and the first line's text.
 
 use alloc::boxed::Box;
 use core::mem;
+
+use icu_segmenter::GraphemeClusterSegmenter;
 
 use super::collapse::{Anchor, Effect, Event, Run, ZWSP};
 use super::transform::{TextTransformer, Transforms};
@@ -35,6 +37,11 @@ impl ContentWriter<'_> {
         let Some(last) = text.chars().next_back() else {
             return;
         };
+        if let Some(mask) = transforms.mask {
+            let before = mem::replace(&mut self.last_char, mask);
+            self.write_masked(mask, transforms, before, text);
+            return;
+        }
         // What the next text reads before it, whatever of this is kept.
         let mut before = mem::replace(&mut self.last_char, last);
         let mut rest = text;
@@ -130,6 +137,83 @@ impl ContentWriter<'_> {
                 return;
             }
         }
+    }
+
+    /// Writes `text` for the current text node masked by `-webkit-text-security`:
+    /// one `mask` for each grapheme of the text as `transforms` transform it.
+    ///
+    /// Chrome masks the text before white space is processed
+    /// (`LayoutText::SecureText`), so every space, tab and segment break is
+    /// masked like any other character: none collapses, and none breaks a
+    /// line. Each of the caller's graphemes is one offset map unit, so a mask
+    /// is one caret stop. `before` is the character before `text`, which
+    /// capitalize reads.
+    fn write_masked(&mut self, mask: char, transforms: Transforms, mut before: char, text: &str) {
+        self.content_arrives(mask, false);
+        let mut buffer = [0; 4];
+        let mask: &str = mask.encode_utf8(&mut buffer);
+        self.reserve_text(text.len().saturating_mul(mask.len()));
+        let Some(item) = self.open_item() else {
+            self.report.drop_bytes(text.len());
+            return;
+        };
+        let mut boundaries = GraphemeClusterSegmenter::new().segment_str(text);
+        // The segmenter says 0 first.
+        let mut start = boundaries.next().unwrap_or(0);
+        for end in boundaries {
+            work::step();
+            let grapheme = text.get(start..end).unwrap_or_default();
+            let count = match transforms.own {
+                Some(transformer) => self.transformed_graphemes(transformer, grapheme, before),
+                None => 1,
+            };
+            if !self.has_text_room(count.saturating_mul(mask.len())) {
+                self.full = true;
+                self.report.drop_bytes(text.len() - start);
+                return;
+            }
+            let at = TextOffset::new(self.content.text.len());
+            for _ in 0..count {
+                self.append(item, mask);
+            }
+            let one_char = grapheme.chars().nth(1).is_none();
+            if one_char && count == 1 && grapheme.len() == mask.len() {
+                self.written_as_given(grapheme.len(), at);
+            } else {
+                let end = self.source.saturating_add(index_to_u32(grapheme.len()));
+                self.content
+                    .record(|map| map.variable(self.source..end, at));
+                self.source = end;
+            }
+            before = grapheme.chars().next_back().unwrap_or(before);
+            start = end;
+        }
+    }
+
+    /// Returns how many graphemes `transformer` makes of `grapheme`, with
+    /// `before` the character before it.
+    ///
+    /// It writes the transform past the text's end and takes it back, so it
+    /// needs no buffer of its own. Where that does not fit, it counts one.
+    fn transformed_graphemes(
+        &mut self,
+        transformer: TextTransformer,
+        grapheme: &str,
+        before: char,
+    ) -> usize {
+        let mark = self.content.text.len();
+        if !self.has_text_room(grapheme.len().saturating_mul(transformer.max_growth())) {
+            return 1;
+        }
+        transformer.write(grapheme, before, self.words, &mut self.content.text);
+        let written = self.content.text.get(mark..).unwrap_or_default();
+        // The segmenter says 0 first, and nothing more for no text.
+        let count = GraphemeClusterSegmenter::new()
+            .segment_str(written)
+            .count()
+            .saturating_sub(1);
+        self.content.text.truncate(mark);
+        count
     }
 
     /// Steps the collapser over a character of collapsible white space in the

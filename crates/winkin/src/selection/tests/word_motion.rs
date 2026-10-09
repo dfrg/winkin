@@ -1,5 +1,6 @@
 //! Word motion tests. They pin:
 //! - word stops on Windows and elsewhere, as Chrome's platforms have them;
+//! - a run of punctuation and symbols as one word;
 //! - Thai and Japanese words, beside Latin and without dictionaries;
 //! - break opportunities leaving a word whole;
 //! - word boundaries around each stop equal to the whole paragraph's.
@@ -45,6 +46,38 @@ fn word_motion_on_windows_skips_spaces() {
     assert_eq!(walk(&layout, 0, forward), [0, 4, 7]);
     let layout = laid("one two three four five", 100.0);
     assert_eq!(walk(&layout, 0, forward), [0, 4, 8, 14, 19, 23]);
+}
+
+/// A run of punctuation and symbols is one word, as Chrome 155 takes it on
+/// Windows: Ctrl+Right crosses `,,,,` or `.,;:` in one step, but stops at
+/// each of `x.y,z`, where letters part them.
+#[test]
+fn a_run_of_punctuation_is_one_word() {
+    let forward = MotionDirection::Forward
+        .moving(Granularity::Word)
+        .with_word_motion(WordMotion::SkipSpaces);
+    let backward = MotionDirection::Backward
+        .moving(Granularity::Word)
+        .with_word_motion(WordMotion::SkipSpaces);
+    for (text, stops) in [
+        ("a,,,,b cd", &[0, 1, 5, 7, 9][..]),
+        ("a.,;:b", &[0, 1, 5, 6]),
+        ("a ,, b", &[0, 2, 5, 6]),
+        ("x.y,z", &[0, 1, 2, 3, 4, 5]),
+        ("a + b", &[0, 2, 4, 5]),
+        ("a ++ b c", &[0, 2, 5, 7, 8]),
+        ("12,,34", &[0, 2, 4, 6]),
+        ("a$$b", &[0, 1, 3, 4]),
+        ("a()b", &[0, 1, 3, 4]),
+        ("a\u{2022}\u{2022},,b", &[0, 1, 9, 10]),
+        ("a\u{1F600}\u{1F600}b", &[0, 1, 9, 10]),
+    ] {
+        let layout = laid(text, 400.0);
+        assert_eq!(walk(&layout, 0, forward), stops, "{text:?}");
+        let mut back: Vec<usize> = stops.to_vec();
+        back.reverse();
+        assert_eq!(walk(&layout, text.len(), backward), back, "{text:?}");
+    }
 }
 
 /// On macOS and Linux a forward word motion stops at the word's end, as Blink's `NextWordPositionForPlatform`.
@@ -308,6 +341,8 @@ fn words_around_a_stop_are_the_whole_paragraphs() {
             let range = analysis.paragraphs.clusters(id);
             let mut words = String::new();
             let mut places = Vec::new();
+            // Where each cluster of text starts in `words`, and its first character.
+            let mut firsts: Vec<(usize, char)> = Vec::new();
             let indicator = |cluster: usize| {
                 let at = clusters.start(ClusterId::new(cluster)).get();
                 text[at..]
@@ -326,6 +361,11 @@ fn words_around_a_stop_are_the_whole_paragraphs() {
                 let apart = cluster.get() > 0
                     && indicator(cluster.get() - 1)
                     && indicator(cluster.get() + 1);
+                if !generated
+                    && let Some(first) = text[at.start.get()..at.end.get()].chars().next()
+                {
+                    firsts.push((words.len(), first));
+                }
                 if !generated || apart {
                     for ch in text[at.start.get()..at.end.get()].chars() {
                         words.push(segmenter_char(ch).unwrap_or(ch));
@@ -335,8 +375,22 @@ fn words_around_a_stop_are_the_whole_paragraphs() {
             places.push((clusters.start(range.end).get(), words.len()));
             let mut segments = Vec::new();
             let mut from = 0;
+            // A run of punctuation and symbols is one word, as Chrome takes it.
+            let punctuation = |ch: char| {
+                !(ch.is_alphanumeric()
+                    || ch.is_whitespace()
+                    || ch.is_control()
+                    || ch == '\u{FFFC}'
+                    || unicode::core_props(ch).is_regional_indicator()
+                    || unicode::rare_props(ch).is_default_ignorable())
+            };
+            let joined = |to: usize| {
+                let after = firsts.iter().find(|&&(at, _)| at == to);
+                let before = firsts.iter().rev().find(|&&(at, _)| at < to);
+                matches!((before, after), (Some(&(_, b)), Some(&(_, a))) if punctuation(b) && punctuation(a))
+            };
             for to in word_boundaries(segmenter, &words, 0) {
-                if to <= from {
+                if to <= from || (to < words.len() && joined(to)) {
                     continue;
                 }
                 let white = words[from..to].chars().all(|ch| {

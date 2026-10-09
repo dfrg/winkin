@@ -247,14 +247,15 @@ impl ContentWriter<'_> {
         ))
     }
 
-    /// How the text written in a container set in `own` is transformed.
-    /// On the first line, where `first_line` transforms it otherwise, that
-    /// style's transform applies.
+    /// How the text written in a container set in `own` is transformed and
+    /// masked. On the first line, where `first_line` transforms it
+    /// otherwise, that style's transform applies. The mask is the
+    /// container's own on every line.
     fn transforms(&self, own: &StyleKey, first_line: Option<&StyleKey>) -> Transforms {
         let first_line = first_line
             .filter(|first| first.text.transform != own.text.transform)
             .map(|first| self.transformer(first));
-        Transforms::new(self.transformer(own), first_line)
+        Transforms::new(self.transformer(own), first_line).with_mask(own.text.security.mask())
     }
 
     /// How the text written in the innermost container open, or the

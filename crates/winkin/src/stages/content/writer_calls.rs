@@ -5,7 +5,6 @@
 use super::check;
 use super::collapse::{Event, ZWSP};
 use super::map::Map;
-use super::transform::Transforms;
 use super::writer::OpenId;
 use super::{
     Absolute, Atomic, AtomicId, BreakClearance, ContainerKind, Content, ContentFlags,
@@ -141,7 +140,7 @@ impl ContentWriter<'_> {
         // The first line's own transform matters only while the first
         // paragraph is being written, where it transforms otherwise.
         let transforms = match self.mirror {
-            Mirror::Done => Transforms::new(transforms.own, None),
+            Mirror::Done => transforms.without_first_line(),
             Mirror::Waiting | Mirror::Writing => transforms,
         };
         let transforms = if self.content.flags.contains(ContentFlags::MATH_AUTO) {

@@ -13,6 +13,7 @@
 //! - `vertical`: vertical lines and combined text;
 //! - `cost`: the cost of each query;
 //! - `ruby`: split ruby annotations;
+//! - `security`: text masked by `-webkit-text-security`;
 //! - `seeks`: the searches each public call makes.
 //!
 //! Chrome counts offsets in UTF-16 and this crate in UTF-8 bytes. Where the
@@ -212,6 +213,7 @@ mod hit;
 mod offsets;
 mod rects;
 mod ruby;
+mod security;
 // Seeks are counted only in debug builds.
 #[cfg(debug_assertions)]
 mod seeks;

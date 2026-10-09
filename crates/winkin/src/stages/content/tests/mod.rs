@@ -5,7 +5,7 @@
 //! - ruby containers and annotations;
 //! - styles lowered into interned facts, the first-line styles and the flags;
 //! - limits, record sizes, and calls in any order;
-//! - text transforms, and the first line's own text.
+//! - text transforms and masks, and the first line's own text.
 //!
 //! The children pin the offset map (`map`) and `::first-letter`
 //! (`first_letter`).
@@ -28,8 +28,8 @@ use crate::data::{HeapBytes, Id};
 use crate::style::{
     ComputedStyle, EdgesGroup, FirstLineVariant, FontFamilyName, FontFeature, FontGroup,
     GenericFamily, Language, LineBreak, Sides, Tag, TextAutospace, TextCase, TextCombineUpright,
-    TextGroup, TextOrientation, TextSpacingTrim, TextTransform, TextWrapMode, UnicodeBidi,
-    WhiteSpaceCollapse, WhiteSpaceTrim, WordBreak,
+    TextGroup, TextOrientation, TextSecurity, TextSpacingTrim, TextTransform, TextWrapMode,
+    UnicodeBidi, WhiteSpaceCollapse, WhiteSpaceTrim, WordBreak,
 };
 use crate::tests::{key, no_fonts, nowrap, styled, white_space};
 use crate::unit::TextUnit;
@@ -2248,6 +2248,26 @@ fn math_auto_stops_at_the_text_limit() {
     let report = b.finish(&mut no_fonts());
     assert_eq!(text(&layout), "i");
     assert_eq!(report.dropped_bytes, 1);
+}
+
+/// Masked text stops at the text limit after the last grapheme whose masks
+/// fit, and reports the bytes it drops.
+#[test]
+fn masked_text_stops_at_the_text_limit() {
+    let masked = styled(|s| s.text.security = TextSecurity::Disc);
+    for (limit, expected, dropped) in [(2, "", 3), (3, "\u{2022}", 2), (8, "\u{2022}\u{2022}", 1)] {
+        let mut layout = Layout::new();
+        let mut b = layout.builder_within(
+            key(0),
+            &ComputedBlockStyle::new(&masked),
+            BuildOptions::default(),
+            ContentLimits::MAX.with_text(limit),
+        );
+        b.text(key(1), "abc");
+        let report = b.finish(&mut no_fonts());
+        assert_eq!(text(&layout), expected, "{limit}");
+        assert_eq!(report.dropped_bytes, dropped, "{limit}");
+    }
 }
 
 /// A case mapping or `full-width` takes room for three bytes a byte, not the

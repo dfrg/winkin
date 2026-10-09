@@ -2,6 +2,7 @@
 //! - the units the writer records, for collapsed, dropped and kept white
 //!   space;
 //! - transforms that change a length, and `full-size-kana`;
+//! - text masked by `-webkit-text-security`, a unit a grapheme;
 //! - nodes answering by their keys, atomic inlines, breaks and break
 //!   opportunities;
 //! - the first letter's box;
@@ -352,6 +353,28 @@ fn a_transform_in_context_is_one_unit_where_it_must_be() {
         content_offset(&layout, 1, 8, Before),
         Some(text(&layout).len())
     );
+}
+
+/// Masked text is one unit for each grapheme. A one-character grapheme as
+/// long as its mask maps as given, and any other is one caret stop.
+#[test]
+fn masked_text_is_one_unit_a_grapheme() {
+    let masked = styled(|s| s.text.security = TextSecurity::Disc);
+    let layout = mapped_with(&masked, |b| b.text(key(1), "ab\u{6F22}e\u{301}"));
+    assert_eq!(text(&layout), "\u{2022}".repeat(4));
+    assert_eq!(
+        units(&layout),
+        [
+            (V, 0..3, 0..1),
+            (V, 3..6, 1..2),
+            (I, 6..9, 2..5),
+            (V, 9..12, 5..8)
+        ]
+    );
+    for (offset, before, after) in [(6, 9, 12), (7, 9, 12)] {
+        assert_eq!(content_offset(&layout, 1, offset, Before), Some(before));
+        assert_eq!(content_offset(&layout, 1, offset, After), Some(after));
+    }
 }
 
 /// Nodes answer by their keys, each counting its own text.

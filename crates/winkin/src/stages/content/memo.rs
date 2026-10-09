@@ -35,8 +35,9 @@ use crate::style::{
     FontSizeAdjust, FontStyle, FontSynthesis, FontVariantCaps, FontVariantEmoji,
     FontVariantPosition, FontVariants, FontWeight, FontWidth, HangingPunctuation, Hyphens,
     LengthPercentage, LineBreak, LineGroup, OrientationGroup, OverflowWrap, RubyGroup, TabSize,
-    TextAutospace, TextEmphasis, TextGroup, TextJustify, TextSpacingTrim, TextTransform,
-    TextWrapMode, WhiteSpaceCollapse, WhiteSpaceTrim, WordBreak, sanitized_font_size,
+    TextAutospace, TextEmphasis, TextGroup, TextJustify, TextSecurity, TextSpacingTrim,
+    TextTransform, TextWrapMode, WhiteSpaceCollapse, WhiteSpaceTrim, WordBreak,
+    sanitized_font_size,
 };
 
 style_struct! {
@@ -143,6 +144,7 @@ style_struct! {
         pub(super) wrap_mode: TextWrapMode,
         pub(super) white_space_trim: WhiteSpaceTrim,
         pub(super) transform: TextTransform,
+        pub(super) security: TextSecurity,
         pub(super) word_break: WordBreak,
         pub(super) line_break: LineBreak,
         pub(super) overflow_wrap: OverflowWrap,
@@ -178,6 +180,7 @@ impl TextKey {
             wrap_mode,
             white_space_trim,
             transform,
+            security,
             word_break,
             line_break,
             overflow_wrap,
@@ -198,6 +201,7 @@ impl TextKey {
             wrap_mode,
             white_space_trim,
             transform,
+            security,
             word_break,
             line_break,
             overflow_wrap,

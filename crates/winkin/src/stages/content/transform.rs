@@ -269,6 +269,9 @@ pub(super) struct Transforms {
     /// How the block's first line transforms the text (`None` for not at
     /// all), where that differs from the node's own style.
     first_line: Option<Option<TextTransformer>>,
+    /// The character `-webkit-text-security` masks each grapheme with, if
+    /// any. `::first-line` cannot change it.
+    pub(super) mask: Option<char>,
 }
 
 impl Transforms {
@@ -276,6 +279,7 @@ impl Transforms {
     pub(super) const NONE: Self = Self {
         own: None,
         first_line: None,
+        mask: None,
     };
 
     /// Creates the pair: `own` for every line (`None` for not at all), and
@@ -284,7 +288,25 @@ impl Transforms {
         own: Option<TextTransformer>,
         first_line: Option<Option<TextTransformer>>,
     ) -> Self {
-        Self { own, first_line }
+        Self {
+            own,
+            first_line,
+            mask: None,
+        }
+    }
+
+    /// Returns the pair masking each grapheme with `mask`, or masking none.
+    pub(super) fn with_mask(self, mask: Option<char>) -> Self {
+        Self { mask, ..self }
+    }
+
+    /// Returns the pair with the first line transforming the text as every
+    /// other line does.
+    pub(super) fn without_first_line(self) -> Self {
+        Self {
+            first_line: None,
+            ..self
+        }
     }
 
     /// Whether either variant asks for the whole text node's length.
@@ -299,7 +321,7 @@ impl Transforms {
         let eligible = || single && text.chars().next().and_then(math_italic).is_some();
         let resolve =
             |t: Option<TextTransformer>| t.filter(|t| !t.transform.is_math_auto() || eligible());
-        Self::new(resolve(self.own), self.first_line.map(resolve))
+        Self::new(resolve(self.own), self.first_line.map(resolve)).with_mask(self.mask)
     }
 
     /// Returns the most bytes either variant makes of one byte of text: one

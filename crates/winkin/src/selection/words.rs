@@ -11,7 +11,8 @@
 //!   it, the LSTM segments the first four, and each ideograph or hiragana is
 //!   a word, a katakana run one word.
 //! - To motion, a word is any segment but white space. Punctuation stops a
-//!   word motion, and a forced break is a stop of its own.
+//!   word motion, and a forced break is a stop of its own. A run of
+//!   punctuation and symbols is one word, as Chrome takes it.
 //!
 //! A motion asks at each stop whether a word starts or ends there
 //! ([`Words::starts_word`], [`Words::ends_word`]). Only the clusters around
@@ -200,6 +201,17 @@ impl<'l> Words<'l> {
                 }
                 _ => {}
             }
+        }
+        // Chrome takes a run of punctuation and symbols as one word, as it
+        // takes `a,,,,b` (three words) or a masked password (one): no stop
+        // parts two of them.
+        let punctuation = |cluster| {
+            clusters
+                .first_char(text.into(), cluster)
+                .is_some_and(is_punctuation_or_symbol)
+        };
+        if punctuation(before) && punctuation(after) {
+            return false;
         }
         // Inside a run ICU segments whole, the run's own words decide.
         if clusters
@@ -683,6 +695,21 @@ fn copy_short(piece: &str, into: &mut [u8]) -> Option<usize> {
         len += ch.len_utf8();
     }
     Some(len)
+}
+
+/// Returns whether `ch` is punctuation, a symbol or an emoji, which runs
+/// together into one word.
+///
+/// That is anything but a letter, a digit, an ideograph, white space, a
+/// control, a format character, a regional indicator, which pairs into a
+/// flag of its own, or an atomic inline's U+FFFC.
+fn is_punctuation_or_symbol(ch: char) -> bool {
+    !(ch.is_alphanumeric()
+        || ch.is_whitespace()
+        || ch.is_control()
+        || ch == '\u{FFFC}'
+        || unicode::core_props(ch).is_regional_indicator()
+        || unicode::rare_props(ch).is_default_ignorable())
 }
 
 /// Returns whether `piece` is white space, which word motion skips.

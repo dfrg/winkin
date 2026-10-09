@@ -135,6 +135,38 @@ impl TextTransform {
     }
 }
 
+/// `-webkit-text-security`: the character each grapheme of text is drawn as.
+///
+/// Text set so is laid out with one mask character for each extended
+/// grapheme cluster, after `text-transform`. Spaces, tabs and segment breaks
+/// are masked like any other character, so none of them collapses or breaks
+/// a line. Offsets, carets and selections stay in the text as given: a mask
+/// is one caret stop, whatever its grapheme holds.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
+pub enum TextSecurity {
+    /// The text as written. The initial value.
+    #[default]
+    None,
+    /// U+2022 BULLET.
+    Disc,
+    /// U+25E6 WHITE BULLET.
+    Circle,
+    /// U+25A0 BLACK SQUARE.
+    Square,
+}
+
+impl TextSecurity {
+    /// Returns the character text is masked with, or `None` for `none`.
+    pub const fn mask(self) -> Option<char> {
+        match self {
+            Self::None => None,
+            Self::Disc => Some('\u{2022}'),
+            Self::Circle => Some('\u{25E6}'),
+            Self::Square => Some('\u{25A0}'),
+        }
+    }
+}
+
 /// `line-break`: how strictly CJK line-breaking rules apply.
 ///
 /// Resolve `auto` to `normal` before building, as browsers do.
@@ -354,6 +386,7 @@ same_by_value!(
     WhiteSpaceTrim,
     TextCase,
     TextTransform,
+    TextSecurity,
     LineBreak,
     Hyphens,
     TextAutospace,

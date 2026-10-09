@@ -160,6 +160,8 @@ style_struct! {
         pub white_space_trim: WhiteSpaceTrim,
         /// `text-transform`.
         pub transform: TextTransform,
+        /// `-webkit-text-security`.
+        pub security: TextSecurity,
         /// `word-break`.
         pub word_break: WordBreak,
         /// `line-break`.
@@ -207,6 +209,7 @@ impl TextGroup<'_> {
         wrap_mode: TextWrapMode::Wrap,
         white_space_trim: WhiteSpaceTrim::NONE,
         transform: TextTransform::NONE,
+        security: TextSecurity::None,
         word_break: WordBreak::Normal,
         line_break: LineBreak::Normal,
         overflow_wrap: OverflowWrap::Normal,

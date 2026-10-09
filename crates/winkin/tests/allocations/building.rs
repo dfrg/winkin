@@ -34,6 +34,61 @@ fn math_auto_allocates_nothing_warm() {
     }
 }
 
+/// A masked field rebuilt keystroke by keystroke, as an editor rebuilds it,
+/// and its lines broken and its carets walked, allocates nothing warm: with
+/// and without the offset map, and under a case transform.
+#[test]
+fn masked_text_allocates_nothing_warm() {
+    use super::test_fonts::{self, TestFont, ahem_fallback};
+    use winkin::selection::{Granularity, MotionDirection, Position, Selection};
+    use winkin::style::TextSecurity;
+    let masks = TestFont::new(
+        "Test Masks",
+        &[(0x2022, 0x2022), (0x25A0, 0x25A0), (0x25E6, 0x25E6)],
+    );
+    let mut cx = Context::new(test_fonts::collection(&[masks], ahem_fallback()));
+    let mut layout = winkin::Layout::new();
+    let families = [FontFamilyName::named("Ahem")];
+    let mut style = ComputedStyle::initial();
+    style.font.families = &families;
+    style.text.security = TextSecurity::Disc;
+    style.text.white_space_collapse = WhiteSpaceCollapse::Preserve;
+    let mut upper = style;
+    upper.text.transform.case = TextCase::Uppercase;
+    let password = "hunter2 e\u{301}\u{1F600} stra\u{DF}e";
+    for style in [style, upper] {
+        let block = ComputedBlockStyle::new(&style);
+        for map_source in [false, true] {
+            let mut typed = 0;
+            let mut keystroke = || {
+                typed = typed % password.len() + 1;
+                while !password.is_char_boundary(typed) {
+                    typed += 1;
+                }
+                let mut options = BuildOptions::default();
+                options.map_source = map_source;
+                let mut b = layout.builder(NodeKey(0), &block, options);
+                b.text(NodeKey(1), &password[..typed]);
+                assert!(b.finish(&mut cx).is_complete());
+                super::relayout(&mut layout, &mut cx, &[400.0, 60.0]);
+                let mut caret = Selection::from(Position::from(0));
+                for _ in 0..4 {
+                    caret.modify(
+                        &layout,
+                        MotionDirection::Forward.moving(Granularity::Character),
+                    );
+                }
+                let _ = layout.node_position(caret.focus());
+            };
+            for _ in 0..password.len() {
+                keystroke();
+            }
+            let warm = count_allocations(&mut keystroke);
+            assert_eq!(warm, 0, "map_source={map_source}");
+        }
+    }
+}
+
 /// The styles a document is set in, with lists the way an engine holds
 /// them: its own, lent for each call.
 struct Styles {
