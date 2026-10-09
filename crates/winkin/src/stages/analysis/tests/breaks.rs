@@ -160,6 +160,140 @@ fn ascii_pairs_break_as_blinks_table_has_them() {
     }
 }
 
+/// Where Chrome 155 breaks each pair of U+0021 to U+007E under `word-break:
+/// break-all`, measured with each pair alone in a column of no width, in
+/// 10 px Ahem: one row per character before, bit `n` set where it breaks
+/// before U+0021 + `n`.
+const CHROME_BREAK_ALL: [u128; 94] = [
+    0x2fffffffefffffffb9ff96bc,
+    0x040000000400000008000080,
+    0x2fffffffefffffffb9ff96ac,
+    0x000000000000000000000010,
+    0x2fffffffefffffffb9ff96bc,
+    0x2fffffffefffffffb9ff96ac,
+    0x000000000000000000000000,
+    0x000000000000000000000000,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffe7ffffffb9ff96a4,
+    0x2fffffffefffffffb9ff96f6,
+    0x2fffffffe7ffffffb9ff96a4,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffe7ffffffb9ff96a4,
+    0x2fffffffe7ffffffb9ff96a4,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96bc,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x000000000000000000000000,
+    0x040000000400000008000090,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x000000000000000000000000,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+    0x2fffffffefffffffb9ff96ac,
+];
+
+/// Under `break-all`, Chrome's ASCII rules decide every printable pair, as
+/// Blink's break-all table adds to its pair table.
+///
+/// Each of the 8,836 pairs breaks as Chrome 155 breaks it. A hyphen before a
+/// digit breaks after anything. Pairs with a space or a character past ASCII
+/// are answered as under `normal`.
+#[test]
+fn ascii_pairs_break_under_break_all_as_chrome_breaks_them() {
+    let printable = || (b'!'..=b'~').map(char::from);
+    for (row, before) in CHROME_BREAK_ALL.iter().zip(printable()) {
+        for (bit, after) in printable().enumerate() {
+            let chrome = row >> bit & 1 == 1;
+            assert_eq!(
+                super::ascii::breaks_all(|| None, before, after),
+                Some(chrome),
+                "{before:?} {after:?}"
+            );
+        }
+    }
+    assert_eq!(super::ascii::breaks_all(|| Some(' '), '-', '1'), Some(true));
+    for (before, after) in [(' ', 'a'), ('a', ' '), ('a', '\u{E9}'), ('\u{E9}', 'a')] {
+        assert_eq!(
+            super::ascii::breaks_all(|| None, before, after),
+            super::ascii::breaks(|| None, before, after),
+            "{before:?} {after:?}"
+        );
+    }
+    // `XX XX\\\` breaks between its letters, at its space and before
+    // its backslashes, and nowhere between them.
+    let all = root_text(&word_break(WordBreak::BreakAll), r"XX XX\\\");
+    assert_eq!(breaks(&all), [1, 3, 4, 5]);
+}
+
 /// The analysis breaks ASCII text as Chrome 153 does, measured in Ahem, where
 /// ICU's rules break it elsewhere:
 /// - no break after a slash between letters or digits (`a/b`, `a/1`, `1/a`),
@@ -171,7 +305,7 @@ fn ascii_pairs_break_as_blinks_table_has_them() {
 /// - a break before an opening bracket after `#` or `=`;
 /// - no break after `!`, `|` or `}` before a letter.
 ///
-/// `break-all` keeps ICU's opportunities and adds Chrome's. `line-break:
+/// `break-all` takes Blink's break-all table over the pair table. `line-break:
 /// anywhere` is untouched.
 #[test]
 fn ascii_text_breaks_as_chrome_breaks_it() {
@@ -196,9 +330,9 @@ fn ascii_text_breaks_as_chrome_breaks_it() {
     assert_eq!(at("#(=<a(b"), ["#", "#(="]);
     assert!(at("a!b|c}d").is_empty());
     assert_eq!(at("well-known?yes"), ["well-", "well-known?"]);
-    // `break-all`: ICU's `break-all` between the letters, and Chrome's
-    // breaks where it adds some: between `?` and `-`, which ICU keeps
-    // together (UAX #14 LB21) and Blink's table breaks.
+    // `break-all`: Blink's break-all table between the letters, and its
+    // pair table between `?` and `-`, which ICU keeps together (UAX #14
+    // LB21).
     let all = root_text(&word_break(WordBreak::BreakAll), "ab#(c");
     assert_eq!(breaks(&all), [1, 2, 3]);
     let all = root_text(&word_break(WordBreak::BreakAll), "x?-y");

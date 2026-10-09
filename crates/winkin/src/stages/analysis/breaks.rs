@@ -20,8 +20,9 @@
 //!
 //! Most text never reaches ICU:
 //! - The writer asks Chrome's own ASCII rules (`ascii`) first, and the stream
-//!   only where they do not decide, as Blink asks its iterator. So ASCII
-//!   text runs no segmenter at all, except under `break-all` and `anywhere`.
+//!   only where they do not decide, as Blink asks its iterator. Under
+//!   `break-all` they take Blink's break-all table too. So ASCII text runs
+//!   no segmenter at all, except under `anywhere`.
 //! - Where the options let it, the stream reads Latin-1 opportunities off a
 //!   pair table of ICU's own answers (`pairs`). It hands over to ICU and
 //!   back at opportunities, where both go on as from the text's start.
@@ -102,20 +103,28 @@ impl LineKey {
         self.word == WordBreak::Normal && self.strictness != LineBreak::Anywhere
     }
 
-    /// Chrome's answer at a boundary where its ASCII rules say `ascii`
-    /// (`ascii::breaks`), as far as the key lets it stand.
+    /// Returns Chrome's answer between `before` and `after` where its ASCII
+    /// rules decide it under the key, or `None` where it asks ICU.
+    ///
+    /// `before_before` finds the character before `before`, which only a
+    /// hyphen before a digit reads.
     /// - Under `line-break: anywhere`, none: Blink breaks between graphemes
     ///   (`kBreakCharacter`).
-    /// - Under `word-break: break-all`, a break but not a refusal. Blink's
-    ///   break-all table may overrule a refusal, and ICU's `break-all`
-    ///   stands in for that table here.
-    /// - Otherwise the whole answer, under every strictness and `keep-all`.
-    ///   Blink asks those only where the rules do not decide.
-    pub(super) fn ascii_answer(self, ascii: Option<bool>) -> Option<bool> {
+    /// - Under `word-break: break-all`, Blink's break-all table over its
+    ///   ASCII rules (`ascii::breaks_all`).
+    /// - Otherwise its ASCII rules (`ascii::breaks`), under every strictness
+    ///   and `keep-all`. Blink asks its iterator only where they do not
+    ///   decide.
+    pub(super) fn ascii_answer(
+        self,
+        before_before: impl FnOnce() -> Option<char>,
+        before: char,
+        after: char,
+    ) -> Option<bool> {
         match (self.strictness, self.word) {
             (LineBreak::Anywhere, _) => None,
-            (_, WordBreak::BreakAll) => ascii.filter(|&breaks| breaks),
-            _ => ascii,
+            (_, WordBreak::BreakAll) => super::ascii::breaks_all(before_before, before, after),
+            _ => super::ascii::breaks(before_before, before, after),
         }
     }
 

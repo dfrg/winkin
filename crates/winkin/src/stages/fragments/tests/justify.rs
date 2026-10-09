@@ -499,6 +499,137 @@ fn text_justify_chooses_where_the_room_goes() {
     assert_eq!(xs(&layout, 0), [0.0, 30.0, 60.0, 90.0]);
 }
 
+/// Each cluster takes room under its own text's `text-justify`.
+///
+/// Chrome 155 reads the property item by item. In Ahem at 20 px on a line
+/// 220 wide, justified as its last:
+/// - `X <span>X X</span> X` with the span under `none` puts its `X`s at 0,
+///   80, 120 and 200: the span's space takes nothing;
+/// - the block under `none` and the span under `inter-word` puts them at 0,
+///   40, 160 and 200: the span's space takes all the room;
+/// - `XX <span>XX</span> XX` with the span under `inter-character` gives
+///   each of its two `X`s a share of 15, as each space has.
+#[test]
+fn each_cluster_takes_room_under_its_own_text_justify() {
+    let mut fixture = fixture();
+    let mut layout = Layout::new();
+    let styled = |justify| {
+        let mut style = ahem(20.0);
+        style.text.justify = justify;
+        style
+    };
+    let cases = [
+        (TextJustify::Auto, TextJustify::None, ["X ", "X X", " X"]),
+        (
+            TextJustify::None,
+            TextJustify::InterWord,
+            ["X ", "X X", " X"],
+        ),
+    ];
+    let expected = [[0.0, 80.0, 120.0, 200.0], [0.0, 40.0, 160.0, 200.0]];
+    for ((block, span, [before, inside, after]), expected) in cases.into_iter().zip(expected) {
+        let (block_style, span_style) = (styled(block), styled(span));
+        let style = ComputedBlockStyle {
+            style: &block_style,
+            ..aligned(TextAlign::Justify, TextAlignLast::Justify)
+        };
+        fixture.build(&mut layout, &style, |b| {
+            b.text(NodeKey(1), before);
+            b.open_box(NodeKey(2), &span_style, None);
+            b.text(NodeKey(3), inside);
+            b.close_box();
+            b.text(NodeKey(4), after);
+        });
+        fixture.lay_out(&mut layout, 220.0);
+        let xs: Vec<f32> = xs(&layout, 0).into_iter().step_by(2).collect();
+        assert_eq!(xs, expected, "{block:?} {span:?}");
+    }
+    let (block_style, span_style) = (
+        styled(TextJustify::Auto),
+        styled(TextJustify::InterCharacter),
+    );
+    let style = ComputedBlockStyle {
+        style: &block_style,
+        ..aligned(TextAlign::Justify, TextAlignLast::Justify)
+    };
+    fixture.build(&mut layout, &style, |b| {
+        b.text(NodeKey(1), "XX ");
+        b.open_box(NodeKey(2), &span_style, None);
+        b.text(NodeKey(3), "XX");
+        b.close_box();
+        b.text(NodeKey(4), " XX");
+    });
+    fixture.lay_out(&mut layout, 220.0);
+    assert_eq!(
+        xs(&layout, 0),
+        [0.0, 20.0, 40.0, 75.0, 110.0, 145.0, 180.0, 200.0]
+    );
+}
+
+/// `inter-character` leaves a run of atomic inlines, and a cursive script's
+/// letters, whole, and the character after either takes room before it.
+///
+/// Measured in Chrome 155:
+/// - `X`, two 20 px inline blocks and `X` in Ahem at 20 px on a line 100
+///   wide puts the blocks at 30 and 50 and the last `X` at 80: one share
+///   after the first `X`, one before the last;
+/// - two Arabic words, a space and three Latin letters take room only at
+///   the space (before and after it), the first letter (before and after
+///   it) and the second, as Chrome leaves Arabic, Syriac, Mongolian, N'Ko,
+///   Mandaic, Hanifi Rohingya and Phags-pa whole.
+#[test]
+fn inter_character_leaves_atomic_inlines_and_cursive_letters_whole() {
+    let mut fixture = fixture();
+    let mut layout = Layout::new();
+    let mut style = ahem(20.0);
+    style.text.justify = TextJustify::InterCharacter;
+    let block = ComputedBlockStyle {
+        style: &style,
+        ..aligned(TextAlign::Justify, TextAlignLast::Justify)
+    };
+    let size = BoxSize {
+        inline: 20.0,
+        block: 20.0,
+        baseline: None,
+    };
+    fixture.build(&mut layout, &block, |b| {
+        b.text(NodeKey(1), "X");
+        b.atomic(NodeKey(2), &style, None, size);
+        b.atomic(NodeKey(3), &style, None, size);
+        b.text(NodeKey(4), "X");
+    });
+    fixture.lay_out(&mut layout, 100.0);
+    let atomics: Vec<_> = items(&layout, 0)
+        .iter()
+        .filter(|item| item.kind() == FragmentItemKind::Atomic)
+        .map(|item| item.inline)
+        .collect();
+    assert_eq!(atomics, [px(30.0), px(50.0)]);
+    assert_eq!(xs(&layout, 0), [0.0, 80.0]);
+    let mut arabic = style;
+    arabic.font.families = &ARABIC;
+    let words = alloc::format!("{BEH}{TEH} {BEH}{TEH}XXX");
+    fixture.build(&mut layout, &block, |b| {
+        b.open_box(NodeKey(1), &arabic, None);
+        b.text(NodeKey(2), &words);
+        b.close_box();
+    });
+    fixture.lay_out(&mut layout, 1000.0);
+    let line = &layout.line_records().lines[LineId::new(0)];
+    let clusters = line.clusters().start..line.content_end(&layout.analysis().clusters);
+    let opportunities = crate::stages::measure::JustifyOpportunities::from_line(
+        &layout.stages().variant(FirstLineVariant::Standard),
+        clusters.clone(),
+        None,
+    )
+    .expect("justified");
+    let counts: Vec<u32> = clusters
+        .ids()
+        .map(|cluster| opportunities.count(cluster))
+        .collect();
+    assert_eq!(counts, [0, 0, 2, 0, 0, 2, 1, 0]);
+}
+
 /// Tabs take a share of a justified line's room, as Chrome's do, unless the config keeps their stops.
 ///
 /// A tab's width rounds up onto the grid, as Chrome snaps a tab. Under

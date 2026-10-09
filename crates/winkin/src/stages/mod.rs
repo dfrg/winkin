@@ -104,6 +104,12 @@ pub(crate) struct LineStages<'a> {
 }
 
 impl<'a> LineStages<'a> {
+    /// Whose styles the line is set in.
+    #[inline]
+    pub(crate) fn variant(&self) -> FirstLineVariant {
+        self.variant
+    }
+
     /// `node`'s text facts in the variant.
     #[inline]
     pub(crate) fn text_facts(&self, node: NodeId) -> TextFactsId {

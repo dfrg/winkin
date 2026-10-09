@@ -180,7 +180,8 @@ const ALLOWED_DOORS: &[Entry] = &[
     ("src/stages/measure/autospace.rs", "cursor_containing(", "entry: `gap_after`, a seam at a line's end, seeks the item after it where the characters leave a seam possible"),
     ("src/stages/measure/autospace.rs", ".containing(", "entry: `gap_after`'s run after a seam, by rank, where a paragraph's levels differ and the caller holds no run; the side before steps back from it"),
     ("src/stages/measure/autospace.rs", "Slot::new(", "entries: `room_before`, a seam where line layout draws its room, seeks the place after it once; `gap_after_near` seeks once a reshaped piece, then steps"),
-    ("src/stages/measure/justify.rs", ".containing(", "entry: a line's opportunities, read from its start: the script-run cursor's one seek, where some text is combined"),
+    ("src/stages/measure/justify.rs", ".containing(", "entry: a line's opportunities, read from its start: the script-run cursor's one seek, where some text is combined or may be cursive"),
+    ("src/stages/measure/justify.rs", "cursor_containing(", "entry: a line's opportunities, read from its start: the item cursor's one seek, where some style sets `text-justify`"),
     ("src/stages/lines/annotate.rs", "cursor_containing(", "a line's em boxes: the font runs of a text item with no one em box for all its text, sought once a line, and walked with the items"),
 ];
 

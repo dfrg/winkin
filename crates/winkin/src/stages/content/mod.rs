@@ -824,7 +824,7 @@ define_flags! {
         /// its edges however its own edges are set.
         pub(super) const BOXES_WITH_EDGES = 1 << 0;
         /// There is an atomic inline.
-        pub(super) const ATOMICS = 1 << 1;
+        pub(crate) const ATOMICS = 1 << 1;
         /// There is a float.
         pub(super) const FLOATS = 1 << 2;
         /// There is a ruby container.
@@ -886,6 +886,9 @@ define_flags! {
         const SHARED_ATOMIC_KEYS = 1 << 22;
         /// Some style asks for whole-node mathematical italic mapping.
         pub(super) const MATH_AUTO = 1 << 23;
+        /// Some style sets `text-justify` other than `auto`. A justified
+        /// line then reads each cluster's own value.
+        pub(crate) const TEXT_JUSTIFY = 1 << 24;
     }
 }
 

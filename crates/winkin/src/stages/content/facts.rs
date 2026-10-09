@@ -446,6 +446,9 @@ impl HoldsFlags for TextFacts {
         if self.has(TextFlags::AUTOSPACE_ALPHA) || self.has(TextFlags::AUTOSPACE_NUMERIC) {
             flags.insert(ContentFlags::AUTOSPACE);
         }
+        if self.justify != TextJustify::Auto {
+            flags.insert(ContentFlags::TEXT_JUSTIFY);
+        }
         flags
     }
 }

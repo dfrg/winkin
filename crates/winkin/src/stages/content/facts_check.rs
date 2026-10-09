@@ -25,7 +25,7 @@ use crate::data::{Id, IdRange};
 use crate::style::{
     BaseDirection, BoxDecorationBreak, ComputedStyle, Direction, DominantBaseline,
     FirstLineVariant, FontVariantPosition, HangingPunctuation, Hyphens, LengthPercentage,
-    LineHeight, OverflowWrap, Sides, TextBoxTrim, TextCombineUpright, TextOrientation,
+    LineHeight, OverflowWrap, Sides, TextBoxTrim, TextCombineUpright, TextJustify, TextOrientation,
     TextWrapMode, UnicodeBidi, VerticalAlign, WritingMode,
 };
 use crate::unit::{LayoutUnit, TextUnit};
@@ -72,6 +72,7 @@ pub(crate) fn lowered(
         ContentFlags::TRIMS_WRAPPED_START,
         ContentFlags::TRIMS_PUNCTUATION,
         ContentFlags::VARIANT_POSITION,
+        ContentFlags::TEXT_JUSTIFY,
     ] {
         assert!(
             !wanted.contains(flag) || flags.contains(flag),
@@ -189,6 +190,10 @@ fn noted_text(flags: &mut ContentFlags, style: &StyleKey) {
     set(
         ContentFlags::TRIMS_PUNCTUATION,
         style.text.spacing_trim.trims_punctuation(),
+    );
+    set(
+        ContentFlags::TEXT_JUSTIFY,
+        style.text.justify != TextJustify::Auto,
     );
     let autospace = style.text.autospace;
     set(

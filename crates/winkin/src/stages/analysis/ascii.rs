@@ -69,6 +69,77 @@ pub(super) fn breaks(
     Some(pair_breaks(before, after))
 }
 
+/// Whether a line may break between `before` and `after` under `word-break:
+/// break-all`, where Chrome's ASCII rules decide it, or `None` where Chrome
+/// asks ICU.
+///
+/// Blink's break-all table adds opportunities to the pair table and takes
+/// none away (`ShouldBreakAfterBreakAll`), and its ICU iterator is never
+/// asked between two ASCII characters.
+pub(super) fn breaks_all(
+    before_before: impl FnOnce() -> Option<char>,
+    before: char,
+    after: char,
+) -> Option<bool> {
+    let breaks = breaks(before_before, before, after)?;
+    let adds = u8::try_from(before)
+        .ok()
+        .zip(u8::try_from(after).ok())
+        .is_some_and(|(before, after)| break_all_adds(before, after));
+    Some(breaks || adds)
+}
+
+/// Whether Blink's break-all table adds an opportunity between two
+/// printable ASCII characters.
+///
+/// It is indexed by line-break class, in which Blink's data puts `+` with
+/// the letters rather than with `$` and `\`. Measured in Chrome 155 in 10 px
+/// Ahem, each pair alone in a column of no width, it adds these, after each
+/// group, before:
+/// - a letter, a digit, `/`, `<`, `@`, `^`, `_` or `` ` ``: a letter or `#`,
+///   `&`, `*`, `+`, `-`, `=`, `>`, `@`, `^`, `_`, `` ` ``, `|` or `~` (call
+///   them letter-like), `$`, `\`, a digit, or an opening `(`, `<`, `[`, `{`;
+/// - `!` or `%`: the letter-like, `$`, `\`, `%` or a digit;
+/// - `#`, `&`, `)`, `*`, `+`, `=`, `>`, `]`, `|`, `}` or `~`: the
+///   letter-like, `$`, `\` or a digit;
+/// - `,`, `.`, `:` or `;`: the letter-like or a digit;
+/// - `$` or `\`: `%`;
+/// - `-`: a digit;
+/// - and after `"`, `'`, `(`, `?`, `[`, `{` and DEL, before nothing.
+fn break_all_adds(before: u8, after: u8) -> bool {
+    let letter = matches!(
+        after,
+        b'#' | b'&'
+            | b'*'
+            | b'+'
+            | b'-'
+            | b'='
+            | b'>'
+            | b'@'
+            | b'A'..=b'Z'
+            | b'^'..=b'`'
+            | b'a'..=b'z'
+            | b'|'
+            | b'~'
+    );
+    let digit = after.is_ascii_digit();
+    let currency = matches!(after, b'$' | b'\\');
+    let opening = matches!(after, b'(' | b'<' | b'[' | b'{');
+    match before {
+        b'/' | b'0'..=b'9' | b'<' | b'@' | b'A'..=b'Z' | b'^'..=b'`' | b'a'..=b'z' => {
+            letter || currency || digit || opening
+        }
+        b'!' | b'%' => letter || currency || digit || after == b'%',
+        b'#' | b'&' | b')' | b'*' | b'+' | b'=' | b'>' | b']' | b'|' | b'}' | b'~' => {
+            letter || currency || digit
+        }
+        b',' | b'.' | b':' | b';' => letter || digit,
+        b'$' | b'\\' => after == b'%',
+        b'-' => digit,
+        _ => false,
+    }
+}
+
 /// A space Blink breaks after a run of and never before: U+0020, a tab or
 /// a line feed.
 fn is_breakable_space(ch: char) -> bool {

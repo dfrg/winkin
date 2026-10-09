@@ -770,7 +770,7 @@ impl ClusterWriter<'_> {
                     .get(..at)
                     .and_then(|before| before.chars().rev().nth(1))
             };
-            let ascii = key.ascii_answer(super::ascii::breaks(before_last, last, ch));
+            let ascii = key.ascii_answer(before_last, last, ch);
             let mut breaks = match ascii {
                 Some(breaks) => breaks,
                 None => self.stream.as_mut().is_some_and(|stream| stream.at(at)),
@@ -1244,11 +1244,12 @@ impl ClusterWriter<'_> {
         // Chrome's ASCII rules first, over the base and what follows, as
         // Blink's `LazyLineBreakIterator` asks them before ICU.
         let mut base_chars = base.chars().rev();
+        let key = next.item.key;
         let ascii = base_chars
             .next()
             .zip(following.chars().next())
-            .and_then(|(last, first)| super::ascii::breaks(|| base_chars.next(), last, first));
-        let answer = match next.item.key.ascii_answer(ascii) {
+            .and_then(|(last, first)| key.ascii_answer(|| base_chars.next(), last, first));
+        let answer = match ascii {
             Some(answer) => answer,
             None => {
                 let length = scratch.len();
@@ -1272,11 +1273,10 @@ impl ClusterWriter<'_> {
         // The character before the cluster's last, which a hyphen's rule
         // reads, found only where it does.
         let before = self.text.get(..next.start).unwrap_or_default();
-        let ascii = next.item.key.ascii_answer(super::ascii::breaks(
-            || before.chars().rev().nth(1),
-            pending.last,
-            next.first,
-        ));
+        let ascii =
+            next.item
+                .key
+                .ascii_answer(|| before.chars().rev().nth(1), pending.last, next.first);
         let breaks = match ascii {
             Some(breaks) => breaks,
             None => self
@@ -1332,11 +1332,10 @@ impl ClusterWriter<'_> {
             .text
             .get(self.inner_start..next.start)
             .unwrap_or_default();
-        let ascii = next.item.key.ascii_answer(super::ascii::breaks(
-            || before.chars().rev().nth(1),
-            pending.last,
-            next.first,
-        ));
+        let ascii =
+            next.item
+                .key
+                .ascii_answer(|| before.chars().rev().nth(1), pending.last, next.first);
         let breaks = match ascii {
             Some(breaks) => breaks,
             None => self
