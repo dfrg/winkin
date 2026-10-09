@@ -54,6 +54,35 @@ fn content_offset(layout: &Layout, key_: u64, offset: u32, side: MapSide) -> Opt
 
 use MapSide::{After, Before};
 
+#[test]
+fn math_auto_maps_each_source_character_as_one_stop() {
+    let math = styled(|s| s.text.transform = TextTransform::MATH_AUTO);
+    let layout = mapped_with(&math, |b| {
+        b.text(key(1), "h");
+        b.text(key(2), "i");
+        b.text(key(3), "α");
+        b.text(key(4), "hi");
+    });
+    assert_eq!(text(&layout), "ℎ𝑖𝛼hi");
+    assert_eq!(
+        units(&layout),
+        [
+            (V, 0..3, 0..1),
+            (V, 3..7, 0..1),
+            (V, 7..11, 0..2),
+            (I, 11..13, 0..2)
+        ]
+    );
+    for (key, from, to, len) in [(1, 0, 3, 1), (2, 3, 7, 1), (3, 7, 11, 2)] {
+        assert_eq!(content_offset(&layout, key, 0, After), Some(from));
+        assert_eq!(content_offset(&layout, key, len, Before), Some(to));
+        for at in from + 1..to {
+            assert_eq!(source(&layout, at, Before), Some((key, 0)));
+            assert_eq!(source(&layout, at, After), Some((key, len)));
+        }
+    }
+}
+
 /// A plain document is one unit per text node. Nothing collapses or
 /// transforms, and a lone space stays one unit.
 #[test]

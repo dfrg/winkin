@@ -4,10 +4,35 @@
 use super::count_allocations;
 use winkin::style::{
     ComputedStyle, EdgesGroup, FontFamilyName, FontFeature, FontGroup, FontVariation, FontWeight,
-    GenericFamily, Language, Sides, Tag, TextCase, TextGroup, TextWrapMode, UnicodeBidi,
-    WhiteSpaceCollapse, WhiteSpaceTrim,
+    GenericFamily, Language, Sides, Tag, TextCase, TextGroup, TextTransform, TextWrapMode,
+    UnicodeBidi, WhiteSpaceCollapse, WhiteSpaceTrim,
 };
 use winkin::{BoxSize, BuildOptions, ComputedBlockStyle, Context, FloatSide, NodeKey};
+
+#[test]
+fn math_auto_allocates_nothing_warm() {
+    let mut layout = winkin::Layout::new();
+    let mut cx = Context::new(fontwich::Collection::new());
+    let mut math = ComputedStyle::initial();
+    math.text.transform = TextTransform::MATH_AUTO;
+    let block = ComputedBlockStyle::new(&math);
+    for source in ["i", "hi", "∞"] {
+        for map_source in [false, true] {
+            let mut build = || {
+                let mut options = BuildOptions::default();
+                options.map_source = map_source;
+                let mut b = layout.builder(NodeKey(0), &block, options);
+                for key in 1..100 {
+                    b.text(NodeKey(key), source);
+                }
+                assert!(b.finish(&mut cx).is_complete());
+            };
+            build();
+            let warm = count_allocations(build);
+            assert_eq!(warm, 0, "{source}, map_source={map_source}");
+        }
+    }
+}
 
 /// The styles a document is set in, with lists the way an engine holds
 /// them: its own, lent for each call.

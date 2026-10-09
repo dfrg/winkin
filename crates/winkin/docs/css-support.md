@@ -102,7 +102,7 @@ sees the text as drawn.
 | `text-transform` | `none`, `uppercase`, `lowercase`, `capitalize` | Supported | Full case mappings, in the text's language: Turkish and Azerbaijani dotted and dotless i, Lithuanian dots, Greek accents dropped in capitals, Dutch IJ, final sigma. `capitalize` finds words by Unicode's word boundaries, the same words word motion finds, and titlecases the first letter. | — |
 | `text-transform` | `full-width` | Beyond Chrome | Chrome has it behind a flag. Printable ASCII, half-width katakana and Hangul and a few signs become full-width. A space becomes U+3000 only where white space is kept. Applied after the case. | — |
 | `text-transform` | `full-size-kana` | Beyond Chrome | Chrome has it behind a flag, with the same table. CSS Text 3's 58 small kana become full-size. Applied after `full-width`. | — |
-| `text-transform` | `math-auto` | Not supported | No value in the API. | — |
+| `text-transform` | `math-auto` | Supported | `TextTransform::MATH_AUTO`. MathML Core's italic mappings for single-character source text nodes; consecutive calls with the same key form one node. | [MathML Core §4.2](https://w3c.github.io/mathml-core/#the-math-auto-transform) |
 | `font-variant-caps` | all values | Supported | See [Fonts](#fonts-and-font-selection). Synthesized small capitals are case transforms done at shaping. | — |
 
 ## Line breaking and word breaking
@@ -479,7 +479,6 @@ These have no value in the API, or are accepted and ignored.
   `@font-feature-values`).
 - `text-autospace` values `punctuation`, `insert`, `replace` and `auto`.
 - `text-spacing-trim` values `trim-both`, `trim-all` and `auto`.
-- `text-transform: math-auto`.
 - Outside list markers. A host can push an inside marker as text or an
   atomic inline.
 - Block layout itself: one layout is one block's inline content. See

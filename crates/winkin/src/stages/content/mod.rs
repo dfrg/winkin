@@ -884,6 +884,8 @@ define_flags! {
         pub(crate) const FIRST_LINE_RESHAPES = 1 << 21;
         /// Two atomic inlines have the same key.
         const SHARED_ATOMIC_KEYS = 1 << 22;
+        /// Some style asks for whole-node mathematical italic mapping.
+        pub(super) const MATH_AUTO = 1 << 23;
     }
 }
 
@@ -1371,6 +1373,10 @@ pub(crate) struct ContentWriter<'a> {
     /// The text node `text` continues while its key is the same, until
     /// anything else is written.
     text_node: Option<NodeId>,
+    /// One character held until another call continues its node or ends it.
+    math_text: Option<(NodeKey, char)>,
+    /// A source text node already known to contain more than one character.
+    math_key: Option<NodeKey>,
     /// That node's item text is appended to, once it has one.
     open_item: Option<ItemId>,
     /// How far the writer has got in the text the caller gave the text

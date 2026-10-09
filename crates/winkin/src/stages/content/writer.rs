@@ -174,6 +174,8 @@ impl<'a> ContentWriter<'a> {
             collapser: Collapser::new(),
             last_char: ' ',
             text_node: None,
+            math_text: None,
+            math_key: None,
             open_item: None,
             source: 0,
             run_unit: None,

@@ -5,11 +5,11 @@ use super::collapse::Event;
 use super::first_letter::FirstLetterScan;
 use super::memo::StyleKey;
 use super::{
-    ContainerKind, ContentWriter, FirstLetter, InitialLetterUse, ItemFlags, ItemKind, NodeFacts,
-    NodeId, NodeKey, NodeKind, Open,
+    ContainerKind, ContentFlags, ContentWriter, FirstLetter, InitialLetterUse, ItemFlags, ItemKind,
+    NodeFacts, NodeId, NodeKey, NodeKind, Open,
 };
 use crate::style::{
-    BidiGroup, ComputedStyle, Direction, FirstLineVariant, InitialLetter, UnicodeBidi,
+    BidiGroup, ComputedStyle, Direction, FirstLineVariant, InitialLetter, TextCase, UnicodeBidi,
     WhiteSpaceTrim,
 };
 
@@ -30,6 +30,9 @@ impl ContentWriter<'_> {
         style: &ComputedStyle<'_>,
         first_line: Option<&ComputedStyle<'_>>,
     ) {
+        if self.math_text.is_some() {
+            self.end_text();
+        }
         if !matches!(
             self.first_letter,
             FirstLetter::Unarmed | FirstLetter::Armed { .. }
@@ -51,6 +54,11 @@ impl ContentWriter<'_> {
             Some(first_line) => self.key(&letter.apply(&style.pinned_first_line(first_line))),
             None => own,
         });
+        if matches!(own.text.transform.case, TextCase::MathAuto)
+            || first_line.is_some_and(|s| matches!(s.text.transform.case, TextCase::MathAuto))
+        {
+            self.content.flags.insert(ContentFlags::MATH_AUTO);
+        }
         self.first_letter = FirstLetter::Armed {
             key,
             style: own,
@@ -61,7 +69,7 @@ impl ContentWriter<'_> {
     /// Writes text from the text node `key` while the first letter is still
     /// to be found. Where the text holds the letter, it splits at the
     /// letter's start and end, and the letter goes in its box.
-    pub(super) fn text_with_first_letter(&mut self, key: NodeKey, text: &str) {
+    pub(super) fn text_with_first_letter(&mut self, key: NodeKey, text: &str, single: bool) {
         // Armed, or else after punctuation an earlier text ended with,
         // whose box is already written.
         let armed = match self.first_letter {
@@ -72,7 +80,7 @@ impl ContentWriter<'_> {
             } => Some((key, style, first_line)),
             FirstLetter::Punctuation { .. } => None,
             FirstLetter::Unarmed | FirstLetter::Done => {
-                self.plain_text(key, text);
+                self.plain_text(key, text, single);
                 return;
             }
         };
@@ -83,10 +91,10 @@ impl ContentWriter<'_> {
             .unwrap_or_else(|| self.container());
         let mode = self.text_facts(holder).collapse;
         match (FirstLetterScan::new(text, mode, armed.is_none()), armed) {
-            (FirstLetterScan::Nothing, _) => self.plain_text(key, text),
+            (FirstLetterScan::Nothing, _) => self.plain_text(key, text, single),
             (FirstLetterScan::Ends, _) => {
                 self.first_letter_ends();
-                self.plain_text(key, text);
+                self.plain_text(key, text, single);
             }
             // The punctuation before the letter came from an earlier text,
             // and the box holds only that part, as Chrome's does.
@@ -94,21 +102,22 @@ impl ContentWriter<'_> {
                 if found {
                     self.first_letter = FirstLetter::Done;
                 }
-                self.plain_text(key, text);
+                self.plain_text(key, text, single);
             }
             (FirstLetterScan::Text { start, end, found }, Some((letter, style, first_line))) => {
                 let (before, rest) = text.split_at(start.min(text.len()));
                 let (letter_text, after) = rest.split_at(end.saturating_sub(start).min(rest.len()));
                 if !before.is_empty() {
-                    self.plain_text(key, before);
+                    self.plain_text(key, before, single);
                 }
-                let node = self.write_first_letter(letter, style, first_line, key, letter_text);
+                let node =
+                    self.write_first_letter(letter, style, first_line, key, letter_text, single);
                 self.first_letter = match node {
                     Some(node) if !found => FirstLetter::Punctuation { node },
                     _ => FirstLetter::Done,
                 };
                 if !after.is_empty() {
-                    self.plain_text(key, after);
+                    self.plain_text(key, after, single);
                 }
             }
         }
@@ -132,6 +141,7 @@ impl ContentWriter<'_> {
         first_line: Option<StyleKey>,
         text_key: NodeKey,
         text: &str,
+        single: bool,
     ) -> Option<NodeId> {
         // Where the letter starts in the caller's text node: after what of
         // it was written before, in this call or earlier ones. Where the box
@@ -143,7 +153,7 @@ impl ContentWriter<'_> {
         self.end_text();
         self.continues = Some((text_key, base));
         if !self.has_node_room() || !self.has_item_room(2) {
-            self.plain_text(text_key, text);
+            self.plain_text(text_key, text, single);
             return None;
         }
         // Where it sets `initial-letter`, the box is the block's initial
@@ -180,7 +190,7 @@ impl ContentWriter<'_> {
             trim: WhiteSpaceTrim::NONE,
         });
         let Some(node) = self.push_node(NodeKind::FirstLetter, lowered, key) else {
-            self.plain_text(text_key, text);
+            self.plain_text(text_key, text, single);
             return None;
         };
         let item = self.push_item(ItemKind::Open, node, ItemFlags::NONE);
@@ -201,7 +211,7 @@ impl ContentWriter<'_> {
         self.open_item = None;
         self.source = base;
         self.content.record(|map| map.letter_from(text_key));
-        self.write_node_text(node, text);
+        self.write_node_text(node, text, single);
         self.pop();
         self.continues = Some((text_key, self.source));
         Some(node)

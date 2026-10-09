@@ -49,6 +49,9 @@ impl ContentWriter<'_> {
     /// Closes the innermost container.
     pub(super) fn pop(&mut self) {
         work::step();
+        if self.math_text.is_some() {
+            self.end_text();
+        }
         let Some(open) = self.stack.pop() else {
             return;
         };
@@ -87,10 +90,23 @@ impl ContentWriter<'_> {
 
     /// Ends the current text node, if any: it takes no more text.
     pub(super) fn end_text(&mut self) {
+        if self.math_text.is_some() {
+            self.end_math_text();
+        }
+        self.math_key = None;
         if let Some(node) = self.text_node.take() {
             self.end_leaf(node);
         }
         self.open_item = None;
+    }
+
+    /// Ends the source text node `math-auto` measures: a held character is
+    /// written as the whole of it.
+    pub(super) fn end_math_text(&mut self) {
+        if let Some((key, ch)) = self.math_text.take() {
+            self.write_text_call(key, ch.encode_utf8(&mut [0; 4]), true);
+        }
+        self.math_key = None;
     }
 
     /// Records that `node` has all its items.

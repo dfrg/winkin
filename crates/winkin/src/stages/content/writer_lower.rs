@@ -12,7 +12,7 @@ use super::{
     NodeId, NodeKind, TextFacts, TextFactsId, TextFlags,
 };
 use crate::style::{
-    BidiGroup, ComputedStyle, Direction, FirstLineVariant, RubyGroup, TextTransform,
+    BidiGroup, ComputedStyle, Direction, FirstLineVariant, RubyGroup, TextCase, TextTransform,
 };
 
 impl ContentWriter<'_> {
@@ -108,6 +108,9 @@ impl ContentWriter<'_> {
         } = &mut *self.content;
         let writing_mode = block.writing_mode;
         let (languages, lookup) = lists.lowering();
+        if matches!(style.text.transform.case, TextCase::MathAuto) {
+            flags.insert(ContentFlags::MATH_AUTO);
+        }
         let mut new = ContentFlags::NONE;
         let mut lower_text = || {
             let lowered = facts.lower_text(lookup, languages, style, writing_mode);

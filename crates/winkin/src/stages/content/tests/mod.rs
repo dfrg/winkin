@@ -2088,6 +2088,131 @@ fn transformed(style: &ComputedStyle<'_>, text_: &str) -> String {
     text(&layout).to_string()
 }
 
+/// Every entry in MathML Core's italic mappings table, in table order.
+#[test]
+fn math_auto_italic_mappings() {
+    let original = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzıȷΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡϴΣΤΥΦΧΨΩ∇αβγδεζηθικλμνξοπρςστυφχψω∂ϵϑϰϕϱϖ";
+    let italic = "𝐴𝐵𝐶𝐷𝐸𝐹𝐺𝐻𝐼𝐽𝐾𝐿𝑀𝑁𝑂𝑃𝑄𝑅𝑆𝑇𝑈𝑉𝑊𝑋𝑌𝑍𝑎𝑏𝑐𝑑𝑒𝑓𝑔ℎ𝑖𝑗𝑘𝑙𝑚𝑛𝑜𝑝𝑞𝑟𝑠𝑡𝑢𝑣𝑤𝑥𝑦𝑧𝚤𝚥𝛢𝛣𝛤𝛥𝛦𝛧𝛨𝛩𝛪𝛫𝛬𝛭𝛮𝛯𝛰𝛱𝛲𝛳𝛴𝛵𝛶𝛷𝛸𝛹𝛺𝛻𝛼𝛽𝛾𝛿𝜀𝜁𝜂𝜃𝜄𝜅𝜆𝜇𝜈𝜉𝜊𝜋𝜌𝜍𝜎𝜏𝜐𝜑𝜒𝜓𝜔𝜕𝜖𝜗𝜘𝜙𝜚𝜛";
+    assert_eq!(original.chars().count(), 112);
+    assert_eq!(italic.chars().count(), 112);
+    let math = styled(|s| s.text.transform = TextTransform::MATH_AUTO);
+    for (from, to) in original.chars().zip(italic.chars()) {
+        assert_eq!(
+            transformed(&math, from.encode_utf8(&mut [0; 4])),
+            to.to_string(),
+            "{from}"
+        );
+    }
+}
+
+#[test]
+fn math_auto_uses_whole_source_text_nodes() {
+    let math = styled(|s| s.text.transform = TextTransform::MATH_AUTO);
+    for unchanged in [
+        "", "hi", " h", "h ", "h\ni", "h\u{301}", "∞", "1", "𝑖", "\u{3A2}",
+    ] {
+        assert_eq!(
+            transformed(&math, unchanged),
+            unchanged.trim().replace('\n', " ")
+        );
+    }
+    let layout = build_with(
+        &ComputedBlockStyle::new(&math),
+        BuildOptions::default(),
+        |b| {
+            b.text(key(1), "h");
+            b.text(key(2), "i");
+            b.text(key(3), "h");
+            b.text(key(3), "");
+            b.text(key(3), "i");
+            b.text(key(3), "j");
+            b.text(key(4), "");
+            b.text(key(4), "i");
+            b.text(key(4), "");
+            b.text(key(5), "");
+            b.text(key(4), "i");
+        },
+    )
+    .0;
+    assert_eq!(text(&layout), "ℎ𝑖hij𝑖𝑖");
+}
+
+#[test]
+fn math_auto_excludes_other_transforms() {
+    let math = styled(|s| {
+        s.text.transform = TextTransform {
+            full_width: true,
+            full_size_kana: true,
+            ..TextTransform::MATH_AUTO
+        }
+    });
+    assert_eq!(transformed(&math, "h"), "ℎ");
+    assert_eq!(transformed(&math, "hi"), "hi");
+    assert_eq!(transformed(&math, "ｧ"), "ｧ");
+}
+
+#[test]
+fn math_auto_stops_at_the_text_limit() {
+    let math = styled(|s| s.text.transform = TextTransform::MATH_AUTO);
+    for (limit, expected, dropped) in [(3, "", 1), (4, "𝑖", 0)] {
+        let mut layout = Layout::new();
+        let mut b = layout.builder_within(
+            key(0),
+            &ComputedBlockStyle::new(&math),
+            BuildOptions::default(),
+            ContentLimits::MAX.with_text(limit),
+        );
+        b.text(key(1), "i");
+        let report = b.finish(&mut no_fonts());
+        assert_eq!(text(&layout), expected);
+        assert_eq!(report.dropped_bytes, dropped);
+    }
+    let mut layout = Layout::new();
+    let mut b = layout.builder_within(
+        key(0),
+        &ComputedBlockStyle::new(&math),
+        BuildOptions::default(),
+        ContentLimits::MAX.with_text(1),
+    );
+    b.text(key(1), "i");
+    b.text(key(1), "j");
+    let report = b.finish(&mut no_fonts());
+    assert_eq!(text(&layout), "i");
+    assert_eq!(report.dropped_bytes, 1);
+}
+
+#[test]
+fn math_auto_first_line_uses_the_source_node_length() {
+    let math = styled(|s| s.text.transform = TextTransform::MATH_AUTO);
+    let plain = ComputedStyle::initial();
+    for (own, first) in [(&plain, &math), (&math, &plain)] {
+        let layout = build_with(
+            &ComputedBlockStyle {
+                first_line: Some(first),
+                ..ComputedBlockStyle::new(own)
+            },
+            BuildOptions::default(),
+            |b| {
+                b.text(key(1), "i");
+                b.text(key(2), "h i");
+                b.text(key(3), "h");
+                b.text(key(3), "i");
+            },
+        )
+        .0;
+        let (first_text, offsets) = first_line_text(&layout);
+        if own.text.transform == TextTransform::MATH_AUTO {
+            assert_eq!(text(&layout), "𝑖h ihi");
+            assert_eq!(first_text, "ih ihi");
+            assert_eq!(offsets, [0, 1, 2, 3, 4, 5, 6]);
+        } else {
+            assert_eq!(text(&layout), "ih ihi");
+            assert_eq!(first_text, "𝑖h ihi");
+            assert_eq!(offsets, [0, 4, 5, 6, 7, 8, 9]);
+        }
+    }
+}
+
 /// Upper and lower case are the full mappings, with their contexts, as Chrome
 /// maps them through ICU. `ß` is two capitals, a ligature two letters, and a
 /// final sigma its own letter.

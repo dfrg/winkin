@@ -4,6 +4,7 @@
 //! - copied text as laid out, keeping the author's case and order.
 
 use super::*;
+use crate::style::TextTransform;
 
 /// A selection paints each item's selected text as tall as the line box.
 ///
@@ -91,6 +92,22 @@ fn a_selection_paints_pieces_atomics_and_hyphens() {
 }
 
 // Copy ------------------------------------------------------------------------
+
+#[test]
+fn a_selection_copies_math_auto_text() {
+    let math = styled(|s| s.text.transform = TextTransform::MATH_AUTO);
+    let layout = laid_with(&ComputedBlockStyle::new(&math), 400.0, |b| {
+        b.text(NodeKey(1), "h");
+        b.text(NodeKey(2), "i");
+        b.text(NodeKey(3), "hi");
+        b.text(NodeKey(4), "∞");
+    });
+    for kind in [CopyKind::Text, CopyKind::Clipboard] {
+        assert_eq!(copied(&layout, kind), "ℎ𝑖hi∞");
+        assert_eq!(layout.selected_text(0..3, kind).to_string(), "ℎ");
+        assert_eq!(layout.selected_text(3..7, kind).to_string(), "𝑖");
+    }
+}
 
 /// A selection copies the text as laid out.
 ///

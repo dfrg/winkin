@@ -12,6 +12,30 @@ use crate::style::{InitialLetter, InitialLetterAlign, VerticalAlign};
 /// The first-letter box's key in these tests.
 const LETTER: NodeKey = NodeKey(99);
 
+#[test]
+fn math_auto_first_letter_uses_the_source_node_length() {
+    let math = styled(|s| s.text.transform = TextTransform::MATH_AUTO);
+    assert_eq!(lettered(&math, "i"), "[𝑖]");
+    assert_eq!(lettered(&math, "hi"), "[h]i");
+    let layout = build(|b| {
+        b.set_first_letter(LETTER, &math, None);
+        b.text(key(1), "h");
+        b.text(key(1), "i");
+    });
+    assert_eq!(shown(&layout), "[h]i");
+    let plain = ComputedStyle::initial();
+    let layout = build_with(
+        &ComputedBlockStyle::new(&math),
+        BuildOptions::default(),
+        |b| {
+            b.set_first_letter(LETTER, &plain, None);
+            b.text(key(1), "hi");
+        },
+    )
+    .0;
+    assert_eq!(shown(&layout), "[h]i");
+}
+
 /// The computed font size `node`'s own text is set in.
 fn font_size(content: &Content, node: NodeId) -> f32 {
     node_request(content, node, FirstLineVariant::Standard)

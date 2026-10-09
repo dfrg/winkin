@@ -74,7 +74,7 @@ impl WhiteSpaceTrim {
     };
 }
 
-/// The case part of `text-transform`.
+/// The case or exclusive mathematical part of `text-transform`.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub enum TextCase {
     /// As written. The initial value.
@@ -86,6 +86,9 @@ pub enum TextCase {
     Lowercase,
     /// The first letter of each word uppercase.
     Capitalize,
+    /// A single-character text node mapped to mathematical italic.
+    /// Ignores `full-width` and `full-size-kana`.
+    MathAuto,
 }
 
 /// `text-transform`.
@@ -95,7 +98,7 @@ pub enum TextCase {
 /// word boundaries.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub struct TextTransform {
-    /// The case transform.
+    /// The case or exclusive mathematical transform.
     pub case: TextCase,
     /// `full-width`: converts characters to full-width forms.
     ///
@@ -116,6 +119,12 @@ impl TextTransform {
         case: TextCase::None,
         full_width: false,
         full_size_kana: false,
+    };
+
+    /// `math-auto`: single-character text nodes in mathematical italic.
+    pub const MATH_AUTO: Self = Self {
+        case: TextCase::MathAuto,
+        ..Self::NONE
     };
 }
 

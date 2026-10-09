@@ -48,6 +48,9 @@
 //! a half-width small katakana that `full-width` made full-width is then
 //! made full-size.
 //!
+//! **`math-auto`** maps single-character text nodes to mathematical italic
+//! by MathML Core's italic table. It excludes every other transform.
+//!
 //! **Lengths.** A transform may change how long the text is: `ß` to `SS`
 //! keeps its bytes, `ŉ` to `ʼN` grows by one, a full-width letter by two, and
 //! a dropped Greek accent shrinks it. Nothing here stores where. The offset
@@ -130,6 +133,11 @@ impl TextTransformer {
         langid: &'static LanguageIdentifier,
         keeps_spaces: bool,
     ) -> Self {
+        let transform = if matches!(transform.case, TextCase::MathAuto) {
+            TextTransform::MATH_AUTO
+        } else {
+            transform
+        };
         Self {
             transform,
             langid,
@@ -155,8 +163,19 @@ impl TextTransformer {
                 keeps_spaces: self.keeps_spaces,
             };
             self.write_case(src, before, scratch, &mut mapped);
+        } else if matches!(self.transform.case, TextCase::MathAuto) {
+            Self::write_math(src, out);
         } else {
             self.write_case(src, before, scratch, out);
+        }
+    }
+
+    /// Writes the mathematical italic form of each character to `out`.
+    #[cold]
+    #[inline(never)]
+    fn write_math(src: &str, out: &mut String) {
+        for ch in src.chars() {
+            out.push(math_italic(ch).unwrap_or(ch));
         }
     }
 
@@ -171,7 +190,7 @@ impl TextTransformer {
         let langid = self.langid;
         // Writing into a string never fails.
         let _ = match self.transform.case {
-            TextCase::None => sink.write_str(src),
+            TextCase::None | TextCase::MathAuto => sink.write_str(src),
             TextCase::Uppercase => CASE.uppercase(src, langid).write_to(sink),
             TextCase::Lowercase => CASE.lowercase(src, langid).write_to(sink),
             TextCase::Capitalize => {
@@ -216,7 +235,7 @@ impl TextTransformer {
         let mut count = Count(0);
         // Counting never fails.
         let _ = match self.transform.case {
-            TextCase::None => return 1,
+            TextCase::None | TextCase::MathAuto => return 1,
             TextCase::Uppercase => CASE.uppercase(one, langid).write_to(&mut count),
             TextCase::Lowercase => CASE.lowercase(one, langid).write_to(&mut count),
             TextCase::Capitalize if starts => CASE
@@ -255,6 +274,24 @@ impl Transforms {
         first_line: Option<Option<TextTransformer>>,
     ) -> Self {
         Self { own, first_line }
+    }
+
+    /// Whether either variant asks for the whole text node's length.
+    pub(super) fn has_math_auto(&self) -> bool {
+        [self.own, self.first_line()]
+            .into_iter()
+            .any(|transformer| {
+                transformer.is_some_and(|t| matches!(t.transform.case, TextCase::MathAuto))
+            })
+    }
+
+    /// Disables `math-auto` where the source node is not one mapped character.
+    pub(super) fn with_node(self, single: bool, text: &str) -> Self {
+        let eligible = || single && text.chars().next().and_then(math_italic).is_some();
+        let resolve = |t: Option<TextTransformer>| {
+            t.filter(|t| !matches!(t.transform.case, TextCase::MathAuto) || eligible())
+        };
+        Self::new(resolve(self.own), self.first_line.map(resolve))
     }
 
     /// Whether the first line transforms the text otherwise than its own
@@ -317,10 +354,35 @@ impl Transforms {
 
 /// The most bytes a transform makes of one byte of text.
 ///
-/// A full-width form of ASCII is three bytes of one, and no case mapping
-/// does more. The writer leaves this much room before it writes a
-/// transform.
-pub(super) const MAX_TRANSFORM_GROWTH: usize = 3;
+/// A mathematical italic letter is four bytes of one of ASCII, a full-width
+/// form three, and no case mapping does more. The writer leaves this much
+/// room before it writes a transform.
+pub(super) const MAX_TRANSFORM_GROWTH: usize = 4;
+
+/// MathML Core's italic mappings.
+/// <https://w3c.github.io/mathml-core/#italic-mappings>
+fn math_italic(ch: char) -> Option<char> {
+    let codepoint = match ch {
+        'A'..='Z' => ch as u32 + 0x1D3F3,
+        'h' => 0x210E,
+        'a'..='z' => ch as u32 + 0x1D3ED,
+        '\u{131}' => 0x1D6A4,
+        '\u{237}' => 0x1D6A5,
+        '\u{391}'..='\u{3A1}' | '\u{3A3}'..='\u{3A9}' => ch as u32 + 0x1D351,
+        '\u{3B1}'..='\u{3C9}' => ch as u32 + 0x1D34B,
+        '\u{3F4}' => 0x1D6F3,
+        '\u{2207}' => 0x1D6FB,
+        '\u{2202}' => 0x1D715,
+        '\u{3F5}' => 0x1D716,
+        '\u{3D1}' => 0x1D717,
+        '\u{3F0}' => 0x1D718,
+        '\u{3D5}' => 0x1D719,
+        '\u{3F1}' => 0x1D71A,
+        '\u{3D6}' => 0x1D71B,
+        _ => return None,
+    };
+    char::from_u32(codepoint)
+}
 
 /// Calls `each` with the word segments of `src` in order, and whether the
 /// segment starts a word or carries on the one `before` is in.
