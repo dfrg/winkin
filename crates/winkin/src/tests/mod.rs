@@ -79,9 +79,8 @@ pub(crate) struct Fixture {
 /// Which of a [`Fixture`]'s layouts its stage's check runs on.
 #[derive(Copy, Clone)]
 pub(crate) enum StageCheck {
-    /// Each layout once it is built, with the context, which the check may
-    /// shape with again.
-    Built(fn(&mut Context, &Layout)),
+    /// Each layout once it is built.
+    Built(fn(&Layout)),
     /// Each layout once it is broken into lines.
     Placed(fn(&Layout)),
 }
@@ -128,7 +127,7 @@ impl Fixture {
         calls(&mut b);
         let built = b.finish(&mut self.cx);
         if let StageCheck::Built(check) = self.check {
-            check(&mut self.cx, layout);
+            check(layout);
         }
         built
     }

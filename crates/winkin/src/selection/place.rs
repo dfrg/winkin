@@ -35,7 +35,22 @@ use crate::work;
 /// a caret passes through it to the text under it, as Blink's does
 /// (`IsGeneratedText`).
 #[derive(Copy, Clone)]
-pub(super) enum Leaf<'a> {
+pub(super) struct Leaf<'a> {
+    /// Where its text starts, as a byte offset into the layout's text.
+    pub(super) start: usize,
+    /// Where its text ends.
+    pub(super) end: usize,
+    /// Where it starts and ends along its line, from the line box's left.
+    pub(super) inline: InlineExtents,
+    /// The text run or atomic inline it is.
+    pub(super) item: LeafItem<'a>,
+    /// The line it is on.
+    pub(super) line: Line<'a>,
+}
+
+/// What a leaf is.
+#[derive(Copy, Clone)]
+pub(super) enum LeafItem<'a> {
     /// A text run.
     Text(TextRun<'a>),
     /// An atomic inline.
@@ -43,44 +58,41 @@ pub(super) enum Leaf<'a> {
 }
 
 impl<'a> Leaf<'a> {
-    /// Returns the leaf `item` is, where it is one.
-    fn from_item(item: Item<'a>) -> Option<Self> {
+    /// Returns the leaf `item` of `line` is, where it is one.
+    fn from_item(line: Line<'a>, item: Item<'a>) -> Option<Self> {
         match item {
-            Item::Text(run) => Some(Self::Text(run)),
-            Item::Atomic(atomic) => Some(Self::Atomic(atomic)),
+            Item::Text(run) => Some(Self::from_run(line, run)),
+            Item::Atomic(atomic) => {
+                let range = atomic.text_range();
+                Some(Self {
+                    start: range.start,
+                    end: range.end,
+                    inline: atomic.inline(),
+                    item: LeafItem::Atomic(atomic),
+                    line,
+                })
+            }
             Item::Generated(_) | Item::Box(_) => None,
         }
     }
 
-    /// Returns where its text starts, as a byte offset into the layout's text.
-    pub(super) fn start(&self) -> usize {
-        match self {
-            Self::Text(run) => run.text_range().start,
-            Self::Atomic(atomic) => atomic.text_range().start,
-        }
-    }
-
-    /// Returns where its text ends.
-    pub(super) fn end(&self) -> usize {
-        match self {
-            Self::Text(run) => run.text_range().end,
-            Self::Atomic(atomic) => atomic.text_range().end,
-        }
-    }
-
-    /// Returns where it starts and ends along its line, from the line box's left.
-    pub(super) fn inline(&self) -> InlineExtents {
-        match self {
-            Self::Text(run) => run.inline(),
-            Self::Atomic(atomic) => atomic.inline(),
+    /// Returns the leaf the text run `run` of `line` is.
+    fn from_run(line: Line<'a>, run: TextRun<'a>) -> Self {
+        let range = run.text_range();
+        Self {
+            start: range.start,
+            end: range.end,
+            inline: run.inline(),
+            item: LeafItem::Text(run),
+            line,
         }
     }
 
     /// Returns its bidi level.
     pub(super) fn level(&self) -> BidiLevel {
-        match self {
-            Self::Text(run) => run.level(),
-            Self::Atomic(atomic) => atomic.level(),
+        match &self.item {
+            LeafItem::Text(run) => run.level(),
+            LeafItem::Atomic(atomic) => atomic.level(),
         }
     }
 
@@ -91,9 +103,9 @@ impl<'a> Leaf<'a> {
 
     /// Returns the text run it is, where it is one.
     pub(super) fn run(&self) -> Option<&TextRun<'a>> {
-        match self {
-            Self::Text(run) => Some(run),
-            Self::Atomic(_) => None,
+        match &self.item {
+            LeafItem::Text(run) => Some(run),
+            LeafItem::Atomic(_) => None,
         }
     }
 
@@ -150,9 +162,9 @@ impl<'a> Leaf<'a> {
     /// Returns the offset at its right edge where `right`, else at its left edge.
     pub(super) fn edge_offset(&self, right: bool) -> usize {
         if right != self.is_rtl() {
-            self.end()
+            self.end
         } else {
-            self.start()
+            self.start
         }
     }
 
@@ -161,12 +173,12 @@ impl<'a> Leaf<'a> {
     /// It is at its start's edge, its end's, or between two clusters, which
     /// share a ligature evenly (`TextRun::places`).
     pub(super) fn caret_x(&self, layout: &Layout, at: usize) -> f32 {
-        let InlineExtents { left, right } = self.inline();
+        let InlineExtents { left, right } = self.inline;
         let rtl = self.is_rtl();
-        let start = self.start();
+        let start = self.start;
         // The start's edge or the end's; an atomic inline has only these.
         let edge = |end: bool| if end != rtl { right } else { left };
-        let Self::Text(run) = self else {
+        let LeafItem::Text(run) = &self.item else {
             return edge(at != start);
         };
         let clusters = &layout.analysis().clusters;
@@ -193,10 +205,10 @@ impl<'a> Leaf<'a> {
     /// after by its halves. A point across the line picks among its
     /// characters ([`hit_across`](Self::hit_across)).
     pub(super) fn hit(&self, layout: &Layout, x: f32) -> (usize, Option<ClusterId>) {
-        let InlineExtents { left, right } = self.inline();
+        let InlineExtents { left, right } = self.inline;
         let middle = left + (right - left) / 2.0;
         let edge = (self.edge_offset(x > middle), None);
-        let Self::Text(run) = self else {
+        let LeafItem::Text(run) = &self.item else {
             return edge;
         };
         if run.is_combined() {
@@ -219,29 +231,26 @@ impl<'a> Leaf<'a> {
         edge
     }
 
-    /// Returns where a caret beside it spans across `line`, from the line box's top.
+    /// Returns where a caret beside it spans across its line, from the line box's top.
     ///
     /// In text it spans the font's ascent and descent around the baseline, as
     /// Chrome sizes a caret. Beside an atomic inline it spans the line box,
     /// as Chrome's `ComputeLocalCaretRectByBoxSide` does.
-    fn caret_block(&self, line: &Line<'_>) -> CrossExtents {
-        match self {
-            Self::Text(run) => run.block(),
-            Self::Atomic(_) => CrossExtents {
-                over: 0.0,
-                under: line.metrics().height(),
-            },
+    fn caret_block(&self) -> CrossExtents {
+        match &self.item {
+            LeafItem::Text(run) => run.block(),
+            LeafItem::Atomic(_) => CrossExtents::from_line_height(self.line.metrics().height()),
         }
     }
 
-    /// Returns the caret at its boundary `at` on `line`.
+    /// Returns the caret at its boundary `at`.
     ///
     /// The caret stands across the line. In combined text it runs along the
     /// line over the unit's em instead.
-    fn caret(&self, layout: &Layout, line: &Line<'_>, at: usize) -> Caret {
+    fn caret(&self, layout: &Layout, at: usize) -> Caret {
         let (inline, block) = match self.across(layout, at) {
             Some(across) => (
-                self.inline(),
+                self.inline,
                 CrossExtents {
                     over: across,
                     under: across,
@@ -249,11 +258,11 @@ impl<'a> Leaf<'a> {
             ),
             None => {
                 let x = self.caret_x(layout, at);
-                (InlineExtents { left: x, right: x }, self.caret_block(line))
+                (InlineExtents { left: x, right: x }, self.caret_block())
             }
         };
         Caret {
-            line: line.index(),
+            line: self.line.index(),
             inline,
             block,
             rtl: self.is_rtl(),
@@ -265,15 +274,16 @@ impl<'a> Leaf<'a> {
 ///
 /// They include the text an ellipsis hides, which keeps its carets and hits
 /// as in Chrome.
-pub(super) fn leaves<'a>(line: Line<'a>) -> impl Iterator<Item = Leaf<'a>> {
-    line.all_items().filter_map(Leaf::from_item)
+pub(super) fn leaves<'a>(line: Line<'a>) -> impl DoubleEndedIterator<Item = Leaf<'a>> + Clone {
+    line.leaf_items()
+        .filter_map(move |item| Leaf::from_item(line, item))
 }
 
 /// Returns the text runs of `line`'s ruby annotations, column by column.
 pub(super) fn annotation_leaves<'a>(line: Line<'a>) -> impl Iterator<Item = Leaf<'a>> {
     line.annotations()
         .flat_map(|annotation| annotation.runs())
-        .map(Leaf::Text)
+        .map(move |run| Leaf::from_run(line, run))
 }
 
 /// A position and the cluster its offset is in, so no reader searches for the cluster again.
@@ -323,7 +333,7 @@ impl ClusteredPosition {
         let at = TextOffset::new(position.offset.min(layout.text().len()));
         Self {
             position,
-            cluster: walk_to(clusters, near, at),
+            cluster: clusters.walk_to(near, at),
         }
     }
 
@@ -343,23 +353,6 @@ impl ClusteredPosition {
     pub(super) fn offset(&self) -> usize {
         self.position.offset
     }
-}
-
-/// Returns the cluster holding byte `at`, as [`Clusters::at`] finds it, walked to from `near`.
-fn walk_to(clusters: &Clusters, near: ClusterId, at: TextOffset) -> ClusterId {
-    let end = clusters.end_id();
-    let mut cluster = near.min(end);
-    // Back to the cluster starting at or before `at`.
-    while cluster.get() > 0 && clusters.start(cluster) > at {
-        work::step();
-        cluster = ClusterId::new(cluster.get() - 1);
-    }
-    // On to the first ending past it.
-    while cluster < end && clusters.range(cluster).end <= at {
-        work::step();
-        cluster = ClusterId::new(cluster.get() + 1);
-    }
-    cluster
 }
 
 /// Returns `unsnapped` snapped to a caret stop, moving toward the affinity's side.
@@ -407,7 +400,7 @@ pub(super) fn snap(layout: &Layout, unsnapped: ClusteredPosition) -> ClusteredPo
         };
         return ClusteredPosition {
             position: Position::new(at.get(), affinity),
-            cluster: walk_to(clusters, cluster, at),
+            cluster: clusters.walk_to(cluster, at),
         };
     }
     ClusteredPosition {
@@ -579,7 +572,7 @@ pub(super) fn caret_line(
 fn touches(line: &Line<'_>, at: usize) -> bool {
     leaves(*line).chain(annotation_leaves(*line)).any(|leaf| {
         work::step();
-        let (start, end) = (leaf.start(), leaf.end());
+        let (start, end) = (leaf.start, leaf.end);
         (start < at && at < end) || (start < end && (start == at || end == at))
     })
 }
@@ -589,11 +582,11 @@ fn touches(line: &Line<'_>, at: usize) -> bool {
 /// It searches the base text first, then the annotations. `None` where no
 /// leaf does.
 fn line_carets(layout: &Layout, line: &Line<'_>, position: Position) -> Option<Carets> {
-    touching(layout, line, leaves(*line), position)
-        .or_else(|| touching(layout, line, annotation_leaves(*line), position))
+    touching(layout, leaves(*line), position)
+        .or_else(|| touching(layout, annotation_leaves(*line), position))
 }
 
-/// Returns the carets of `position` among `leaves` of `line`.
+/// Returns the carets of `position` among `leaves`, all of one line.
 ///
 /// The strong caret is in the leaf holding the offset. At a boundary
 /// between two leaves, it is in the one nearer the paragraph's level, the
@@ -607,7 +600,6 @@ fn line_carets(layout: &Layout, line: &Line<'_>, position: Position) -> Option<C
 /// two DOM positions at a unit's edge, one inside and one outside.
 fn touching<'a>(
     layout: &Layout,
-    line: &Line<'_>,
     leaves: impl Iterator<Item = Leaf<'a>>,
     position: Position,
 ) -> Option<Carets> {
@@ -615,10 +607,10 @@ fn touching<'a>(
     let (mut before, mut after) = (None, None);
     for leaf in leaves {
         work::step();
-        let (start, end) = (leaf.start(), leaf.end());
+        let (start, end) = (leaf.start, leaf.end);
         if start < at && at < end {
             return Some(Carets {
-                strong: leaf.caret(layout, line, at),
+                strong: leaf.caret(layout, at),
                 weak: None,
             });
         }
@@ -642,10 +634,10 @@ fn touching<'a>(
         (None, after) => (after?, None),
     };
     Some(Carets {
-        strong: strong.caret(layout, line, at),
+        strong: strong.caret(layout, at),
         weak: weak
             .filter(|weak| weak.is_rtl() != strong.is_rtl())
-            .map(|weak| weak.caret(layout, line, at)),
+            .map(|weak| weak.caret(layout, at)),
     })
 }
 
@@ -656,10 +648,10 @@ fn touching<'a>(
 /// as tall as the line box.
 fn past_content(layout: &Layout, line: &Line<'_>, at: usize) -> Caret {
     let last = leaves(*line)
-        .filter(|leaf| leaf.end() <= at)
-        .max_by_key(Leaf::end);
+        .filter(|leaf| leaf.end <= at)
+        .max_by_key(|leaf| leaf.end);
     match last {
-        Some(leaf) => leaf.caret(layout, line, leaf.end()),
+        Some(leaf) => leaf.caret(layout, leaf.end),
         None => {
             let rtl = line.level().is_rtl();
             let metrics = line.metrics();
@@ -667,10 +659,7 @@ fn past_content(layout: &Layout, line: &Line<'_>, at: usize) -> Caret {
             Caret {
                 line: line.index(),
                 inline: InlineExtents { left: x, right: x },
-                block: CrossExtents {
-                    over: 0.0,
-                    under: metrics.height(),
-                },
+                block: CrossExtents::from_line_height(metrics.height()),
                 rtl,
             }
         }

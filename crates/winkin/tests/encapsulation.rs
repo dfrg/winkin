@@ -172,8 +172,8 @@ const ALLOWED_DOORS: &[Entry] = &[
     ("src/layout/paint.rs", "first_from(", "entry: a line's paint starts its walk over the kept boxes at its first node, once a paint, where the line has no box item to start from"),
     ("src/layout/emphasis.rs", ".containing(", "entry: the font runs of a fragment whose item's fonts have no one em box, read alone, for its marks' em box"),
     ("src/stages/measure/ruby_columns.rs", "base_containing(", "entry: `outermost_annotation` seeks the base containing a marked item once, then follows the bounded parent chain"),
-    ("src/layout/run.rs", "run_containing(", "entry: an annotation's text run's shaping run, which its item does not name, by rank, read alone"),
-    ("src/stages/fragments/ruby.rs", "line_edges_touching(", "entry: an annotation line's reshaped edges, sought once a level rather than once a cluster"),
+    ("src/stages/fragments/annotations.rs", "first_from(", "entry: an annotation line's walk over the kept boxes seeks its element once a level, then walks to its boxes in node order"),
+    ("src/stages/fragments/annotations.rs", "line_edges_touching(", "entry: an annotation line's reshaped edges, sought once a level rather than once a cluster"),
     ("src/stages/fragments/read.rs", "line_edges_touching(", "entry: a fragment's line's reshaped edges, read alone"),
     ("src/stages/lines/fit_reshape.rs", "run_containing(", "entry: `text-spacing-trim` at a line's start or end mark, from its shaping run's facts, by rank once a line edge"),
     ("src/stages/lines/fit_reshape.rs", ".containing(", "entry: the breaker's edge reshapes, once a line edge: the shaping run of a start window or an end piece, by rank, which the reshape takes with its neighbours, the run's id ± 1"),
@@ -207,7 +207,6 @@ const FACTS: &[&str] = &[
 const ALLOWED_STYLES: &[Entry] = &[
     ("src/build.rs", "ComputedStyle", "public API: the builder's calls take the caller's style, which each hands to the door"),
     ("src/lib.rs", "ComputedStyle", "public API: the crate's re-export of the door's input"),
-    ("src/stages/fonts/select.rs", "FontRequest", "`faces_alike`: a first-line request at its node's own size, compared and never kept"),
 ];
 
 #[test]

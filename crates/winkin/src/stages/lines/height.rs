@@ -44,7 +44,8 @@ use alloc::vec::Vec;
 use core::mem;
 use core::ops::Range;
 
-use super::{LineShift, LineShiftId};
+use super::annotate::{AnnotationContinuation, Carry, EmWalk};
+use super::{Breaker, BreakerParagraph, LineShift, LineShiftId, Lines};
 use crate::data::{Id, RunCursor, Table, define_id, heap_bytes, sort_by_key};
 use crate::stages::LineStages;
 use crate::stages::analysis::ClusterId;
@@ -164,21 +165,28 @@ impl CarriedBoxes {
         }
         self.walked.extend(stages.boxes_around(node));
         self.record.clear();
-        for &node in self.walked.iter().rev() {
-            let open = nodes.items(node).start;
-            let strut = stages.measured.extents.get(open);
-            let struts = self
-                .record
-                .last()
-                .map_or(strut, |outer| outer.struts.unite(strut));
-            self.record.push(Ancestor {
-                node,
-                opened: stages.analysis.item_clusters.start(open),
-                struts,
-            });
+        let walked = mem::take(&mut self.walked);
+        for &node in walked.iter().rev() {
+            self.push_box(stages, node, nodes.items(node).start);
         }
+        self.walked = walked;
         self.at = holding;
         self.deep = true;
+    }
+
+    /// Pushes box `node`, opened by item `open`, onto the record, its strut
+    /// united with those of the boxes around it.
+    fn push_box(&mut self, stages: &LineStages<'_>, node: NodeId, open: ItemId) {
+        let strut = stages.measured.extents.get(open);
+        let struts = self
+            .record
+            .last()
+            .map_or(strut, |outer| outer.struts.unite(strut));
+        self.record.push(Ancestor {
+            node,
+            opened: stages.analysis.item_clusters.start(open),
+            struts,
+        });
     }
 
     /// Moves the record on to item `to`, opening and closing boxes as the
@@ -201,18 +209,7 @@ impl CarriedBoxes {
             };
             let node = item.node;
             match item.kind {
-                ItemKind::Open if stages.is_box(node) => {
-                    let strut = stages.measured.extents.get(at);
-                    let struts = self
-                        .record
-                        .last()
-                        .map_or(strut, |outer| outer.struts.unite(strut));
-                    self.record.push(Ancestor {
-                        node,
-                        opened: stages.analysis.item_clusters.start(at),
-                        struts,
-                    });
-                }
+                ItemKind::Open if stages.is_box(node) => self.push_box(stages, node, at),
                 ItemKind::Close if self.record.last().is_some_and(|open| open.node == node) => {
                     self.record.pop();
                 }
@@ -426,6 +423,9 @@ impl LineStages<'_> {
     /// `InlineBoxState::AccumulateUsedFonts` reads the fallback fonts of the
     /// line's part of the shape result. `fonts` carries the text item and
     /// the cursor over the shaping runs from the line before.
+    ///
+    /// Where the line makes room for annotations and marks, `ems` gathers
+    /// its em boxes in the same walk.
     #[inline]
     pub(super) fn extents_on_line(
         &self,
@@ -433,10 +433,14 @@ impl LineStages<'_> {
         start: ClusterId,
         end: ClusterId,
         fonts: &mut LineFonts,
+        mut ems: Option<&mut EmWalk<'_, '_>>,
         mut each: impl FnMut(ItemId, Extent),
     ) -> ItemId {
         let extents = &self.measured.extents;
         self.items_on_line(from, start, end, |item, clusters| {
+            if let Some(ems) = ems.as_deref_mut() {
+                ems.visit(self, item, clusters.clone());
+            }
             let extent = extents.get(item);
             if clusters.start >= start && clusters.end <= end {
                 each(item, extent);
@@ -609,16 +613,19 @@ pub(super) fn carried_struts(
 /// may be on the next line.
 ///
 /// The boxes shift as Blink's `InlineLayoutStateStack` shifts them. The
-/// shifts the line settles are pushed to `shifts`, sorted by node.
+/// shifts the line settles are pushed to `shifts`, sorted by node. The line
+/// holds `clusters`, from item `from`, and `ems` gathers its em boxes where
+/// given.
 pub(super) fn shifted(
     stages: &LineStages<'_>,
     boxes: &mut BoxStack,
     shifts: &mut Table<LineShiftId, LineShift>,
     fonts: &mut LineFonts,
+    ems: Option<&mut EmWalk<'_, '_>>,
     from: ItemId,
-    start: ClusterId,
-    end: ClusterId,
+    clusters: Range<ClusterId>,
 ) -> (Extent, ItemId) {
+    let Range { start, end } = clusters;
     let nodes = &stages.content.nodes;
     let items = &stages.content.items;
     let measured = stages.measured;
@@ -649,7 +656,7 @@ pub(super) fn shifted(
         }
         boxes.carried = carried;
     }
-    let resume = stages.extents_on_line(from, start, end, fonts, |id, extent| {
+    let resume = stages.extents_on_line(from, start, end, fonts, ems, |id, extent| {
         let Some(item) = items.get(id) else {
             return;
         };
@@ -909,4 +916,153 @@ fn record(shifts: &mut Table<LineShiftId, LineShift>, node: NodeId, shift: Layou
 fn primary_metrics<'a>(stages: &LineStages<'a>, text: TextFactsId) -> Option<&'a FontLineMetrics> {
     let request = stages.content.facts.text_request(text);
     stages.fonts.primary_font(request).map(|used| &used.metrics)
+}
+
+/// What a line's height measure finds.
+///
+/// It holds the line box's extent, the first item that may be on the next
+/// line, the room the line leaves the next at its end, and how far its
+/// annotations move an initial letter it opens down.
+#[derive(Copy, Clone, Debug)]
+pub(super) struct Height {
+    pub(super) extent: Extent,
+    pub(super) next_item: ItemId,
+    pub(super) carry: Carry,
+    pub(super) letter_shift: LayoutUnit,
+}
+
+/// A line's height, as more of the breaker's `impl`.
+impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
+    /// Returns how tall a line from `start` is taken to be before its own
+    /// height is known.
+    ///
+    /// That is the strut's height. For the line an initial letter opens, it
+    /// reaches the letter's margin box's bottom if further. Chrome's
+    /// `ComputeTotalBlockSize` does the same.
+    pub(super) fn reserve(&self, start: ClusterId) -> LayoutUnit {
+        let strut = self.stages.measured.extents.strut.box_height();
+        if start == ClusterId::new(0)
+            && let Some(letter) = self.stages.measured.initial_letter()
+        {
+            let (top, height) = (letter.exclusion_top, letter.exclusion_height);
+            return strut.max(top + height);
+        }
+        strut
+    }
+
+    /// Returns the line box's height for a line from `start` to `end`, from
+    /// item `from` on.
+    ///
+    /// The extent unites the strut, every item on the line at its baseline,
+    /// and the strut of every box open across its start. The result also
+    /// holds the next line's first item and the room left at the line's end.
+    ///
+    /// Where nothing is shifted, this is one flat union. Otherwise the line
+    /// is walked box by box, and settles the shifts only it can. Both find
+    /// the line's items with
+    /// [`LineStages::extents_on_line`](crate::stages::LineStages::extents_on_line).
+    pub(super) fn extent(
+        &mut self,
+        out: &mut Lines,
+        para: &BreakerParagraph,
+        from: ItemId,
+        start: ClusterId,
+        end: ClusterId,
+    ) -> Height {
+        let (extent, next_item) = self.natural_extent(out, para, from, start, end);
+        // A raised initial letter moves its line down by how far it stands
+        // above the paragraph, as Chrome's
+        // `SetInitialLetterBlockStartAdjustment` does. The line box grows
+        // over its baseline by as much.
+        let extent = match self.stages.measured.initial_letter() {
+            Some(letter) if start == ClusterId::new(0) && letter.raise > LayoutUnit::ZERO => {
+                let extent = extent.zero_if_none();
+                Extent::new(extent.ascent() + letter.raise, extent.descent())
+            }
+            _ => extent,
+        };
+        let Some(annotation) = &self.annotation else {
+            return Height {
+                extent,
+                next_item,
+                carry: self.carry,
+                letter_shift: LayoutUnit::ZERO,
+            };
+        };
+        let columns = self.line_columns(start..end);
+        let (annotated, carry) = annotation.room(
+            &self.stages,
+            &mut self.scratch.bands,
+            &self.scratch.ems,
+            start..end,
+            extent,
+            AnnotationContinuation {
+                carry: self.carry,
+                columns,
+                parts: out
+                    .ruby
+                    .as_deref()
+                    .map(|ruby| (ruby, ruby.recent_line_parts(out.lines.next_id()))),
+            },
+        );
+        // Annotations that move the line down past a raised letter's raise
+        // move the letter down with it, as Chrome's
+        // `ComputeInitialLetterBoxBlockStartAdjustment` does.
+        let letter_shift = if start == ClusterId::new(0) && !extent.is_none() {
+            (annotated.ascent() - extent.ascent()).max(LayoutUnit::ZERO)
+        } else {
+            LayoutUnit::ZERO
+        };
+        Height {
+            extent: annotated,
+            next_item,
+            carry,
+            letter_shift,
+        }
+    }
+
+    /// Returns the line's own extent, before annotations and marks make
+    /// room (see [`extent`](Self::extent)).
+    fn natural_extent(
+        &mut self,
+        out: &mut Lines,
+        para: &BreakerParagraph,
+        from: ItemId,
+        start: ClusterId,
+        end: ClusterId,
+    ) -> (Extent, ItemId) {
+        // A line making room for annotations and marks gathers its em boxes
+        // in the walk that measures its extent.
+        let room = self.annotation.as_ref();
+        let ems = &mut self.scratch.ems;
+        let mut ems = room.map(|room| EmWalk::new(&self.stages, Some(room), ems, start..end));
+        if self.stages.has_shifts() {
+            let kept = out.kept_shifts_end();
+            let shifts = &mut out.shifts;
+            shifts.truncate(kept);
+            let boxes = &mut self.scratch.boxes;
+            let fonts = &mut self.line_fonts;
+            let ems = ems.as_mut();
+            return shifted(&self.stages, boxes, shifts, fonts, ems, from, start..end);
+        }
+        let mut extent = self.stages.measured.extents.strut;
+        let fonts = &mut self.line_fonts;
+        let next = self
+            .stages
+            .extents_on_line(from, start, end, fonts, ems.as_mut(), |_, own| {
+                extent = extent.unite(own);
+            });
+        // The boxes open across the start, whose struts the line holds.
+        // Content with no box skips this. So does a paragraph whose every
+        // box strut the block's strut already holds.
+        let boxes = self
+            .stages
+            .content
+            .flags
+            .contains(ContentFlags::INLINE_BOXES);
+        if boxes && para.struts {
+            extent = carried_struts(&self.stages, &mut self.scratch.carried, from, start, extent);
+        }
+        (extent, next)
+    }
 }

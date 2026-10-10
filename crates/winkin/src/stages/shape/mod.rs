@@ -105,6 +105,9 @@ pub(crate) fn shape_runs(
         dropped = dropped.saturating_add(first_dropped);
         flags.insert(first_flags);
     }
+    if input.punctuation_trim.halves_advances() {
+        flags.insert(ShapedFlags::HALVES_PUNCTUATION);
+    }
     out.flags = flags;
     dropped
 }
@@ -791,12 +794,6 @@ heap_bytes! {
 
 heap_bytes! {
     ShapedRuns { runs, starts; end }
-}
-
-impl Default for Shaped {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 /// Each cluster's advance along the line, as shaping hands it to

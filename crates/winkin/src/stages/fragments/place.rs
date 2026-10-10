@@ -1,13 +1,13 @@
 //! Lays out one line at a time and writes its items once.
 //!
-//! `Placer::line` runs each line's phases in order:
+//! `Placer::place_line` runs each line's phases in order:
 //! - the pieces, in logical order (`pieces`);
-//! - `line-padding`, justification and alignment;
+//! - `line-padding`, justification (`justify`) and alignment;
 //! - reordering by bidi level;
 //! - box parts and the room their edges take (`boxes`);
 //! - positions, left to right;
 //! - truncation, on a line cut for an ellipsis (`cut`);
-//! - the items, then the ruby annotation lines (`ruby`).
+//! - the items, then the ruby annotation lines (`annotations`).
 //!
 //! **Alignment** is Chrome's `LineOffsetForTextAlign`. It sees the content,
 //! and only the fitting part of preserved white space before a forced break
@@ -24,44 +24,32 @@
 //!   next piece's, or the paragraph's at the line's end.
 //!
 //! **Each phase has its own scratch:** [`LinePieces`], [`LineBoxes`],
-//! [`PaintLinks`] and [`LineRubies`]. Each goes only to the phases that use
+//! [`LeafCounts`] and [`LineRubies`]. Each goes only to the phases that use
 //! it, and is cleared, never dropped.
 
-use super::{Piece, PieceKind, Placer};
+use super::{Gates, LineState, Piece, PieceKind, Placer};
 use alloc::vec::Vec;
 use core::iter;
-use core::ops::Range;
 
-use super::boxes::{PaintLinks, paint_order};
+use super::boxes::{BoxPartId, LineBoxId, LineBoxes};
+use super::boxes::{LeafCounts, paint_order};
 use super::cut::LineEllipsis;
 use super::pieces::TabLine;
-use super::ruby::{BoxesInAnnotation, LineColumn};
+use super::ruby::LineRubies;
 use super::{
-    BlockResult, FragmentItem, FragmentItemFlags, FragmentItemId, FragmentItemKind, Fragments,
-    Justified, LineJustification, PlaceInput,
+    BlockResult, FragmentItem, FragmentItemFlags, FragmentItemId, Fragments, JustifiedLineId,
+    PlaceInput,
 };
-use crate::config::TabJustification;
-use crate::data::IdRange;
 use crate::data::{Id, Table, define_id, heap_bytes, u32_to_index};
 use crate::stages::analysis::{BidiLevel, ClusterId, ParagraphFlags, ParagraphId};
-use crate::stages::content::{BoxFacts, ContentFlags, ItemId, NodeId, TextFlags};
-use crate::stages::lines::{LevelBands, LineBand, LineFlags, LineId, LineView};
-use crate::stages::measure::{AutospaceRules, JustifyOpportunities, KeptBoxId, RubyColumnId};
+use crate::stages::content::{BoxFacts, ContentFlags, ItemId, NodeId};
+use crate::stages::lines::{LineBand, LineFlags, LineId, LineView};
+use crate::stages::measure::{AutospaceRules, KeptBoxId, RubyColumnId};
 use crate::stages::shape::ShapedRunId;
 use crate::style::{FirstLineVariant, TextAlign, TextGroupAlign};
 use crate::unicode::reorder_bidi;
 use crate::unit::{InlineLayoutUnit, LayoutUnit};
 use crate::work;
-
-define_id! {
-    /// Names a kept box of the line being laid out, in [`LineBoxes`].
-    pub(super) struct LineBoxId(u32);
-}
-
-define_id! {
-    /// Names a box part on the line being laid out, in [`LineBoxes`].
-    pub(super) struct BoxPartId(u32);
-}
 
 define_id! {
     /// Names a piece of the line being laid out by its logical place, in
@@ -98,47 +86,6 @@ pub(super) struct LineCut {
     pub(super) split: Option<PieceSplit>,
 }
 
-/// A box that keeps a fragment, as one line has it.
-#[derive(Copy, Clone, Debug)]
-pub(super) struct LineBox {
-    pub(super) node: NodeId,
-    /// Its row among the kept boxes of the line's variant, which its box
-    /// parts name.
-    pub(super) kept: Option<KeptBoxId>,
-    /// The box around it on the line, and how deep it is among them.
-    pub(super) parent: Option<LineBoxId>,
-    pub(super) depth: u32,
-    /// How far its baseline is raised from the line's: its own shift plus
-    /// every box's around it.
-    pub(super) shift: LayoutUnit,
-    /// How far the baseline of the nearest `top` or `bottom` box, itself or
-    /// one around it, is raised from the line's; zero where there is none.
-    ///
-    /// A `top` or `bottom` box inside it is placed from this.
-    pinned: LayoutUnit,
-    /// Whether it opens on the line, rather than continuing from the line
-    /// before, and whether it closes on it.
-    pub(super) opens: bool,
-    pub(super) closes: bool,
-    /// Whether its left and right sides are its own edges on the line.
-    ///
-    /// Its direction decides which of start and end is on the left. A box
-    /// that clones has both on every line.
-    pub(super) has_left: bool,
-    pub(super) has_right: bool,
-    /// The room its left and right edges take, margins included, and the
-    /// margins alone; zero on a side that is not its edge.
-    pub(super) left_room: InlineLayoutUnit,
-    pub(super) right_room: InlineLayoutUnit,
-    pub(super) left_margin: InlineLayoutUnit,
-    pub(super) right_margin: InlineLayoutUnit,
-    /// Where its leftmost box part starts and its rightmost ends,
-    /// visually, and the box part being found.
-    pub(super) first_left: Option<VisualId>,
-    pub(super) last_right: Option<VisualId>,
-    pub(super) active: Option<BoxPartId>,
-}
-
 /// Which ends of the line a ruby column standing there sits flush with.
 ///
 /// These are Chrome's `on_start_edge` and `on_end_edge`
@@ -153,26 +100,6 @@ pub(super) struct RubyEdges {
     /// The line's room, which a column holding the whole line spreads its
     /// base over.
     pub(super) room: LayoutUnit,
-}
-
-/// A box part: the pieces of one box that reordering leaves side by side,
-/// from its leftmost to its rightmost place, inclusive.
-#[derive(Copy, Clone, Debug)]
-pub(super) struct BoxPart {
-    /// The box, in the line's table of them.
-    pub(super) line_box: LineBoxId,
-    pub(super) left: VisualId,
-    pub(super) right: VisualId,
-    /// The room inner boxes' edges take at its left and right ends, between
-    /// its border and its content.
-    ///
-    /// The left sums the left edges of deeper boxes whose leftmost box
-    /// part starts here. The right does the same for right edges ending
-    /// here.
-    pub(super) inner_left: InlineLayoutUnit,
-    pub(super) inner_right: InlineLayoutUnit,
-    /// The item of the box part painted after it, or `None` for the last.
-    pub(super) next: Option<FragmentItemId>,
 }
 
 /// The pieces of a line being laid out and their visual order: the line's
@@ -190,18 +117,31 @@ pub(super) struct LinePieces {
     /// The anchors at the line's end that go on to the next line's start,
     /// in order.
     pub(super) carried: Vec<Piece>,
+    /// The advance of the hanging pieces, summed as they are pushed.
+    hang: InlineLayoutUnit,
+    /// The line's hyphen, once pushed. A line has one at most.
+    hyphen: Option<PieceId>,
 }
 
 impl LinePieces {
     /// Makes an empty table, allocating nothing.
-    const fn new() -> Self {
+    pub(super) const fn new() -> Self {
         Self {
             logical: Table::new(),
             levels: Table::new(),
             order: Table::new(),
             resolved: Vec::new(),
             carried: Vec::new(),
+            hang: InlineLayoutUnit::ZERO,
+            hyphen: None,
         }
+    }
+
+    /// Forgets the last line's pieces, keeping the anchors it carried on.
+    pub(super) fn clear(&mut self) {
+        self.logical.clear();
+        self.hang = InlineLayoutUnit::ZERO;
+        self.hyphen = None;
     }
 
     /// Adds the anchors the line before carried on, in the box `owner`
@@ -216,17 +156,32 @@ impl LinePieces {
     }
 
     /// Returns the advance of the hanging pieces.
+    ///
+    /// Nothing changes a hanging piece's advance once it is pushed: it
+    /// takes no justification room and no ruby room before alignment.
     fn hang(&self) -> InlineLayoutUnit {
-        (self.logical.as_slice().iter())
-            .filter(|piece| piece.flags.contains(FragmentItemFlags::HANGS))
-            .fold(InlineLayoutUnit::ZERO, |sum, piece| sum + piece.advance)
+        self.hang
     }
 
     /// Adds `piece` as a piece of its own.
     #[inline]
     pub(super) fn push(&mut self, piece: Piece) {
+        if piece.flags.contains(FragmentItemFlags::HANGS) {
+            self.hang += piece.advance;
+        }
         self.logical
             .push_bounded(piece, "no more pieces on a line than a PieceId names");
+    }
+
+    /// Adds the line's hyphen, `piece`, and keeps where it is.
+    pub(super) fn push_hyphen(&mut self, piece: Piece) {
+        self.hyphen = Some(self.logical.next_id());
+        self.push(piece);
+    }
+
+    /// Returns the line's hyphen, where it has one.
+    fn hyphen(&self) -> Option<PieceId> {
+        self.hyphen
     }
 
     /// Adds `piece` as [`push_or_join`](Self::push_or_join) does, with a gap
@@ -248,119 +203,17 @@ impl LinePieces {
         }
     }
 
-    /// Moves the room each spread gap holds into the text of its node beside
-    /// it, as Chrome expands the glyph before an opportunity: into the text
-    /// before it, or the text after it where none is before.
-    ///
-    /// The gap keeps its place with no room, and the text takes the room on
-    /// the gap's side. Nothing moves along the line. Returns whether any
-    /// text took room in.
-    pub(super) fn absorb_spread(&mut self) -> bool {
-        let mut moved = false;
-        let count = self.logical.next_id().get();
-        for at in 0..count {
-            let Some(gap) = self.logical.get(PieceId::new(at)).copied() else {
-                continue;
-            };
-            if gap.kind != PieceKind::Spread || gap.advance == InlineLayoutUnit::ZERO {
-                continue;
-            }
-            work::step();
-            let spread = |piece: &Piece| piece.kind == PieceKind::Spread && piece.node == gap.node;
-            // A tab is as wide as the distance to its stop, and takes no room.
-            let text = |piece: &Piece| {
-                piece.kind == PieceKind::Text
-                    && piece.node == gap.node
-                    && !piece.flags.contains(FragmentItemFlags::TAB)
-            };
-            // The text before, past the gaps it already took in.
-            let mut back = at;
-            while let Some(previous) = back.checked_sub(1)
-                && self.logical.get(PieceId::new(previous)).is_some_and(spread)
-            {
-                back = previous;
-            }
-            let before = back
-                .checked_sub(1)
-                .filter(|&previous| self.logical.get(PieceId::new(previous)).is_some_and(text));
-            let mut on = at + 1;
-            while self.logical.get(PieceId::new(on)).is_some_and(spread) {
-                on += 1;
-            }
-            let after =
-                Some(on).filter(|&next| self.logical.get(PieceId::new(next)).is_some_and(text));
-            let Some((owner, gap_after)) =
-                before.map(|at| (at, true)).or(after.map(|at| (at, false)))
-            else {
-                continue;
-            };
-            let Some(text) = self.logical.get_mut(PieceId::new(owner)) else {
-                continue;
-            };
-            text.advance += gap.advance;
-            // A gap after the text in logical order is on its right, or its
-            // left where it runs right to left.
-            if gap_after != text.level.is_rtl() {
-                text.room.1 += gap.advance;
-            } else {
-                text.room.0 += gap.advance;
-            }
-            if let Some(gap) = self.logical.get_mut(PieceId::new(at)) {
-                gap.advance = InlineLayoutUnit::ZERO;
-            }
-            moved = true;
-        }
-        moved
-    }
-
-    /// Moves `room` into the leftmost text piece of `range`, in visual
-    /// order, or the rightmost where `!left`, and returns how much it moved:
-    /// none where `range` holds no text. Pieces `nested` names are passed
-    /// over.
-    ///
-    /// The text takes the room on that side, as Chrome expands the glyph at
-    /// the edge of a spread base or annotation.
-    pub(super) fn absorb_end(
-        &mut self,
-        range: Range<PieceId>,
-        (room, left): (InlineLayoutUnit, bool),
-        nested: impl Fn(PieceId) -> bool,
-    ) -> InlineLayoutUnit {
-        if room <= InlineLayoutUnit::ZERO {
-            return InlineLayoutUnit::ZERO;
-        }
-        let logical = &self.logical;
-        let holds = |at: &PieceId| {
-            range.contains(at)
-                && !nested(*at)
-                && logical.get(*at).is_some_and(|piece| {
-                    piece.kind == PieceKind::Text && !piece.flags.contains(FragmentItemFlags::HANGS)
-                })
-        };
-        let order = self.order.as_slice().iter().copied();
-        let found = if left {
-            order.inspect(|_| work::step()).find(holds)
-        } else {
-            order.rev().inspect(|_| work::step()).find(holds)
-        };
-        let Some(text) = found.and_then(|at| self.logical.get_mut(at)) else {
-            return InlineLayoutUnit::ZERO;
-        };
-        text.advance += room;
-        if left {
-            text.room.0 += room;
-        } else {
-            text.room.1 += room;
-        }
-        room
-    }
-
     /// Inserts `piece` before the piece `at`, moving the rest one place on.
     fn insert(&mut self, at: PieceId, piece: Piece) {
         let end = PieceId::new(self.logical.next_id().get() + 1);
         self.push(piece);
         if let Some(moved) = self.logical.get_slice_mut(at..end) {
             moved.rotate_right(1);
+        }
+        if let Some(hyphen) = self.hyphen.as_mut()
+            && *hyphen >= at
+        {
+            *hyphen = PieceId::new(hyphen.get() + 1);
         }
     }
 
@@ -385,6 +238,9 @@ impl LinePieces {
         {
             last.end = piece.end;
             last.advance += piece.advance;
+            if piece.flags.contains(FragmentItemFlags::HANGS) {
+                self.hang += piece.advance;
+            }
             // The run of the first shaped cluster, or of the first.
             if last.run.is_none() || (last.font.is_none() && piece.font.is_some()) {
                 last.run = piece.run;
@@ -458,11 +314,18 @@ impl LinePieces {
 
     /// Places the pieces left to right from `start`, adding the room `rooms`
     /// gives before and after each place.
+    ///
+    /// Where `counts` is given, it counts the leaves before each place as
+    /// the walk passes them.
     pub(super) fn place(
         &mut self,
         start: InlineLayoutUnit,
         rooms: &Table<VisualId, (InlineLayoutUnit, InlineLayoutUnit)>,
+        mut counts: Option<&mut LeafCounts>,
     ) {
+        if let Some(counts) = counts.as_deref_mut() {
+            counts.begin_count();
+        }
         let mut pen = start;
         for (at, &logical) in self.order.iter() {
             work::step();
@@ -471,162 +334,11 @@ impl LinePieces {
             if let Some(piece) = self.logical.get_mut(logical) {
                 piece.inline = pen;
                 pen += piece.advance;
+                if let Some(counts) = counts.as_deref_mut() {
+                    counts.count(piece.kind.is_leaf());
+                }
             }
             pen += after;
-        }
-    }
-}
-
-/// The kept boxes of the line being laid out.
-///
-/// It holds each box as the line has it, the boxes open during the piece
-/// walk, and after reordering the box parts and their edges' room. It
-/// also carries the boxes open at the line's end into the next line.
-pub(super) struct LineBoxes {
-    /// The boxes that keep a fragment on the line, as they open.
-    pub(super) boxes: Table<LineBoxId, LineBox>,
-    /// Those open where the walk is, outermost first.
-    pub(super) stack: Vec<LineBoxId>,
-    /// Their box parts.
-    pub(super) parts: Table<BoxPartId, BoxPart>,
-    /// The box parts in the order they end, innermost first at a shared
-    /// piece. Each one's inner right is summed in this order.
-    pub(super) ended: Vec<BoxPartId>,
-    /// The room box edges take before and after each place in visual order.
-    pub(super) rooms: Table<VisualId, (InlineLayoutUnit, InlineLayoutUnit)>,
-    /// The kept boxes open at the last line's end, outermost first, with
-    /// their rows, carried to the next.
-    open: Vec<(NodeId, Option<KeptBoxId>)>,
-}
-
-impl LineBoxes {
-    /// Makes an empty table, allocating nothing.
-    const fn new() -> Self {
-        Self {
-            boxes: Table::new(),
-            stack: Vec::new(),
-            parts: Table::new(),
-            ended: Vec::new(),
-            rooms: Table::new(),
-            open: Vec::new(),
-        }
-    }
-
-    /// Empties the line's tables, keeping the boxes open from the line
-    /// before.
-    fn begin_line(&mut self) {
-        self.boxes.clear();
-        self.stack.clear();
-        self.parts.clear();
-        self.ended.clear();
-    }
-
-    /// Records the kept boxes still open at the line's end, which go on to
-    /// the next line.
-    fn carry_open(&mut self) {
-        self.open.clear();
-        for &index in self.stack.iter() {
-            if let Some(still) = self.boxes.get(index) {
-                self.open.push((still.node, still.kept));
-            }
-        }
-    }
-
-    /// Returns the innermost kept box open where the walk is, which owns a
-    /// piece made there.
-    #[inline]
-    pub(super) fn innermost(&self) -> Option<LineBoxId> {
-        self.stack.last().copied()
-    }
-
-    /// Returns the innermost open kept box's shift and pinned shift; zeros
-    /// outside every box.
-    ///
-    /// A culled box has no shift and is never `top` or `bottom`, so the
-    /// innermost kept box gives its parent's baseline.
-    #[inline]
-    pub(super) fn innermost_shifts(&self) -> (LayoutUnit, LayoutUnit) {
-        self.innermost()
-            .and_then(|id| self.boxes.get(id))
-            .map_or((LayoutUnit::ZERO, LayoutUnit::ZERO), |open| {
-                (open.shift, open.pinned)
-            })
-    }
-
-    /// Opens the kept box `node`, row `kept`, at boundary `at`, raised as
-    /// `shifts` says.
-    ///
-    /// It adds the box inside the one open around it and a placeholder piece
-    /// to `pieces`. `opens` is false for a box continuing from the line
-    /// before.
-    pub(super) fn open_box(
-        &mut self,
-        pieces: &mut LinePieces,
-        (node, kept): (NodeId, Option<KeptBoxId>),
-        at: ClusterId,
-        opens: bool,
-        (shift, pinned): (LayoutUnit, LayoutUnit),
-    ) {
-        let parent = self.innermost();
-        let depth = parent
-            .and_then(|parent| self.boxes.get(parent))
-            .map_or(0, |parent| parent.depth + 1);
-        let Some(id) = self.boxes.push(LineBox {
-            node,
-            kept,
-            parent,
-            depth,
-            shift,
-            pinned,
-            opens,
-            closes: false,
-            has_left: false,
-            has_right: false,
-            left_room: InlineLayoutUnit::ZERO,
-            right_room: InlineLayoutUnit::ZERO,
-            left_margin: InlineLayoutUnit::ZERO,
-            right_margin: InlineLayoutUnit::ZERO,
-            first_left: None,
-            last_right: None,
-            active: None,
-        }) else {
-            debug_assert!(false, "no more boxes on a line than a LineBoxId names");
-            return;
-        };
-        self.stack.push(id);
-        pieces.push(Piece::new(
-            PieceKind::Place,
-            node,
-            BidiLevel::LTR,
-            at..at,
-            InlineLayoutUnit::ZERO,
-            Some(id),
-            shift,
-        ));
-    }
-}
-
-/// The ruby columns on the line being laid out, and the annotation lines
-/// they set.
-pub(super) struct LineRubies {
-    /// The ruby columns on the line.
-    pub(super) columns: Vec<LineColumn>,
-    /// Where its annotation levels stand.
-    pub(super) bands: LevelBands,
-    /// The pieces of the annotation line being set.
-    pub(super) annotation: LinePieces,
-    /// The boxes inside the annotation line being set.
-    pub(super) boxes: BoxesInAnnotation,
-}
-
-impl LineRubies {
-    /// Makes an empty table, allocating nothing.
-    const fn new() -> Self {
-        Self {
-            columns: Vec::new(),
-            bands: LevelBands::new(),
-            annotation: LinePieces::new(),
-            boxes: BoxesInAnnotation::new(),
         }
     }
 }
@@ -641,7 +353,7 @@ pub(crate) struct PlaceScratch {
     /// Its kept boxes and their box parts.
     boxes: LineBoxes,
     /// Where its box parts' items go, and their paint order.
-    links: PaintLinks,
+    counts: LeafCounts,
     /// Its ruby columns and their annotation lines.
     rubies: LineRubies,
 }
@@ -652,7 +364,7 @@ impl PlaceScratch {
         Self {
             pieces: LinePieces::new(),
             boxes: LineBoxes::new(),
-            links: PaintLinks::new(),
+            counts: LeafCounts::new(),
             rubies: LineRubies::new(),
         }
     }
@@ -663,22 +375,22 @@ impl PlaceScratch {
         self.boxes.open.clear();
         self.pieces.carried.clear();
     }
+
+    /// Empties the line's tables, keeping the boxes and anchors the line
+    /// before carried on.
+    fn begin_line(&mut self) {
+        self.pieces.clear();
+        self.boxes.begin_line();
+        self.rubies.columns.clear();
+    }
 }
 
 heap_bytes! {
-    PlaceScratch { pieces, boxes, links, rubies }
+    PlaceScratch { pieces, boxes, counts, rubies }
 }
 
 heap_bytes! {
-    LinePieces { logical, levels, order, resolved, carried }
-}
-
-heap_bytes! {
-    LineBoxes { boxes, stack, parts, ended, rooms, open }
-}
-
-heap_bytes! {
-    LineRubies { columns, bands, annotation, boxes }
+    LinePieces { logical, levels, order, resolved, carried; hang, hyphen }
 }
 
 /// `text-group-align`: how far each line's band narrows, and how far its
@@ -786,6 +498,54 @@ pub(super) struct LineOffset {
     start: InlineLayoutUnit,
 }
 
+impl Gates {
+    /// Reads what every line of `input` reads the same.
+    fn new(input: &PlaceInput<'_>) -> Self {
+        let stages = input.stages.variant(FirstLineVariant::Standard);
+        let (content, analysis, measured) = (stages.content, stages.analysis, stages.measured);
+        let style = content.block;
+        Self {
+            text_align: style.text_align,
+            text_align_last: style.text_align_last,
+            has_box_edges: content.flags.contains(ContentFlags::BOXES_WITH_EDGES),
+            has_mixed_levels: analysis.flags.contains(ParagraphFlags::MIXED_LEVELS),
+            autospace: AutospaceRules::new(content),
+            ends_on_a_line: analysis.paragraphs.ends_on_a_line(),
+            has_tabs: analysis.flags.contains(ParagraphFlags::HAS_TABS),
+            area: LineBand::from(input.area.inline),
+            justification: input.tab_justification,
+            ellipsis_space: input.ellipsis_space,
+            has_line_padding: content.flags.contains(ContentFlags::LINE_PADDING),
+            group: Group::new(input),
+            ruby_in_bidi: !measured.ruby_columns().is_empty()
+                && analysis.flags.contains(ParagraphFlags::RIGHT_TO_LEFT),
+            has_decorated_boxes: content.flags.contains(ContentFlags::DECORATED_BOXES),
+            has_upright: analysis.flags.contains(ParagraphFlags::HAS_UPRIGHT),
+            has_anchors: !content.absolutes().is_empty(),
+        }
+    }
+}
+
+impl LineState<'_> {
+    /// Makes the state before the first line, which holds no line's facts.
+    fn new() -> Self {
+        Self {
+            paragraph: ParagraphId::new(0),
+            level: BidiLevel::LTR,
+            band: LineBand::default(),
+            align: TextAlign::Start,
+            ruby_edges: RubyEdges::default(),
+            column_parts: &[],
+            line_column: RubyColumnId::new(0),
+            tab_line: TabLine::default(),
+            spread: None,
+            hyphen: None,
+            open_column: None,
+            boxed: false,
+        }
+    }
+}
+
 impl<'a> Placer<'a> {
     /// Makes the placer for `input`'s lines, with the block result `block`.
     ///
@@ -794,7 +554,6 @@ impl<'a> Placer<'a> {
     pub(super) fn new(input: &'a PlaceInput<'a>, block: BlockResult) -> Self {
         let stages = input.stages.variant(FirstLineVariant::Standard);
         let (content, analysis, measured) = (stages.content, stages.analysis, stages.measured);
-        let style = content.block;
         Self {
             input,
             stages,
@@ -802,45 +561,19 @@ impl<'a> Placer<'a> {
             items: &content.items,
             item_clusters: &analysis.item_clusters,
             count: analysis.clusters.end_id(),
-            boxes: &measured.kept_boxes,
+            kept_boxes: &measured.kept_boxes,
             lines: input.lines,
             block,
-            paragraph: ParagraphId::new(0),
-            level: BidiLevel::LTR,
-            text_align: style.text_align,
-            text_align_last: style.text_align_last,
-            has_box_edges: content.flags.contains(ContentFlags::BOXES_WITH_EDGES),
-            has_mixed_levels: analysis.flags.contains(ParagraphFlags::MIXED_LEVELS),
-            autospace: AutospaceRules::new(content),
-            ends_on_a_line: analysis.paragraphs.ends_on_a_line(),
+            gates: Gates::new(input),
+            rubies: measured.ruby_columns(),
             item: ItemId::new(0),
             controls: analysis.control_levels(),
             run: stages.shaped.runs.cursor(ShapedRunId::new(0)),
-            kept: KeptBoxId::new(0),
+            next_kept: KeptBoxId::new(0),
             shift_rows: None,
-            has_tabs: analysis.flags.contains(ParagraphFlags::HAS_TABS),
-            area: LineBand::from(input.area.inline),
-            tab_line: TabLine::default(),
-            justification: input.tab_justification,
-            ellipsis_space: input.ellipsis_space,
-            has_line_padding: content.flags.contains(ContentFlags::LINE_PADDING),
-            group: Group::new(input),
-            rubies: measured.ruby_columns(),
             column: RubyColumnId::new(0),
-            line_column: RubyColumnId::new(0),
-            ruby_pieces: &[],
-            spread: None,
-            hyphen: None,
-            open_column: None,
-            ruby_in_bidi: !measured.ruby_columns().is_empty()
-                && analysis.flags.contains(ParagraphFlags::RIGHT_TO_LEFT),
-            ruby_edges: RubyEdges::default(),
-            has_emphasis: content.flags.contains(ContentFlags::EMPHASIS),
-            has_upright: analysis.flags.contains(ParagraphFlags::HAS_UPRIGHT),
-            has_anchors: !content.absolutes().is_empty(),
-            has_decorated_boxes: content.flags.contains(ContentFlags::DECORATED_BOXES),
             open_boxes: 0,
-            boxed: false,
+            line_state: LineState::new(),
         }
     }
 
@@ -853,17 +586,16 @@ impl<'a> Placer<'a> {
             return;
         }
         self.stages = self.input.stages.variant(variant);
-        self.boxes = &self.stages.measured.kept_boxes;
+        self.kept_boxes = &self.stages.measured.kept_boxes;
         self.rubies = self.stages.measured.ruby_columns();
         self.run = self.stages.shaped.runs.cursor(ShapedRunId::new(0));
-        self.kept = KeptBoxId::new(0);
+        self.next_kept = KeptBoxId::new(0);
         self.shift_rows = None;
         self.column = RubyColumnId::new(0);
-        self.line_column = RubyColumnId::new(0);
     }
 
     /// Lays out every line in order and writes their items to `out`.
-    pub(super) fn lines(&mut self, scratch: &mut PlaceScratch, out: &mut Fragments) {
+    pub(super) fn place_lines(&mut self, scratch: &mut PlaceScratch, out: &mut Fragments) {
         for ((id, line), &facts) in self
             .lines
             .lines
@@ -871,19 +603,73 @@ impl<'a> Placer<'a> {
             .zip(self.input.placements.as_slice())
         {
             self.enter(line.variant());
-            self.paragraph = line.paragraph;
-            self.level = line.level(&self.stages.analysis.paragraphs);
             let line = LineView::new(id, line, facts);
-            self.line(scratch, out, id, &line);
+            self.line_state = self.line_state(&line);
+            // The ruby column cursor goes back to the first column continued
+            // onto the line.
+            if let Some(first) =
+                (self.line_state.column_parts.iter()).min_by_key(|part| part.column)
+            {
+                self.column = self.column.min(first.column);
+            }
+            scratch.begin_line();
+            self.place_line(scratch, out, id, &line);
         }
-        if self.has_anchors {
+        if self.gates.has_anchors {
             self.place_unheld_anchors(out);
+        }
+    }
+
+    /// Returns the state `line` starts with.
+    ///
+    /// Its alignment is decided first: a ruby column at the line's edges
+    /// reads it while the pieces are made, and justification uses it after.
+    /// The tab stops are measured from the line's start. The boxes open from
+    /// the line before stay open.
+    fn line_state(&self, line: &LineView<'_>) -> LineState<'a> {
+        let gates = &self.gates;
+        let paragraphs = &self.stages.analysis.paragraphs;
+        let band = gates.group.narrow(line.band);
+        let ends_paragraph = line.ends_paragraph(paragraphs);
+        let align = if ends_paragraph {
+            gates.text_align_last.resolve(gates.text_align)
+        } else {
+            gates.text_align
+        };
+        let ruby_edges = if self.rubies.is_empty() || gates.ruby_in_bidi {
+            RubyEdges::default()
+        } else {
+            RubyEdges {
+                start: align == TextAlign::Justify
+                    || (ends_paragraph && gates.text_align == TextAlign::Justify),
+                end: align == TextAlign::Justify,
+                room: band.width() - line.indent,
+            }
+        };
+        let tab_line = if gates.has_tabs {
+            TabLine::new(line, paragraphs, gates.area, &self.stages.measured.prefix)
+        } else {
+            TabLine::default()
+        };
+        LineState {
+            paragraph: line.paragraph,
+            level: line.level(paragraphs),
+            band,
+            align,
+            ruby_edges,
+            column_parts: (self.lines.ruby.as_deref()).map_or(&[], |ruby| ruby.line_parts(line.id)),
+            line_column: self.column,
+            tab_line,
+            spread: None,
+            hyphen: None,
+            open_column: None,
+            boxed: self.open_boxes > 0,
         }
     }
 
     /// Lays out `line` and writes its items to `out`, each phase with its
     /// part of `scratch`.
-    fn line(
+    fn place_line(
         &mut self,
         scratch: &mut PlaceScratch,
         out: &mut Fragments,
@@ -893,14 +679,11 @@ impl<'a> Placer<'a> {
         let PlaceScratch {
             pieces,
             boxes,
-            links,
+            counts,
             rubies,
         } = scratch;
-        self.begin(pieces, boxes, rubies, line);
         let spread = out.spread_mark();
-        // Alignment is decided first. A ruby column at the line's edges reads
-        // it while the pieces are made, and justification uses it after.
-        let (band, align) = self.alignment(line);
+        let (band, align) = (self.line_state.band, self.line_state.align);
         // Pieces: made in logical order, each tab sized where it lands.
         self.open_carried_boxes(pieces, boxes, line);
         pieces.take_carried(boxes.innermost());
@@ -908,13 +691,15 @@ impl<'a> Placer<'a> {
         self.pieces(pieces, boxes, rubies, line, shapes);
         self.finish_columns(pieces, boxes, rubies, line);
         boxes.carry_open();
-        if self.has_line_padding {
+        if self.gates.has_line_padding {
             self.pad(pieces);
         }
         // Justification and alignment: justification spends the spare room
         // on the line's opportunities. Otherwise alignment moves the whole
         // line, tabs included, in the band `text-group-align` narrows.
-        let justified = self.justify_into(pieces, line, id, band, align, out);
+        let (justified, justified_row) = self
+            .justify_into(pieces, line, id, band, align, out)
+            .unzip();
         let letter_indent = self.letter_indent(id);
         let offset = self.align(
             line,
@@ -927,20 +712,22 @@ impl<'a> Placer<'a> {
         // Reordering by level. A piece with no level of its own takes the
         // next piece's level, or the paragraph's at the line's end, as
         // Blink's opaque items do.
-        pieces.reorder(self.level);
+        pieces.reorder(self.line_state.level);
         // A spread ruby base's text takes in its room, which its boxes then
         // reach over.
-        let spread_base = !rubies.columns.is_empty() && Placer::absorb_base_spread(pieces, rubies);
+        if !rubies.columns.is_empty() {
+            Placer::absorb_base_spread(pieces, rubies);
+        }
         // Box parts: found in visual order, with the room their edges
         // take.
         self.rooms(boxes, letter_indent);
         self.box_parts(pieces, boxes);
         // Positions: assigned left to right. Each box's edges sit at its
         // leftmost and rightmost parts.
-        pieces.place(offset.start, &boxes.rooms);
+        pieces.place(offset.start, &boxes.rooms, Some(counts));
         // Static positions: where the anchors stand, now that they are
         // placed.
-        if self.has_anchors {
+        if self.gates.has_anchors {
             self.place_anchors(pieces, out, line, offset);
         }
         // Truncation, on a line cut for an ellipsis: what doesn't fit before
@@ -951,77 +738,15 @@ impl<'a> Placer<'a> {
             None
         };
         let split = cut.and_then(|cut| cut.split).map(|split| split.piece);
-        links.count_leaves(pieces, split, self.hyphen_items(pieces, line));
-        // Items: written once, then the annotation lines.
-        self.emit(pieces, boxes, links, out, line, offset, cut);
-        if spread_base {
-            out.push_spread(id, pieces.logical.as_slice());
-        }
+        let hyphen = pieces.hyphen().zip(self.line_state.hyphen);
+        counts.widen_leaves(pieces, split, hyphen.map(|(at, text)| (at, text.count())));
+        // Items: written once, with the rows of the text a spread ruby base
+        // took room into, then the annotation lines.
+        self.emit(pieces, boxes, counts, out, line, offset, cut, justified_row);
         if !rubies.columns.is_empty() {
             self.annotations(pieces, rubies, out, line);
         }
         out.settle_spread(spread);
-    }
-
-    /// Empties the line's scratch and resets the placer's state for `line`.
-    ///
-    /// The boxes open from the line before stay open. The tab stops are
-    /// measured from the line's start, and the ruby column cursor goes back
-    /// to the line's first column.
-    fn begin(
-        &mut self,
-        pieces: &mut LinePieces,
-        boxes: &mut LineBoxes,
-        rubies: &mut LineRubies,
-        line: &LineView<'_>,
-    ) {
-        pieces.logical.clear();
-        boxes.begin_line();
-        rubies.columns.clear();
-        self.ruby_pieces = self
-            .lines
-            .ruby
-            .as_deref()
-            .map_or(&[], |ruby| ruby.line_pieces(line.id));
-        self.spread = None;
-        self.hyphen = None;
-        self.open_column = None;
-        self.boxed = self.open_boxes > 0;
-        if self.has_tabs {
-            self.tab_line = TabLine::new(
-                line,
-                &self.stages.analysis.paragraphs,
-                self.area,
-                &self.stages.measured.prefix,
-            );
-        }
-        self.line_column = self.column;
-        if let Some(first) = self.ruby_pieces.iter().min_by_key(|piece| piece.column) {
-            self.column = self.column.min(first.column);
-        }
-    }
-
-    /// Returns `line`'s band and alignment, and sets the ruby edges that
-    /// read them.
-    fn alignment(&mut self, line: &LineView<'_>) -> (LineBand, TextAlign) {
-        let band = self.group.narrow(line.band);
-        let ends_paragraph = line.ends_paragraph(&self.stages.analysis.paragraphs);
-        let align = if ends_paragraph {
-            self.text_align_last.resolve(self.text_align)
-        } else {
-            self.text_align
-        };
-        self.ruby_edges = if self.rubies.is_empty() || self.ruby_in_bidi {
-            RubyEdges::default()
-        } else {
-            RubyEdges {
-                start: align == TextAlign::Justify
-                    || (ends_paragraph && self.text_align == TextAlign::Justify),
-                end: align == TextAlign::Justify,
-                room: band.width() - line.indent,
-            }
-        };
-        (band, align)
     }
 
     /// Gives each box open from the line before a placeholder at `line`'s
@@ -1042,10 +767,10 @@ impl<'a> Placer<'a> {
             work::step();
             if let Some(&(node, kept)) = boxes.open.get(at) {
                 let kept = match kept {
-                    Some(kept) if self.boxes.node(kept) == Some(node) => Some(kept),
+                    Some(kept) if self.kept_boxes.node(kept) == Some(node) => Some(kept),
                     _ => {
-                        let at = self.boxes.walk_to(self.kept, node);
-                        (self.boxes.node(at) == Some(node)).then_some(at)
+                        let at = self.kept_boxes.walk_to(self.next_kept, node);
+                        (self.kept_boxes.node(at) == Some(node)).then_some(at)
                     }
                 };
                 let shifts = self.shift(line, node, boxes.innermost_shifts());
@@ -1054,64 +779,12 @@ impl<'a> Placer<'a> {
         }
     }
 
-    /// Justifies `line` where `align` is `justify`, and records it in `out`.
-    ///
-    /// Returns what justification gave the line, or `None` where it is not
-    /// justified.
-    fn justify_into(
-        &self,
-        pieces: &mut LinePieces,
-        line: &LineView<'_>,
-        id: LineId,
-        band: LineBand,
-        align: TextAlign,
-        out: &mut Fragments,
-    ) -> Option<Justified<'a>> {
-        if align != TextAlign::Justify {
-            return None;
-        }
-        let justified = self.justify(pieces, line, band)?;
-        // Lines are laid out in order, so the table stays sorted.
-        out.rare_mut().justified.push(super::JustifiedLine {
-            line: id,
-            content_end: line.content_end,
-            justification: justified.justification,
-        });
-        Some(justified)
-    }
-
-    /// Returns the hyphen's piece on a hyphenated `line`, and how many items
-    /// it writes, one per font of its generated text.
-    fn hyphen_items(&self, pieces: &LinePieces, line: &LineView<'_>) -> Option<(PieceId, usize)> {
-        if !line.flags.contains(LineFlags::HYPHENATED) {
-            return None;
-        }
-        let text = self.hyphen?;
-        let (at, _) = pieces
-            .logical
-            .iter()
-            .rev()
-            .find(|(_, piece)| piece.kind == PieceKind::Hyphen)?;
-        Some((at, text.count()))
-    }
-
     /// Returns `node`'s box facts in the current line's variant.
     #[inline]
     pub(super) fn box_facts(&self, node: NodeId) -> &'a BoxFacts {
         let content = self.stages.content;
         let id = content.nodes.box_facts(node, self.stages.variant);
         content.facts.box_facts(id)
-    }
-
-    /// Returns [`FragmentItemFlags::EMPHASIS`] where `node`'s text sets
-    /// emphasis marks, else no flag.
-    pub(super) fn emphasis(&self, node: NodeId) -> FragmentItemFlags {
-        let facts = self.stages.content.facts.text(self.stages.text_facts(node));
-        if facts.has(TextFlags::EMPHASIS) {
-            FragmentItemFlags::EMPHASIS
-        } else {
-            FragmentItemFlags::NONE
-        }
     }
 
     /// Returns the part of line `id`'s indent inside the initial letter's
@@ -1127,7 +800,7 @@ impl<'a> Placer<'a> {
         {
             return LayoutUnit::ZERO;
         }
-        indent.length(self.area.width())
+        indent.length(self.gates.area.width())
     }
 
     /// Returns where `line` sits in `band` under `align`.
@@ -1166,7 +839,7 @@ impl<'a> Placer<'a> {
         } else {
             LayoutUnit::ZERO
         };
-        let rtl = self.level.is_rtl();
+        let rtl = self.line_state.level.is_rtl();
         // A justified line fills its band, since its opportunities took the
         // room. Otherwise alignment places the indent, the content, and the
         // fitting part of a conditional hang.
@@ -1186,72 +859,6 @@ impl<'a> Placer<'a> {
             InlineLayoutUnit::from_layout(line.indent - letter_indent - line.hang.start)
         };
         LineOffset { left, start }
-    }
-
-    /// Justifies `line` in `band`, giving each of `pieces` its share of the
-    /// spare room.
-    ///
-    /// Returns the amounts and which clusters have opportunities. Returns
-    /// `None` where the line has no room or no opportunity; it is then set at
-    /// its start, as in Chrome.
-    ///
-    /// The shares add up to the room exactly, as in Chrome. A tab's width
-    /// with its share rounds up onto the grid, as Chrome snaps a tab, so its
-    /// size stays its advance. Tabs take no share where the config keeps them
-    /// at their stops.
-    fn justify(
-        &self,
-        pieces: &mut LinePieces,
-        line: &LineView<'_>,
-        band: LineBand,
-    ) -> Option<Justified<'a>> {
-        let extra = band.width() - (line.indent + line.width);
-        if extra <= LayoutUnit::ZERO {
-            return None;
-        }
-        let opportunities = JustifyOpportunities::from_line(
-            &self.stages,
-            line.clusters().start..line.content_end,
-            None,
-        )?;
-        let justify_tabs = self.justification == TabJustification::Stretch;
-        let mut count = 0u32;
-        for piece in pieces.logical.as_mut_slice() {
-            // A tab that doesn't hang takes its opportunity's room only where
-            // the config widens tabs.
-            let tab = piece.kind == PieceKind::Text
-                && piece.flags.contains(FragmentItemFlags::TAB)
-                && !piece.flags.contains(FragmentItemFlags::HANGS);
-            piece.opportunities = if piece.is_text() {
-                opportunities.count_range(piece.start..piece.end)
-            } else if tab && justify_tabs {
-                opportunities.count(piece.start)
-            } else {
-                0
-            };
-            count = count.saturating_add(piece.opportunities);
-        }
-        let (holder, last) = last_opportunity(&pieces.logical, &opportunities)?;
-        let justification = LineJustification::new(
-            InlineLayoutUnit::from_layout(extra),
-            count,
-            last,
-            opportunities.summary(),
-        )?;
-        let ids = (PieceId::new(0)..pieces.logical.next_id()).ids();
-        for (at, piece) in ids.zip(pieces.logical.as_mut_slice()) {
-            if piece.opportunities == 0 {
-                continue;
-            }
-            piece.advance += justification.share(piece.opportunities, at == holder);
-            if piece.flags.contains(FragmentItemFlags::TAB) {
-                piece.advance = piece.advance.ceil_to_grid();
-            }
-        }
-        Some(Justified {
-            justification,
-            opportunities,
-        })
     }
 
     /// Adds `line-padding` pieces inside the innermost box at each end of the
@@ -1285,7 +892,7 @@ impl<'a> Placer<'a> {
             Piece::new(
                 PieceKind::Padding,
                 of.node,
-                self.level,
+                self.line_state.level,
                 at..at,
                 advance,
                 of.owner,
@@ -1302,52 +909,54 @@ impl<'a> Placer<'a> {
         }
     }
 
-    /// Writes `line`'s items to `out`: its `Line` item, then its pieces'
-    /// items in visual order.
+    /// Writes `line`'s items to `out`: its `Line` item, naming its
+    /// justification row `justified`, then its pieces' items in visual order.
     ///
-    /// Each box part's item comes before the items inside it. `links`
-    /// counts the leaf items and links the box items in paint order.
+    /// Each box part's item comes before the items inside it. `counts`
+    /// counts the leaf items, and the box items link in paint order.
     #[allow(clippy::too_many_arguments)]
     fn emit(
         &self,
         pieces: &LinePieces,
         boxes: &mut LineBoxes,
-        links: &mut PaintLinks,
+        counts: &mut LeafCounts,
         out: &mut Fragments,
         line: &LineView<'_>,
         offset: LineOffset,
         cut: Option<LineCut>,
+        justified: Option<JustifiedLineId>,
     ) {
         let baseline = line.ascent();
         let head = out.items.next_id();
         let ellipsis = cut.map_or(0, |cut| cut.ellipsis.items());
-        let total = links.total() + boxes.parts.len() + ellipsis;
+        let total = counts.total() + boxes.parts.len() + ellipsis;
         let top = self.block.top(line.block_start);
         // The ellipsis belongs to the line, in no box. It is the first item
         // when drawn at the left (right to left) and the last when drawn at
         // the right, so items stay in visual order. The box items link past
         // it, the first from the line's item.
-        let rtl = self.level.is_rtl();
+        let rtl = self.line_state.level.is_rtl();
         let leading = cut.filter(|_| rtl);
         let before = FragmentItemId::new(head.get() + if rtl { ellipsis } else { 0 });
-        let first = paint_order(links, boxes, before);
-        let flags = if self.has_decorated_boxes && self.boxed {
+        let first = paint_order(counts, boxes, before);
+        let flags = if self.gates.has_decorated_boxes && self.line_state.boxed {
             FragmentItemFlags::BOXED
         } else {
             FragmentItemFlags::NONE
         };
-        let pushed = out.items.push(FragmentItem::from_line(
-            self.level,
+        let item = FragmentItem::from_line(
+            self.line_state.level,
             offset.left,
             top,
             total,
             first,
+            justified,
             flags,
-        ));
-        if pushed.is_none() || out.line_heads.push(head).is_none() {
-            debug_assert!(false, "no more items than a FragmentItemId names");
-            return;
-        }
+        );
+        out.items
+            .push_bounded(item, "no more items than a FragmentItemId names");
+        out.line_heads
+            .push_bounded(head, "no more lines than a LineId names");
         if let Some(cut) = leading {
             self.emit_ellipsis(out, cut.ellipsis, baseline);
         }
@@ -1356,73 +965,31 @@ impl<'a> Placer<'a> {
         for (at, &logical) in pieces.order.iter() {
             work::step();
             while let Some(next) = boxes.parts.get(part).filter(|next| next.left == at) {
-                self.emit_box_part(pieces, boxes, links, out, part, next, baseline);
+                self.emit_box_part(pieces, boxes, counts, out, part, next, baseline);
                 part = BoxPartId::new(part.get() + 1);
             }
             let Some(piece) = pieces.logical.get(logical) else {
                 continue;
             };
-            let Some(kind) = piece.kind.fragment() else {
+            let Some(kind) = piece.kind.item_kind() else {
                 continue;
             };
-            let flags = if self.has_emphasis && kind == FragmentItemKind::Text {
-                piece.flags.union(self.emphasis(piece.node))
-            } else {
-                piece.flags
-            };
+            if piece.room != (InlineLayoutUnit::ZERO, InlineLayoutUnit::ZERO) {
+                out.push_spread(line.id, piece);
+            }
             if let Some(split) = split.filter(|split| split.piece == logical) {
-                self.emit_split(out, piece, kind, flags, split, baseline);
+                self.emit_split(out, piece, kind, piece.flags, split, baseline);
             } else if piece.kind == PieceKind::Hyphen {
-                self.emit_hyphen(out, piece, flags, baseline);
-            } else if out.items.push(piece.item(kind, flags, baseline)).is_none() {
-                debug_assert!(false, "no more items than a FragmentItemId names");
-                return;
+                self.emit_hyphen(out, piece, piece.flags, baseline);
+            } else {
+                out.items.push_bounded(
+                    piece.fragment_item(kind, piece.flags, baseline),
+                    "no more items than a FragmentItemId names",
+                );
             }
         }
         if !rtl && let Some(cut) = cut {
             self.emit_ellipsis(out, cut.ellipsis, baseline);
         }
     }
-}
-
-/// Returns the justification opportunity Chrome fills last, which takes the
-/// leftover: its piece and its cluster. `None` where no piece has one.
-///
-/// Chrome spends the room item by item in logical order (`JustifyResults`).
-/// Within an item it goes in glyph order
-/// (`ShapeResult::ApplySpacingOrExpansion`), which is visual.
-///
-/// So the last is in the logically last piece with an opportunity. Left to
-/// right, it is that piece's last. Right to left, it is the first of the
-/// whole item: Chrome's shape result spans pieces of the same node and level
-/// that only a font change divides. A tab is an item of its own, as in
-/// Chrome.
-fn last_opportunity(
-    pieces: &Table<PieceId, Piece>,
-    opportunities: &JustifyOpportunities<'_>,
-) -> Option<(PieceId, ClusterId)> {
-    let (holder, piece) = pieces
-        .iter()
-        .rev()
-        .find(|(_, piece)| piece.opportunities > 0)?;
-    if !piece.is_text() || !piece.level.is_rtl() {
-        let last = opportunities.last(piece.start..piece.end)?;
-        return Some((holder, last));
-    }
-    let mut first = holder;
-    while let Some(at) = first.get().checked_sub(1).map(PieceId::new)
-        && let (Some(before), Some(after)) = (pieces.get(at), pieces.get(first))
-        && before.is_text()
-        && before.node == piece.node
-        && before.level == piece.level
-        && before.end == after.start
-    {
-        first = at;
-    }
-    let (at, piece) = (first..PieceId::new(holder.get() + 1))
-        .ids()
-        .filter_map(|at| pieces.get(at).map(|piece| (at, piece)))
-        .find(|(_, piece)| piece.opportunities > 0)?;
-    let last = opportunities.first(piece.start..piece.end)?;
-    Some((at, last))
 }

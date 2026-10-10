@@ -34,6 +34,15 @@ impl PrefixAdvances {
         self.sums.clear();
     }
 
+    /// Returns how many entries the sums of `clusters` clusters take: one
+    /// before each cluster, and one at the text's end.
+    ///
+    /// A buffer of advances made with this capacity becomes the sums in
+    /// place without growing.
+    pub(crate) const fn capacity_needed(clusters: usize) -> usize {
+        clusters.saturating_add(1)
+    }
+
     /// Whether it holds no sum: a variant the build had no use for.
     pub(super) fn is_empty(&self) -> bool {
         self.sums.is_empty()

@@ -27,19 +27,21 @@
 //! - Under [`RubyBreakWithin::BaseOpportunities`] the base breaks on its own, and a
 //!   level with no opportunity goes whole. Under [`RubyBreakWithin::AllLevels`]
 //!   a column breaks only where each level left has an opportunity too.
-use super::fit_reshape::EndPiece;
-use super::fit_search::{overflowing, settle};
-use super::ruby::{ContinuationShift, LevelCut, PieceLevelId};
+use super::fit_reshape::EdgeEnd;
+use super::fit_search::{gallop_last, overflowing, settle};
+use super::ruby::{ContinuationShift, LevelCut, PartLevelId};
 use super::{
-    Breaker, BreakerParagraph, EdgeShapeId, Fitted, Fitting, LineId, Lines, PieceLevel,
-    ReshapedPieces, RubyLines, RubyPiece,
+    Breaker, BreakerParagraph, ColumnPart, EdgeShapeId, Fitted, Fitting, LineHead, LineId, Lines,
+    PartLevel, ReshapedPieces, RubyLines,
 };
 use crate::config::RubyBreakWithin;
 use crate::data::{Id, IdRange, RunCursor};
 use crate::stages::analysis::{ClusterAttrs, ClusterClass, ClusterId};
-use crate::stages::content::{ItemFlags, ItemId};
-use crate::stages::measure::{LineEdgeFlags, RubyColumn, RubyColumnId, RubyLevel, RubyLevelId};
-use crate::stages::shape::{ClusterGlyphs, ShapingEdges};
+use crate::stages::content::ItemId;
+use crate::stages::measure::{
+    LineEdgeFlags, RubyColumn, RubyColumnId, RubyLevel, RubyLevelId, is_monolithic,
+};
+use crate::stages::shape::ShapingEdges;
 use crate::unit::{InlineLayoutUnit, LayoutUnit};
 use crate::work;
 use alloc::boxed::Box;
@@ -87,7 +89,7 @@ struct BaseCut {
 pub(super) struct Continued {
     column: RubyColumnId,
     /// The line before's levels of the column, where each level resumes.
-    levels: Range<PieceLevelId>,
+    levels: Range<PartLevelId>,
     /// The rest, where the line starts inside the column's base.
     rest: Option<Rest>,
 }
@@ -117,11 +119,11 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
         out: &Lines,
         column: Option<RubyColumnId>,
         start: ClusterId,
-    ) -> Option<&RubyPiece> {
+    ) -> Option<&ColumnPart> {
         let line = LineId::new(out.lines.next_id().get().checked_sub(1)?);
         out.ruby
             .as_ref()?
-            .recent_line_pieces(line)
+            .recent_line_parts(line)
             .iter()
             .rev()
             .find(|piece| piece.base.end == start && column.is_none_or(|id| piece.column == id))
@@ -169,7 +171,7 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
     fn level_start(
         &self,
         out: &Lines,
-        resume: Option<&Range<PieceLevelId>>,
+        resume: Option<&Range<PartLevelId>>,
         level: &RubyLevel,
         id: RubyLevelId,
     ) -> (ClusterId, ItemId) {
@@ -200,7 +202,7 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
         &self,
         out: &Lines,
         column: &RubyColumn,
-        resume: Option<&Range<PieceLevelId>>,
+        resume: Option<&Range<PartLevelId>>,
         cuts: &mut Vec<LevelCut>,
     ) {
         let rubies = self.stages.measured.ruby_columns();
@@ -364,48 +366,6 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
         Some(continued)
     }
 
-    /// Counts the glyphs of `range` in annotations, or out of them, up to
-    /// `limit`.
-    ///
-    /// The items are walked from `from`, an item at or before `range`'s
-    /// start.
-    fn glyph_count(
-        &self,
-        from: ItemId,
-        range: Range<ClusterId>,
-        limit: usize,
-        annotation: bool,
-    ) -> usize {
-        let mut count = 0;
-        let items = &self.stages.analysis.item_clusters;
-        let mut cursor = items.cursor(items.walk_to(from, range.start));
-        for at in range.ids() {
-            work::step();
-            while cursor.end() <= at {
-                self.stages.analysis.item_clusters.step(&mut cursor);
-            }
-            if self
-                .stages
-                .content
-                .items
-                .get(cursor.id())
-                .is_none_or(|item| item.flags.contains(ItemFlags::ANNOTATION) != annotation)
-            {
-                continue;
-            }
-            // Inner annotation glyphs are not glyphs of an enclosing base.
-            count += match self.stages.shaped.glyphs.glyphs(at) {
-                ClusterGlyphs::None => 0,
-                ClusterGlyphs::One(_) => 1,
-                ClusterGlyphs::Many(glyphs) => glyphs.len(),
-            };
-            if count >= limit {
-                break;
-            }
-        }
-        count
-    }
-
     /// Returns whether the rest of `column` from `start` stays whole: four
     /// base glyphs or fewer, and eight or fewer in each level `cuts` start.
     ///
@@ -421,12 +381,16 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
             return false;
         }
         let rubies = self.stages.measured.ruby_columns();
-        self.glyph_count(near, start..column.base.end, 5, false) <= 4
-            && cuts.iter().all(|cut| {
-                rubies.level(cut.level).is_none_or(|level| {
-                    self.glyph_count(cut.item, cut.from..level.clusters.end, 9, true) <= 8
-                })
-            })
+        is_monolithic(
+            self.stages.content,
+            self.stages.analysis,
+            self.stages.shaped,
+            (near, start..column.base.end),
+            (cuts.iter()).filter_map(|cut| {
+                let level = rubies.level(cut.level)?;
+                Some((cut.item, cut.from..level.clusters.end))
+            }),
+        )
     }
 
     /// Returns the width of the hyphen a soft hyphen before `end` shows.
@@ -470,7 +434,7 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
     /// Where the paragraph's prefix never goes back, a cut's width grows
     /// with the cut, so no cut past this boundary fits. Elsewhere it is the
     /// base's end, and every cut is tried.
-    fn base_reach(
+    fn base_furthest(
         &self,
         para: &BreakerParagraph,
         base: Range<ClusterId>,
@@ -481,35 +445,14 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
         }
         work::seek();
         let fits = |at: usize| self.base_width(base.start..ClusterId::new(at)) <= target;
-        let (mut low, end) = (base.start.get(), base.end.get());
-        let mut step = 1usize;
-        let mut high = loop {
-            let probe = low.saturating_add(step).min(end);
-            if !fits(probe) {
-                break probe;
-            }
-            if probe == end {
-                return base.end;
-            }
-            low = probe;
-            step = step.saturating_mul(2);
-        };
-        while high - low > 1 {
-            let middle = low + (high - low) / 2;
-            if fits(middle) {
-                low = middle;
-            } else {
-                high = middle;
-            }
-        }
-        ClusterId::new(low)
+        ClusterId::new(gallop_last(base.start.get(), base.end.get(), fits))
     }
 
     /// Finds the last cut of `base` before `ceiling` whose width and hyphen
     /// fit `target`.
     ///
-    /// It visits the cuts backwards from `ceiling`, or from `reach` where
-    /// that is nearer: no cut past `reach` is within the target. A rejected
+    /// It visits the cuts backwards from `ceiling`, or from `furthest` where
+    /// that is nearer: no cut past `furthest` is within the target. A rejected
     /// trial resumes before its cut. Once the normal opportunities run out
     /// it keeps to the emergency ones: the target stays fixed and earlier
     /// cuts only disappear. Where no cut fits, it overflows at the earliest
@@ -518,7 +461,7 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
         &self,
         id: RubyColumnId,
         base: Range<ClusterId>,
-        (target, reach): (LayoutUnit, ClusterId),
+        (target, furthest): (LayoutUnit, ClusterId),
         ceiling: ClusterId,
         emergency: &mut bool,
         cursor: &mut RunCursor<ItemId, ClusterId>,
@@ -528,51 +471,40 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
         // The columns nested in the base follow it, and the line's own
         // columns follow those before the line.
         let near = Cell::new(id.max(self.column.get()));
+        let opportunity = |range: Range<ClusterId>, kind: (bool, bool)| {
+            rubies.opportunity(self.clusters, range, Some(id), kind, &near)
+        };
         loop {
-            let mut past = end.min(reach);
-            while let Some(at) = rubies.opportunity(
-                self.clusters,
-                base.start..past,
-                Some(id),
-                (true, *emergency),
-                &near,
-            ) {
+            let mut past = end.min(furthest);
+            while let Some(at) = opportunity(base.start..past, (true, *emergency)) {
                 work::step();
-                let cut = BaseCut {
-                    at,
-                    width: self.base_width(base.start..at),
-                    hyphen: self.hyphen(at, cursor),
-                };
+                let cut = self.cut_base(&base, at, cursor);
                 if cut.width + cut.hyphen <= target {
                     return Some(cut);
                 }
                 past = ClusterId::new(at.get().saturating_sub(1));
             }
             if *emergency {
-                let at = rubies
-                    .opportunity(
-                        self.clusters,
-                        base.start..end,
-                        Some(id),
-                        (false, false),
-                        &near,
-                    )
-                    .or_else(|| {
-                        rubies.opportunity(
-                            self.clusters,
-                            base.start..end,
-                            Some(id),
-                            (false, true),
-                            &near,
-                        )
-                    })?;
-                return Some(BaseCut {
-                    at,
-                    width: self.base_width(base.start..at),
-                    hyphen: self.hyphen(at, cursor),
-                });
+                let at = opportunity(base.start..end, (false, false))
+                    .or_else(|| opportunity(base.start..end, (false, true)))?;
+                return Some(self.cut_base(&base, at, cursor));
             }
             *emergency = true;
+        }
+    }
+
+    /// Returns the cut of `base` at `at`, the item of a hyphen before it
+    /// found by `cursor`.
+    fn cut_base(
+        &self,
+        base: &Range<ClusterId>,
+        at: ClusterId,
+        cursor: &mut RunCursor<ItemId, ClusterId>,
+    ) -> BaseCut {
+        BaseCut {
+            at,
+            width: self.base_width(base.start..at),
+            hyphen: self.hyphen(at, cursor),
         }
     }
 
@@ -710,71 +642,33 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
         level: &RubyLevel,
         range: Range<ClusterId>,
     ) -> ReshapedPieces {
-        let mut pieces = ReshapedPieces::default();
         if range.is_empty() {
-            return pieces;
+            return ReshapedPieces::default();
         }
-        let start_unsafe = range.start > level.clusters.start
-            && self
-                .stages
-                .shaped
-                .glyphs
-                .word(range.start)
-                .is_unsafe_to_break();
-        let end_unsafe = range.end < level.clusters.end
-            && self
-                .stages
-                .shaped
-                .glyphs
-                .word(range.end)
-                .is_unsafe_to_break();
+        let glyphs = &self.stages.shaped.glyphs;
+        let start_unsafe =
+            range.start > level.clusters.start && glyphs.word(range.start).is_unsafe_to_break();
+        let end_unsafe =
+            range.end < level.clusters.end && glyphs.word(range.end).is_unsafe_to_break();
         let mark = out.edges.mark();
-        let mut floor = range.start;
-        if start_unsafe
-            && let Some((window, head)) = self.start_window(out, para, range.start, false)
-        {
-            if window.end >= range.end {
-                pieces.push(self.reshape(
-                    out,
-                    para,
-                    window.run,
-                    range.clone(),
-                    ShapingEdges {
-                        line_start: true,
-                        trim_start: false,
-                        trim_end: false,
-                    },
-                    true,
-                ));
-                return pieces;
-            }
-            floor = window.end;
-            pieces.push(head.piece);
-        }
-        if end_unsafe {
-            match self.end_piece(out, para, floor, range.end, !start_unsafe, false) {
-                EndPiece::Piece(piece) => pieces.push(Some(piece)),
-                EndPiece::Whole(run) => {
-                    // The unsafe window covers the whole first run.
-                    out.edges.rewind(mark);
-                    pieces = ReshapedPieces::default();
-                    pieces.push(self.reshape(
-                        out,
-                        para,
-                        run,
-                        range,
-                        ShapingEdges {
-                            line_start: start_unsafe,
-                            trim_start: false,
-                            trim_end: false,
-                        },
-                        true,
-                    ));
-                }
-                EndPiece::None => {}
-            }
-        }
-        pieces
+        let (window, head) = if start_unsafe {
+            self.start_window(out, para, range.start, false).unzip()
+        } else {
+            (None, None)
+        };
+        let mut head = LineHead { mark, shaped: head };
+        let ends = EdgeEnd {
+            whole: ShapingEdges {
+                line_start: start_unsafe,
+                trim_start: false,
+                trim_end: false,
+            },
+            reshaped: end_unsafe,
+            trims: false,
+            seam: InlineLayoutUnit::ZERO,
+            whole_at_window_end: true,
+        };
+        self.edge_pieces(out, para, range, window, &mut head, ends)
     }
 
     /// Measures `range` of `level`, whose first item is `near`, with its
@@ -829,10 +723,13 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
     ) {
         let rubies = self.stages.measured.ruby_columns();
         let line = out.lines.next_id();
-        let levels_start = out
+        // The tables are taken out while the levels' edges are reshaped,
+        // which reads none of them.
+        let mut ruby = out
             .ruby
-            .as_ref()
-            .map_or(PieceLevelId::new(0), |ruby| ruby.levels.next_id());
+            .take()
+            .unwrap_or_else(|| Box::new(RubyLines::default()));
+        let levels_start = ruby.levels.next_id();
         for cut in cuts {
             if let Some(level) = rubies.level(cut.level) {
                 let clusters = cut.from..cut.end;
@@ -841,24 +738,17 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
                     visible_end,
                     shapes,
                 } = self.reshaped_level_width(out, para, level, (clusters.clone(), cut.item), true);
-                let _ = out
-                    .ruby
-                    .get_or_insert_with(|| Box::new(RubyLines::default()))
-                    .levels
-                    .push(PieceLevel {
-                        level: cut.level,
-                        clusters,
-                        width,
-                        visible_end,
-                        shapes,
-                        item: cut.item,
-                    });
+                let _ = ruby.levels.push(PartLevel {
+                    level: cut.level,
+                    clusters,
+                    width,
+                    visible_end,
+                    shapes,
+                    item: cut.item,
+                });
             }
         }
-        let ruby = out
-            .ruby
-            .get_or_insert_with(|| Box::new(RubyLines::default()));
-        let _ = ruby.pieces.push(RubyPiece {
+        ruby.push_part(ColumnPart {
             line,
             column: piece.column,
             base: piece.base,
@@ -867,10 +757,11 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
             width: piece.width,
             overhang: (piece.before, LayoutUnit::ZERO),
         });
+        out.ruby = Some(ruby);
     }
 
-    /// Splits the last breakable column on the line that reaches `reach`,
-    /// and returns the line that ends at the split.
+    /// Splits the last breakable column on the line whose furthest boundary
+    /// that fits is `furthest`, and returns the line that ends at the split.
     ///
     /// Columns are tried from the last that starts on the line back to the
     /// one the line continues. A column the line holds whole, followed by
@@ -880,14 +771,15 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
     pub(super) fn split_ruby(
         &mut self,
         out: &mut Lines,
-        fitting: &mut Fitting<'_>,
-        reach: ClusterId,
+        fitting: &mut Fitting<'_, '_>,
+        furthest: ClusterId,
     ) -> Option<Fitted> {
-        if !fitting.para.breakable_ruby {
+        if !fitting.line.para.breakable_ruby {
             return None;
         }
         let rubies = self.stages.measured.ruby_columns();
-        let range = self.line_columns(fitting.start..ClusterId::new(reach.get().saturating_add(1)));
+        let range =
+            self.line_columns(fitting.line.start..ClusterId::new(furthest.get().saturating_add(1)));
         // A continuation's base starts before the line; include that root.
         let low = self
             .continued
@@ -912,7 +804,7 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
             let Some(column) = rubies.get(id).filter(|column| column.may_break) else {
                 continue;
             };
-            fitted = self.split_column(out, fitting, reach, id, column, &mut cuts);
+            fitted = self.split_column(out, fitting, furthest, id, column, &mut cuts);
             if fitted.is_some() {
                 break;
             }
@@ -921,27 +813,28 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
         fitted
     }
 
-    /// Splits column `id` where the line that reaches `reach` ends inside
-    /// it, and returns that line. `None` where the column stays whole.
+    /// Splits column `id` where the line, whose furthest boundary that fits
+    /// is `furthest`, ends inside it, and returns that line. `None` where the
+    /// column stays whole.
     fn split_column(
         &mut self,
         out: &mut Lines,
-        fitting: &mut Fitting<'_>,
-        reach: ClusterId,
+        fitting: &mut Fitting<'_, '_>,
+        furthest: ClusterId,
         id: RubyColumnId,
         column: &RubyColumn,
         cuts: &mut Vec<LevelCut>,
     ) -> Option<Fitted> {
         let rubies = self.stages.measured.ruby_columns();
-        let start = column.base.start.max(fitting.start);
+        let start = column.base.start.max(fitting.line.start);
         if start >= column.base.end {
             return None;
         }
         let resume = Self::previous_piece(out, Some(id), start).map(|piece| piece.levels.clone());
         self.start_levels(out, column, resume.as_ref(), cuts);
         // A line that starts inside the column knows its first item.
-        let near = if start == fitting.start {
-            fitting.first_item
+        let near = if start == fitting.line.start {
+            fitting.line.first_item
         } else {
             column.open
         };
@@ -959,48 +852,50 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
             return None;
         }
         let prefix = &self.stages.measured.prefix;
-        let used = (prefix.get(start) - prefix.get(fitting.start) + fitting.shift.at(start))
+        let used = (prefix.get(start) - prefix.get(fitting.line.start) + fitting.shift.at(start))
             .to_layout()
-            + fitting.start_cost;
-        let available = (fitting.room - used).max(LayoutUnit::ZERO);
+            + fitting.line.start_cost;
+        let available = (fitting.line.room - used).max(LayoutUnit::ZERO);
         // The rest the line continues was sized before it was fitted.
         let continued = self
             .continued
             .as_ref()
-            .filter(|continued| continued.column == id && start == fitting.start)
+            .filter(|continued| continued.column == id && start == fitting.line.start)
             .and_then(|continued| continued.rest);
         let (whole, base) = match continued {
             Some(rest) => (rest.width, rest.base),
             None => (
-                self.rest_width(out, fitting.para, start..column.base.end, cuts),
+                self.rest_width(out, fitting.line.para, start..column.base.end, cuts),
                 self.base_width(start..column.base.end),
             ),
         };
-        let before = if start > fitting.start {
+        let before = if start > fitting.line.start {
             column.overhang.0.min((whole - base).max(LayoutUnit::ZERO))
         } else {
             LayoutUnit::ZERO
         };
         let column_end = self.column_end(column);
         if whole <= available + before
-            && (column_end == fitting.para.end
+            && (column_end == fitting.line.para.end
                 || self
                     .clusters
                     .attrs(ClusterId::new(column_end.get() - 1))
                     .is_some_and(|attrs| attrs.has(ClusterAttrs::BREAK_AFTER))
-                || self.first_opportunity(column_end..reach).is_some())
+                || self
+                    .opportunity(column_end..furthest, false, false)
+                    .is_some())
         {
             return None;
         }
         let target = Self::proportion(available + before, base, whole);
-        let reach = self.base_reach(fitting.para, start..column.base.end, target);
+        let furthest = self.base_furthest(fitting.line.para, start..column.base.end, target);
         let mut ceiling = column.base.end;
         let mut emergency = false;
         let mut item = self.stages.analysis.item_clusters.cursor(column.open);
         while let Some(cut) = self.base_cut(
             id,
             start..column.base.end,
-            (target, reach),
+            (target, furthest),
             ceiling,
             &mut emergency,
             &mut item,
@@ -1020,7 +915,7 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
             }
             let base_width =
                 cut.width + self.base_delta(&candidate.pieces, start..cut.at) + cut.hyphen;
-            let width = self.split_width(out, fitting.para, cuts, room, whole, base_width);
+            let width = self.split_width(out, fitting.line.para, cuts, room, whole, base_width);
             let extra = width - base_width - before;
             candidate.content = candidate.content + extra;
             candidate.full = candidate.full + extra;
@@ -1032,11 +927,11 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
                 before,
             };
             if let Some(fitted) = settle(fitting, &candidate) {
-                self.record_ruby(out, fitting.para, piece, cuts);
+                self.record_ruby(out, fitting.line.para, piece, cuts);
                 return Some(fitted);
             }
-            if start == fitting.start {
-                self.record_ruby(out, fitting.para, piece, cuts);
+            if start == fitting.line.start {
+                self.record_ruby(out, fitting.line.para, piece, cuts);
                 return Some(overflowing(fitting, &candidate));
             }
             // The combined line does not fit: retry at a shorter cut.
@@ -1062,7 +957,7 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
         };
         // The line kept a piece of the column where the fit split it.
         if out.ruby.as_ref().is_some_and(|ruby| {
-            ruby.recent_line_pieces(out.lines.next_id())
+            ruby.recent_line_parts(out.lines.next_id())
                 .iter()
                 .any(|piece| piece.column == continued.column)
         }) {

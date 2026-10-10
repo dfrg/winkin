@@ -355,46 +355,41 @@ impl TextFacts {
         let orientation = style.orientation;
         let wraps = text.wrap_mode == TextWrapMode::Wrap;
         let mut flags = TextFlags::NONE;
-        let mut set = |flag: TextFlags, on: bool| {
-            if on {
-                flags.insert(flag);
-            }
-        };
-        set(TextFlags::WRAPS, wraps);
-        set(TextFlags::WHITE_SPACE_HANGS, text.white_space_hangs());
-        set(
+        flags.set(TextFlags::WRAPS, wraps);
+        flags.set(TextFlags::WHITE_SPACE_HANGS, text.white_space_hangs());
+        flags.set(
             TextFlags::HANGS_CONDITIONALLY,
             text.white_space_hangs_conditionally(),
         );
-        set(TextFlags::HYPHENS_NONE, text.hyphens == Hyphens::None);
-        set(
+        flags.set(TextFlags::HYPHENS_NONE, text.hyphens == Hyphens::None);
+        flags.set(
             TextFlags::EMERGENCY,
             wraps && text.overflow_wrap != OverflowWrap::Normal,
         );
-        set(
+        flags.set(
             TextFlags::ANYWHERE,
             text.overflow_wrap == OverflowWrap::Anywhere,
         );
-        set(TextFlags::CJK_LINE_BREAKS, cjk);
-        set(
+        flags.set(TextFlags::CJK_LINE_BREAKS, cjk);
+        flags.set(
             TextFlags::UPRIGHT_BIDI,
             vertical
                 && (orientation.text_orientation == TextOrientation::Upright
                     || orientation.text_combine_upright == TextCombineUpright::All),
         );
-        set(TextFlags::RTL, style.bidi.direction == Direction::Rtl);
-        set(TextFlags::EMPHASIS, text.emphasis.marks);
+        flags.set(TextFlags::RTL, style.bidi.direction == Direction::Rtl);
+        flags.set(TextFlags::EMPHASIS, text.emphasis.marks);
         // `text-orientation` has no effect in the sideways modes, so upright
         // text ends a seam only in a vertical typographic mode. Chrome's
         // `TextAutoSpace` reads the font's orientation, which is horizontal
         // there.
         let upright_in_vertical =
             vertical && orientation.text_orientation == TextOrientation::Upright;
-        set(
+        flags.set(
             TextFlags::AUTOSPACE_ALPHA,
             text.autospace.ideograph_alpha && !upright_in_vertical,
         );
-        set(
+        flags.set(
             TextFlags::AUTOSPACE_NUMERIC,
             text.autospace.ideograph_numeric && !upright_in_vertical,
         );
@@ -715,24 +710,19 @@ impl BoxFacts {
         let edges = &style.edges;
         let rtl = style.bidi.direction == Direction::Rtl;
         let mut flags = BoxFlags::NONE;
-        let mut set = |flag: BoxFlags, on: bool| {
-            if on {
-                flags.insert(flag);
-            }
-        };
-        set(BoxFlags::PAINTS, style.paints);
-        set(BoxFlags::DECORATES, style.decorates);
-        set(BoxFlags::HAS_EDGES, edges.any());
-        set(
+        flags.set(BoxFlags::PAINTS, style.paints);
+        flags.set(BoxFlags::DECORATES, style.decorates);
+        flags.set(BoxFlags::HAS_EDGES, edges.any());
+        flags.set(
             BoxFlags::CLONES,
             edges.decoration_break == BoxDecorationBreak::Clone,
         );
-        set(BoxFlags::RTL, rtl);
-        set(
+        flags.set(BoxFlags::RTL, rtl);
+        flags.set(
             BoxFlags::TRIMS_TEXT_BOX,
             style.line.text_box_trim != TextBoxTrim::None,
         );
-        set(BoxFlags::INITIAL_LETTER, style.line.initial_letter.is_set());
+        flags.set(BoxFlags::INITIAL_LETTER, style.line.initial_letter.is_set());
         // An edge stops shaping as Blink's `ShouldBreakShapingBeforeBox`
         // and `AfterBox` say: margin, border or padding on that inline side,
         // or `vertical-align` other than `baseline`. Any `unicode-bidi`
@@ -755,11 +745,11 @@ impl BoxFacts {
                 || side(border.0 != 0.0, border.1 != 0.0)
                 || side(!padding.0.is_zero(), !padding.1.is_zero())
         };
-        set(
+        flags.set(
             BoxFlags::BREAKS_SHAPING_AT_START,
             breaks_everywhere || any_along(true),
         );
-        set(
+        flags.set(
             BoxFlags::BREAKS_SHAPING_AT_END,
             breaks_everywhere || any_along(false),
         );

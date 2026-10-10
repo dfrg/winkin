@@ -15,20 +15,20 @@
 use alloc::vec::Vec;
 use core::iter;
 
-use super::place::{
-    BoxPart, BoxPartId, LineBox, LineBoxId, LineBoxes, LinePieces, PieceId, VisualId,
-};
-use super::{FragmentItem, FragmentItemFlags, FragmentItemId, Fragments, Placer};
+use super::place::{LinePieces, PieceId, VisualId};
+use super::{FragmentItem, FragmentItemFlags, FragmentItemId, Fragments, Piece, PieceKind, Placer};
 use crate::data::IdRange;
-use crate::data::{Id, Table, heap_bytes, index_to_u32, sort_by_key, u32_to_index};
-use crate::stages::analysis::BidiLevel;
-use crate::stages::content::BoxFlags;
+use crate::data::{Id, Table, define_id, heap_bytes, index_to_u32, sort_by_key, u32_to_index};
+use crate::stages::analysis::{BidiLevel, ClusterId};
+use crate::stages::content::{BoxFlags, NodeId};
+use crate::stages::measure::KeptBoxId;
 use crate::unit::{InlineLayoutUnit, LayoutUnit};
 use crate::work;
 
-/// Where each box part's item goes among the line's items, and their
-/// paint order.
-pub(super) struct PaintLinks {
+/// How many items a line's leaves write before each visual place, which put
+/// each box part's item among the line's, and the scratch that sorts the
+/// box parts into paint order.
+pub(super) struct LeafCounts {
     /// How many items the pieces before each visual place write, with the
     /// total after the last.
     leaves: Table<VisualId, u32>,
@@ -38,8 +38,8 @@ pub(super) struct PaintLinks {
     painted: Vec<BoxPartId>,
 }
 
-impl PaintLinks {
-    /// Makes empty links, allocating nothing.
+impl LeafCounts {
+    /// Makes empty counts, allocating nothing.
     pub(super) const fn new() -> Self {
         Self {
             leaves: Table::new(),
@@ -47,30 +47,34 @@ impl PaintLinks {
         }
     }
 
-    /// Counts the items `pieces` write before each visual place, and in all.
+    /// Starts counting the items the line's pieces write before each visual
+    /// place, which placing them does a place at a time.
+    pub(super) fn begin_count(&mut self) {
+        self.leaves.clear();
+        self.leaves
+            .push_bounded(0, "no more pieces on a line than a VisualId names");
+    }
+
+    /// Counts the next visual place, where a leaf writes one item.
+    #[inline]
+    pub(super) fn count(&mut self, leaf: bool) {
+        let before = self.leaves.last().copied().unwrap_or(0);
+        self.leaves.push_bounded(
+            before + u32::from(leaf),
+            "no more pieces on a line than a VisualId names",
+        );
+    }
+
+    /// Adds the items `pieces` write past one each to the counts.
     ///
-    /// A leaf writes one. The piece `split` a cut divides writes two. The
-    /// line's `hyphen` writes one per font of its generated text.
-    pub(super) fn count_leaves(
+    /// The piece `split` a cut divides writes two. The line's `hyphen`
+    /// writes one per font of its generated text.
+    pub(super) fn widen_leaves(
         &mut self,
         pieces: &LinePieces,
         split: Option<PieceId>,
         hyphen: Option<(PieceId, usize)>,
     ) {
-        self.leaves.clear();
-        let mut leaves = 0u32;
-        let mut counted = self.leaves.push(0).is_some();
-        for &logical in pieces.order.as_slice() {
-            if pieces
-                .logical
-                .get(logical)
-                .is_some_and(|piece| piece.kind.is_leaf())
-            {
-                leaves += 1;
-            }
-            counted &= self.leaves.push(leaves).is_some();
-        }
-        debug_assert!(counted, "no more pieces on a line than a VisualId names");
         if let Some(split) = split {
             self.widen(pieces, split, 1);
         }
@@ -107,7 +111,211 @@ impl PaintLinks {
 }
 
 heap_bytes! {
-    PaintLinks { leaves, painted }
+    LeafCounts { leaves, painted }
+}
+
+define_id! {
+    /// Names a kept box of the line being laid out, in [`LineBoxes`].
+    pub(super) struct LineBoxId(u32);
+}
+
+define_id! {
+    /// Names a box part on the line being laid out, in [`LineBoxes`].
+    pub(super) struct BoxPartId(u32);
+}
+
+/// A box that keeps a fragment, as one line has it.
+#[derive(Copy, Clone, Debug)]
+pub(super) struct LineBox {
+    pub(super) node: NodeId,
+    /// Its row among the kept boxes of the line's variant, which its box
+    /// parts name.
+    pub(super) kept: Option<KeptBoxId>,
+    /// The box around it on the line, and how deep it is among them.
+    pub(super) parent: Option<LineBoxId>,
+    pub(super) depth: u32,
+    /// How far its baseline is raised from the line's: its own shift plus
+    /// every box's around it.
+    pub(super) shift: LayoutUnit,
+    /// How far the baseline of the nearest `top` or `bottom` box, itself or
+    /// one around it, is raised from the line's; zero where there is none.
+    ///
+    /// A `top` or `bottom` box inside it is placed from this.
+    pinned: LayoutUnit,
+    /// Whether it opens on the line, rather than continuing from the line
+    /// before, and whether it closes on it.
+    pub(super) opens: bool,
+    pub(super) closes: bool,
+    /// Whether its left and right sides are its own edges on the line.
+    ///
+    /// Its direction decides which of start and end is on the left. A box
+    /// that clones has both on every line.
+    pub(super) has_left: bool,
+    pub(super) has_right: bool,
+    /// The room its left and right edges take, margins included, and the
+    /// margins alone; zero on a side that is not its edge.
+    pub(super) left_room: InlineLayoutUnit,
+    pub(super) right_room: InlineLayoutUnit,
+    pub(super) left_margin: InlineLayoutUnit,
+    pub(super) right_margin: InlineLayoutUnit,
+    /// Where its leftmost box part starts and its rightmost ends,
+    /// visually, and the box part being found.
+    pub(super) first_left: Option<VisualId>,
+    pub(super) last_right: Option<VisualId>,
+    pub(super) active: Option<BoxPartId>,
+}
+
+/// A box part: the pieces of one box that reordering leaves side by side,
+/// from its leftmost to its rightmost place, inclusive.
+#[derive(Copy, Clone, Debug)]
+pub(super) struct BoxPart {
+    /// The box, in the line's table of them.
+    pub(super) line_box: LineBoxId,
+    pub(super) left: VisualId,
+    pub(super) right: VisualId,
+    /// The room inner boxes' edges take at its left and right ends, between
+    /// its border and its content.
+    ///
+    /// The left sums the left edges of deeper boxes whose leftmost box
+    /// part starts here. The right does the same for right edges ending
+    /// here.
+    pub(super) inner_left: InlineLayoutUnit,
+    pub(super) inner_right: InlineLayoutUnit,
+    /// The item of the box part painted after it, or `None` for the last.
+    pub(super) next: Option<FragmentItemId>,
+}
+
+/// The kept boxes of the line being laid out.
+///
+/// It holds each box as the line has it, the boxes open during the piece
+/// walk, and after reordering the box parts and their edges' room. It
+/// also carries the boxes open at the line's end into the next line.
+pub(super) struct LineBoxes {
+    /// The boxes that keep a fragment on the line, as they open.
+    pub(super) line_boxes: Table<LineBoxId, LineBox>,
+    /// Those open where the walk is, outermost first.
+    pub(super) stack: Vec<LineBoxId>,
+    /// Their box parts.
+    pub(super) parts: Table<BoxPartId, BoxPart>,
+    /// The box parts in the order they end, innermost first at a shared
+    /// piece. Each one's inner right is summed in this order.
+    pub(super) ended: Vec<BoxPartId>,
+    /// The room box edges take before and after each place in visual order.
+    pub(super) rooms: Table<VisualId, (InlineLayoutUnit, InlineLayoutUnit)>,
+    /// The kept boxes open at the last line's end, outermost first, with
+    /// their rows, carried to the next.
+    pub(super) open: Vec<(NodeId, Option<KeptBoxId>)>,
+}
+
+impl LineBoxes {
+    /// Makes an empty table, allocating nothing.
+    pub(super) const fn new() -> Self {
+        Self {
+            line_boxes: Table::new(),
+            stack: Vec::new(),
+            parts: Table::new(),
+            ended: Vec::new(),
+            rooms: Table::new(),
+            open: Vec::new(),
+        }
+    }
+
+    /// Empties the line's tables, keeping the boxes open from the line
+    /// before.
+    pub(super) fn begin_line(&mut self) {
+        self.line_boxes.clear();
+        self.stack.clear();
+        self.parts.clear();
+        self.ended.clear();
+    }
+
+    /// Records the kept boxes still open at the line's end, which go on to
+    /// the next line.
+    pub(super) fn carry_open(&mut self) {
+        self.open.clear();
+        for &index in self.stack.iter() {
+            if let Some(still) = self.line_boxes.get(index) {
+                self.open.push((still.node, still.kept));
+            }
+        }
+    }
+
+    /// Returns the innermost kept box open where the walk is, which owns a
+    /// piece made there.
+    #[inline]
+    pub(super) fn innermost(&self) -> Option<LineBoxId> {
+        self.stack.last().copied()
+    }
+
+    /// Returns the innermost open kept box's shift and pinned shift; zeros
+    /// outside every box.
+    ///
+    /// A culled box has no shift and is never `top` or `bottom`, so the
+    /// innermost kept box gives its parent's baseline.
+    #[inline]
+    pub(super) fn innermost_shifts(&self) -> (LayoutUnit, LayoutUnit) {
+        self.innermost()
+            .and_then(|id| self.line_boxes.get(id))
+            .map_or((LayoutUnit::ZERO, LayoutUnit::ZERO), |open| {
+                (open.shift, open.pinned)
+            })
+    }
+
+    /// Opens the kept box `node`, row `kept`, at boundary `at`, raised as
+    /// `shifts` says.
+    ///
+    /// It adds the box inside the one open around it and a placeholder piece
+    /// to `pieces`. `opens` is false for a box continuing from the line
+    /// before.
+    pub(super) fn open_box(
+        &mut self,
+        pieces: &mut LinePieces,
+        (node, kept): (NodeId, Option<KeptBoxId>),
+        at: ClusterId,
+        opens: bool,
+        (shift, pinned): (LayoutUnit, LayoutUnit),
+    ) {
+        let parent = self.innermost();
+        let depth = parent
+            .and_then(|parent| self.line_boxes.get(parent))
+            .map_or(0, |parent| parent.depth + 1);
+        let Some(id) = self.line_boxes.push(LineBox {
+            node,
+            kept,
+            parent,
+            depth,
+            shift,
+            pinned,
+            opens,
+            closes: false,
+            has_left: false,
+            has_right: false,
+            left_room: InlineLayoutUnit::ZERO,
+            right_room: InlineLayoutUnit::ZERO,
+            left_margin: InlineLayoutUnit::ZERO,
+            right_margin: InlineLayoutUnit::ZERO,
+            first_left: None,
+            last_right: None,
+            active: None,
+        }) else {
+            debug_assert!(false, "no more boxes on a line than a LineBoxId names");
+            return;
+        };
+        self.stack.push(id);
+        pieces.push(Piece::new(
+            PieceKind::Place,
+            node,
+            BidiLevel::LTR,
+            at..at,
+            InlineLayoutUnit::ZERO,
+            Some(id),
+            shift,
+        ));
+    }
+}
+
+heap_bytes! {
+    LineBoxes { line_boxes, stack, parts, ended, rooms, open }
 }
 
 impl<'a> Placer<'a> {
@@ -131,7 +339,7 @@ impl<'a> Placer<'a> {
         let end = pieces.order.next_id();
         boxes.rooms.clear();
         // With no box, no piece has room beside it, and positions read none.
-        if boxes.boxes.is_empty() {
+        if boxes.line_boxes.is_empty() {
             return;
         }
         let none = (InlineLayoutUnit::ZERO, InlineLayoutUnit::ZERO);
@@ -140,7 +348,7 @@ impl<'a> Placer<'a> {
             debug_assert!(false, "no more pieces on a line than a VisualId names");
         }
         let LineBoxes {
-            boxes,
+            line_boxes: boxes,
             parts,
             ended,
             rooms,
@@ -175,7 +383,7 @@ impl<'a> Placer<'a> {
                     {
                         part.right = VisualId::new(at.get().saturating_sub(1));
                         open.last_right = Some(part.right);
-                        if self.has_box_edges {
+                        if self.gates.has_box_edges {
                             ended.push(active);
                         }
                     }
@@ -273,14 +481,14 @@ impl<'a> Placer<'a> {
     /// takes `letter_indent` more, the indent inside its box, which the
     /// line's indent holds.
     pub(super) fn rooms(&self, boxes: &mut LineBoxes, letter_indent: LayoutUnit) {
-        for open in boxes.boxes.as_mut_slice() {
+        for open in boxes.line_boxes.as_mut_slice() {
             work::step();
             let facts = self.box_facts(open.node);
             let direction = facts.direction();
             let clones = facts.has(BoxFlags::CLONES);
             let (starts, ends) = (open.opens || clones, open.closes || clones);
             (open.has_left, open.has_right) = direction.line_order(starts, ends);
-            if !self.has_box_edges {
+            if !self.gates.has_box_edges {
                 continue;
             }
             let exact = |room: LayoutUnit| InlineLayoutUnit::from_layout(room);
@@ -322,7 +530,7 @@ impl<'a> Placer<'a> {
     }
 
     /// Writes the item of box part `index`, `part`: its border box,
-    /// heading the items `links` counts inside it.
+    /// heading the items inside it, which `counts` counts.
     ///
     /// A side with the box's own edge reaches to the edge, inside its margin.
     /// An open side reaches to the pieces it holds, around inner boxes'
@@ -332,7 +540,7 @@ impl<'a> Placer<'a> {
         &self,
         pieces: &LinePieces,
         boxes: &LineBoxes,
-        links: &PaintLinks,
+        counts: &LeafCounts,
         out: &mut Fragments,
         index: BoxPartId,
         part: &BoxPart,
@@ -341,7 +549,7 @@ impl<'a> Placer<'a> {
         let (Some(leftmost), Some(rightmost), Some(own)) = (
             pieces.visual(part.left),
             pieces.visual(part.right),
-            boxes.boxes.get(part.line_box),
+            boxes.line_boxes.get(part.line_box),
         ) else {
             return;
         };
@@ -366,10 +574,10 @@ impl<'a> Placer<'a> {
         }
         // Its items: the leaves among its pieces, and the nested parts,
         // which follow it in the list and start inside it.
-        let leaves = links
+        let leaves = counts
             .leaves
             .get(VisualId::new(part.right.get() + 1))
-            .zip(links.leaves.get(part.left))
+            .zip(counts.leaves.get(part.left))
             .map_or(0, |(to, from)| u32_to_index(to.saturating_sub(*from)));
         let nested = boxes
             .parts
@@ -408,7 +616,7 @@ impl<'a> Placer<'a> {
 /// first.
 ///
 /// Paint order is by box in tree order, outermost first whatever reordering
-/// did, then each box's parts left to right. `links` is the sort
+/// did, then each box's parts left to right. `counts` holds the sort
 /// scratch.
 ///
 /// Each link is the id the next part's item will have. It counts from
@@ -420,12 +628,16 @@ impl<'a> Placer<'a> {
 /// has no part. A painter follows the links instead of searching, so
 /// painting a line is linear in its items.
 pub(super) fn paint_order(
-    links: &mut PaintLinks,
+    counts: &mut LeafCounts,
     boxes: &mut LineBoxes,
     head: FragmentItemId,
 ) -> Option<FragmentItemId> {
-    let PaintLinks { leaves, painted } = links;
-    let LineBoxes { boxes, parts, .. } = boxes;
+    let LeafCounts { leaves, painted } = counts;
+    let LineBoxes {
+        line_boxes: boxes,
+        parts,
+        ..
+    } = boxes;
     let node = |part: &BoxPart| boxes.get(part.line_box).map(|open| open.node);
     // The id the item of part `index` will have.
     let item = |parts: &Table<BoxPartId, BoxPart>, index: BoxPartId| {

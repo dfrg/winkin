@@ -29,7 +29,8 @@ use crate::build::BoxSize;
 use crate::config::Config;
 use crate::data::Id;
 use crate::paint::{Decorates, Paint};
-use crate::stages::fonts::UsedFontId;
+use crate::stages::content::TextFactsId;
+use crate::stages::fonts::{UsedFont, UsedFontId};
 use crate::stages::fragments::{FragmentItemKind, GlyphWalk};
 use crate::stages::lines::{Area, InlineExtents, LineId, NoExclusions};
 use crate::style::{
@@ -45,6 +46,19 @@ use crate::{
     BuildOptions, ComputedBlockStyle, Context, CrossExtents, InlineEdges, Item, Layout,
     LayoutBuilder, NodeKey, TextRun,
 };
+
+/// Returns the primary font of text with the text facts `text`, through its
+/// font request.
+pub(crate) fn primary(layout: &Layout, text: TextFactsId) -> Option<&UsedFont> {
+    let request = layout.content().facts.text_request(text);
+    layout.fonts().primary_font(request)
+}
+
+/// Returns the id of [`primary`].
+pub(crate) fn primary_id(layout: &Layout, text: TextFactsId) -> Option<UsedFontId> {
+    let request = layout.content().facts.text_request(text);
+    Some(layout.fonts().resolution(request)?.primary)
+}
 
 /// `extents`' two ends, to print as a pair.
 fn ends(extents: InlineExtents) -> (f32, f32) {

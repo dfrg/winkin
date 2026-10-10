@@ -20,6 +20,7 @@ use core::fmt::Write;
 
 use super::{AHEM_FAMILY, Fixture, StageCheck, TestFont, han, han_fallback};
 use crate::data::Id;
+use crate::layout::primary;
 use crate::paint::Decorates;
 use crate::stages::analysis::ClusterId;
 use crate::stages::lines::{Area, NoExclusions};
@@ -228,7 +229,7 @@ fn snapshot(fixture: &mut Fixture, layout: &mut Layout, widths: &[f32]) -> Strin
         let _ = writeln!(out, "fonts {:?}", fonts.runs(variant).as_slice());
     }
     for id in layout.content().facts.text_ids() {
-        let primary = layout.primary(id).map(|used| (used.size, used.metrics));
+        let primary = primary(layout, id).map(|used| (used.size, used.metrics));
         let _ = writeln!(out, "primary {primary:?}");
     }
     let _ = writeln!(out, "sizes {:?}", layout.intrinsic_sizes());

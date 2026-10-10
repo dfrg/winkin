@@ -75,6 +75,8 @@ impl<I: Id, A> AdvanceStore<A> for Table<I, A> {
 /// per cluster shaped.
 pub(crate) struct GlyphSink<'a, I: Id, A: AdvanceUnit, S: AdvanceStore<A> = Vec<A>> {
     words: &'a mut Table<I, GlyphWord>,
+    /// The first word this sink writes.
+    first: I,
     sidecar: &'a mut Table<SidecarGlyphId, SidecarGlyph>,
     /// Along the line.
     advances: &'a mut S,
@@ -155,6 +157,7 @@ impl<'a, I: Id, A: AdvanceUnit, S: AdvanceStore<A>> GlyphSink<'a, I, A, S> {
         advances: &'a mut S,
     ) -> Self {
         Self {
+            first: words.next_id(),
             words,
             sidecar,
             advances,
@@ -199,6 +202,12 @@ impl<'a, I: Id, A: AdvanceUnit, S: AdvanceStore<A>> GlyphSink<'a, I, A, S> {
     /// Whether any cluster written was unsafe to break before.
     pub(super) fn any_unsafe(&self) -> bool {
         self.unsafe_seen
+    }
+
+    /// Returns how many words it has written: one per cluster the tables
+    /// took.
+    pub(crate) fn words_written(&self) -> usize {
+        self.words.next_id().get().saturating_sub(self.first.get())
     }
 
     /// How many glyphs were left out.
@@ -263,11 +272,7 @@ impl<'a, I: Id, A: AdvanceUnit, S: AdvanceStore<A>> GlyphSink<'a, I, A, S> {
     /// form where it can without further checks.
     #[inline]
     pub(super) fn one(&mut self, glyph: &GlyphInfo, position: &GlyphPosition, flags: Flags) {
-        if !self.keep_advances
-            && position.x_offset == 0
-            && position.y_offset == 0
-            && let Some(word) = GlyphWord::from_glyph(glyph.glyph_id)
-        {
+        if let Some(word) = self.compact(glyph, position) {
             self.push(flags.apply(word), i64::from(position.x_advance));
             return;
         }
@@ -293,14 +298,8 @@ impl<'a, I: Id, A: AdvanceUnit, S: AdvanceStore<A>> GlyphSink<'a, I, A, S> {
             ([], _) | (_, []) => GlyphWord::EMPTY,
             // Compact: one glyph, drawn where the pen is, along a
             // horizontal line.
-            ([glyph], [position])
-                if !vertical
-                    && !self.keep_advances
-                    && position.x_offset == 0
-                    && position.y_offset == 0
-                    && halved.shift == 0 =>
-            {
-                match GlyphWord::from_glyph(glyph.glyph_id) {
+            ([glyph], [position]) if !vertical && halved.shift == 0 => {
+                match self.compact(glyph, position) {
                     Some(word) => word,
                     None => self.expand(glyphs, positions, vertical, halved),
                 }
@@ -309,6 +308,20 @@ impl<'a, I: Id, A: AdvanceUnit, S: AdvanceStore<A>> GlyphSink<'a, I, A, S> {
         };
         let taken = i64::from(halved.shift) + i64::from(halved.trim);
         self.push(flags.apply(word), sum + taken);
+    }
+
+    /// Returns the compact word of a cluster drawn by `glyph` alone at
+    /// `position` along a horizontal line, or `None` where it is written
+    /// expanded.
+    ///
+    /// It is expanded where the sink keeps advances, where the glyph is
+    /// drawn off its pen, or where a word cannot hold its id.
+    #[inline]
+    fn compact(&self, glyph: &GlyphInfo, position: &GlyphPosition) -> Option<GlyphWord> {
+        if self.keep_advances || position.x_offset != 0 || position.y_offset != 0 {
+            return None;
+        }
+        GlyphWord::from_glyph(glyph.glyph_id)
     }
 
     /// Writes `glyphs` to the sidecar, shaped `vertical`ly or not and moved
@@ -420,7 +433,7 @@ pub(super) fn along(position: &GlyphPosition, vertical: bool) -> i64 {
 /// its cluster's last where `last`. Its offsets are in the line's terms (see
 /// [`GlyphSink::expand`]). The last glyph's advance gives back what the
 /// cluster gives back.
-fn sidecar_glyph(
+pub(super) fn sidecar_glyph(
     glyph: &GlyphInfo,
     position: &GlyphPosition,
     vertical: bool,

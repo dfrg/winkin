@@ -1,156 +1,21 @@
-//! The calls the builder makes on the writer: text, containers, atomic
+//! The calls the builder makes on the writer, but text: containers, atomic
 //! inlines, floats, absolutely positioned boxes, breaks and `finish`.
 
 #[cfg(debug_assertions)]
 use super::check;
 use super::collapse::{Event, ZWSP};
-use super::map::Map;
 use super::writer::OpenId;
+use super::writer::{ContainerKind, ContentWriter, LoweredNode, Mirror, NodeFacts, OBJECT, Open};
 use super::{
-    Absolute, Atomic, AtomicId, BreakClearance, ContainerKind, Content, ContentFlags,
-    ContentWriter, FirstLetter, Float, ItemFlags, ItemKind, LoweredNode, MAX_RUBY_DEPTH, MathText,
-    Mirror, NodeFacts, NodeId, NodeKey, NodeKind, OBJECT, Open, TextFlags,
+    Absolute, Atomic, AtomicId, BreakClearance, Content, ContentFlags, Float, ItemKind,
+    MAX_RUBY_DEPTH, NodeId, NodeKey, NodeKind,
 };
 use crate::build::{BoxSize, BuildReport, Clear, FloatSide, OriginalDisplay};
 use crate::data::{HashIndex, TextOffset, hash_one};
-use crate::style::{
-    ComputedStyle, FirstLineVariant, RubyGroup, RubyPosition, TextCombineUpright, WhiteSpaceTrim,
-};
+use crate::style::{ComputedStyle, FirstLineVariant, RubyGroup, RubyPosition, WhiteSpaceTrim};
 use alloc::boxed::Box;
-use core::mem;
 
 impl ContentWriter<'_> {
-    /// Writes text from the text node `key`. Where a first letter is asked
-    /// for and not yet found, the text splits at the letter's end.
-    pub(crate) fn text(&mut self, key: NodeKey, text: &str) {
-        if !self.content.flags.contains(ContentFlags::MATH_AUTO) {
-            self.write_text_call(key, text, false);
-            return;
-        }
-        self.math_auto_text(key, text);
-    }
-
-    /// Resolves a source node's length before writing its mathematical transform.
-    #[inline(never)]
-    fn math_auto_text(&mut self, key: NodeKey, text: &str) {
-        match mem::replace(&mut self.math, MathText::None) {
-            MathText::Long(long) if long == key => {
-                self.write_text_call(key, text, false);
-                self.math = MathText::Long(key);
-                return;
-            }
-            MathText::Held(held, ch) if held == key => {
-                if text.is_empty() {
-                    self.math = MathText::Held(held, ch);
-                    return;
-                }
-                self.write_text_call(held, ch.encode_utf8(&mut [0; 4]), false);
-                self.write_text_call(key, text, false);
-                self.math = MathText::Long(key);
-                return;
-            }
-            MathText::Held(held, ch) => {
-                self.write_text_call(held, ch.encode_utf8(&mut [0; 4]), true);
-            }
-            MathText::Long(_) | MathText::None => {}
-        }
-        let math = self.container_transforms().has_math_auto() || self.first_letter.is_math_auto();
-        if math {
-            let mut chars = text.chars();
-            if let Some(ch) = chars.next().filter(|_| chars.next().is_none()) {
-                if self.text_node_keyed(key).is_none() {
-                    self.end_text();
-                }
-                self.math = MathText::Held(key, ch);
-                return;
-            }
-        }
-        self.write_text_call(key, text, false);
-        if math && !text.is_empty() {
-            self.math = MathText::Long(key);
-        }
-    }
-
-    /// Writes one call, `single` where `text` is the whole of a one-character
-    /// source node `math-auto` may map.
-    #[inline]
-    pub(super) fn write_text_call(&mut self, key: NodeKey, text: &str, single: bool) {
-        match self.first_letter {
-            FirstLetter::Armed { .. } | FirstLetter::Punctuation { .. } if !self.full => {
-                self.text_with_first_letter(key, text, single);
-            }
-            _ => self.plain_text(key, text, single),
-        }
-    }
-
-    /// Writes text from the text node `key`, with no first letter in it.
-    pub(super) fn plain_text(&mut self, key: NodeKey, text: &str, single: bool) {
-        let continues = self.text_node_keyed(key).is_some();
-        if self.full {
-            // Nothing more fits: the text goes, and its node if it needed one.
-            self.report.drop_bytes(text.len());
-            if !continues {
-                self.end_text();
-                self.report.drop_node();
-            }
-            return;
-        }
-        let node = match self.text_node {
-            Some(node) if continues => node,
-            _ => {
-                self.end_text();
-                // The rest of a text node the first letter was cut from goes
-                // on counting where the letter ended.
-                let base = match self.continues.take() {
-                    Some((continued, at)) if continued == key => at,
-                    _ => 0,
-                };
-                let around = self.container_facts();
-                // A node with room for its item, or neither.
-                let node = if self.has_item_room(1) {
-                    self.push_node(NodeKind::Text, around, key)
-                } else {
-                    None
-                };
-                let Some(node) = node else {
-                    self.report.drop_node();
-                    self.report.drop_bytes(text.len());
-                    return;
-                };
-                self.text_node = Some(node);
-                self.source = base;
-                node
-            }
-        };
-        self.write_node_text(node, text, single);
-    }
-
-    /// Writes `text` for `node`, the current text node.
-    ///
-    /// The text follows the white space rules of the node's text facts. It
-    /// is transformed as its container says. Where the first-line style
-    /// transforms otherwise, the first line's text follows that style.
-    pub(super) fn write_node_text(&mut self, node: NodeId, text: &str, single: bool) {
-        self.reserve_text(text.len());
-        let facts = self.text_facts(node);
-        let (mode, wraps) = (facts.collapse, facts.has(TextFlags::WRAPS));
-        let combined = facts.combine == TextCombineUpright::All;
-        self.combined_text_arrives(combined);
-        let transforms = self.container_transforms();
-        // The first line's own transform matters only while the first
-        // paragraph is being written, where it transforms otherwise.
-        let transforms = match self.mirror {
-            Mirror::Done => transforms.without_first_line(),
-            Mirror::Waiting | Mirror::Writing => transforms,
-        };
-        let transforms = if self.content.flags.contains(ContentFlags::MATH_AUTO) {
-            transforms.with_node(single, text)
-        } else {
-            transforms
-        };
-        self.write_text(mode, wraps, transforms, text);
-    }
-
     /// Opens a container, styled `style` and, where the block has
     /// `::first-line`, `first_line`.
     pub(crate) fn open(
@@ -160,11 +25,11 @@ impl ContentWriter<'_> {
         style: &ComputedStyle<'_>,
         first_line: Option<&ComputedStyle<'_>>,
     ) {
-        let container = if container == ContainerKind::Ruby && self.ruby.is_some() {
-            if self.annotations == 0 && self.ruby_depth < MAX_RUBY_DEPTH {
+        let container = if container == ContainerKind::Ruby && self.ruby.innermost.is_some() {
+            if self.ruby.annotations == 0 && self.ruby.depth < MAX_RUBY_DEPTH {
                 ContainerKind::Ruby
             } else {
-                self.flattened_rubies += 1;
+                self.ruby.flattened += 1;
                 ContainerKind::FlattenedRuby
             }
         } else {
@@ -229,38 +94,24 @@ impl ContentWriter<'_> {
             transforms: self.container_transforms(),
             outer: None,
             anonymous,
+            annotation_close: None,
         };
         // A node and its opening item, and room left for its close.
         if !self.has_node_room() || !self.has_item_room(2) {
-            self.report.drop_node();
+            self.room.report.drop_node();
             self.push_open(dropped);
             return;
         }
         let kind = container.node_kind();
         let lowered = lower(self, kind);
-        self.collapser.step(Event::Open { trim });
-        let Some(node) = self.push_node(kind, lowered, key) else {
-            self.report.drop_node();
+        if self
+            .push_container(container, kind, key, lowered, trim, anonymous)
+            .is_none()
+        {
+            self.room.report.drop_node();
             self.push_open(dropped);
             return;
-        };
-        if container == ContainerKind::Annotation {
-            self.annotations += 1;
-        } else if container == ContainerKind::Ruby {
-            self.ruby_depth += 1;
         }
-        let item = self.push_item(container.open_item_kind(), node, ItemFlags::NONE);
-        self.reserved += 1;
-        self.push_open(Open {
-            node: Some(node),
-            kind: container,
-            item: item.unwrap_or(self.content.items.next_id()),
-            trim,
-            container: node,
-            transforms: lowered.transforms,
-            outer: None,
-            anonymous,
-        });
         match container {
             ContainerKind::Ruby => self.content.flags.insert(ContentFlags::RUBY),
             ContainerKind::Box | ContainerKind::Annotation | ContainerKind::FlattenedRuby => {}
@@ -283,8 +134,8 @@ impl ContentWriter<'_> {
     /// A normalized container still consumes its end if its annotation
     /// already closed the box that represented it.
     pub(crate) fn end_ruby(&mut self) {
-        if self.flattened_rubies > 0 {
-            self.flattened_rubies -= 1;
+        if self.ruby.flattened > 0 {
+            self.ruby.flattened -= 1;
             self.close_through(ContainerKind::FlattenedRuby, Some(ContainerKind::Ruby));
             return;
         }
@@ -419,7 +270,7 @@ impl ContentWriter<'_> {
         // Its character, and the space a pending run may owe before it.
         if !self.has_node_room() || !self.has_item_room(1) || !self.has_text_room(OBJECT.len() + 1)
         {
-            self.report.drop_node();
+            self.room.report.drop_node();
             return;
         }
         let lowered = self.lower_node_styles(style, first_line, NodeKind::Atomic, false);
@@ -428,27 +279,32 @@ impl ContentWriter<'_> {
         self.first_letter_ends();
         self.combined_text_arrives(false);
         self.content_arrives('\u{FFFC}', false);
-        let Some(node) = self.push_node(NodeKind::Atomic, lowered, key) else {
+        let written = self.push_leaf(
+            NodeKind::Atomic,
+            ItemKind::Atomic,
+            lowered,
+            key,
+            |writer, item| {
+                // Its node's offsets 0 and 1, before and after it.
+                let at = TextOffset::new(writer.content.text.len());
+                writer.append(item, OBJECT);
+                writer.content.record(|map| map.generated(0..1, at));
+                let writing_mode = writer.content.block.writing_mode;
+                let basis = writer.content.basis();
+                if style.edges.margin.has_percentage() {
+                    writer.content.flags.insert(ContentFlags::PERCENTAGES);
+                }
+                let atomic = Atomic::new(item, size, style, writing_mode, basis);
+                let atomics = &mut writer.content.extras_mut().atomics;
+                let id = atomics.next_id();
+                atomics.push_bounded(atomic, "an atomic has an item, and fits where it does");
+                writer.note_atomic_key(key, id);
+            },
+        );
+        if !written {
             return;
-        };
-        if let Some(item) = self.push_item(ItemKind::Atomic, node, ItemFlags::NONE) {
-            // Its node's offsets 0 and 1, before and after it.
-            let at = TextOffset::new(self.content.text.len());
-            self.append(item, OBJECT);
-            self.content.record(|map| map.generated(0..1, at));
-            let writing_mode = self.content.block.writing_mode;
-            let basis = self.content.basis();
-            if style.edges.margin.has_percentage() {
-                self.content.flags.insert(ContentFlags::PERCENTAGES);
-            }
-            let atomic = Atomic::new(item, size, style, writing_mode, basis);
-            let atomics = &mut self.content.extras_mut().atomics;
-            let id = atomics.next_id();
-            atomics.push_bounded(atomic, "an atomic has an item, and fits where it does");
-            self.note_atomic_key(key, id);
         }
-        self.end_leaf(node);
-        self.last_char = ' ';
+        self.text_node.last_char = ' ';
         self.content.flags.insert(ContentFlags::ATOMICS);
     }
 
@@ -496,27 +352,34 @@ impl ContentWriter<'_> {
     ) {
         self.end_text();
         if !self.has_node_room() || !self.has_item_room(1) {
-            self.report.drop_node();
+            self.room.report.drop_node();
             return;
         }
         // `::first-line` styles inline content, which a float is not.
         let lowered = self.lower_node_styles(style, None, NodeKind::Float, false);
-        let Some(node) = self.push_node(NodeKind::Float, lowered, key) else {
+        let written = self.push_leaf(
+            NodeKind::Float,
+            ItemKind::Float,
+            lowered,
+            key,
+            |writer, item| {
+                let writing_mode = writer.content.block.writing_mode;
+                let basis = writer.content.basis();
+                if style.edges.margin.has_percentage() {
+                    writer.content.flags.insert(ContentFlags::PERCENTAGES);
+                }
+                let float = Float::new(item, size, side, style, writing_mode, basis);
+                writer
+                    .content
+                    .extras_mut()
+                    .floats
+                    .push_bounded(float, "a float has an item, and fits where it does");
+            },
+        );
+        if !written {
             return;
-        };
-        if let Some(item) = self.push_item(ItemKind::Float, node, ItemFlags::NONE) {
-            let writing_mode = self.content.block.writing_mode;
-            let basis = self.content.basis();
-            if style.edges.margin.has_percentage() {
-                self.content.flags.insert(ContentFlags::PERCENTAGES);
-            }
-            let float = Float::new(item, size, side, style, writing_mode, basis);
-            if self.content.extras_mut().floats.push(float).is_none() {
-                debug_assert!(false, "a float has an item, and fits where it does");
-            }
         }
-        self.end_leaf(node);
-        self.last_char = ' ';
+        self.text_node.last_char = ' ';
         self.content.flags.insert(ContentFlags::FLOATS);
     }
 
@@ -529,20 +392,22 @@ impl ContentWriter<'_> {
     pub(crate) fn absolute(&mut self, key: NodeKey, display: OriginalDisplay) {
         self.end_text();
         if !self.has_node_room() || !self.has_item_room(1) {
-            self.report.drop_node();
+            self.room.report.drop_node();
             return;
         }
         let around = self.container_facts();
-        let Some(node) = self.push_node(NodeKind::Absolute, around, key) else {
-            return;
-        };
-        if let Some(item) = self.push_item(ItemKind::Absolute, node, ItemFlags::NONE) {
-            let absolute = Absolute { item, display };
-            if self.content.extras_mut().absolutes.push(absolute).is_none() {
-                debug_assert!(false, "an anchor has an item, and fits where it does");
-            }
-        }
-        self.end_leaf(node);
+        self.push_leaf(
+            NodeKind::Absolute,
+            ItemKind::Absolute,
+            around,
+            key,
+            |writer, item| {
+                writer.content.extras_mut().absolutes.push_bounded(
+                    Absolute { item, display },
+                    "an anchor has an item, and fits where it does",
+                );
+            },
+        );
     }
 
     /// Writes a forced break: one `\n`, in a node of its own styled by the
@@ -559,12 +424,12 @@ impl ContentWriter<'_> {
     ///
     /// A break outside ruby that clears floats records `clear`.
     pub(crate) fn line_break(&mut self, key: NodeKey, clear: Option<Clear>) {
-        let in_ruby = self.ruby.is_some();
+        let in_ruby = self.ruby.innermost.is_some();
         self.end_text();
         // Its character, and in ruby the space a pending run may owe first.
         let bytes = if in_ruby { 2 } else { 1 };
         if !self.has_node_room() || !self.has_item_room(1) || !self.has_text_room(bytes) {
-            self.report.drop_node();
+            self.room.report.drop_node();
             return;
         }
         self.first_letter_ends();
@@ -575,31 +440,31 @@ impl ContentWriter<'_> {
             self.lead_trim_ends();
         }
         let around = self.container_facts();
-        let Some(node) = self.push_node(NodeKind::LineBreak, around, key) else {
-            return;
-        };
         let (kind, text) = if in_ruby {
             (ItemKind::Text, " ")
         } else {
             (ItemKind::Break, "\n")
         };
-        if let Some(item) = self.push_item(kind, node, ItemFlags::NONE) {
-            let at = TextOffset::new(self.content.text.len());
-            self.append(item, text);
-            self.content.record(|map| map.generated(0..1, at));
+        let written = self.push_leaf(NodeKind::LineBreak, kind, around, key, |writer, item| {
+            let at = TextOffset::new(writer.content.text.len());
+            writer.append(item, text);
+            writer.content.record(|map| map.generated(0..1, at));
             if !in_ruby {
-                self.mirror = Mirror::Done;
+                writer.first_line.mirror = Mirror::Done;
                 if let Some(clear) = clear {
                     let clearance = BreakClearance { item, clear };
-                    self.content
+                    writer
+                        .content
                         .extras_mut()
                         .clearances
                         .push_bounded(clearance, "a clearance has an item, and fits where it does");
                 }
             }
+        });
+        if !written {
+            return;
         }
-        self.end_leaf(node);
-        self.last_char = '\n';
+        self.text_node.last_char = '\n';
         if in_ruby {
             // The white space after it collapses into it, as after a forced
             // break, which leaves the collapser in the same state.
@@ -616,22 +481,19 @@ impl ContentWriter<'_> {
         if self.content.flags.contains(ContentFlags::MATH_AUTO) {
             self.end_math_text();
         }
-        if self.full {
+        if self.room.full {
             return;
         }
         if !self.has_text_room(ZWSP.len_utf8()) {
-            self.full = true;
+            self.room.full = true;
             return;
         }
-        self.last_char = ZWSP;
+        self.text_node.last_char = ZWSP;
         // How far the text node's text has got; between nodes, how far the
         // last node written got.
-        let (node, source) = match self.text_node {
-            Some(node) => (node, self.source),
-            None => {
-                let map = self.content.extras.as_deref().map(|extras| &extras.map);
-                (self.container(), map.map_or(0, Map::source_end))
-            }
+        let (node, source) = match self.text_node.node {
+            Some(node) => (node, self.text_node.source),
+            None => (self.container(), self.content.extras().map.source_end()),
         };
         self.generated_break(node, source);
     }
@@ -648,18 +510,22 @@ impl ContentWriter<'_> {
         while !self.stack.is_empty() {
             self.pop();
         }
-        if self.block_trims {
+        if self.trim.ends {
             self.trim_end();
         }
         let end = self.content.items.next_id();
         if let Some(block) = self.content.nodes.get_mut(NodeId::BLOCK) {
             block.end = end;
         }
+        // The boxes are pushed in node order, and found by key.
+        if let Some(extras) = self.content.extras.as_deref_mut() {
+            extras.keyed_boxes.sort_from(0);
+        }
         #[cfg(debug_assertions)]
         self.debug_check();
         #[cfg(debug_assertions)]
         check(self.content);
-        self.report
+        self.room.report
     }
 
     /// Returns the content written, for the stages that read it once it is

@@ -3,8 +3,8 @@
 //! [`edge_room`] is the one function every reader charges an edge by. The
 //! scan's line-end costs live in `scan_ends.rs`.
 
-use super::BoundaryRoom;
 use super::InitialLetter;
+use super::scan::BoundaryRoom;
 use crate::data::Id;
 use crate::stages::analysis::{Analysis, ClusterId};
 use crate::stages::content::{BoxFacts, Content, ContentFlags, Item, ItemFlags, ItemId, ItemKind};

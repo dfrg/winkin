@@ -1,16 +1,13 @@
 //! The writer's `::first-letter` calls: arming it, splitting text at the
 //! letter, and writing the letter's box.
 
-use super::collapse::Event;
-use super::first_letter::FirstLetterScan;
 use super::memo::StyleKey;
-use super::{
-    ContainerKind, ContentFlags, ContentWriter, FirstLetter, InitialLetterUse, ItemFlags, ItemKind,
-    MathText, NodeFacts, NodeId, NodeKey, NodeKind, Open,
+use super::writer::{
+    ContainerKind, ContentWriter, FirstLetter, InitialLetterUse, MathText, NodeFacts,
 };
+use super::{ContentFlags, NodeId, NodeKey, NodeKind};
 use crate::style::{
-    BidiGroup, ComputedStyle, Direction, FirstLineVariant, InitialLetter, UnicodeBidi,
-    WhiteSpaceTrim,
+    BidiGroup, ComputedStyle, Direction, FirstLineVariant, UnicodeBidi, WhiteSpaceTrim,
 };
 
 impl ContentWriter<'_> {
@@ -30,94 +27,28 @@ impl ContentWriter<'_> {
         style: &ComputedStyle<'_>,
         first_line: Option<&ComputedStyle<'_>>,
     ) {
-        if matches!(self.math, MathText::Held(..)) {
+        if matches!(self.text_node.math, MathText::Held(..)) {
             self.end_text();
         }
         if !matches!(
-            self.first_letter,
+            self.letters.first_letter,
             FirstLetter::Unarmed | FirstLetter::Armed { .. }
         ) {
             return;
         }
         // The styles are keyed now, but lowered and noted in the flags only
         // once the box is written, so a first letter that never comes
-        // restyles nothing. Its `initial-letter` is kept, and settled when
-        // the box is written, once it is known whether it is the block's
-        // initial letter.
-        let letter = match style.line.initial_letter.is_set() {
-            true => InitialLetterUse::Kept,
-            false => InitialLetterUse::Unset,
-        };
-        let style = &letter.apply(style);
-        let own = self.key(style);
-        let first_line = self.first_line.then(|| match first_line {
-            Some(first_line) => self.key(&letter.apply(&style.pinned_first_line(first_line))),
-            None => own,
-        });
-        self.first_letter = FirstLetter::Armed {
+        // restyles nothing. Its `initial-letter` and `vertical-align` are
+        // kept as given, and settled when the box is written, once it is
+        // known whether it is the block's initial letter.
+        let (own, first_line) = self.key_styles(InitialLetterUse::Unset, style, first_line);
+        self.letters.first_letter = FirstLetter::Armed {
             key,
             style: own,
             first_line,
         };
-        if self.first_letter.is_math_auto() {
+        if self.letters.first_letter.is_math_auto() {
             self.content.flags.insert(ContentFlags::MATH_AUTO);
-        }
-    }
-
-    /// Writes text from the text node `key` while the first letter is still
-    /// to be found. Where the text holds the letter, it splits at the
-    /// letter's start and end, and the letter goes in its box.
-    pub(super) fn text_with_first_letter(&mut self, key: NodeKey, text: &str, single: bool) {
-        // Armed, or else after punctuation an earlier text ended with,
-        // whose box is already written.
-        let armed = match self.first_letter {
-            FirstLetter::Armed {
-                key,
-                style,
-                first_line,
-            } => Some((key, style, first_line)),
-            FirstLetter::Punctuation { .. } => None,
-            FirstLetter::Unarmed | FirstLetter::Done => {
-                self.plain_text(key, text, single);
-                return;
-            }
-        };
-        // The text is read as its own white space collapses: by its node's
-        // rules, or by those of the box it would be written in.
-        let holder = self
-            .text_node_keyed(key)
-            .unwrap_or_else(|| self.container());
-        let mode = self.text_facts(holder).collapse;
-        match (FirstLetterScan::new(text, mode, armed.is_none()), armed) {
-            (FirstLetterScan::Nothing, _) => self.plain_text(key, text, single),
-            (FirstLetterScan::Ends, _) => {
-                self.first_letter_ends();
-                self.plain_text(key, text, single);
-            }
-            // The punctuation before the letter came from an earlier text,
-            // and the box holds only that part, as Chrome's does.
-            (FirstLetterScan::Text { found, .. }, None) => {
-                if found {
-                    self.first_letter = FirstLetter::Done;
-                }
-                self.plain_text(key, text, single);
-            }
-            (FirstLetterScan::Text { start, end, found }, Some((letter, style, first_line))) => {
-                let (before, rest) = text.split_at(start.min(text.len()));
-                let (letter_text, after) = rest.split_at(end.saturating_sub(start).min(rest.len()));
-                if !before.is_empty() {
-                    self.plain_text(key, before, single);
-                }
-                let node =
-                    self.write_first_letter(letter, style, first_line, key, letter_text, single);
-                self.first_letter = match node {
-                    Some(node) if !found => FirstLetter::Punctuation { node },
-                    _ => FirstLetter::Done,
-                };
-                if !after.is_empty() {
-                    self.plain_text(key, after, single);
-                }
-            }
         }
     }
 
@@ -132,7 +63,7 @@ impl ContentWriter<'_> {
     /// The text node `text_key` is ended first, and what follows the box is
     /// a new node of it. Where the box does not fit, the text is written as
     /// `text_key`'s, and this returns `None`.
-    fn write_first_letter(
+    pub(super) fn write_first_letter(
         &mut self,
         key: NodeKey,
         style: StyleKey,
@@ -145,29 +76,33 @@ impl ContentWriter<'_> {
         // it was written before, in this call or earlier ones. Where the box
         // does not fit, the text goes on from there in a node of its own.
         let base = match self.text_node_keyed(text_key) {
-            Some(_) => self.source,
+            Some(_) => self.text_node.source,
             None => 0,
         };
         self.end_text();
-        self.continues = Some((text_key, base));
+        self.text_node.continues = Some((text_key, base));
         if !self.has_node_room() || !self.has_item_room(2) {
-            self.plain_text(text_key, text, single);
+            self.text_node_text(text_key, text, single);
             return None;
         }
         // Where it sets `initial-letter`, the box is the block's initial
-        // letter if it may be one. It may not after kept white space, or
-        // inside a box that is one; there the value is `normal`.
-        let initial_letter = style.line.initial_letter.is_set();
-        let kept = initial_letter && self.may_open_initial_letter();
-        self.initial_letter |= kept;
+        // letter where no text comes before it, after empty boxes too, as in
+        // Chrome. After kept white space outside it, or inside a box that is
+        // one already, the value is `normal`, and its `vertical-align`
+        // applies.
+        let first = self.content.text.is_empty() && !self.letters.initial_letter;
+        let letter = match style.line.initial_letter.is_set() {
+            false => InitialLetterUse::Unset,
+            true if first => InitialLetterUse::Kept,
+            true => InitialLetterUse::Normal,
+        };
+        self.letters.initial_letter |= letter == InitialLetterUse::Kept;
         // Its `unicode-bidi` is `normal` and its `direction` its parent's.
         // Blink's cascade drops both for the pseudo, so it opens no bidi
         // controls and has its edges and seams where its parent's would be.
         let parent = self.container();
         let used = |mut style: StyleKey, direction: Direction| {
-            if !kept {
-                style.line.initial_letter = InitialLetter::NONE;
-            }
+            letter.apply_key(&mut style);
             style.bidi = BidiGroup {
                 direction,
                 unicode_bidi: UnicodeBidi::Normal,
@@ -184,34 +119,27 @@ impl ContentWriter<'_> {
             NodeKind::FirstLetter,
             Some(around),
         );
-        self.collapser.step(Event::Open {
-            trim: WhiteSpaceTrim::NONE,
-        });
-        let Some(node) = self.push_node(NodeKind::FirstLetter, lowered, key) else {
-            self.plain_text(text_key, text, single);
+        let opened = self.push_container(
+            ContainerKind::Box,
+            NodeKind::FirstLetter,
+            key,
+            lowered,
+            WhiteSpaceTrim::NONE,
+            false,
+        );
+        let Some(node) = opened else {
+            self.text_node_text(text_key, text, single);
             return None;
         };
-        let item = self.push_item(ItemKind::Open, node, ItemFlags::NONE);
-        self.reserved += 1;
-        self.push_open(Open {
-            node: Some(node),
-            kind: ContainerKind::Box,
-            item: item.unwrap_or(self.content.items.next_id()),
-            trim: WhiteSpaceTrim::NONE,
-            container: node,
-            transforms: lowered.transforms,
-            outer: None,
-            anonymous: false,
-        });
         // The letter is the box's own text. In the offset map it is the
         // caller's text node's, which counts on after the box.
-        self.text_node = Some(node);
-        self.open_item = None;
-        self.source = base;
+        self.text_node.node = Some(node);
+        self.text_node.item = None;
+        self.text_node.source = base;
         self.content.record(|map| map.letter_from(text_key));
-        self.write_node_text(node, text, single);
+        self.transform_text(node, text, single);
         self.pop();
-        self.continues = Some((text_key, self.source));
+        self.text_node.continues = Some((text_key, self.text_node.source));
         Some(node)
     }
 
@@ -222,7 +150,7 @@ impl ContentWriter<'_> {
     /// plain. It takes the facts of a child that sets nothing in the box
     /// around it, as that punctuation would have.
     pub(super) fn first_letter_ends(&mut self) {
-        if let FirstLetter::Punctuation { node } = self.first_letter {
+        if let FirstLetter::Punctuation { node } = self.letters.first_letter {
             let parent = self.content.nodes.parent(node);
             // A child that sets nothing has its parent's text facts, since
             // every text property inherits. Its box keeps nothing of its own
@@ -245,6 +173,6 @@ impl ContentWriter<'_> {
                 block.initial_letter = None;
             }
         }
-        self.first_letter = FirstLetter::Done;
+        self.letters.first_letter = FirstLetter::Done;
     }
 }

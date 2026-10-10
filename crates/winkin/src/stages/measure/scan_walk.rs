@@ -7,9 +7,10 @@
 use super::autospace::{SeamContext, Seams};
 use super::edges::logical_edges;
 use super::metrics::normal_extent;
-use super::scan_ruby::TextBeside;
+use super::scan::{BoundaryRoom, EdgeAmounts, Scan, ScanWalk};
+use super::scan_overhang::TextBeside;
 use super::spacing::LetterWordSpacing;
-use super::{BoundaryRoom, EdgeAmounts, Extent, ItemExtents, Scan, ScanWalk, autospace};
+use super::{Extent, ItemExtents, autospace};
 use crate::data::Id;
 use crate::stages::analysis::{ClusterClass, ClusterId, RunOrientation, ScriptRun};
 use crate::stages::content::{
@@ -27,8 +28,8 @@ impl<'a> ScanWalk<'a> {
     /// No boundary is crossed yet, so it holds no segment, and the block's
     /// text facts are in hand.
     pub(super) fn new(scan: &Scan<'a>) -> Self {
-        let content = scan.content;
-        let mut segments = Segments::from_text(scan.analysis, scan.shaped);
+        let content = scan.input.content;
+        let mut segments = Segments::from_text(scan.input.analysis, scan.shaped);
         let ahead = segments.next();
         let text = content.nodes.text_facts(NodeId::BLOCK, scan.variant);
         Self {
@@ -36,6 +37,8 @@ impl<'a> ScanWalk<'a> {
             ahead,
             segment: None,
             item: None,
+            paragraph: None,
+            has_seams: false,
             combined: false,
             seam: None,
             until: ClusterId::new(0),
@@ -104,7 +107,7 @@ impl<'a> ScanWalk<'a> {
         let OverhangNeighbour::Text(item) = self.leaf else {
             return None;
         };
-        let first = scan.analysis.item_clusters.start(item);
+        let first = scan.input.analysis.item_clusters.start(item);
         let start = prefix.get(first.get()).copied().unwrap_or(sum);
         Some(TextBeside {
             item,
@@ -151,10 +154,10 @@ impl<'a> ScanWalk<'a> {
         at: ClusterId,
     ) -> InlineLayoutUnit {
         let spacing = self.spacing;
-        if spacing.is_none() || self.combined {
+        if spacing.is_none() || self.combined || !spacing.may_space(class) {
             return InlineLayoutUnit::ZERO;
         }
-        let text = scan.analysis.clusters.text(scan.source, at);
+        let text = scan.input.analysis.clusters.text(scan.source, at);
         let continuation = scan.shaped.glyphs.word(at).is_continuation();
         // The text's first cluster is the one at its offset 0.
         let first = at == ClusterId::new(0);
@@ -169,13 +172,13 @@ impl<'a> ScanWalk<'a> {
     /// items between are checked for one that ends the seam. Each side is
     /// read at its script run's level.
     pub(super) fn seam_after(&self, scan: &Scan<'a>, seams: &mut Seams, at: ClusterId) -> TextUnit {
-        let content = scan.content;
+        let content = scan.input.content;
         let none = TextUnit::from_raw(0);
         let Some(segment) = &self.segment else {
             return none;
         };
         let after = ClusterId::new(at.get() + 1);
-        let text_end = scan.analysis.clusters.end_id();
+        let text_end = scan.input.analysis.clusters.end_id();
         // Find the item and script run holding the cluster after, and
         // whether an item with no text at the boundary ends the seam. Where
         // the segment goes on past the cluster, there is nothing to look at.
@@ -209,17 +212,17 @@ impl<'a> ScanWalk<'a> {
             };
         }
         if self.combined || next_combined {
-            seams.after(content, scan.fonts, None, None, true);
+            seams.after(content, scan.input.fonts, None, None, true);
             return none;
         }
-        let clusters = &scan.analysis.clusters;
+        let clusters = &scan.input.analysis.clusters;
         let here = seams.side(self.seam, at, clusters.text(scan.source, at), false);
         let there = if after < text_end {
             seams.side(next, after, clusters.text(scan.source, after), true)
         } else {
             None
         };
-        seams.after(content, scan.fonts, here, there, ended)
+        seams.after(content, scan.input.fonts, here, there, ended)
     }
 
     /// Crosses boundary `at`: takes the items the walk yields there, and the
@@ -228,6 +231,7 @@ impl<'a> ScanWalk<'a> {
     /// It pushes each item's extent to `extents` where given; a look-ahead
     /// passes none. Returns what the items at the boundary take along the
     /// line, and the edges of the cloned boxes open across a break there.
+    /// Also returns whether it entered a segment starting at `at`.
     ///
     /// Most boundaries in prose fall inside a segment and have no item. One
     /// comparison passes them. Walking items at every boundary costs 7% of
@@ -238,7 +242,7 @@ impl<'a> ScanWalk<'a> {
         scan: &Scan<'a>,
         at: ClusterId,
         extents: Option<&mut ItemExtents>,
-    ) -> BoundaryRoom {
+    ) -> (BoundaryRoom, bool) {
         if let Some((first, leaf)) = self.entered
             && first < at
         {
@@ -246,10 +250,11 @@ impl<'a> ScanWalk<'a> {
             self.entered = None;
         }
         if at < self.until {
-            return BoundaryRoom {
+            let room = BoundaryRoom {
                 across: self.cloned,
                 ..BoundaryRoom::default()
             };
+            return (room, false);
         }
         self.cross_items(scan, at, extents)
     }
@@ -263,9 +268,9 @@ impl<'a> ScanWalk<'a> {
         scan: &Scan<'a>,
         at: ClusterId,
         mut extents: Option<&mut ItemExtents>,
-    ) -> BoundaryRoom {
-        let content = scan.content;
-        let mut room = BoundaryRoom::from_boundary(scan.analysis, at);
+    ) -> (BoundaryRoom, bool) {
+        let content = scan.input.content;
+        let mut room = BoundaryRoom::from_boundary(scan.input.analysis, at);
         let mut across = None;
         while let Some(Step::Item { at: sits, id }) = self.ahead
             && sits == at
@@ -306,10 +311,10 @@ impl<'a> ScanWalk<'a> {
                 // A container with no annotation opens no column.
                 if item.kind == ItemKind::RubyOpen
                     && !annotation
-                    && room.ruby.is_none()
-                    && content.annotation_follows(ItemId::new(id.get() + 1))
+                    && room.ruby_open.is_none()
+                    && item.flags.contains(ItemFlags::ANNOTATION_FOLLOWS)
                 {
-                    room.ruby = Some(id);
+                    room.ruby_open = Some(id);
                 }
             }
             if scan.has_edges {
@@ -331,9 +336,10 @@ impl<'a> ScanWalk<'a> {
                 self.clone_edges(scan, item);
             }
         }
-        match self.ahead {
+        let entered = match self.ahead {
             Some(Step::Segment(segment)) if segment.start == at => {
                 self.enter(scan, segment, extents);
+                true
             }
             // Nothing holds the cluster after: this is the text's end, or a
             // missing row ended the walk, which is a bug in an earlier
@@ -341,23 +347,27 @@ impl<'a> ScanWalk<'a> {
             _ => {
                 self.segment = None;
                 self.item = None;
+                self.paragraph = None;
+                self.has_seams = false;
                 self.combined = false;
                 self.seam = None;
                 self.until = ClusterId::new(at.get() + 1);
+                false
             }
-        }
+        };
         room.across = across.unwrap_or(self.cloned);
-        room
+        (room, entered)
     }
 
     /// Takes `segment` from the walk. It starts at the boundary the scan
     /// crosses.
     ///
-    /// Where the segment starts a new item, it enters the item: its extent,
-    /// its text's facts, its spacing and, for an atomic inline, the width of
-    /// its U+FFFC. Where the segment continues the current item, because a
-    /// shaping run or a paragraph ended inside it, it widens the item's
-    /// extent by the segment's font.
+    /// It reads the segment's paragraph, and whether the scan looks for
+    /// seams there. Where the segment starts a new item, it enters the item:
+    /// its extent, its text's facts, its spacing and, for an atomic inline,
+    /// the width of its U+FFFC. Where the segment continues the current
+    /// item, because a shaping run or a paragraph ended inside it, it widens
+    /// the item's extent by the segment's font.
     fn enter(&mut self, scan: &Scan<'a>, segment: Segment, extents: Option<&mut ItemExtents>) {
         self.ahead = self.segments.next();
         self.until = segment.end;
@@ -367,13 +377,17 @@ impl<'a> ScanWalk<'a> {
             .as_ref()
             .is_some_and(|before| before.item == id);
         self.segment = Some(segment);
+        let paragraphs = &scan.input.analysis.paragraphs;
+        self.paragraph = (paragraphs.get(segment.paragraph)).map(|para| (segment.paragraph, para));
+        self.has_seams = self.paragraph.is_some_and(|(_, para)| scan.has_seams(para));
         self.seam = if scan.autospace.any() {
-            scan.content
+            scan.input
+                .content
                 .items
                 .get(id)
                 .zip(scan.script(&segment))
                 .and_then(|(item, run)| {
-                    let text = scan.content.nodes.text_facts(item.node, scan.variant);
+                    let text = scan.input.content.nodes.text_facts(item.node, scan.variant);
                     SeamContext::new(id, item, text, run.level)
                 })
         } else {
@@ -394,7 +408,7 @@ impl<'a> ScanWalk<'a> {
             }
             return;
         }
-        let content = scan.content;
+        let content = scan.input.content;
         let Some(item) = content.items.get(id) else {
             self.item = None;
             return;
@@ -469,13 +483,14 @@ impl<'a> ScanWalk<'a> {
     /// A box that clones adds both its edges where it opens, and removes
     /// them where it closes.
     fn clone_edges(&mut self, scan: &Scan<'a>, item: &Item) {
-        let nodes = &scan.content.nodes;
+        let nodes = &scan.input.content.nodes;
         if item.flags.contains(ItemFlags::ANNOTATION)
             || nodes.kind(item.node) != Some(NodeKind::Box)
         {
             return;
         }
         let facts = scan
+            .input
             .content
             .facts
             .box_facts(nodes.box_facts(item.node, scan.variant));
@@ -503,7 +518,7 @@ impl<'a> ScanWalk<'a> {
     /// Returns the atomic inline whose item is `id`, moving the cursor to
     /// it.
     fn atomic_row(&mut self, scan: &Scan<'a>, id: ItemId) -> Option<Atomic> {
-        let atomics = scan.content.atomics();
+        let atomics = scan.input.content.atomics();
         while atomics
             .get(self.atomics)
             .is_some_and(|atomic| atomic.item < id)
@@ -522,7 +537,7 @@ impl<'a> ScanWalk<'a> {
     /// Returns zero for an anchor with no float, which is a bug in an
     /// earlier stage.
     fn float_width(&mut self, scan: &Scan<'a>, id: ItemId) -> InlineLayoutUnit {
-        let floats = scan.content.floats();
+        let floats = scan.input.content.floats();
         while floats.get(self.floats).is_some_and(|float| float.item < id) {
             self.floats = FloatId::new(self.floats.get() + 1);
         }
@@ -561,11 +576,11 @@ impl<'a> ScanWalk<'a> {
         // An initial letter stands on no line: what it holds takes no room
         // in the line it opens (CSS Inline 3, "initial-letter").
         if let Some(letter) = &scan.letter
-            && scan.content.nodes.contains(letter.node, item.node)
+            && scan.input.content.nodes.contains(letter.node, item.node)
         {
             return none;
         }
-        let text = || scan.content.nodes.text_facts(item.node, scan.variant);
+        let text = || scan.input.content.nodes.text_facts(item.node, scan.variant);
         match item.kind {
             ItemKind::Text if !holds => none,
             ItemKind::Text => {
@@ -591,7 +606,8 @@ impl<'a> Scan<'a> {
     /// It widens the extent of text under `line-height: normal`. It is
     /// [`Extent::NONE`] where `font` names no used font.
     fn normal(&self, font: UsedFontId) -> Extent {
-        self.fonts
+        self.input
+            .fonts
             .used
             .get(font)
             .map_or(Extent::NONE, |used| normal_extent(&used.metrics))

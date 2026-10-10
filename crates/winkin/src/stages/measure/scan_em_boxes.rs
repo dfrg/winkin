@@ -1,7 +1,8 @@
 //! Each text item's em box, recorded at segment starts beside the item
 //! extents.
 
-use super::{Extent, MeasuredText, Scan, ruby};
+use super::scan::Scan;
+use super::{Extent, MeasuredText, ruby};
 use crate::data::IdRange;
 use crate::stages::Segment;
 use crate::stages::content::{ContentFlags, ItemFlags, ItemId, ItemKind};
@@ -26,7 +27,7 @@ impl ItemEmScan {
     /// Starts the em boxes in `out`, or returns `None` where the content has
     /// neither ruby nor emphasis marks.
     pub(super) fn new(scan: &Scan<'_>, out: &mut MeasuredText) -> Option<Self> {
-        let flags = scan.content.flags;
+        let flags = scan.input.content.flags;
         if !flags.contains(ContentFlags::RUBY) && !flags.contains(ContentFlags::EMPHASIS) {
             return None;
         }
@@ -58,7 +59,7 @@ impl ItemEmScan {
             return;
         }
         self.font = font;
-        let Some(used) = font.and_then(|font| scan.fonts.used.get(font)) else {
+        let Some(used) = font.and_then(|font| scan.input.fonts.used.get(font)) else {
             self.uniform = false;
             return;
         };
@@ -78,14 +79,14 @@ impl ItemEmScan {
         let Some(id) = self.item.take() else {
             return;
         };
-        let em = match scan.content.items.get(id) {
+        let em = match scan.input.content.items.get(id) {
             Some(item)
                 if item.kind == ItemKind::Text
                     && !item.flags.contains(ItemFlags::ANNOTATION)
                     && self.uniform
                     && !self.em.is_none() =>
             {
-                let text = scan.content.nodes.text_facts(item.node, scan.variant);
+                let text = scan.input.content.nodes.text_facts(item.node, scan.variant);
                 scan.input.primary(text).map(|cap| {
                     Extent::new(
                         self.em.ascent().min(cap.ascent),
@@ -105,28 +106,30 @@ impl ItemEmScan {
         // describes the whole item, including fonts past that paragraph.
         let partial = self
             .item
-            .filter(|&id| scan.analysis.item_clusters.range(id).end > scan.end);
+            .filter(|&id| scan.input.analysis.item_clusters.range(id).end > scan.end);
         if partial.is_none() {
             self.flush(scan, out);
         }
         let first = out.rare_mut().em_boxes.items.next_id();
-        if first >= scan.content.items.next_id()
-            || scan.analysis.item_clusters.range(first).start > scan.end
+        if first >= scan.input.content.items.next_id()
+            || scan.input.analysis.item_clusters.range(first).start > scan.end
         {
             return;
         }
-        let text_end = scan.analysis.clusters.end_id();
-        let runs = scan.fonts.runs(scan.variant);
+        let text_end = scan.input.analysis.clusters.end_id();
+        let runs = scan.input.fonts.runs(scan.variant);
         // Seek once where the unshaped tail starts, then walk the fonts in
         // order.
-        let mut run =
-            runs.cursor_containing(scan.analysis.item_clusters.range(first).start, text_end);
-        for id in (first..scan.content.items.next_id()).ids() {
-            let range = scan.analysis.item_clusters.range(id);
+        let mut run = runs.cursor_containing(
+            scan.input.analysis.item_clusters.range(first).start,
+            text_end,
+        );
+        for id in (first..scan.input.content.items.next_id()).ids() {
+            let range = scan.input.analysis.item_clusters.range(id);
             if range.start > scan.end {
                 break;
             }
-            let Some(item) = scan.content.items.get(id) else {
+            let Some(item) = scan.input.content.items.get(id) else {
                 break;
             };
             let text = item.kind == ItemKind::Text
@@ -134,10 +137,10 @@ impl ItemEmScan {
                 && !item.flags.contains(ItemFlags::ANNOTATION);
             let em = if text && let Some(run) = &mut run {
                 runs.step_to(run, range.start, text_end);
-                let text = scan.content.nodes.text_facts(item.node, scan.variant);
-                let request = scan.content.facts.text_request(text);
+                let text = scan.input.content.nodes.text_facts(item.node, scan.variant);
+                let request = scan.input.content.facts.text_request(text);
                 let (em, uniform) =
-                    ruby::em_box(scan.fonts, request, range, scan.variant, run.id());
+                    ruby::em_box(scan.input.fonts, request, range, scan.variant, run.id());
                 uniform.then_some(em)
             } else {
                 None

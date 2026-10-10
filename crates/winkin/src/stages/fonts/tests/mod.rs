@@ -34,7 +34,7 @@ use fontwich::{FallbackKey, FallbackOverride, Family, GenericBucket};
 
 use fontwich::{Charset, Collection, FaceDescriptors, LayerBuilder, Role, Script};
 
-use super::{coverage, select, *};
+use super::{coverage, select_kept, *};
 
 use crate::stages::analysis::{ClusterClass, ParagraphFlags};
 
@@ -61,6 +61,7 @@ use crate::tests::{
 
 use crate::unicode;
 
+use crate::layout::primary_id;
 use crate::{BoxSize, BuildOptions, ComputedBlockStyle, Context, Layout, LayoutBuilder, NodeKey};
 
 // Fonts --------------------------------------------------------------------
@@ -216,7 +217,7 @@ fn fixture_with(fonts: &[TestFont]) -> Fixture {
     Fixture::new(
         fonts,
         han_fallback("Test Han Acute"),
-        StageCheck::Built(|_, layout| check(layout)),
+        StageCheck::Built(check),
     )
 }
 
@@ -224,11 +225,7 @@ fn fixture_with(fonts: &[TestFont]) -> Fixture {
 ///
 /// It runs [`check`] on each build.
 fn fixture_over(collection: Collection, families: &[String]) -> Fixture {
-    Fixture::from_collection(
-        collection,
-        families,
-        StageCheck::Built(|_, layout| check(layout)),
-    )
+    Fixture::from_collection(collection, families, StageCheck::Built(check))
 }
 
 impl Fixture {
@@ -255,7 +252,7 @@ impl Fixture {
     /// The primary font of the block's own text.
     fn primary(&self, layout: &Layout) -> UsedFontId {
         let block = layout.content().nodes.text_facts(NodeId::BLOCK, Standard);
-        layout.primary_id(block).expect("a font request")
+        primary_id(layout, block).expect("a font request")
     }
 }
 
@@ -368,7 +365,7 @@ fn check(layout: &Layout) {
     let fonts = layout.fonts();
     let used = fonts.used.len();
     for text in layout.content().facts.text_ids() {
-        let primary = layout.primary_id(text).expect("all text has fonts");
+        let primary = primary_id(layout, text).expect("all text has fonts");
         assert!(primary.get() < used, "a primary the layout has");
     }
     let runs = ordered_runs(layout);

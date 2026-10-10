@@ -197,7 +197,7 @@ fn mark_offset(
     // every part's. Otherwise its font runs, sought.
     let kept = item
         .text_item()
-        .and_then(|at| layout.measured().text(variant).em_boxes().get(at));
+        .and_then(|at| line.stages().measured().em_boxes().get(at));
     let em = kept.unwrap_or_else(|| {
         let clusters = item.clusters();
         fonts
@@ -224,7 +224,7 @@ fn mark_offset(
 /// baseline, less its em box, where the column has one there.
 fn annotation_reach(line: Line<'_>, item: &FragmentItem, side: RubySide) -> Option<LayoutUnit> {
     let layout = line.layout();
-    let rubies = layout.measured().text(line.variant()).ruby_columns();
+    let rubies = line.stages().measured().ruby_columns();
     if rubies.is_empty() {
         return None;
     }

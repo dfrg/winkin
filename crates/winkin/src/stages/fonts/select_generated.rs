@@ -7,13 +7,11 @@ use fontwich::{FaceId, Presentation};
 use icu_segmenter::GraphemeClusterSegmenter;
 use parlance::{Language, Script};
 
-use super::context::{CacheChange, FontContext};
+use super::context::CacheChange;
 use super::lists::{CandidateId, CandidateList, MatchRequest, NamedListId};
-use super::select::{
-    CandidateFit, GraphemeNeeds, Input, ListOutcome, MAX_STOPS, ResolvedRequest, RunScratch,
-    choose, resolve, second_pass,
-};
-use super::used::UsedFontInterner;
+use super::select::{Input, MAX_STOPS, Selecting};
+use super::select_choice::{ResolvedRequest, choose};
+use super::select_pick::{CandidateFit, GraphemeNeeds, ListOutcome, resolve, second_pass};
 use super::{Generated, GeneratedFonts, GeneratedString, UsedFontId, coverage, features};
 use crate::stages::analysis::ClusterClass;
 use crate::stages::content::{FontRequest, FontRequestId, HyphenStringId, TextFactsId};
@@ -34,21 +32,17 @@ use crate::{unicode, work};
 /// Otherwise each grapheme ([`generated_graphemes`]) is set in the primary if it
 /// covers it. If not, it takes the first candidate the text's walk would try
 /// that covers it, then the best partial cover, then the primary. Pending
-/// faces a grapheme wants go in `wanted`.
+/// faces a grapheme wants go in the wanted faces.
 ///
 /// Blink shapes a hyphen and an ellipsis in the style's `Font`, whose
 /// fallback covers what the primary lacks (`HyphenResult::Shape`,
 /// `LineTruncator`). This does the same through the text's candidate lists,
 /// caches and used-font choices, applying cache changes as the walk does.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn select_generated(
     input: &Input<'_>,
     text: TextFactsId,
     kinds: impl Iterator<Item = Generated>,
-    cx: &mut FontContext,
-    scratch: &mut RunScratch,
-    used: &mut UsedFontInterner<'_>,
-    wanted: &mut Vec<FaceId>,
+    sel: &mut Selecting<'_>,
     out: &mut GeneratedFonts,
 ) {
     let content = input.stage.content;
@@ -62,9 +56,9 @@ pub(super) fn select_generated(
         .copied()
         .unwrap_or_default();
     let language = input
-        .default_language()
+        .default_language
         .fonts_language(lists.languages.get(request.language));
-    let primary_font = cx.primary_font(list, request, language);
+    let primary_font = sel.cx.primary_font(list, request, language);
     let font = primary_font
         .as_ref()
         .and_then(|(family, index)| family.fonts().get(*index));
@@ -88,9 +82,7 @@ pub(super) fn select_generated(
                     && coverage::has_sequences(font, grapheme)
             });
             let font = match &generated {
-                Some(generated) if !covered => {
-                    generated.fallback(input, grapheme, cx, scratch, used, wanted)
-                }
+                Some(generated) if !covered => generated.fallback(input, grapheme, sel),
                 _ => primary,
             };
             out.push_run(start, end, font);
@@ -143,19 +135,11 @@ impl<'a> GeneratedRequest<'a> {
 
     /// The used font `grapheme`, which the primary font does not cover, is set
     /// in: the first candidate covering it, as the text's walk takes one.
-    fn fallback(
-        &self,
-        input: &Input<'_>,
-        grapheme: &str,
-        cx: &mut FontContext,
-        scratch: &mut RunScratch,
-        used: &mut UsedFontInterner<'_>,
-        wanted: &mut Vec<FaceId>,
-    ) -> UsedFontId {
+    fn fallback(&self, input: &Input<'_>, grapheme: &str, sel: &mut Selecting<'_>) -> UsedFontId {
         for _ in 0..MAX_STOPS {
-            match self.pick(input, grapheme, cx, scratch, used, wanted) {
+            match self.pick(input, grapheme, sel) {
                 Ok(font) => return font.unwrap_or(self.resolved.resolution.primary),
-                Err(change) => cx.apply(change),
+                Err(change) => sel.cx.apply(change),
             }
         }
         debug_assert!(
@@ -172,13 +156,16 @@ impl<'a> GeneratedRequest<'a> {
         &self,
         input: &Input<'_>,
         grapheme: &str,
-        cx: &mut FontContext,
-        scratch: &mut RunScratch,
-        used: &mut UsedFontInterner<'_>,
-        wanted: &mut Vec<FaceId>,
+        sel: &mut Selecting<'_>,
     ) -> Result<Option<UsedFontId>, CacheChange> {
+        let Selecting {
+            cx,
+            scratch,
+            used,
+            wanted,
+        } = sel;
         let Some((text, emoji)) =
-            cx.segment_lists(self.list, self.script, self.language, self.matching)
+            cx.span_lists(self.list, self.script, self.language, self.matching)
         else {
             return Ok(None);
         };
@@ -250,7 +237,7 @@ fn pick_grapheme(
             CandidateFit::CoversBase => {
                 base.get_or_insert(at);
             }
-            CandidateFit::Misses(_) | CandidateFit::Passed => {}
+            CandidateFit::Misses(_) | CandidateFit::Pending(_) | CandidateFit::Passed => {}
         }
     }
     second_pass(list, base)

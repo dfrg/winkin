@@ -13,23 +13,23 @@ use crate::work;
 
 use super::{MeasureInput, ShapedGeneratedId};
 
-/// The shaped pieces of one generated text, one per used font, from the left
+/// The shaped items of one generated text, one per used font, from the left
 /// as drawn.
 ///
-/// The pieces live in [`GeneratedTexts`]' table. Nearly always there is one.
+/// The items live in [`GeneratedTexts`]' table. Nearly always there is one.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub(crate) struct GeneratedPieces {
+pub(crate) struct GeneratedItems {
     start: ShapedGeneratedId,
     end: ShapedGeneratedId,
 }
 
-impl GeneratedPieces {
-    /// Its pieces, from the left.
+impl GeneratedItems {
+    /// Its items, from the left.
     pub(crate) fn ids(self) -> impl Iterator<Item = ShapedGeneratedId> {
         (self.start..self.end).ids()
     }
 
-    /// How many pieces it has, each an item where it is drawn.
+    /// How many items it has, each drawn as a fragment item.
     pub(crate) fn count(self) -> usize {
         self.end.get().saturating_sub(self.start.get())
     }
@@ -39,8 +39,8 @@ impl GeneratedPieces {
 /// need them.
 ///
 /// An ellipsis is shaped once per direction its lines read in. The texts
-/// sort by style, then kind, then direction, with one piece per font from
-/// the left as drawn. All pieces' glyphs share one table of sidecar glyphs,
+/// sort by style, then kind, then direction, with one item per font from
+/// the left as drawn. All items' glyphs share one table of sidecar glyphs,
 /// so a rebuild allocates nothing.
 ///
 /// The first line's styles have their own text facts rows, so its hyphens
@@ -156,7 +156,7 @@ impl GeneratedTexts {
 
     /// The hyphen of text with the text facts `text`, by halving, or `None`
     /// where it needs none.
-    pub(crate) fn hyphen(&self, text: TextFactsId) -> Option<GeneratedPieces> {
+    pub(crate) fn hyphen(&self, text: TextFactsId) -> Option<GeneratedItems> {
         self.find(text, 0)
     }
 
@@ -165,26 +165,26 @@ impl GeneratedTexts {
     /// `rtl` picks the one a right-to-left line draws; otherwise it is the
     /// left-to-right one. Returns `None` where the text needs none, or no
     /// paragraph reads that way.
-    pub(crate) fn ellipsis(&self, text: TextFactsId, rtl: bool) -> Option<GeneratedPieces> {
+    pub(crate) fn ellipsis(&self, text: TextFactsId, rtl: bool) -> Option<GeneratedItems> {
         self.find(text, 1 + u8::from(rtl))
     }
 
-    /// The pieces of the generated text of `text` at `rank` in
+    /// The items of the generated text of `text` at `rank` in
     /// [`ShapedGenerated::rank`]'s order, by halving.
-    fn find(&self, text: TextFactsId, rank: u8) -> Option<GeneratedPieces> {
+    fn find(&self, text: TextFactsId, rank: u8) -> Option<GeneratedItems> {
         work::seek();
         let texts = self.texts.as_slice();
         let want = (text, rank);
         let start = texts.partition_point(|piece| (piece.text, piece.rank()) < want);
         let end = texts.partition_point(|piece| (piece.text, piece.rank()) <= want);
-        (start < end).then_some(GeneratedPieces {
+        (start < end).then_some(GeneratedItems {
             start: ShapedGeneratedId::try_new(start)?,
             end: ShapedGeneratedId::try_new(end)?,
         })
     }
 
-    /// How far `text` reaches along a line, exactly: its pieces' advances.
-    pub(crate) fn advance(&self, text: GeneratedPieces) -> InlineLayoutUnit {
+    /// How far `text` reaches along a line, exactly: its items' advances.
+    pub(crate) fn advance(&self, text: GeneratedItems) -> InlineLayoutUnit {
         text.ids()
             .filter_map(|id| self.texts.get(id))
             .fold(InlineLayoutUnit::ZERO, |sum, piece| sum + piece.advance)
@@ -194,7 +194,7 @@ impl GeneratedTexts {
     /// hyphen's and an ellipsis's width (`ShapeResult::SnappedWidth`, over
     /// every run of the result): what a line ending in it pays, and what an
     /// ellipsis needs room for.
-    pub(crate) fn snapped(&self, text: GeneratedPieces) -> LayoutUnit {
+    pub(crate) fn snapped(&self, text: GeneratedItems) -> LayoutUnit {
         self.advance(text)
             .ceil_to_grid()
             .to_layout()

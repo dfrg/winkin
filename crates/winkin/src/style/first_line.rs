@@ -109,15 +109,6 @@ impl<T: FirstLineState> FirstLine<T> {
         self.first_line.get_or_insert_with(Box::default)
     }
 
-    /// Returns both tables, for a stage writing the first line's from the text's.
-    ///
-    /// It makes the first line's table as
-    /// [`first_line_mut`](Self::first_line_mut) does.
-    pub(crate) fn both_mut(&mut self) -> (&mut T, &mut T) {
-        let first_line = self.first_line.get_or_insert_with(Box::default);
-        (&mut self.text, first_line)
-    }
-
     /// Returns the first line's table if a build made one, empty or not.
     ///
     /// It makes none. A stage uses it to hand its buffers round.
@@ -186,9 +177,7 @@ mod tests {
         assert!(!both.has_first_line(), "cleared");
         assert!(both.kept_first_line_mut().is_some(), "kept");
         assert_eq!(both.first_line_heap_bytes(), made, "with its capacity");
-        let (text, first_line) = both.both_mut();
-        text.0.push(3);
-        first_line.0.push(4);
+        both.first_line_mut().0.push(4);
         assert_eq!(
             both.first_line().map(|first| first.0.as_slice()),
             Some(&[4][..])

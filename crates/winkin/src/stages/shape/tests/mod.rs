@@ -107,8 +107,8 @@ fn fixture() -> Fixture {
 
 impl Fixture {
     /// Each cluster's advance as shaping hands it on (see [`advances`]).
-    fn advances(&mut self, layout: &Layout) -> Vec<i32> {
-        advances(&mut self.cx, layout)
+    fn advances(&self, layout: &Layout) -> Vec<i32> {
+        advances(layout)
     }
 
     /// Shapes `range` of `layout`'s run `run` again, as the breaker will,
@@ -163,12 +163,10 @@ struct Piece {
 }
 
 /// Each cluster's advance along the line as the stage hands it on, in 1/65536
-/// px, which a test's clusters fit an `i32` in. The measure stage has turned
-/// the layout's own into its prefix, so this shapes the text again, with
-/// `cx`, through the stage's own function into tables of its own.
-fn advances(cx: &mut Context, layout: &Layout) -> Vec<i32> {
+/// px, which a test's clusters fit an `i32` in.
+fn advances(layout: &Layout) -> Vec<i32> {
     layout
-        .shaped_advances(cx)
+        .shaped_advances()
         .iter()
         .map(|advance| i32::try_from(advance.raw()).expect("a test's cluster fits 16.16"))
         .collect()
@@ -226,11 +224,11 @@ fn ids(layout: &Layout) -> Vec<Vec<u32>> {
 /// - The flags say what is there.
 /// - There is no combined text and no first line's table, since the content
 ///   checked here never asks for them.
-fn check(cx: &mut Context, layout: &Layout) {
+fn check(layout: &Layout) {
     let shaped = layout.shaped().text(FirstLineVariant::Standard);
     let clusters = &layout.analysis().clusters;
     let count = clusters.len();
-    let advances = advances(cx, layout);
+    let advances = advances(layout);
     assert_eq!(shaped.glyphs.len(), count, "a word per cluster");
     assert_eq!(advances.len(), count, "an advance per cluster");
     let runs: Vec<(&ShapedRun, Range<ClusterId>)> = shaped

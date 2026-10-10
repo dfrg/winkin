@@ -34,19 +34,55 @@
 //!   is one entry that is not aligned.
 
 use alloc::string::String;
+use alloc::vec::Vec;
 use core::cell::Cell;
 use core::ops::Range;
-use core::str::CharIndices;
 
-use super::transform::Transforms;
-use super::{FirstLineSource, MapEntry};
-use crate::data::TextOffset;
+use super::transform::{Transforms, align_counts};
+use crate::data::{TextOffset, heap_bytes};
 use crate::work;
+
+/// The first paragraph as its first line draws it, where some node's
+/// `::first-line` transform differs from its own.
+///
+/// The first-line variant selects fonts for this text and shapes it. It is
+/// empty unless the first line transforms some text its own way.
+#[derive(Default)]
+pub(super) struct FirstLineSource {
+    /// The text, from the content's start through its first paragraph.
+    pub(super) text: String,
+    /// Where the content's offsets are in `text`, one entry a piece, sorted.
+    pub(super) map: Vec<MapEntry>,
+}
+
+heap_bytes! {
+    FirstLineSource { text, map }
+}
+
+/// One entry of [`FirstLineSource`]'s map, for a piece of text. 12 bytes.
+///
+/// It records where the piece starts in the content's text and in the first
+/// line's. It also records whether the two match byte for byte through it,
+/// or map only as wholes.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub(super) struct MapEntry {
+    content: TextOffset,
+    first_line: TextOffset,
+    aligned: bool,
+}
 
 /// How many entries a cursor steps back one at a time before it halves.
 const BACK_STEPS: usize = 8;
 
 impl FirstLineSource {
+    /// No text, allocating nothing.
+    pub(super) const fn new() -> Self {
+        Self {
+            text: String::new(),
+            map: Vec::new(),
+        }
+    }
+
     /// Empties it for a new build, keeping the allocations.
     pub(super) fn clear(&mut self) {
         self.text.clear();
@@ -220,41 +256,19 @@ impl FirstLineSource {
         let Self { text, map } = self;
         let mark = map.len();
         let first = text.get(from.get()..).unwrap_or_default();
-        let mut ours = content.char_indices();
-        let mut theirs = first.char_indices();
-        // Where each has got to, in bytes from where it started.
-        let (mut here, mut there) = (0, 0);
-        let mut whole = true;
-        // Takes `count` characters of `chars`, moving `to` past them.
-        let take = |chars: &mut CharIndices<'_>, count: usize, to: &mut usize| {
-            for _ in 0..count {
-                let Some((at, ch)) = chars.next() else {
-                    return false;
-                };
-                *to = at + ch.len_utf8();
-            }
-            true
-        };
-        counts(&mut |_, ours_count, theirs_count| {
+        let whole = align_counts(content, first, counts, |made| {
             work::step();
-            if !whole {
-                return;
-            }
-            let (was_here, was_there) = (here, there);
-            whole = take(&mut ours, ours_count, &mut here)
-                && take(&mut theirs, theirs_count, &mut there);
-            let aligned =
-                ours_count == 1 && theirs_count == 1 && here - was_here == there - was_there;
+            let aligned = made.is_aligned();
             let open_aligned = map.last().is_none_or(|last| last.aligned);
             if !(aligned && open_aligned) {
                 map.push(MapEntry {
-                    content: TextOffset::new(at.get() + was_here),
-                    first_line: TextOffset::new(from.get() + was_there),
+                    content: TextOffset::new(at.get() + made.ours.start.get()),
+                    first_line: TextOffset::new(from.get() + made.theirs.start.get()),
                     aligned,
                 });
             }
         });
-        if !whole || ours.next().is_some() || theirs.next().is_some() {
+        if !whole {
             map.truncate(mark);
             map.push(MapEntry {
                 content: at,

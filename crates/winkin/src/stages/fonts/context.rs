@@ -73,7 +73,7 @@ pub(super) enum CacheChange {
     Coverage {
         list: CandidateListId,
         candidate: CandidateId,
-        /// The OpenType script the segment's fonts are asked under.
+        /// The OpenType script the span's fonts are asked under.
         script: [u8; 4],
         /// `sups` or `subs`.
         feature: [u8; 4],
@@ -264,13 +264,13 @@ impl FontContext {
         self.candidates.first_available(id)
     }
 
-    /// Finds or makes the candidate lists a segment's clusters try.
+    /// Finds or makes the candidate lists a span's clusters try.
     ///
     /// Both come from family list `list`, for text of `script` whose fonts
     /// are chosen in `language`, matched for `request`. The first is for
     /// text presentation, the second for emoji. Returns `None` where the
     /// table cannot take one.
-    pub(super) fn segment_lists(
+    pub(super) fn span_lists(
         &mut self,
         list: NamedListId,
         script: Script,

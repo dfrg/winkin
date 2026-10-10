@@ -120,7 +120,7 @@ pub(crate) fn check(content: &Content) {
     let flags = content.flags;
     if reshapes && flags.contains(ContentFlags::FIRST_LINE_RESTYLE) {
         assert!(
-            flags.contains(ContentFlags::FIRST_LINE_RESHAPES),
+            flags.contains(ContentFlags::FIRST_LINE_SHAPING),
             "a node's first line shapes otherwise, unflagged"
         );
     }
@@ -162,51 +162,46 @@ fn noted_box(flags: &mut ContentFlags, style: &StyleKey, kind: NodeKind) {
 
 /// Notes in `flags` what text set in `style` says the content holds.
 fn noted_text(flags: &mut ContentFlags, style: &StyleKey) {
-    let mut set = |flag, on: bool| {
-        if on {
-            flags.insert(flag);
-        }
-    };
-    set(ContentFlags::EMPHASIS, style.text.emphasis.marks);
-    set(
+    flags.set(ContentFlags::EMPHASIS, style.text.emphasis.marks);
+    flags.set(
         ContentFlags::INITIAL_LETTER,
         style.line.initial_letter.is_set(),
     );
-    set(ContentFlags::LINE_PADDING, style.line.padding != 0.0);
-    set(
+    flags.set(ContentFlags::LINE_PADDING, style.line.padding != 0.0);
+    flags.set(
         ContentFlags::HANGING_PUNCTUATION,
         style.text.hanging_punctuation != HangingPunctuation::NONE,
     );
-    set(
+    flags.set(
         ContentFlags::NONZERO_SPACING,
         style.text.letter_spacing != 0.0 || style.text.word_spacing != LengthPercentage::ZERO,
     );
-    set(
+    flags.set(
         ContentFlags::DOMINANT_BASELINE,
         style.line.dominant_baseline != DominantBaseline::Auto,
     );
-    set(
+    flags.set(
         ContentFlags::NOWRAP,
         style.text.wrap_mode == TextWrapMode::NoWrap,
     );
-    set(
+    flags.set(
         ContentFlags::TRIMS_WRAPPED_START,
         style.text.spacing_trim.trims_wrapped_start(),
     );
-    set(
+    flags.set(
         ContentFlags::TRIMS_PUNCTUATION,
         style.text.spacing_trim.trims_punctuation(),
     );
-    set(
+    flags.set(
         ContentFlags::TEXT_JUSTIFY,
         style.text.justify != TextJustify::Auto,
     );
     let autospace = style.text.autospace;
-    set(
+    flags.set(
         ContentFlags::AUTOSPACE,
         autospace.ideograph_alpha || autospace.ideograph_numeric,
     );
-    set(
+    flags.set(
         ContentFlags::VARIANT_POSITION,
         style.font.variant_position != FontVariantPosition::Normal,
     );

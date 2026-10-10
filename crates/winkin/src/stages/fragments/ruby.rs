@@ -1,4 +1,4 @@
-//! Places a line's ruby columns and writes their annotation lines.
+//! Places a line's ruby columns.
 //!
 //! A column's base sits on the line among the rest, as Chrome's
 //! `PlaceRubyColumn` places it. The column's spare room goes into gaps
@@ -6,33 +6,23 @@
 //! `ruby-align` says. Gaps write no items and take the level of the text
 //! beside them, so reordering keeps them with it. An overhang onto text
 //! beside the column shortens the gap on that side.
-//!
-//! Once the line is placed, each annotation is set as a line of its own
-//! over the column's box. `ruby-align` spreads it, as Chrome's
-//! `PlaceRubyAnnotation` does. Its baseline comes from `LevelBands::stack`,
-//! the function the breaker sized the line with. The annotation lines'
-//! items follow the line's own.
 
 use alloc::vec::Vec;
-use core::iter::from_fn;
 use core::ops::Range;
 
-use super::place::{LineBoxes, LinePieces, LineRubies, PieceId};
-use super::read::AnnotationText;
-use super::{
-    FragmentItem, FragmentItemFlags, FragmentItemKind, Fragments, Justified, Piece, PieceKind,
-    Placer,
-};
+use super::annotations::BoxesInAnnotation;
+use super::boxes::LineBoxes;
+use super::justify::{Justified, LineJustification};
+use super::place::{LinePieces, PieceId};
+use super::{FragmentItemFlags, Piece, PieceKind, Placer, spreads_inside};
 use crate::data::IdRange;
-use crate::data::{Id, Table, define_id, heap_bytes, stable_sort_by_key};
+use crate::data::{Id, heap_bytes};
 use crate::stages::analysis::{BidiLevel, ClusterClass, ClusterId};
-use crate::stages::content::{ItemFlags, ItemId, ItemKind, NodeId, NodeKind};
-use crate::stages::lines::{LineView, RubyPiece};
-use crate::stages::measure::{
-    JustifyOpportunities, RubyColumn, RubyColumnId, RubyLevel, RubyLevelId, RubySpread,
-};
+use crate::stages::content::{ItemFlags, ItemId, NodeId};
+use crate::stages::lines::{ColumnPart, LevelBands, LineView};
+use crate::stages::measure;
+use crate::stages::measure::{JustifyOpportunities, RubyColumn, RubyColumnId, RubySpread};
 use crate::stages::shape::ShapedRunId;
-use crate::stages::{Segments, Step, measure};
 use crate::style::RubyAlign;
 use crate::unit::{InlineLayoutUnit, LayoutUnit};
 use crate::work;
@@ -41,19 +31,31 @@ use crate::work;
 #[derive(Copy, Clone, Debug)]
 pub(super) struct LineColumn {
     /// Its id in measurement's ruby columns.
-    column: RubyColumnId,
+    pub(super) column: RubyColumnId,
     /// Its index among the line's columns.
     index: usize,
-    /// Its base's clusters on this line, start and end.
-    base: (ClusterId, ClusterId),
+    /// Its base and sizes on this line.
+    pub(super) sizes: ColumnSizes,
+    /// Whether the line sets a part of it, the column being split across
+    /// lines.
+    pub(super) split: bool,
+    /// Its closing item: the item after its last.
+    pub(super) close: ItemId,
+    /// Where it ends on this line: its part's base end where the line
+    /// splits its base, else its closing item's boundary.
+    pub(super) end: ClusterId,
+    /// Its ruby container.
+    pub(super) container: NodeId,
+    /// Whether its base starts on a line before this one.
+    pub(super) continued: bool,
     /// The index of the column it is nested in, if any.
     parent: Option<usize>,
     /// How its base's spread room is shared, saved for nested columns.
-    spread: Option<super::LineJustification>,
+    spread: Option<LineJustification>,
     /// Its gap before its base, among the line's pieces, and the one after
     /// it, once its end is met.
-    leading: PieceId,
-    trailing: Option<PieceId>,
+    pub(super) leading: PieceId,
+    pub(super) trailing: Option<PieceId>,
     /// Its room before its base and among its base's opportunities, and its
     /// width on this line.
     ///
@@ -67,196 +69,76 @@ pub(super) struct LineColumn {
     room_after: InlineLayoutUnit,
     /// Its overhang onto the text before and after it on this line, which
     /// shortens the gaps there.
-    overhang: (InlineLayoutUnit, InlineLayoutUnit),
+    pub(super) overhang: (InlineLayoutUnit, InlineLayoutUnit),
     /// Where its base starts in the prefix, past its container's opening
     /// edge.
     start: InlineLayoutUnit,
     /// How far its base's baseline is raised from the line's.
-    shift: LayoutUnit,
+    pub(super) shift: LayoutUnit,
     /// The room its parent's spread base gives it before and after, which a
     /// nested column's gaps take on.
-    parent_room: (InlineLayoutUnit, InlineLayoutUnit),
+    pub(super) parent_room: (InlineLayoutUnit, InlineLayoutUnit),
     /// The shaping run its base starts in on this line.
     first_run: ShapedRunId,
 }
 
-define_id! {
-    /// Names a box inside the annotation line being set, in
-    /// [`BoxesInAnnotation`].
-    struct AnnotationBoxId(u32);
-}
-
-/// A box inside the annotation line being set: its node, its range of the
-/// annotation's pieces in logical order, and their reach once placed.
+/// A ruby column's base and sizes as the line being placed sets them: its
+/// part's where the column is split across lines, else its own.
 #[derive(Copy, Clone, Debug)]
-struct BoxInAnnotation {
-    node: NodeId,
-    start: PieceId,
-    end: PieceId,
-    reach: Option<(InlineLayoutUnit, InlineLayoutUnit)>,
+pub(super) struct ColumnSizes {
+    /// Its base's clusters on the line, start and end.
+    base: (ClusterId, ClusterId),
+    /// Its base's width, and the widest of its base and annotations.
+    base_width: LayoutUnit,
+    pub(super) width: LayoutUnit,
+    /// How far it overhangs the text before and after it.
+    overhang: (LayoutUnit, LayoutUnit),
 }
 
-impl BoxInAnnotation {
-    /// Widens its reach to take in `left` to `right` too.
-    fn widen(&mut self, left: InlineLayoutUnit, right: InlineLayoutUnit) {
-        self.reach = Some(match self.reach {
-            None => (left, right),
-            Some((from, to)) => (from.min(left), to.max(right)),
-        });
-    }
-}
-
-/// The boxes inside the annotation line being set, in tree order, and the
-/// stack of those open during the walk.
-///
-/// It is line layout scratch: each annotation line clears it, and it is
-/// never dropped.
-pub(super) struct BoxesInAnnotation {
-    boxes: Table<AnnotationBoxId, BoxInAnnotation>,
-    open: Vec<AnnotationBoxId>,
-}
-
-impl BoxesInAnnotation {
-    /// Makes an empty table, allocating nothing.
-    pub(super) const fn new() -> Self {
-        Self {
-            boxes: Table::new(),
-            open: Vec::new(),
+impl ColumnSizes {
+    /// Returns `column`'s sizes, or those of `part`, the line's part of it.
+    fn new(column: &RubyColumn, part: Option<&ColumnPart>) -> Self {
+        match part {
+            Some(part) => Self {
+                base: (part.base.start, part.base.end),
+                base_width: part.base_width,
+                width: part.width,
+                overhang: part.overhang,
+            },
+            None => Self {
+                base: (column.base.start, column.base.end),
+                base_width: column.base_width,
+                width: column.width,
+                overhang: column.overhang,
+            },
         }
     }
 
-    /// Forgets the last annotation line's boxes.
-    fn clear(&mut self) {
-        self.boxes.clear();
-        self.open.clear();
+    /// Returns its base's clusters on the line.
+    fn base(&self) -> Range<ClusterId> {
+        self.base.0..self.base.1
     }
-
-    /// Opens the box `node` before piece `at`.
-    fn open(&mut self, node: NodeId, at: PieceId) {
-        let opened = self.boxes.push(BoxInAnnotation {
-            node,
-            start: at,
-            end: at,
-            reach: None,
-        });
-        match opened {
-            Some(id) => self.open.push(id),
-            None => debug_assert!(false, "no more boxes than an AnnotationBoxId names"),
-        }
-    }
-
-    /// Opens the boxes `nodes` names, innermost first, before piece `at`,
-    /// so that the outermost is opened first.
-    fn open_around(&mut self, nodes: impl Iterator<Item = NodeId>, at: PieceId) {
-        let from = self.boxes.next_id();
-        for node in nodes {
-            self.open(node, at);
-        }
-        // The open stack names them by id, outermost at the bottom once the
-        // rows are reversed.
-        if let Some(opened) = self.boxes.get_slice_mut(from..self.boxes.next_id()) {
-            opened.reverse();
-        }
-    }
-
-    /// Closes the innermost open box before piece `at`.
-    fn close(&mut self, at: PieceId) {
-        if let Some(open) = self.open.pop()
-            && let Some(found) = self.boxes.get_mut(open)
-        {
-            found.end = at;
-        }
-    }
-
-    /// Finds each box's reach along the line from the placed `pieces`, its
-    /// edges included.
-    ///
-    /// One walk widens the innermost open box by each piece. A closing box
-    /// widens the box around it. So the walk is linear however deep the
-    /// boxes nest.
-    fn reach(&mut self, pieces: &LinePieces) {
-        self.open.clear();
-        let mut next = AnnotationBoxId::new(0);
-        for (at, piece) in pieces.logical.iter() {
-            work::step();
-            while let Some(found) = self.boxes.get(next)
-                && found.start <= at
-            {
-                self.open.push(next);
-                next = AnnotationBoxId::new(next.get() + 1);
-            }
-            if let Some(&top) = self.open.last()
-                && let Some(found) = self.boxes.get_mut(top)
-            {
-                found.widen(piece.inline, piece.inline + piece.advance);
-            }
-            // The boxes closing after it widen the box around them.
-            let after = PieceId::new(at.get() + 1);
-            while let Some(&top) = self.open.last()
-                && self.boxes.get(top).is_some_and(|b| b.end <= after)
-            {
-                self.open.pop();
-                let Some(&closed) = self.boxes.get(top) else {
-                    break;
-                };
-                if let Some(&outer) = self.open.last()
-                    && let Some(around) = self.boxes.get_mut(outer)
-                    && let Some((left, right)) = closed.reach
-                {
-                    around.widen(left, right);
-                }
-            }
-        }
-    }
-}
-
-heap_bytes! {
-    BoxesInAnnotation { boxes, open }
-}
-
-/// Where an annotation line is set: its level, its column's box along the
-/// line, its baseline from the line box's top, and its ruby container.
-#[derive(Copy, Clone, Debug)]
-struct AnnotationPlace {
-    id: RubyLevelId,
-    left: InlineLayoutUnit,
-    width: InlineLayoutUnit,
-    baseline: LayoutUnit,
-    container: NodeId,
-    /// The first item at its text's start: the level's opening item, or the
-    /// first item of a part continued from the line before.
-    first: ItemId,
-}
-
-/// Whether `ruby-align` places room among a base's or an annotation's
-/// justification opportunities, so that their count matters.
-fn spreads_inside(align: RubyAlign) -> bool {
-    matches!(align, RubyAlign::SpaceAround | RubyAlign::SpaceBetween)
 }
 
 impl<'a> Placer<'a> {
-    /// Returns the piece of column `id` that the line being placed sets,
+    /// Returns the part of column `id` that the line being placed sets,
     /// where the column is split.
-    fn line_piece(&self, id: RubyColumnId) -> Option<&'a RubyPiece> {
-        self.ruby_pieces
+    pub(super) fn line_part(&self, id: RubyColumnId) -> Option<&'a ColumnPart> {
+        self.line_state
+            .column_parts
             .iter()
             .rev()
-            .find(|piece| piece.column == id)
+            .find(|part| part.column == id)
     }
 
-    /// Returns column `id` as the line being placed sets it, with its
-    /// piece where the column is split: the piece's base, widths and
-    /// overhang.
-    fn column_on_line(&self, id: RubyColumnId) -> Option<(RubyColumn, Option<&'a RubyPiece>)> {
-        let mut column = self.rubies.get(id)?.clone();
-        let piece = self.line_piece(id);
-        if let Some(piece) = piece {
-            column.base = piece.base.clone();
-            column.base_width = piece.base_width;
-            column.width = piece.width;
-            column.overhang = piece.overhang;
+    /// Returns where `column` ends on the line: the base end of `part`, its
+    /// part on the line, where the line splits its base, else where its
+    /// closing item stands.
+    fn column_end(&self, column: &RubyColumn, part: Option<&ColumnPart>) -> ClusterId {
+        match part {
+            Some(part) if part.base.end < column.base.end => part.base.end,
+            _ => self.item_clusters.start(column.close),
         }
-        Some((column, piece))
     }
 
     /// Closes every column still open at the end of `line`, innermost
@@ -269,6 +151,7 @@ impl<'a> Placer<'a> {
         line: &LineView<'_>,
     ) {
         while let Some(open) = self
+            .line_state
             .open_column
             .and_then(|index| rubies.columns.get(index))
             .copied()
@@ -294,33 +177,28 @@ impl<'a> Placer<'a> {
         at: ClusterId,
         rest: InlineLayoutUnit,
     ) {
-        loop {
-            let open = self
-                .open_column
-                .and_then(|index| rubies.columns.get(index))
-                .copied();
-            let Some(open) = open else {
-                break;
-            };
-            if self
-                .rubies
-                .get(open.column)
-                .is_none_or(|column| column.close != self.item)
-            {
-                break;
-            }
+        while let Some(open) = self
+            .line_state
+            .open_column
+            .and_then(|index| rubies.columns.get(index))
+            .copied()
+            .filter(|open| open.close == self.item)
+        {
             self.close_column(pieces, boxes, rubies, line, open);
         }
-        while let Some((column, piece)) = self.column_on_line(self.column) {
+        // Most items open no column, which the column's first item says
+        // before its part on the line is looked for.
+        while let Some(column) = self.rubies.get(self.column) {
             work::step();
-            let open = column.open;
-            if open > self.item {
+            if column.open > self.item {
                 break;
             }
+            let part = self.line_part(self.column);
+            let sizes = ColumnSizes::new(column, part);
             // A column whose base starts at the line's end belongs to the
             // next line. The item at the end boundary only closes the column
             // before it.
-            if !column.base.is_empty() && column.base.start >= line.clusters().end {
+            if sizes.base.0 < sizes.base.1 && sizes.base.0 >= line.clusters().end {
                 break;
             }
             let id = self.column;
@@ -328,30 +206,24 @@ impl<'a> Placer<'a> {
             // A column that starts before this line, left behind by a forced
             // break inside it, belongs to the line before. Its text here
             // takes no room.
-            if piece.is_none() && (open < self.item || column.base.start < line.clusters().start) {
-                // The columns between the pieces continued onto the line and
+            if part.is_none() && (column.open < self.item || sizes.base.0 < line.clusters().start) {
+                // The columns between the parts continued onto the line and
                 // where the cursor stood as it started are all left behind:
                 // the walk goes on at the next of either.
-                if id < self.line_column {
+                if id < self.line_state.line_column {
                     let next = self
-                        .ruby_pieces
+                        .line_state
+                        .column_parts
                         .iter()
-                        .map(|piece| piece.column)
+                        .map(|part| part.column)
                         .filter(|&column| column > id)
-                        .fold(self.line_column, RubyColumnId::min);
+                        .fold(self.line_state.line_column, RubyColumnId::min);
                     self.column = self.column.max(next);
                 }
                 continue;
             }
-            self.open_column(
-                pieces,
-                boxes,
-                rubies,
-                line,
-                id,
-                at.max(line.clusters().start),
-                rest,
-            );
+            let start = at.max(line.clusters().start);
+            self.open_column(pieces, boxes, rubies, line, (id, column, part), start, rest);
             if column.close == self.item
                 && let Some(open) = rubies.columns.last().copied()
             {
@@ -360,11 +232,13 @@ impl<'a> Placer<'a> {
         }
     }
 
-    /// Opens ruby column `id` on `line` at boundary `at`.
+    /// Opens ruby column `id`, `column`, with `part`, its part on `line`
+    /// where it is split, at boundary `at`.
     ///
     /// It pushes the gap before the base, less any overhang onto text before
     /// it. It sets up the room the base's opportunities share, given out as
-    /// its pieces are made. It records the column in `rubies`.
+    /// its pieces are made. It records the column in `rubies`, with what
+    /// closing it and setting its annotations read.
     // Out of line, so that a line with no ruby pays nothing for it.
     #[inline(never)]
     #[allow(clippy::too_many_arguments)]
@@ -374,88 +248,80 @@ impl<'a> Placer<'a> {
         boxes: &LineBoxes,
         rubies: &mut LineRubies,
         line: &LineView<'_>,
-        id: RubyColumnId,
+        (id, column, part): (RubyColumnId, &'a RubyColumn, Option<&'a ColumnPart>),
         at: ClusterId,
         rest: InlineLayoutUnit,
     ) {
-        let Some((mut column, piece)) = self.column_on_line(id) else {
-            return;
-        };
-        if piece.is_some() {
-            let container = column.container(self.stages.content);
-            let align = self.box_facts(container).ruby.align;
-            let space = column.width - column.base_width;
+        let sizes = ColumnSizes::new(column, part);
+        let base = sizes.base();
+        let content = self.stages.content;
+        let container = column.container(content);
+        let align = self.box_facts(container).ruby.align;
+        let text = content.facts.text(self.stages.text_facts(container));
+        let scope = (id, id.max(self.line_state.line_column));
+        let (mut room_before, mut room_inside) = (column.room_before, column.room_inside);
+        if part.is_some() {
+            let space = sizes.width - sizes.base_width;
             // Only room spread inside the base reads its opportunities.
             let opportunities = if space > LayoutUnit::ZERO && spreads_inside(align) {
-                let text = self
-                    .stages
-                    .content
-                    .facts
-                    .text(self.stages.text_facts(container));
                 JustifyOpportunities::from_base(
-                    self.stages.content,
+                    content,
                     self.stages.analysis,
-                    column.base.clone(),
+                    base.clone(),
                     text.justify,
                     self.rubies,
-                    (id, id.max(self.line_column)),
+                    scope,
+                    None,
                 )
-                .map_or(0, |found| found.count_range(column.base.clone()))
+                .map_or(0, |found| found.count_range(base.clone()))
             } else {
                 0
             };
             let spread = RubySpread::from_base(align, space, opportunities);
-            column.room_before = spread.start;
-            column.room_inside = spread.inside;
+            room_before = spread.start;
+            room_inside = spread.inside;
         }
-        let base = column.base.clone();
         let level = if base.is_empty() {
-            self.level
+            self.line_state.level
         } else {
             let run = self.advance_run(base.start);
-            self.run_level(run, self.level)
+            self.run_level(run, self.line_state.level)
         };
         let first_run = self.run.id();
         // Where the column starts the line, no text is beside it, and the
         // breaker paid its overhang back.
         let before = if base.start > line.clusters().start {
-            InlineLayoutUnit::from_layout(column.overhang.0)
+            InlineLayoutUnit::from_layout(sizes.overhang.0)
         } else {
             InlineLayoutUnit::ZERO
         };
-        let container = column.container(self.stages.content);
-        let content = self.stages.content;
-        let text = content.facts.text(self.stages.text_facts(container));
+        let end = self.column_end(column, part);
         // At a justified line's edge, the base sits flush with it.
-        let (starts, ends) = if column.parent.is_none()
-            && self.box_facts(container).ruby.align == RubyAlign::SpaceAround
-        {
-            let end = piece.map_or_else(
-                || self.item_clusters.start(column.close),
-                |piece| {
-                    if piece.base.end
-                        < self
-                            .rubies
-                            .get(id)
-                            .map_or(piece.base.end, |column| column.base.end)
-                    {
-                        piece.base.end
-                    } else {
-                        self.item_clusters.start(column.close)
-                    }
-                },
-            );
+        let (starts, ends) = if column.parent.is_none() && align == RubyAlign::SpaceAround {
             (
-                self.ruby_edges.start && !base.is_empty() && base.start == line.clusters().start,
-                self.ruby_edges.end && end == self.inflow_end(line),
+                self.line_state.ruby_edges.start
+                    && !base.is_empty()
+                    && base.start == line.clusters().start,
+                self.line_state.ruby_edges.end && end == self.inflow_end(line),
             )
         } else {
             (false, false)
         };
-        let (room_before, room_inside, width) =
-            column.room_on_edges(starts, ends, self.ruby_edges.room);
+        let (room_before, room_inside, width) = if starts || ends {
+            // The room at the edges is the column's, sized as on the line.
+            let on_line = RubyColumn {
+                base_width: sizes.base_width,
+                width: sizes.width,
+                room_before,
+                room_inside,
+                ..column.clone()
+            };
+            on_line.room_on_edges(starts, ends, self.line_state.ruby_edges.room)
+        } else {
+            (room_before, room_inside, sizes.width)
+        };
         let room_after =
-            (width - column.base_width - room_before - room_inside).max(LayoutUnit::ZERO);
+            (width - sizes.base_width - room_before - room_inside).max(LayoutUnit::ZERO);
         let (room_before, room_inside, width, room_after) = (
             InlineLayoutUnit::from_layout(room_before),
             InlineLayoutUnit::from_layout(room_inside),
@@ -463,13 +329,13 @@ impl<'a> Placer<'a> {
             InlineLayoutUnit::from_layout(room_after),
         );
         let (shift, _) = boxes.innermost_shifts();
-        let parent_room = if column.parent.is_some() && !column.base.is_empty() {
-            self.spread.as_ref().map_or(
+        let parent_room = if column.parent.is_some() && !base.is_empty() {
+            self.line_state.spread.as_ref().map_or(
                 (InlineLayoutUnit::ZERO, InlineLayoutUnit::ZERO),
                 |spread| {
                     (
-                        spread.room(column.base.start).0,
-                        spread.room(ClusterId::new(column.base.end.get() - 1)).1,
+                        spread.room(base.start).0,
+                        spread.room(ClusterId::new(base.end.get() - 1)).1,
                     )
                 },
             )
@@ -486,24 +352,41 @@ impl<'a> Placer<'a> {
             boxes.innermost(),
             shift,
         ));
-        self.spread = Justified::from_base(
-            content,
-            self.stages.analysis,
-            base,
-            text.justify,
+        let (analysis, ruby_columns) = (self.stages.analysis, self.rubies);
+        let clusters = base.clone();
+        self.line_state.spread = Justified::new(
+            || {
+                JustifyOpportunities::from_base(
+                    content,
+                    analysis,
+                    base,
+                    text.justify,
+                    ruby_columns,
+                    scope,
+                    None,
+                )
+            },
+            clusters,
             room_inside,
-            self.rubies,
-            (id, id.max(self.line_column)),
         );
         let index = rubies.columns.len();
-        let parent = self.open_column;
-        self.open_column = Some(index);
+        let parent = self.line_state.open_column;
+        self.line_state.open_column = Some(index);
         rubies.columns.push(LineColumn {
             column: id,
             index,
-            base: (column.base.start, column.base.end),
+            sizes,
+            split: part.is_some(),
+            close: column.close,
+            end,
+            container,
+            continued: column.base.start < line.clusters().start,
             parent,
-            spread: self.spread.as_ref().map(|spread| spread.justification),
+            spread: self
+                .line_state
+                .spread
+                .as_ref()
+                .map(|spread| spread.justification),
             leading,
             trailing: None,
             room_before,
@@ -534,80 +417,39 @@ impl<'a> Placer<'a> {
         line: &LineView<'_>,
         open: LineColumn,
     ) {
-        self.spread = None;
-        let Some((column, piece)) = self.column_on_line(open.column) else {
-            return;
-        };
-        let id = open.column;
-        let base = column.base.clone();
+        self.line_state.spread = None;
+        let sizes = open.sizes;
+        let base = sizes.base();
         let base_width = if base.is_empty() {
             InlineLayoutUnit::ZERO
         } else {
-            self.stages.measured.prefix.get(base.end) - open.start - self.closes_past_base(&column)
+            self.stages.measured.prefix.get(base.end) - open.start - self.closes_past_base(&open)
         };
-        let end = piece.map_or_else(
-            || self.item_clusters.start(column.close),
-            |piece| {
-                if piece.base.end
-                    < self
-                        .rubies
-                        .get(id)
-                        .map_or(piece.base.end, |column| column.base.end)
-                {
-                    piece.base.end
-                } else {
-                    self.item_clusters.start(column.close)
-                }
-            },
-        );
-        let after = if end < line.clusters().end {
-            InlineLayoutUnit::from_layout(column.overhang.1)
+        let after = if open.end < line.clusters().end {
+            InlineLayoutUnit::from_layout(sizes.overhang.1)
         } else {
             InlineLayoutUnit::ZERO
         };
         let room = open.width - base_width - open.room_before - open.room_inside - after;
-        let level = if base.is_empty() {
-            self.level
-        } else if self.has_mixed_levels {
+        let level = if base.is_empty() || !self.gates.has_mixed_levels {
+            self.line_state.level
+        } else {
             // Both gaps take the lowest level in the base, its boxes' bidi
             // controls included, so reordering keeps them outside every
             // part of it, as Chrome places a column as one unit.
-            let controls = pieces
-                .logical
-                .get_slice(open.leading..pieces.logical.next_id())
-                .unwrap_or_default()
-                .iter()
-                .filter(|piece| piece.kind == PieceKind::Control)
-                .map(|piece| piece.level)
-                .min();
-            let runs = self.lowest_level(open.first_run, base.end);
-            let lowest = controls.map_or(runs, |controls| controls.min(runs));
+            let lowest = self.base_level(pieces, &open);
             if let Some(leading) = pieces.logical.get_mut(open.leading) {
                 leading.level = lowest;
             }
             lowest
-        } else {
-            let last = (column.open..column.base_end)
-                .ids()
-                .rev()
-                .find_map(|id| {
-                    let item = self.items.get(id)?;
-                    let range = self.item_clusters.range(id);
-                    (!item.flags.contains(ItemFlags::ANNOTATION) && !range.is_empty())
-                        .then(|| ClusterId::new(range.end.get() - 1))
-                })
-                .unwrap_or(base.start);
-            let run = self.advance_run(last);
-            self.run_level(run, self.level)
         };
         let (shift, _) = boxes.innermost_shifts();
         let trailing = pieces.logical.next_id();
-        let container = column.container(self.stages.content);
         pieces.push(Piece::new(
             PieceKind::Gap,
-            container,
+            open.container,
             level,
-            end..end,
+            open.end..open.end,
             room + open.parent_room.1,
             boxes.innermost(),
             shift,
@@ -616,24 +458,27 @@ impl<'a> Placer<'a> {
             last.trailing = Some(trailing);
             last.overhang.1 = after;
         }
-        self.open_column = open.parent;
+        self.line_state.open_column = open.parent;
+        // The parent's base spreads its room again, by the amounts saved as
+        // it opened, so its base is not walked again.
         if let Some(parent) = open.parent.and_then(|index| rubies.columns.get(index))
             && let Some(saved) = parent.spread
-            && let Some(column) = self.rubies.get(parent.column)
         {
-            let container = column.container(self.stages.content);
-            self.spread = JustifyOpportunities::from_base_summary(
+            self.line_state.spread = JustifyOpportunities::from_base(
                 self.stages.content,
                 self.stages.analysis,
-                parent.base.0..parent.base.1,
+                parent.sizes.base(),
                 self.stages
                     .content
                     .facts
-                    .text(self.stages.text_facts(container))
+                    .text(self.stages.text_facts(parent.container))
                     .justify,
                 self.rubies,
-                (parent.column, parent.column.max(self.line_column)),
-                saved.summary,
+                (
+                    parent.column,
+                    parent.column.max(self.line_state.line_column),
+                ),
+                Some(saved.summary),
             )
             .map(|opportunities| Justified {
                 justification: saved,
@@ -642,12 +487,18 @@ impl<'a> Placer<'a> {
         }
     }
 
-    /// Returns the lowest bidi level of the shaping runs from `first` up to
-    /// cluster `end`.
-    fn lowest_level(&self, first: ShapedRunId, end: ClusterId) -> BidiLevel {
+    /// Returns the lowest bidi level in the base of the open column `open`:
+    /// its shaping runs' and its boxes' bidi controls'.
+    ///
+    /// The runs are walked from the one the base starts in, up to its end.
+    /// They count the runs whose clusters make no piece, such as removed
+    /// spaces, so the levels come from the runs and not from the pieces.
+    /// The controls are the pieces pushed since the column opened.
+    fn base_level(&self, pieces: &LinePieces, open: &LineColumn) -> BidiLevel {
         let runs = &self.stages.shaped.runs;
-        let mut cursor = runs.cursor(first);
-        let mut lowest = self.run_level(runs.get(first), self.level);
+        let end = open.sizes.base.1;
+        let mut cursor = runs.cursor(open.first_run);
+        let mut lowest = self.run_level(runs.get(open.first_run), self.line_state.level);
         while cursor.end() < end {
             work::step();
             let id = cursor.id();
@@ -655,24 +506,31 @@ impl<'a> Placer<'a> {
             if cursor.id() == id {
                 break;
             }
-            lowest = lowest.min(self.run_level(runs.get(cursor.id()), self.level));
+            lowest = lowest.min(self.run_level(runs.get(cursor.id()), self.line_state.level));
         }
-        lowest
+        let since = open.leading..pieces.logical.next_id();
+        (pieces.logical.get_slice(since).unwrap_or_default().iter())
+            .filter(|piece| piece.kind == PieceKind::Control)
+            .fold(lowest, |lowest, piece| lowest.min(piece.level))
     }
 
-    /// Returns what the prefix charges at the end of `column`'s base that is
-    /// not the base's, where the column ends there too.
+    /// Returns what the prefix charges at the end of the base of `open` that
+    /// is not the base's, where the column ends there too.
     ///
     /// A column with no annotation text ends where its base does. The
     /// closing edges after its base, its container's among them, lead the
     /// items at that boundary, so the prefix there holds them.
-    fn closes_past_base(&self, column: &RubyColumn) -> InlineLayoutUnit {
-        let at = column.base.end;
-        if self.item_clusters.start(column.close) != at {
+    fn closes_past_base(&self, open: &LineColumn) -> InlineLayoutUnit {
+        let sizes = open.sizes;
+        let at = sizes.base.1;
+        if self.item_clusters.start(open.close) != at {
             return InlineLayoutUnit::ZERO;
         }
+        let Some(column) = self.rubies.get(open.column) else {
+            return InlineLayoutUnit::ZERO;
+        };
         let mut sum = InlineLayoutUnit::from_layout(
-            column.width - column.overhang.0 - column.overhang.1 - column.base_width,
+            sizes.width - sizes.overhang.0 - sizes.overhang.1 - sizes.base_width,
         );
         for id in (column.base_end..self.items.next_id()).ids() {
             work::step();
@@ -720,7 +578,7 @@ impl<'a> Placer<'a> {
         piece: Piece,
         advance: &dyn Fn(&Self, ClusterId, ClusterId) -> InlineLayoutUnit,
     ) {
-        let Some(spread) = self.spread.as_ref() else {
+        let Some(spread) = self.line_state.spread.as_ref() else {
             pieces.push_or_join(piece);
             return;
         };
@@ -738,8 +596,7 @@ impl<'a> Placer<'a> {
     }
 
     /// Moves the room `ruby-align` spread in the line's ruby bases into
-    /// their text, as Chrome's expansion is part of the glyphs, and returns
-    /// whether any text took room in.
+    /// their text, as Chrome's expansion is part of the glyphs.
     ///
     /// Each base's text takes the room at its opportunities, and its
     /// outermost text the room its column leaves before and after it, out
@@ -749,8 +606,8 @@ impl<'a> Placer<'a> {
     /// line.
     // Out of line, so that a line with no ruby pays nothing for it.
     #[inline(never)]
-    pub(super) fn absorb_base_spread(pieces: &mut LinePieces, rubies: &LineRubies) -> bool {
-        let mut moved = pieces.absorb_spread();
+    pub(super) fn absorb_base_spread(pieces: &mut LinePieces, rubies: &LineRubies) {
+        pieces.absorb_spread();
         for open in &rubies.columns {
             work::step();
             let Some(trailing) = open.trailing else {
@@ -793,619 +650,146 @@ impl<'a> Placer<'a> {
             };
             for ((gap, room), at_left) in [(left, true), (right, false)] {
                 let taken = pieces.absorb_end(base.clone(), (room, at_left), nested);
-                if taken > InlineLayoutUnit::ZERO {
-                    moved = true;
-                    if let Some(gap) = pieces.logical.get_mut(gap) {
-                        gap.advance = gap.advance - taken;
-                    }
+                if taken > InlineLayoutUnit::ZERO
+                    && let Some(gap) = pieces.logical.get_mut(gap)
+                {
+                    gap.advance = gap.advance - taken;
                 }
             }
         }
-        moved
     }
+}
 
-    /// Writes the annotation lines of `line`'s ruby columns to `out`, after
-    /// the line's own items.
-    ///
-    /// Each level sits over its column's box, which the column's gaps in
-    /// `pieces` bound. Its baseline is where the breaker stacked its level.
-    // Out of line, so that a line with no ruby pays nothing for it.
-    #[inline(never)]
-    pub(super) fn annotations(
-        &mut self,
-        pieces: &LinePieces,
-        rubies: &mut LineRubies,
-        out: &mut Fragments,
-        line: &LineView<'_>,
-    ) {
-        let LineRubies {
-            columns,
-            bands,
-            annotation,
-            boxes,
-        } = rubies;
-        let Some(last) = columns.last() else {
-            return;
-        };
-        // The columns open across the line's start come first, then those
-        // whose bases start on it.
-        let line_start = line.clusters().start;
-        let split = columns
-            .iter()
-            .position(|open| {
-                self.rubies
-                    .get(open.column)
-                    .is_none_or(|column| column.base.start >= line_start)
-            })
-            .unwrap_or(columns.len());
-        let on_line = columns.get(split).map_or(Range::default(), |starts| {
-            starts.column..RubyColumnId::new(last.column.get() + 1)
-        });
-        let open = columns.get(..split).unwrap_or_default().iter();
-        bands.stack(
-            self.rubies,
-            open.map(|open| open.column)
-                .chain((on_line.start.get()..on_line.end.get()).map(RubyColumnId::new)),
-            line.extent,
-            self.lines
-                .ruby
-                .as_deref()
-                .map(|ruby| (ruby, self.ruby_pieces)),
-        );
-        // Closing-item order is postorder: child annotations precede their
-        // parent's, while siblings retain text order.
-        if columns.iter().any(|open| {
-            self.rubies
-                .get(open.column)
-                .is_some_and(|column| column.parent.is_some())
-        }) {
-            stable_sort_by_key(&mut columns[..], |open| {
-                self.rubies.get(open.column).map(|column| column.close)
-            });
+/// The ruby columns on the line being laid out, and the annotation lines
+/// they set.
+pub(super) struct LineRubies {
+    /// The ruby columns on the line.
+    pub(super) columns: Vec<LineColumn>,
+    /// Where its annotation levels stand.
+    pub(super) bands: LevelBands,
+    /// The pieces of the annotation line being set.
+    pub(super) annotation: LinePieces,
+    /// The boxes inside the annotation line being set.
+    pub(super) boxes: BoxesInAnnotation,
+}
+
+impl LineRubies {
+    /// Makes an empty table, allocating nothing.
+    pub(super) const fn new() -> Self {
+        Self {
+            columns: Vec::new(),
+            bands: LevelBands::new(),
+            annotation: LinePieces::new(),
+            boxes: BoxesInAnnotation::new(),
         }
-        let baseline = line.ascent();
-        for index in 0..columns.len() {
-            let Some(&open) = columns.get(index) else {
+    }
+}
+
+heap_bytes! {
+    LineRubies { columns, bands, annotation, boxes }
+}
+
+impl LinePieces {
+    /// Moves the room each spread gap holds into the text of its node beside
+    /// it, as Chrome expands the glyph before an opportunity: into the text
+    /// before it, or the text after it where none is before.
+    ///
+    /// The gap keeps its place with no room, and the text takes the room on
+    /// the gap's side. Nothing moves along the line.
+    pub(super) fn absorb_spread(&mut self) {
+        let count = self.logical.next_id().get();
+        for at in 0..count {
+            let Some(gap) = self.logical.get(PieceId::new(at)).copied() else {
                 continue;
             };
-            let (Some((column, piece)), Some(trailing)) =
-                (self.column_on_line(open.column), open.trailing)
+            if gap.kind != PieceKind::Spread || gap.advance == InlineLayoutUnit::ZERO {
+                continue;
+            }
+            work::step();
+            let spread = |piece: &Piece| piece.kind == PieceKind::Spread && piece.node == gap.node;
+            // A tab is as wide as the distance to its stop, and takes no room.
+            let text = |piece: &Piece| {
+                piece.kind == PieceKind::Text
+                    && piece.node == gap.node
+                    && !piece.flags.contains(FragmentItemFlags::TAB)
+            };
+            // The text before, past the gaps it already took in.
+            let mut back = at;
+            while let Some(previous) = back.checked_sub(1)
+                && self.logical.get(PieceId::new(previous)).is_some_and(spread)
+            {
+                back = previous;
+            }
+            let before = back
+                .checked_sub(1)
+                .filter(|&previous| self.logical.get(PieceId::new(previous)).is_some_and(text));
+            let mut on = at + 1;
+            while self.logical.get(PieceId::new(on)).is_some_and(spread) {
+                on += 1;
+            }
+            let after =
+                Some(on).filter(|&next| self.logical.get(PieceId::new(next)).is_some_and(text));
+            let Some((owner, gap_after)) =
+                before.map(|at| (at, true)).or(after.map(|at| (at, false)))
             else {
                 continue;
             };
-            let (Some(lead), Some(trail)) = (
-                pieces.logical.get(open.leading),
-                pieces.logical.get(trailing),
-            ) else {
+            let Some(text) = self.logical.get_mut(PieceId::new(owner)) else {
                 continue;
             };
-            // The column's box spans from its start gap to its end gap,
-            // with the overhangs. Its start is on the left for a
-            // left-to-right base. It is at least the column's width, wider
-            // where justification spread the base, as Chrome widens it
-            // (`JustifyResults`).
-            let (left, right) = if lead.inline <= trail.inline {
-                (
-                    lead.inline - open.overhang.0 + open.parent_room.0,
-                    trail.inline + trail.advance + open.overhang.1 - open.parent_room.1,
-                )
+            text.advance += gap.advance;
+            // A gap after the text in logical order is on its right, or its
+            // left where it runs right to left.
+            if gap_after != text.level.is_rtl() {
+                text.room.1 += gap.advance;
             } else {
-                (
-                    trail.inline - open.overhang.1 + open.parent_room.1,
-                    lead.inline + lead.advance + open.overhang.0 - open.parent_room.0,
-                )
-            };
-            let width = (right - left).max(InlineLayoutUnit::from_layout(column.width));
-            let container = column.container(self.stages.content);
-            let levels = column.levels.clone();
-            for id in levels.ids() {
-                work::step();
-                let Some(level) = self.rubies.level(id) else {
-                    continue;
-                };
-                let mut level = level.clone();
-                let mut first = level.open;
-                if let Some(piece) = piece {
-                    let Some(part) = self
-                        .lines
-                        .ruby
-                        .as_ref()
-                        .and_then(|ruby| ruby.level(piece, id))
-                    else {
-                        continue;
-                    };
-                    if part.clusters.is_empty() {
-                        continue;
-                    }
-                    if part.clusters.start > level.clusters.start {
-                        first = part.item;
-                    }
-                    level.clusters = part.clusters.clone();
-                    level.clusters.end = part.visible_end;
-                    if level.clusters.is_empty() {
-                        continue;
-                    }
-                    level.width = part.width;
-                    // Only room spread inside the annotation reads its
-                    // opportunities.
-                    level.opportunities = if width.to_layout() - level.width > LayoutUnit::ZERO
-                        && spreads_inside(self.box_facts(container).ruby.align)
-                    {
-                        let node = self
-                            .items
-                            .get(level.open)
-                            .map_or(container, |item| item.node);
-                        let justify = self
-                            .stages
-                            .content
-                            .facts
-                            .text(self.stages.text_facts(node))
-                            .justify;
-                        JustifyOpportunities::new(
-                            self.stages.content,
-                            self.stages.analysis,
-                            level.clusters.clone(),
-                            justify,
-                        )
-                        .map_or(0, |found| found.count_range(level.clusters.clone()))
-                    } else {
-                        0
-                    };
-                }
-                // The level's depth on its side, counting out from the base,
-                // picks its band on the line.
-                let side = level.side;
-                let raise = bands
-                    .raise(side, level.depth as usize)
-                    .unwrap_or(LayoutUnit::ZERO);
-                let place = AnnotationPlace {
-                    id,
-                    left,
-                    width,
-                    baseline: baseline - open.shift - raise,
-                    container,
-                    first,
-                };
-                self.emit_annotation(annotation, boxes, out, line, &level, place);
+                text.room.0 += gap.advance;
+            }
+            if let Some(gap) = self.logical.get_mut(PieceId::new(at)) {
+                gap.advance = InlineLayoutUnit::ZERO;
             }
         }
     }
 
-    /// Writes one annotation line, `level` of a column, at `place`.
+    /// Moves `room` into the leftmost text piece of `range`, in visual
+    /// order, or the rightmost where `!left`, and returns how much it moved:
+    /// none where `range` holds no text. Pieces `nested` names are passed
+    /// over.
     ///
-    /// Its text is spread by `ruby-align`, as Chrome's `ApplyRubyAlign` does,
-    /// reordered as a line of its own, and set from the column box's left.
-    /// Then its items are written.
-    // Out of line, so that a line with no ruby pays nothing for it.
-    #[inline(never)]
-    fn emit_annotation(
+    /// The text takes the room on that side, as Chrome expands the glyph at
+    /// the edge of a spread base or annotation.
+    pub(super) fn absorb_end(
         &mut self,
-        pieces: &mut LinePieces,
-        boxes: &mut BoxesInAnnotation,
-        out: &mut Fragments,
-        line: &LineView<'_>,
-        level: &RubyLevel,
-        place: AnnotationPlace,
-    ) {
-        let clusters = level.clusters.clone();
-        let content = self.stages.content;
-        // The annotation's own element: its opening item's node.
-        let node = self
-            .items
-            .get(level.open)
-            .map_or(place.container, |item| item.node);
-        let text = content.facts.text(self.stages.text_facts(node));
-        let request = content.facts.text_request(self.stages.text_facts(node));
-        let size = self
-            .stages
-            .fonts
-            .resolution(request)
-            .map_or(0.0, |resolution| resolution.computed);
-        // Its text is walked from its first cluster, found through its
-        // level, never through the line holding a cluster. Its direction is
-        // its first segment's.
-        let walk = Segments::from_item(
-            &self.stages,
-            line.paragraph,
-            place.first,
-            clusters.start..self.count,
-        );
-        let first = self.first_level(walk, clusters.end);
-        let rtl = self.ruby_in_bidi && !clusters.is_empty() && first.is_some_and(BidiLevel::is_rtl);
-        let spread = RubySpread::from_annotation(
-            self.box_facts(place.container).ruby.align,
-            self.text_align,
-            place.width.to_layout() - level.width,
-            level.opportunities,
-            size,
-            rtl,
-        );
-        let spreading = Justified::new(
-            content,
-            self.stages.analysis,
-            clusters,
-            text.justify,
-            InlineLayoutUnit::from_layout(spread.inside),
-        );
-        let parts = (node, place.first);
-        self.annotation_pieces(pieces, boxes, line, level, parts, walk, spreading.as_ref());
-        // Reorder by level as a line of its own, and set from the box's left.
-        // Right to left, the logical start is on the right.
-        let placed = pieces.logical.as_slice().iter();
-        let base = placed.clone().map(|piece| piece.level).min();
-        let total = placed.fold(InlineLayoutUnit::ZERO, |sum, piece| sum + piece.advance);
-        pieces.reorder(base.unwrap_or(self.level));
-        let start = InlineLayoutUnit::from_layout(spread.start);
-        let lead = if rtl {
-            place.width - start - total
-        } else {
-            start
+        range: Range<PieceId>,
+        (room, left): (InlineLayoutUnit, bool),
+        nested: impl Fn(PieceId) -> bool,
+    ) -> InlineLayoutUnit {
+        if room <= InlineLayoutUnit::ZERO {
+            return InlineLayoutUnit::ZERO;
+        }
+        let logical = &self.logical;
+        let holds = |at: &PieceId| {
+            range.contains(at)
+                && !nested(*at)
+                && logical.get(*at).is_some_and(|piece| {
+                    piece.kind == PieceKind::Text && !piece.flags.contains(FragmentItemFlags::HANGS)
+                })
         };
-        // The text takes in the room spread at its opportunities, and the
-        // room on its left and right, as Chrome's expansion is part of its
-        // glyphs.
-        let moved = pieces.absorb_spread();
-        let all = PieceId::new(0)..pieces.logical.next_id();
-        let trail = (place.width - lead - total).max(InlineLayoutUnit::ZERO);
-        let taken = pieces.absorb_end(all.clone(), (lead, true), |_| false);
-        let given = pieces.absorb_end(all, (trail, false), |_| false);
-        pieces.place(place.left + lead - taken, &Table::new());
-        boxes.reach(pieces);
-        self.annotation_items(pieces, boxes, out, node, place);
-        if moved || taken > InlineLayoutUnit::ZERO || given > InlineLayoutUnit::ZERO {
-            out.push_spread(line.id, pieces.logical.as_slice());
+        let order = self.order.as_slice().iter().copied();
+        let found = if left {
+            order.inspect(|_| work::step()).find(holds)
+        } else {
+            order.rev().inspect(|_| work::step()).find(holds)
+        };
+        let Some(text) = found.and_then(|at| self.logical.get_mut(at)) else {
+            return InlineLayoutUnit::ZERO;
+        };
+        text.advance += room;
+        if left {
+            text.room.0 += room;
+        } else {
+            text.room.1 += room;
         }
-    }
-
-    /// Returns the boxes inside annotation `annotation` open across the
-    /// boundary whose first item is `first`, innermost first.
-    ///
-    /// A box closing at the boundary is open across it, and one opening
-    /// there is not.
-    fn boxes_around(&self, first: ItemId, annotation: NodeId) -> impl Iterator<Item = NodeId> {
-        let nodes = &self.stages.content.nodes;
-        let start = self.items.get(first).map(|item| {
-            if item.kind == ItemKind::Close {
-                item.node
-            } else {
-                nodes.parent(item.node)
-            }
-        });
-        let mut next = start.filter(|&node| node != annotation && node != NodeId::BLOCK);
-        from_fn(move || {
-            loop {
-                work::step();
-                let node = next?;
-                let parent = nodes.parent(node);
-                next = (parent != node && parent != annotation && parent != NodeId::BLOCK)
-                    .then_some(parent);
-                if nodes.kind(node) == Some(NodeKind::Box) {
-                    return Some(node);
-                }
-            }
-        })
-    }
-
-    /// Makes the pieces of annotation line `level`, whose element is `node`,
-    /// and records the boxes in it.
-    ///
-    /// - Text: a piece per cluster, in its shaping run's font and level,
-    ///   stepping as the text does in the line's variant, with gaps where
-    ///   `spreading` gives room.
-    /// - Box edges: gaps taking the room the level's width counted, as in
-    ///   Chrome, at the level of the text beside them.
-    ///
-    /// The walk runs from `first`, the annotation's opening item or the
-    /// first item of a continued part, to its closing, going past its last
-    /// cluster to meet it. A continued part opens the boxes around its start
-    /// first, found up its first item's ancestors.
-    #[allow(clippy::too_many_arguments)]
-    fn annotation_pieces(
-        &self,
-        pieces: &mut LinePieces,
-        boxes: &mut BoxesInAnnotation,
-        line: &LineView<'_>,
-        level: &RubyLevel,
-        (node, first): (NodeId, ItemId),
-        mut walk: Segments<'a>,
-        spreading: Option<&Justified<'_>>,
-    ) {
-        pieces.logical.clear();
-        boxes.clear();
-        if first != level.open {
-            boxes.open_around(self.boxes_around(first, node), pieces.logical.next_id());
-        }
-        let clusters = level.clusters.clone();
-        let words = self.input.stages.measured.word_spacing_rule;
-        // The line's reshaped edges that hold some of the level.
-        let shapes = self.lines.edges.line_edges_touching(line, &clusters);
-        // The bidi level of the last text segment, which a closing edge
-        // after it takes, as does an opening edge after the last.
-        let mut before = None;
-        loop {
-            work::step();
-            let ahead = walk;
-            let segment = match walk.next() {
-                // Its own opening edge, where its line starts with its text.
-                Some(Step::Item { at, id }) if id == level.open => {
-                    if let Some(item) = self.items.get(id)
-                        && self.item_clusters.start(id) >= clusters.start
-                    {
-                        let room = measure::edge_room(self.stages.content, None, item, true);
-                        let beside = self.first_level(ahead, clusters.end);
-                        self.annotation_edge(pieces, item.node, beside, at, room);
-                    }
-                    continue;
-                }
-                // Items before its own opening belong to the base or to
-                // earlier levels.
-                Some(Step::Item { id, .. }) if id < level.open => continue,
-                // A box's edge, until its own closing.
-                Some(Step::Item { at, id }) if at <= clusters.end => {
-                    let Some(item) = self.items.get(id) else {
-                        continue;
-                    };
-                    if item.kind == ItemKind::AnnotationClose && item.node == node {
-                        // Its own closing edge.
-                        let room = measure::edge_room(self.stages.content, None, item, false);
-                        let beside = before.or_else(|| self.first_level(ahead, clusters.end));
-                        self.annotation_edge(pieces, item.node, beside, at, room);
-                        break;
-                    }
-                    let opens = item.kind == ItemKind::Open;
-                    let actual = self.item_clusters.start(id);
-                    if actual < clusters.start {
-                        if opens {
-                            boxes.open(item.node, pieces.logical.next_id());
-                        } else if item.kind == ItemKind::Close {
-                            boxes.close(pieces.logical.next_id());
-                        }
-                        continue;
-                    }
-                    if actual == clusters.end && opens {
-                        break;
-                    }
-                    if !item.flags.contains(ItemFlags::ANNOTATION)
-                        || !(opens || item.kind == ItemKind::Close)
-                    {
-                        continue;
-                    }
-                    let after = || self.first_level(ahead, clusters.end);
-                    let beside = if opens {
-                        after().or(before)
-                    } else {
-                        before.or_else(after)
-                    };
-                    if opens {
-                        boxes.open(item.node, pieces.logical.next_id());
-                    }
-                    pieces.push(Piece::new(
-                        PieceKind::Gap,
-                        item.node,
-                        beside.unwrap_or(self.level),
-                        at..at,
-                        measure::edge_room(self.stages.content, None, item, opens),
-                        None,
-                        LayoutUnit::ZERO,
-                    ));
-                    if !opens {
-                        boxes.close(pieces.logical.next_id());
-                    }
-                    continue;
-                }
-                Some(Step::Segment(segment)) if segment.start < clusters.end => segment,
-                _ => break,
-            };
-            let Some(item) = self.items.get(segment.item) else {
-                continue;
-            };
-            if !item.flags.contains(ItemFlags::ANNOTATION) {
-                continue;
-            }
-            let run = self.stages.shaped.runs.get(segment.run);
-            let bidi = self.run_level(run, self.level);
-            before = Some(bidi);
-            if !matches!(item.kind, ItemKind::Text | ItemKind::Atomic) {
-                continue;
-            }
-            // An atomic inline steps its margin box and its spacing, as on a
-            // line.
-            if item.kind == ItemKind::Atomic {
-                let text = run.map(|run| AnnotationText::new(&self.stages, words, run.shaping));
-                let width = self
-                    .stages
-                    .content
-                    .item_atomic(segment.item)
-                    .map_or(InlineLayoutUnit::ZERO, |atomic| {
-                        InlineLayoutUnit::from_layout(atomic.margin_inline)
-                    });
-                for cluster in (segment.start..segment.end.min(clusters.end)).ids() {
-                    work::step();
-                    let next = ClusterId::new(cluster.get() + 1);
-                    let spacing = text
-                        .as_ref()
-                        .map_or(InlineLayoutUnit::ZERO, |text| text.spacing_after(cluster));
-                    let piece = Piece::new(
-                        PieceKind::Atomic,
-                        item.node,
-                        bidi,
-                        cluster..next,
-                        width + spacing,
-                        None,
-                        LayoutUnit::ZERO,
-                    );
-                    let room = spreading.map(|spread| spread.room(cluster));
-                    pieces.push_with_room(piece, room.unwrap_or_default());
-                }
-                continue;
-            }
-            let Some(run) = run else {
-                continue;
-            };
-            let (font, orientation) = (Some(run.font), self.orientation(Some(run)));
-            // Its clusters step as its text does in the line's variant,
-            // spaced as its shaping run's facts say.
-            let text = AnnotationText::new(&self.stages, words, run.shaping);
-            for cluster in (segment.start..segment.end.min(clusters.end)).ids() {
-                work::step();
-                let next = ClusterId::new(cluster.get() + 1);
-                let advance = shapes
-                    .iter()
-                    .find_map(|shape| shape.entry(cluster))
-                    .and_then(|entry| self.lines.edges.advances.get(entry))
-                    .map_or_else(
-                        || text.step(cluster),
-                        |&advance| InlineLayoutUnit::from_text(advance),
-                    );
-                let piece = Piece {
-                    font,
-                    orientation,
-                    ..Piece::new(
-                        PieceKind::Text,
-                        item.node,
-                        bidi,
-                        cluster..next,
-                        advance,
-                        None,
-                        LayoutUnit::ZERO,
-                    )
-                };
-                let room = spreading.map(|spread| spread.room(cluster));
-                pieces.push_with_room(piece, room.unwrap_or_default());
-            }
-        }
-        while !boxes.open.is_empty() {
-            boxes.close(pieces.logical.next_id());
-        }
-    }
-
-    /// Adds a gap for an annotation's own edge at boundary `at`, taking
-    /// `room`, at the level of the text beside it, `beside`.
-    ///
-    /// The level's width counts the edges, so its pieces add up to it.
-    fn annotation_edge(
-        &self,
-        pieces: &mut LinePieces,
-        node: NodeId,
-        beside: Option<BidiLevel>,
-        at: ClusterId,
-        room: InlineLayoutUnit,
-    ) {
-        if room == InlineLayoutUnit::ZERO {
-            return;
-        }
-        pieces.push(Piece::new(
-            PieceKind::Gap,
-            node,
-            beside.unwrap_or(self.level),
-            at..at,
-            room,
-            None,
-            LayoutUnit::ZERO,
-        ));
-    }
-
-    /// Writes the items of the annotation line for `node` at `place`: its
-    /// head, then its kept boxes, then its text and atomic inlines.
-    fn annotation_items(
-        &self,
-        pieces: &LinePieces,
-        boxes: &BoxesInAnnotation,
-        out: &mut Fragments,
-        node: NodeId,
-        place: AnnotationPlace,
-    ) {
-        // Kept boxes go after the head and before the text, outermost first,
-        // in paint order. Each spans its border box over all its pieces, as
-        // Chrome gives a box in an annotation its own fragment. Where
-        // reordering splits a box's pieces, one item covers them all.
-        let kept = boxes
-            .boxes
-            .as_slice()
-            .iter()
-            .filter(|found| found.reach.is_some() && self.boxes.get(found.node).is_some())
-            .count();
-        let leaves = pieces
-            .logical
-            .as_slice()
-            .iter()
-            .filter(|piece| matches!(piece.kind, PieceKind::Text | PieceKind::Atomic))
-            .count();
-        let head = FragmentItem::from_annotation(
-            node,
-            self.level,
-            place.id,
-            place.left,
-            place.width.to_layout(),
-            place.baseline,
-            kept + leaves,
-        );
-        if out.items.push(head).is_none() {
-            debug_assert!(false, "no more items than a FragmentItemId names");
-            return;
-        }
-        for found in boxes.boxes.as_slice() {
-            let Some((reach_left, reach_right)) = found.reach else {
-                continue;
-            };
-            if self.boxes.get(found.node).is_none() {
-                continue;
-            }
-            let (left, right) = self.box_facts(found.node).margin_line;
-            let from = reach_left + InlineLayoutUnit::from_layout(left);
-            let to = (reach_right - InlineLayoutUnit::from_layout(right)).max(from);
-            let level = pieces
-                .logical
-                .get(found.start)
-                .map_or(self.level, |piece| piece.level);
-            let item = FragmentItem::from_box_part(
-                found.node,
-                level,
-                from,
-                (to - from).to_layout(),
-                place.baseline,
-                FragmentItemFlags::NONE,
-                0,
-                None,
-            );
-            if out.items.push(item).is_none() {
-                debug_assert!(false, "no more items than a FragmentItemId names");
-                return;
-            }
-        }
-        for &logical in pieces.order.as_slice() {
-            let Some(piece) = pieces.logical.get(logical) else {
-                continue;
-            };
-            let (kind, flags) = match piece.kind {
-                PieceKind::Text => (FragmentItemKind::Text, self.emphasis(piece.node)),
-                PieceKind::Atomic => (FragmentItemKind::Atomic, FragmentItemFlags::NONE),
-                _ => continue,
-            };
-            let flags = piece
-                .flags
-                .union(FragmentItemFlags::ANNOTATION)
-                .union(flags);
-            let item = piece.item(kind, flags, place.baseline);
-            if out.items.push(item).is_none() {
-                debug_assert!(false, "no more items than a FragmentItemId names");
-                return;
-            }
-        }
-    }
-
-    /// Returns the bidi level of the first segment `walk` meets before
-    /// `end`, if any.
-    ///
-    /// An annotation takes its direction from it, and an edge takes the
-    /// level of the text after it.
-    fn first_level(&self, mut walk: Segments<'_>, end: ClusterId) -> Option<BidiLevel> {
-        let segment = walk
-            .find_map(|step| match step {
-                Step::Segment(segment) => Some(segment),
-                Step::Item { .. } => None,
-            })
-            .filter(|segment| segment.start < end)?;
-        Some(self.run_level(self.stages.shaped.runs.get(segment.run), self.level))
+        room
     }
 }

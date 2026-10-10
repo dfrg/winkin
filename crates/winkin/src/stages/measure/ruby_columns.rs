@@ -9,7 +9,7 @@ use core::cell::Cell;
 use core::ops::Range;
 
 use crate::data::{Id, Table, define_id};
-use crate::stages::analysis::{ClusterId, Clusters};
+use crate::stages::analysis::{Analysis, ClusterId, Clusters};
 use crate::stages::content::{Content, ItemId, ItemKind, NodeId};
 use crate::style::{EmphasisSide, RubyPosition};
 use crate::unit::{InlineLayoutUnit, LayoutUnit};
@@ -18,6 +18,12 @@ use crate::work;
 use super::{Extent, RubyColumnId, RubyLevelId, TabReach};
 
 define_id! { pub(super) struct ColumnRoomId(u32); }
+
+define_id! {
+    /// Names a level's cumulative width at one of its boundaries, and the
+    /// floor there, in [`RubyColumns`]' tables of them.
+    pub(super) struct StepId(u32);
+}
 
 /// A descendant's measured contribution at its closing boundary. An entirely
 /// empty descendant contributes opening room instead of a glyph advance.
@@ -40,11 +46,13 @@ pub(super) struct ColumnRoom {
 pub(crate) struct RubyColumns {
     pub(super) columns: Table<RubyColumnId, RubyColumn>,
     pub(super) levels: Table<RubyLevelId, RubyLevel>,
-    pub(super) steps: Vec<InlineLayoutUnit>,
+    /// Each level's cumulative width at each of its boundaries, from its
+    /// start to its end, where its column may split.
+    pub(super) steps: Table<StepId, InlineLayoutUnit>,
     /// The least of each level's cumulative widths from each of its
     /// boundaries to its end, beside `steps`: written whole as the level
     /// closes.
-    pub(super) floors: Vec<InlineLayoutUnit>,
+    pub(super) floors: Table<StepId, InlineLayoutUnit>,
     pub(super) rooms: Table<ColumnRoomId, ColumnRoom>,
     /// The tabs the columns' overhang reaches into, in text order.
     pub(super) tab_reaches: Vec<TabReach>,
@@ -55,8 +63,8 @@ impl RubyColumns {
         Self {
             columns: Table::new(),
             levels: Table::new(),
-            steps: Vec::new(),
-            floors: Vec::new(),
+            steps: Table::new(),
+            floors: Table::new(),
             rooms: Table::new(),
             tab_reaches: Vec::new(),
         }
@@ -85,14 +93,24 @@ impl RubyColumns {
         found.ok().and_then(|at| self.tab_reaches.get(at)).copied()
     }
 
+    /// Returns `table`'s entries from `level`'s first on: its entry at each
+    /// of its boundaries, then the next levels'. Empty where its column
+    /// may not split.
+    fn level_steps<'t>(
+        level: &RubyLevel,
+        table: &'t Table<StepId, InlineLayoutUnit>,
+    ) -> &'t [InlineLayoutUnit] {
+        level
+            .steps
+            .and_then(|first| table.as_slice().get(first.get()..))
+            .unwrap_or_default()
+    }
+
     /// A level's exact cumulative width at a boundary, including its box edges.
     pub(crate) fn level_position(&self, level: &RubyLevel, at: ClusterId) -> InlineLayoutUnit {
         let offset = at.get().saturating_sub(level.clusters.start.get());
-        level
-            .steps
-            .and_then(|first| self.steps.get(first as usize + offset))
-            .copied()
-            .unwrap_or_default()
+        let steps = Self::level_steps(level, &self.steps);
+        steps.get(offset).copied().unwrap_or_default()
     }
 
     /// Returns the least of a level's cumulative widths at the boundaries
@@ -111,11 +129,8 @@ impl RubyColumns {
         {
             return InlineLayoutUnit::ZERO;
         }
-        level
-            .steps
-            .and_then(|first| self.floors.get(first as usize + offset))
-            .copied()
-            .unwrap_or_default()
+        let floors = Self::level_steps(level, &self.floors);
+        floors.get(offset).copied().unwrap_or_default()
     }
 
     /// Returns the first boundary of `level` from `from` on whose floor is
@@ -130,14 +145,9 @@ impl RubyColumns {
         let past = ClusterId::new(level.clusters.end.get() + 1);
         let start = level.clusters.start.get();
         let offset = from.get().saturating_sub(start);
-        let floors = level
-            .steps
-            .and_then(|first| {
-                let first = first as usize;
-                self.floors
-                    .get(first + offset..=first + level.clusters.end.get().saturating_sub(start))
-            })
-            .unwrap_or_default();
+        let last = level.clusters.end.get().saturating_sub(start);
+        let floors = Self::level_steps(level, &self.floors);
+        let floors = floors.get(offset..=last).unwrap_or_default();
         if floors.is_empty() {
             return past;
         }
@@ -149,12 +159,10 @@ impl RubyColumns {
     /// end of the floors written so far.
     pub(super) fn close_floors(&mut self) {
         let from = self.floors.len();
-        self.floors
-            .extend_from_slice(self.steps.get(from..).unwrap_or_default());
+        let steps = self.steps.as_slice().get(from..).unwrap_or_default();
+        let _ = self.floors.extend_from_slice(steps);
         let mut least = None;
-        for floor in self
-            .floors
-            .get_mut(from..)
+        for floor in (self.floors.as_mut_slice().get_mut(from..))
             .unwrap_or_default()
             .iter_mut()
             .rev()
@@ -211,33 +219,6 @@ impl RubyColumns {
             }
             (self.level_position(level, end) - self.level_position(level, range.start)).to_layout()
         };
-        // Each count starts from the base's or the level's opening item.
-        let glyphs = |from: ItemId, range: Range<ClusterId>, annotation: bool, limit: usize| {
-            let mut count = 0;
-            let items = &analysis.item_clusters;
-            let mut item = items.cursor(items.walk_to(from, range.start));
-            for at in range.ids() {
-                while item.end() <= at {
-                    analysis.item_clusters.step(&mut item);
-                }
-                if content
-                    .items
-                    .get(item.id())
-                    .is_none_or(|item| item.flags.contains(ItemFlags::ANNOTATION) != annotation)
-                {
-                    continue;
-                }
-                count += match shaped.glyphs.glyphs(at) {
-                    ClusterGlyphs::None => 0,
-                    ClusterGlyphs::One(_) => 1,
-                    ClusterGlyphs::Many(glyphs) => glyphs.len(),
-                };
-                if count >= limit {
-                    break;
-                }
-            }
-            count
-        };
         let mut start = column.base.start;
         let mut ordinal = 0;
         let mut first = LayoutUnit::ZERO;
@@ -250,10 +231,14 @@ impl RubyColumns {
                         && next(from, level.clusters.end, None) == level.clusters.end
                 });
             let monolithic = blocked
-                || (glyphs(column.open, start..column.base.end, false, 5) <= 4
-                    && levels.iter().zip(starts.iter()).all(|(level, &from)| {
-                        glyphs(level.open, from..level.clusters.end, true, 9) <= 8
-                    }));
+                || is_monolithic(
+                    content,
+                    analysis,
+                    shaped,
+                    (column.open, start..column.base.end),
+                    (levels.iter().zip(starts.iter()))
+                        .map(|(level, &from)| (level.open, from..level.clusters.end)),
+                );
             let end = if monolithic {
                 column.base.end
             } else {
@@ -309,8 +294,16 @@ impl RubyColumns {
 
     /// The columns `columns` names, in text order: empty where they are not
     /// the table's.
-    pub(crate) fn slice(&self, columns: Range<RubyColumnId>) -> &[RubyColumn] {
+    pub(super) fn slice(&self, columns: Range<RubyColumnId>) -> &[RubyColumn] {
         self.columns.get_slice(columns).unwrap_or_default()
+    }
+
+    /// Returns where `column` ends: past its last level, or its base's end
+    /// where it has no level.
+    fn column_end(&self, column: &RubyColumn) -> ClusterId {
+        self.levels(column)
+            .last()
+            .map_or(column.base.end, |level| level.clusters.end)
     }
 
     /// Whether the content has no column.
@@ -413,11 +406,7 @@ impl RubyColumns {
         let mut id = self.nearest(cluster)?;
         loop {
             let column = self.get(id)?;
-            let end = self
-                .levels(column)
-                .last()
-                .map_or(column.base.end, |level| level.clusters.end);
-            if cluster < end {
+            if cluster < self.column_end(column) {
                 return column.base.contains(&cluster).then_some(id);
             }
             id = column.parent?;
@@ -455,10 +444,7 @@ impl RubyColumns {
         while column.parent != parent {
             column = self.get(column.parent?)?;
         }
-        let end = self
-            .levels(column)
-            .last()
-            .map_or(column.base.end, |level| level.clusters.end);
+        let end = self.column_end(column);
         (column.base.start < boundary && boundary < end).then_some(column.base.start..end)
     }
 
@@ -562,6 +548,74 @@ impl RubyColumns {
     }
 }
 
+/// The most glyphs a ruby base, or the rest of one, holds and still stays
+/// whole, as Chrome keeps a column with a short base from breaking.
+const BASE_WHOLE_GLYPHS: usize = 4;
+
+/// The most glyphs an annotation level, or the rest of one, holds and still
+/// stays whole beside a base that does.
+const ANNOTATION_WHOLE_GLYPHS: usize = 8;
+
+/// Returns whether a ruby column, or its rest from a cut, stays whole on a
+/// line: its base holds four glyphs or fewer, and each level eight or fewer.
+///
+/// `base` is the base's clusters, with an item at or before their start.
+/// Each of `levels` is a level's clusters, with an item at or before their
+/// start. The glyphs of `shaped` are counted, each part only as far as its
+/// limit. Inner annotations' glyphs are no glyphs of an enclosing base.
+pub(crate) fn is_monolithic(
+    content: &Content,
+    analysis: &Analysis,
+    shaped: &ShapedText,
+    (from, base): (ItemId, Range<ClusterId>),
+    levels: impl IntoIterator<Item = (ItemId, Range<ClusterId>)>,
+) -> bool {
+    let count = |from, range, limit, annotation| {
+        glyph_count(content, analysis, shaped, (from, range), limit, annotation)
+    };
+    count(from, base, BASE_WHOLE_GLYPHS + 1, false) <= BASE_WHOLE_GLYPHS
+        && levels.into_iter().all(|(from, range)| {
+            count(from, range, ANNOTATION_WHOLE_GLYPHS + 1, true) <= ANNOTATION_WHOLE_GLYPHS
+        })
+}
+
+/// Counts the glyphs of `range` in annotations (`annotation`) or out of
+/// them, stopping at `limit`.
+///
+/// The items are walked from `from`, an item at or before `range`'s start.
+fn glyph_count(
+    content: &Content,
+    analysis: &Analysis,
+    shaped: &ShapedText,
+    (from, range): (ItemId, Range<ClusterId>),
+    limit: usize,
+    annotation: bool,
+) -> usize {
+    let items = &analysis.item_clusters;
+    let mut count = 0;
+    let mut cursor = items.cursor(items.walk_to(from, range.start));
+    for at in range.ids() {
+        work::step();
+        while cursor.end() <= at {
+            items.step(&mut cursor);
+        }
+        if (content.items.get(cursor.id()))
+            .is_none_or(|item| item.flags.contains(ItemFlags::ANNOTATION) != annotation)
+        {
+            continue;
+        }
+        count += match shaped.glyphs.glyphs(at) {
+            ClusterGlyphs::None => 0,
+            ClusterGlyphs::One(_) => 1,
+            ClusterGlyphs::Many(glyphs) => glyphs.len(),
+        };
+        if count >= limit {
+            break;
+        }
+    }
+    count
+}
+
 /// A walk's column context. One initial seek; later clusters move the
 /// preorder cursor and rebuild ancestry only when crossing a column start.
 #[derive(Clone)]
@@ -602,27 +656,8 @@ impl<'a> ColumnWalk<'a> {
     /// rebuilds the stack where it changes.
     fn move_to(&mut self, cluster: ClusterId) {
         let old = self.near;
-        let mut id = self.near.unwrap_or(RubyColumnId::new(0));
-        while id.get() > 0
-            && self
-                .columns
-                .get(id)
-                .is_some_and(|column| column.base.start > cluster)
-        {
-            id = RubyColumnId::new(id.get() - 1);
-        }
-        while self
-            .columns
-            .get(RubyColumnId::new(id.get() + 1))
-            .is_some_and(|column| column.base.start <= cluster)
-        {
-            id = RubyColumnId::new(id.get() + 1);
-        }
-        self.near = self
-            .columns
-            .get(id)
-            .filter(|column| column.base.start <= cluster)
-            .map(|_| id);
+        let near = self.near.unwrap_or(RubyColumnId::new(0));
+        self.near = self.columns.nearest_from(near, cluster);
         if old != self.near {
             self.rebuild();
         }
@@ -631,14 +666,7 @@ impl<'a> ColumnWalk<'a> {
     /// outermost first.
     fn active(&self, cluster: ClusterId) -> impl DoubleEndedIterator<Item = RubyColumnId> + '_ {
         self.stack[..self.depth].iter().copied().filter(move |&id| {
-            self.columns.get(id).is_some_and(|column| {
-                let end = self
-                    .columns
-                    .levels(column)
-                    .last()
-                    .map_or(column.base.end, |level| level.clusters.end);
-                cluster < end
-            })
+            (self.columns.get(id)).is_some_and(|column| cluster < self.columns.column_end(column))
         })
     }
     /// Returns the innermost column whose base holds `cluster`.
@@ -754,11 +782,7 @@ impl<'a> ColumnScope<'a> {
             let Some(column) = self.columns.get(id) else {
                 continue;
             };
-            let past = self
-                .columns
-                .levels(column)
-                .last()
-                .map_or(column.base.end, |level| level.clusters.end);
+            let past = self.columns.column_end(column);
             for boundary in [column.base.start, column.base.end, past] {
                 if boundary <= cluster {
                     start = start.max(boundary);
@@ -834,8 +858,9 @@ pub(crate) struct RubyLevel {
     pub(crate) opportunities: u32,
     /// Its band on this side, past the annotations nested in its base.
     pub(crate) depth: u32,
-    /// First cumulative width, absent for an indivisible column.
-    pub(super) steps: Option<u32>,
+    /// Its first cumulative width in the stage's table of them, absent for
+    /// an indivisible column.
+    pub(super) steps: Option<StepId>,
 }
 
 /// A ruby column: a base and its annotations, sized once:

@@ -352,10 +352,22 @@ fn check(layout: &Layout) {
         // Every glyph can be read. A text item's walked clusters add up to
         // its stored advance, a justified line's room included.
         for fragment in own.iter().filter(|f| f.kind() == FragmentItemKind::Text) {
-            for glyph in GlyphWalk::new(&input, id, line, fragment) {
+            for glyph in GlyphWalk::new(
+                &input,
+                &layout.stages().variant(line.variant()),
+                id,
+                line,
+                fragment,
+            ) {
                 assert!(fragment.clusters().contains(&glyph.cluster));
             }
-            let walk = ClusterWalk::new(&input, id, line, fragment);
+            let walk = ClusterWalk::new(
+                &input,
+                &layout.stages().variant(line.variant()),
+                id,
+                line,
+                fragment,
+            );
             if walk.len() > 0 {
                 let walked = walk.fold(InlineLayoutUnit::ZERO, |sum, (_, _, step)| sum + step);
                 assert_eq!(walked, fragment.advance(), "{id:?}: {fragment:?}");
@@ -399,10 +411,22 @@ fn check(layout: &Layout) {
                     fragment.inline + slack >= left && reach <= right + slack,
                     "{id:?}: {fragment:?} lies over its column"
                 );
-                for glyph in GlyphWalk::new(&input, id, line, fragment) {
+                for glyph in GlyphWalk::new(
+                    &input,
+                    &layout.stages().variant(line.variant()),
+                    id,
+                    line,
+                    fragment,
+                ) {
                     assert!(fragment.clusters().contains(&glyph.cluster));
                 }
-                let walk = ClusterWalk::new(&input, id, line, fragment);
+                let walk = ClusterWalk::new(
+                    &input,
+                    &layout.stages().variant(line.variant()),
+                    id,
+                    line,
+                    fragment,
+                );
                 if walk.len() > 0 {
                     let walked = walk.fold(InlineLayoutUnit::ZERO, |sum, (_, _, step)| sum + step);
                     assert_eq!(walked, fragment.advance(), "{id:?}: {fragment:?}");
@@ -450,7 +474,16 @@ fn glyphs(layout: &Layout, n: usize) -> Vec<(u32, InlineLayoutUnit)> {
     items(layout, n)
         .iter()
         .filter(|item| item.kind() == FragmentItemKind::Text)
-        .flat_map(|item| GlyphWalk::new(&input, id, line, item).map(|glyph| (glyph.id, glyph.x)))
+        .flat_map(|item| {
+            GlyphWalk::new(
+                &input,
+                &layout.stages().variant(line.variant()),
+                id,
+                line,
+                item,
+            )
+            .map(|glyph| (glyph.id, glyph.x))
+        })
         .collect()
 }
 

@@ -30,6 +30,11 @@ pub(crate) struct BlockResult {
     pub(crate) first_baseline: Option<LayoutUnit>,
     /// The last line's baseline after the trim.
     pub(crate) last_baseline: Option<LayoutUnit>,
+    /// `text-box-trim` trims the block's end, which then lends no room
+    /// below it.
+    ///
+    /// It is false where the block has no font to trim by.
+    pub(crate) trims_end: bool,
 }
 
 impl BlockResult {
@@ -40,6 +45,7 @@ impl BlockResult {
         block_end: LayoutUnit::ZERO,
         first_baseline: None,
         last_baseline: None,
+        trims_end: false,
     };
 
     /// Finishes the block once breaking has chosen its final lines.
@@ -73,6 +79,7 @@ impl BlockResult {
             block_end: cleared.map_or(trimmed_end, |cleared| trimmed_end.max(cleared)),
             first_baseline: None,
             last_baseline: None,
+            trims_end: trims.is_some_and(|trims| trims.ends),
         };
         block.first_baseline = first
             .zip(placements.as_slice().first())

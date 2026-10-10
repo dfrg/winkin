@@ -99,7 +99,7 @@ fn line_end(layout: &Layout, line: &Line<'_>, end: bool) -> ClusteredPosition {
     let start = line.text_range().start;
     if end {
         let at = place::leaves(*line)
-            .map(|leaf| leaf.end())
+            .map(|leaf| leaf.end)
             .max()
             .unwrap_or(start);
         ClusteredPosition::from_walk(layout, clusters.end, Position::new(at, Affinity::Upstream))
@@ -114,7 +114,7 @@ fn line_hit(layout: &Layout, line: &Line<'_>, x: f32, y: f32) -> ClusteredPositi
     // An annotation's text, where the point is on it.
     for leaf in place::annotation_leaves(*line) {
         work::step();
-        let InlineExtents { left, right } = leaf.inline();
+        let InlineExtents { left, right } = leaf.inline;
         let Some(run) = leaf.run() else {
             continue;
         };
@@ -139,70 +139,109 @@ pub(super) fn hit_x(layout: &Layout, line: &Line<'_>, x: f32) -> ClusteredPositi
 /// Only combined text reads `y`, since its characters stand across the line.
 /// Without `y`, combined text is hit as an atomic inline is.
 fn hit_point(layout: &Layout, line: &Line<'_>, x: f32, y: Option<f32>) -> ClusteredPosition {
-    // The leaf under the point, else the nearest after it and before it.
+    // The leaf under the point, else the nearest after it and before it,
+    // each with the leaves beside it.
     let mut under = None;
-    let mut after: Option<(usize, Leaf<'_>, f32)> = None;
-    let mut before: Option<(usize, Leaf<'_>, f32)> = None;
-    for (at, leaf) in place::leaves(*line).enumerate() {
+    let mut after: Option<(Beside<'_>, f32)> = None;
+    let mut before: Option<(Beside<'_>, f32)> = None;
+    let mut previous = None;
+    let mut leaves = place::leaves(*line);
+    while let Some(leaf) = leaves.next() {
         work::step();
-        let InlineExtents { left, right } = leaf.inline();
+        // A nearest leaf found at the leaf before has this one on its right.
+        for (nearest, _) in [&mut after, &mut before].into_iter().flatten() {
+            if nearest.open {
+                nearest.right = Some(leaf);
+                nearest.open = false;
+            }
+        }
+        let InlineExtents { left, right } = leaf.inline;
         if left <= x && x < right {
-            under = Some((at, leaf));
+            under = Some(Beside {
+                leaf,
+                left: previous,
+                right: leaves.next(),
+                open: false,
+            });
             break;
         }
-        if left > x && after.is_none_or(|(_, _, nearest)| left < nearest) {
-            after = Some((at, leaf, left));
+        let beside = Beside {
+            leaf,
+            left: previous,
+            right: None,
+            open: true,
+        };
+        if left > x && after.is_none_or(|(_, nearest)| left < nearest) {
+            after = Some((beside, left));
         }
-        if right <= x && before.is_none_or(|(_, _, nearest)| right > nearest) {
-            before = Some((at, leaf, right));
+        if right <= x && before.is_none_or(|(_, nearest)| right > nearest) {
+            before = Some((beside, right));
         }
+        previous = Some(leaf);
     }
-    let (index, leaf, (offset, cluster)) = match (under, after, before) {
-        (Some((at, leaf)), _, _) => {
+    let (beside, (offset, cluster)) = match (under, after, before) {
+        (Some(beside), _, _) => {
+            let leaf = &beside.leaf;
             let across = y.and_then(|y| leaf.hit_across(layout, y));
             let hit = across.map_or_else(
                 || leaf.hit(layout, x),
                 |(offset, cluster)| (offset, Some(cluster)),
             );
-            (at, leaf, hit)
+            (beside, hit)
         }
-        (None, Some((at, leaf, _)), _) => (at, leaf, (leaf.edge_offset(false), None)),
-        (None, None, Some((at, leaf, _))) => (at, leaf, (leaf.edge_offset(true), None)),
+        (None, Some((beside, _)), _) => {
+            let offset = beside.leaf.edge_offset(false);
+            (beside, (offset, None))
+        }
+        (None, None, Some((beside, _))) => {
+            let offset = beside.leaf.edge_offset(true);
+            (beside, (offset, None))
+        }
         (None, None, None) => {
             let clusters = &layout.analysis().clusters;
             let start = line.record().clusters().start;
             return ClusteredPosition::from_cluster(clusters, start, Affinity::Downstream);
         }
     };
-    let (position, kept) = adjusted(line, index, &leaf, offset);
+    let (position, kept) = adjusted(&beside, offset);
     // The cluster the leaf found is the position's unless the hit moved to
     // another offset beside it.
     ClusteredPosition::with_cluster(layout, position, cluster.filter(|_| kept))
 }
 
-/// Returns `offset` in `leaf`, the `index`th of `line`'s, adjusted at a direction change.
+/// A leaf a point hits, with the leaves drawn either side of it on its line.
+#[derive(Copy, Clone)]
+struct Beside<'a> {
+    leaf: Leaf<'a>,
+    /// The leaf before it in visual order, and the one after.
+    left: Option<Leaf<'a>>,
+    right: Option<Leaf<'a>>,
+    /// Whether the leaf after it is still to come in the walk.
+    open: bool,
+}
+
+/// Returns `offset` in the leaf `beside` holds, adjusted at a direction change.
 ///
 /// Where `offset` is at the leaf's visual edge and the leaf beside that edge
 /// is nearer the paragraph's level, it returns that leaf's offset at the
 /// edge. That is the position whose caret is drawn there, as Blink's
 /// `BidiAdjustment::AdjustForHitTest` finds it. With it comes whether the
 /// offset is still `offset`.
-fn adjusted(line: &Line<'_>, index: usize, leaf: &Leaf<'_>, offset: usize) -> (Position, bool) {
+fn adjusted(beside: &Beside<'_>, offset: usize) -> (Position, bool) {
+    let leaf = &beside.leaf;
     let right = leaf.edge_offset(true) == offset;
     let left = leaf.edge_offset(false) == offset;
-    let beside = if right {
-        place::leaves(*line).nth(index + 1)
+    let neighbour = if right {
+        beside.right
     } else if left {
-        index
-            .checked_sub(1)
-            .and_then(|before| place::leaves(*line).nth(before))
+        beside.left
     } else {
         None
     };
-    match beside {
-        Some(beside) if beside.level() < leaf.level() => {
-            let edge = beside.edge_offset(left);
-            (affine(&beside, edge), edge == offset)
+    match neighbour {
+        Some(neighbour) if neighbour.level() < leaf.level() => {
+            let edge = neighbour.edge_offset(left);
+            (affine(&neighbour, edge), edge == offset)
         }
         _ => (affine(leaf, offset), true),
     }
@@ -213,7 +252,7 @@ fn adjusted(line: &Line<'_>, index: usize, leaf: &Leaf<'_>, offset: usize) -> (P
 /// Upstream keeps it on the leaf's line where the line wraps there.
 /// Elsewhere it is downstream.
 fn affine(leaf: &Leaf<'_>, offset: usize) -> Position {
-    if offset == leaf.end() && leaf.start() < leaf.end() {
+    if offset == leaf.end && leaf.start < leaf.end {
         Position::new(offset, Affinity::Upstream)
     } else {
         Position::new(offset, Affinity::Downstream)

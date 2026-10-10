@@ -2,7 +2,8 @@
 //! pays there, and the room the items at a boundary take along the line.
 
 use super::hang::{hangs_end, hangs_first};
-use super::{BoundaryRoom, EdgeAmounts, LineEdgeCost, LineEdgeFlags, Scan, ScanWalk};
+use super::scan::{BoundaryRoom, EdgeAmounts, LinePay, Scan, ScanWalk};
+use super::{LineEdgeCost, LineEdgeFlags};
 use crate::data::Id;
 use crate::stages::analysis::{ClusterAttrs, ClusterId, Clusters};
 use crate::style::HangingPunctuation;
@@ -85,9 +86,9 @@ impl LineEndState {
         room: &BoundaryRoom,
         walk: &ScanWalk<'_>,
         step: InlineLayoutUnit,
-    ) -> (EdgeAmounts, Option<LineEdgeCost>) {
+    ) -> (LinePay, Option<LineEdgeCost>) {
         let (end, text_start) = (scan.end, ClusterId::new(0));
-        let clusters = &scan.analysis.clusters;
+        let clusters = &scan.input.analysis.clusters;
         let breaks = !room.inside_column && is_break_boundary(clusters, at);
         let can_start = at < end && (breaks || starts_paragraph);
         let can_end = at > text_start && (breaks || at == end);
@@ -131,6 +132,7 @@ impl LineEndState {
         if hyphen.is_some() {
             edge.flags.insert(LineEdgeFlags::HYPHEN);
         }
+        let mut min_end_hang = InlineLayoutUnit::ZERO;
         if scan.has_hanging {
             // `first`: the block's first cluster, with no room before it,
             // gives its advance back to the block's first line where its
@@ -159,7 +161,7 @@ impl LineEndState {
                 if mark.flags.contains(LineEdgeFlags::HANG_FORCED) {
                     across.end = across.end - advance;
                 } else {
-                    across.min_end_hang = advance;
+                    min_end_hang = advance;
                 }
             }
         }
@@ -172,7 +174,11 @@ impl LineEndState {
             || edge.end != LayoutUnit::ZERO
             || edge.flex != LayoutUnit::ZERO
             || edge.flags.contains(LineEdgeFlags::HYPHEN);
-        (across, has_cost.then_some(edge))
+        let pay = LinePay {
+            edges: across,
+            min_end_hang,
+        };
+        (pay, has_cost.then_some(edge))
     }
 
     /// Records a cluster that doesn't hang, in the segment `walk` holds,

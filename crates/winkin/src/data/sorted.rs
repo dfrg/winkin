@@ -2,6 +2,7 @@
 //! key, and the cursor a walk in key order moves instead of searching.
 
 use alloc::vec::Vec;
+use core::ops::RangeInclusive;
 
 use super::{HeapBytes, sort_by_key};
 use crate::work;
@@ -48,6 +49,12 @@ pub(crate) fn find_sorted<T: Keyed>(entries: &[T], key: T::Key) -> Option<&T> {
 /// walks them.
 pub(crate) struct SortedTable<T> {
     entries: Vec<T>,
+}
+
+impl<T: Keyed> Default for SortedTable<T> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<T: Keyed> SortedTable<T> {
@@ -119,6 +126,17 @@ impl<T: Keyed> SortedTable<T> {
     #[inline]
     pub(crate) fn cursor(&self, key: T::Key) -> SortedCursor<'_, T> {
         SortedCursor::new(&self.entries, key)
+    }
+
+    /// Returns the entries whose keys run from the range's start to its
+    /// end, both included, by halving.
+    pub(crate) fn range(&self, keys: RangeInclusive<T::Key>) -> &[T] {
+        work::seek();
+        let (first, last) = (*keys.start(), *keys.end());
+        let start = self.entries.partition_point(|entry| entry.key() < first);
+        let rest = self.entries.get(start..).unwrap_or_default();
+        let count = rest.partition_point(|entry| entry.key() <= last);
+        rest.get(..count).unwrap_or_default()
     }
 
     /// Every entry, in the order of their keys, for the tests to check.

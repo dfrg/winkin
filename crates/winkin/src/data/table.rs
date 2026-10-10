@@ -4,7 +4,9 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 use core::marker::PhantomData;
-use core::ops::{Index, IndexMut, Range};
+#[cfg(test)]
+use core::ops::Index;
+use core::ops::Range;
 
 use super::{HeapBytes, Id, IdRange};
 use crate::work;
@@ -388,18 +390,14 @@ impl<I: Id, T: fmt::Debug> fmt::Debug for Table<I, T> {
     }
 }
 
+/// Reads a row by its id, for tests. The crate reads rows through
+/// [`get`](Table::get), which never panics.
+#[cfg(test)]
 impl<I: Id, T> Index<I> for Table<I, T> {
     type Output = T;
 
     #[inline]
     fn index(&self, id: I) -> &T {
         &self.items[id.get()]
-    }
-}
-
-impl<I: Id, T> IndexMut<I> for Table<I, T> {
-    #[inline]
-    fn index_mut(&mut self, id: I) -> &mut T {
-        &mut self.items[id.get()]
     }
 }

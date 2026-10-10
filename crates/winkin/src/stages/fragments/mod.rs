@@ -2,10 +2,16 @@
 //!
 //! In: [`PlaceInput`], every prepared table, the lines and the area. Out:
 //! [`Fragments`].
-//! Start at: [`place_fragments`], then `Placer::lines` in `place`.
+//! Start at: [`place_fragments`], then `Placer::place_lines` in `place`.
 //!
 //! - `place` lays out one line at a time: its pieces, alignment, bidi
 //!   reordering, box fragments and ruby, then writes its items once.
+//! - `pieces` makes a line's pieces from its items, in logical order.
+//! - `justify` spreads a justified line's room over its opportunities.
+//! - `boxes` finds a line's box parts and links them in paint order.
+//! - `cut` truncates a line for an ellipsis and writes generated text.
+//! - `ruby` places a line's ruby columns among its pieces.
+//! - `annotations` sets and writes a line's ruby annotation lines.
 //! - `read` reads a text item back: its glyphs and its clusters' advances.
 //! - `anchors` turns where each absolutely positioned box's anchor stands
 //!   into its static position.
@@ -16,8 +22,10 @@
 //! lines already written stay whole when a table fills.
 
 mod anchors;
+mod annotations;
 mod boxes;
 mod cut;
+mod justify;
 mod pieces;
 mod place;
 mod read;
@@ -31,29 +39,35 @@ use core::fmt;
 use core::ops::Range;
 
 use crate::config::{EllipsisSpace, TabJustification};
+use crate::data::TextOffset;
 use crate::data::{
     Id, Keyed, RunCursor, SortedCursor, SortedTable, Table, define_flags, define_id, heap_bytes,
     index_to_u32, u32_to_index,
 };
 use crate::stages::analysis::{
-    Analysis, BidiLevel, ClusterId, Clusters, ControlLevel, ItemClusters, ParagraphId,
-    RunOrientation,
+    BidiLevel, ClusterId, Clusters, ControlLevel, ItemClusters, ParagraphId, RunOrientation,
 };
-use crate::stages::content::{Content, Item, ItemId, NodeId};
-use crate::stages::lines::{Area, BlockResult, LineBand, LineId, LinePlacements, Lines, RubyPiece};
+use crate::stages::content::{Item, ItemId, NodeId, Nodes, TextFacts, TextFlags};
+use crate::stages::lines::{
+    Area, BlockResult, ColumnPart, LineBand, LineId, LinePlacements, Lines,
+};
 use crate::stages::measure::{
-    AutospaceRules, GeneratedPieces, JustifyOpportunities, JustifySummary, KeptBoxId, KeptBoxes,
-    RubyColumnId, RubyColumns, RubyLevelId, ShapedGeneratedId,
+    AutospaceRules, GeneratedItems, KeptBoxId, KeptBoxes, RubyColumnId, RubyColumns, RubyLevelId,
+    ShapedGeneratedId,
 };
 use crate::stages::{LineStages, Stages, lines};
-use crate::style::{TextAlign, TextAlignLast, TextJustify};
+use crate::style::{RubyAlign, TextAlign, TextAlignLast};
 use crate::unit::{InlineLayoutUnit, LayoutUnit};
 use crate::work;
 
 use crate::stages::fonts::UsedFontId;
 use crate::stages::shape::ShapedRunId;
+use boxes::LineBoxId;
+#[cfg(test)]
+use justify::LineJustification;
+use justify::{Justified, JustifiedLine, JustifiedLineId};
 use pieces::TabLine;
-use place::{Group, LineBoxId, RubyEdges};
+use place::{Group, RubyEdges};
 
 pub(crate) use place::PlaceScratch;
 
@@ -96,7 +110,7 @@ pub(crate) fn place_fragments(
     out.items
         .reserve(lines.saturating_add(input.stages.content.items.len()));
     scratch.begin();
-    Placer::new(input, input.lines.block).lines(scratch, out);
+    Placer::new(input, input.lines.block).place_lines(scratch, out);
 }
 
 define_id! {
@@ -183,6 +197,18 @@ define_flags! {
     }
 }
 
+impl FragmentItemFlags {
+    /// Returns the flags every item of text with `facts` carries:
+    /// [`EMPHASIS`](Self::EMPHASIS) where its style sets emphasis marks.
+    fn from_text(facts: &TextFacts) -> Self {
+        if facts.has(TextFlags::EMPHASIS) {
+            Self::EMPHASIS
+        } else {
+            Self::NONE
+        }
+    }
+}
+
 /// One placed thing on a line: 40 bytes.
 ///
 /// Every field is final when the item is written. The plain-data fields are
@@ -191,16 +217,15 @@ define_flags! {
 ///
 /// | Kind | `a` | `b` | `c` | `d` |
 /// |---|---|---|---|---|
-/// | `Line` | the items after it that are the line's | the first box item to paint, its [`FragmentItemId`]; 0 where the line has none | none | none |
+/// | `Line` | the items after it that are the line's | the first box item to paint, its [`FragmentItemId`]; 0 where the line has none | its justification row, a [`JustifiedLineId`], where it is justified | none |
 /// | `Text` | its first cluster | one past its last | its shaping run, a [`ShapedRunId`] | the content item holding its first cluster, an [`ItemId`] |
 /// | `Atomic` | its first cluster | one past its last | none | none |
 /// | `Box` | the items after it inside it; none for a box inside an annotation, whose text is the annotation's | the next box item to paint, its [`FragmentItemId`]; 0 for the last, and for a box inside an annotation, which its annotation paints | its kept box, a [`KeptBoxId`] | none |
-/// | `AnnotationLine` | the items after it that are its own: its boxes that keep a fragment, then its text | its [`RubyLevelId`] | none | none |
+/// | `AnnotationLine` | the items after it that are its own: its boxes that keep a fragment, then its text | its [`RubyLevelId`] | its element's kept box, a [`KeptBoxId`], where it keeps one | none |
 /// | `Generated` | the boundary it stands at | its generated text, its [`ShapedGeneratedId`] | none | none |
 ///
-/// A ruby annotation's text and boxes name no shaping run and no kept box,
-/// and their readers look them up. The links cost 8 bytes an item, 4 of
-/// them alignment, and save a search per text item and box part read.
+/// The links cost 8 bytes an item, 4 of them alignment, and save a search
+/// per text item and box part read.
 ///
 /// **Positions.**
 /// - A `Line` item's `inline` is its line box's left edge after alignment,
@@ -268,13 +293,16 @@ impl FragmentItem {
     }
 
     /// Makes a line's item, heading `descendants` items. `first` is the
-    /// first box item to paint, where the line has one.
+    /// first box item to paint, where the line has one, and `justified` its
+    /// justification row, where it is justified.
+    #[allow(clippy::too_many_arguments)]
     fn from_line(
         level: BidiLevel,
         left: LayoutUnit,
         top: LayoutUnit,
         descendants: usize,
         first: Option<FragmentItemId>,
+        justified: Option<JustifiedLineId>,
         flags: FragmentItemFlags,
     ) -> Self {
         Self {
@@ -283,7 +311,7 @@ impl FragmentItem {
             a: index_to_u32(descendants),
             // No box item is the table's first, which is a line's.
             b: first.map_or(0, |first| index_to_u32(first.get())),
-            c: Self::NONE,
+            c: justified.map_or(Self::NONE, |row| index_to_u32(row.get())),
             d: Self::NONE,
             size: LayoutUnit::ZERO,
             block: top,
@@ -364,10 +392,11 @@ impl FragmentItem {
     }
 
     /// Makes an annotation line for the annotation `node`, level `id` of its
-    /// ruby column.
+    /// ruby column, whose kept box is `kept`.
     ///
     /// It spans `width` from `left`, has its baseline at `baseline` from the
     /// line box's top, and heads `descendants` items: its boxes and its text.
+    #[allow(clippy::too_many_arguments)]
     fn from_annotation(
         node: NodeId,
         level: BidiLevel,
@@ -376,13 +405,14 @@ impl FragmentItem {
         width: LayoutUnit,
         baseline: LayoutUnit,
         descendants: usize,
+        kept: Option<KeptBoxId>,
     ) -> Self {
         Self {
             inline: left,
             node,
             a: index_to_u32(descendants),
             b: index_to_u32(id.get()),
-            c: Self::NONE,
+            c: kept.map_or(Self::NONE, |kept| index_to_u32(kept.get())),
             d: Self::NONE,
             size: width,
             block: baseline,
@@ -493,7 +523,7 @@ impl FragmentItem {
     /// its first cluster where none is shaped.
     ///
     /// Its used font and orientation are that run's. `None` for any other
-    /// item, and for an annotation's text, which names none.
+    /// item.
     #[inline]
     pub(crate) fn run(&self) -> Option<ShapedRunId> {
         (self.kind() == FragmentItemKind::Text && self.c != Self::NONE)
@@ -515,12 +545,23 @@ impl FragmentItem {
         self.kind_short & Self::SPREAD != 0
     }
 
-    /// Returns the kept box a box item is a part of, or `None` for any other
-    /// item, and for a box inside an annotation, which names none.
+    /// Returns the kept box a box item is a part of, or an annotation line's
+    /// element keeps; `None` for any other item.
     #[inline]
     pub(crate) fn kept_box(&self) -> Option<KeptBoxId> {
-        (self.kind() == FragmentItemKind::Box && self.c != Self::NONE)
+        (matches!(
+            self.kind(),
+            FragmentItemKind::Box | FragmentItemKind::AnnotationLine
+        ) && self.c != Self::NONE)
             .then(|| KeptBoxId::new(u32_to_index(self.c)))
+    }
+
+    /// Returns a line item's justification row, or `None` for an
+    /// unjustified line and any other item.
+    #[inline]
+    fn justified_line(&self) -> Option<JustifiedLineId> {
+        (self.kind() == FragmentItemKind::Line && self.c != Self::NONE)
+            .then(|| JustifiedLineId::new(u32_to_index(self.c)))
     }
 
     /// Returns the generated text a generated item draws, or `None` for any
@@ -547,188 +588,6 @@ impl fmt::Debug for FragmentItem {
             .field("flags", &self.flags)
             .field("level", &self.level)
             .finish()
-    }
-}
-
-/// The line's spare room per justification opportunity, in 48.16: 32 bytes.
-///
-/// The room divides truncated, as in Chrome's `ShapeResultSpacing`
-/// (`expansion / count`). The remainder goes to the opportunity Chrome fills
-/// last, as its `NextExpansion` does, so the shares add up exactly. That is
-/// the last one of the logically last item, or its first if that item is
-/// right-to-left.
-///
-/// Each item's `inline` and advance already include the room. A reader adds
-/// a cluster's room ([`room`](Self::room)) to its advance and moves its
-/// glyphs by the room before it. Nothing is stored per cluster.
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-struct LineJustification {
-    summary: JustifySummary,
-    /// The room each opportunity gets, the last one aside.
-    per: InlineLayoutUnit,
-    /// The cluster whose opportunity is filled last: its after one where it
-    /// has one, else its before one.
-    last: ClusterId,
-    /// What the last takes beyond `per`, in 1/65536 px. It is less than the
-    /// line's count of opportunities, so it fits a `u32`.
-    leftover: u32,
-}
-
-impl LineJustification {
-    /// Spreads `extra` over `count` opportunities, the last of them
-    /// `last`'s. Returns `None` when `count` is zero.
-    fn new(
-        extra: InlineLayoutUnit,
-        count: u32,
-        last: ClusterId,
-        summary: JustifySummary,
-    ) -> Option<Self> {
-        if count == 0 {
-            return None;
-        }
-        let count = i64::from(count);
-        let per = extra.raw() / count;
-        // Less than `count`, and not negative for room that is not.
-        let leftover = extra.raw() - per.saturating_mul(count);
-        Some(Self {
-            per: InlineLayoutUnit::from_raw(per),
-            summary,
-            last,
-            leftover: u32::try_from(leftover).unwrap_or(0),
-        })
-    }
-
-    /// Returns what the last opportunity takes beyond `per`.
-    fn leftover(&self) -> InlineLayoutUnit {
-        InlineLayoutUnit::from_raw(i64::from(self.leftover))
-    }
-
-    /// Returns what `count` opportunities take together, with the leftover
-    /// when `last` says the last one is among them.
-    ///
-    /// This is how much a piece of the line widens.
-    fn share(&self, count: u32, last: bool) -> InlineLayoutUnit {
-        let each = InlineLayoutUnit::from_raw(self.per.raw().saturating_mul(i64::from(count)));
-        if last { each + self.leftover() } else { each }
-    }
-
-    /// Returns the room `cluster` takes before and after it, given which
-    /// opportunities it has.
-    #[inline]
-    fn room(
-        &self,
-        cluster: ClusterId,
-        before: bool,
-        after: bool,
-    ) -> (InlineLayoutUnit, InlineLayoutUnit) {
-        let last = cluster == self.last;
-        let share = |takes: bool, rest: bool| match (takes, rest) {
-            (false, _) => InlineLayoutUnit::ZERO,
-            (true, false) => self.per,
-            (true, true) => self.per + self.leftover(),
-        };
-        // Chrome takes a cluster's before opportunity first.
-        (share(before, last && !after), share(after, last))
-    }
-}
-
-/// A justified range's amounts and which of its clusters have opportunities.
-///
-/// The range is a line, or a ruby base or annotation spread as a line of its
-/// own. Line layout builds one for the line it places, and a reader for the
-/// item it reads. Both count opportunities by the same rule.
-#[derive(Clone, Debug)]
-struct Justified<'a> {
-    justification: LineJustification,
-    opportunities: JustifyOpportunities<'a>,
-}
-
-impl<'a> Justified<'a> {
-    /// Spreads `room` over the opportunities of `clusters`, justified as a
-    /// line of their own under `justify`.
-    ///
-    /// This serves a ruby base or an annotation. Returns `None` where there
-    /// is no room or no opportunity.
-    fn new(
-        content: &'a Content,
-        analysis: &'a Analysis,
-        clusters: Range<ClusterId>,
-        justify: TextJustify,
-        room: InlineLayoutUnit,
-    ) -> Option<Self> {
-        if room <= InlineLayoutUnit::ZERO {
-            return None;
-        }
-        let opportunities =
-            JustifyOpportunities::new(content, analysis, clusters.clone(), justify)?;
-        let count = opportunities.count_range(clusters.clone());
-        let last = opportunities.last(clusters)?;
-        Some(Self {
-            justification: LineJustification::new(room, count, last, opportunities.summary())?,
-            opportunities,
-        })
-    }
-
-    /// Spreads `room` over the opportunities of ruby base `clusters` in
-    /// `column`, as [`new`](Self::new) does for other text.
-    fn from_base(
-        content: &'a Content,
-        analysis: &'a Analysis,
-        clusters: Range<ClusterId>,
-        justify: TextJustify,
-        room: InlineLayoutUnit,
-        rubies: &'a RubyColumns,
-        column: (RubyColumnId, RubyColumnId),
-    ) -> Option<Self> {
-        if room <= InlineLayoutUnit::ZERO {
-            return None;
-        }
-        let opportunities = JustifyOpportunities::from_base(
-            content,
-            analysis,
-            clusters.clone(),
-            justify,
-            rubies,
-            column,
-        )?;
-        let count = opportunities.count_range(clusters.clone());
-        let last = opportunities.last(clusters)?;
-        Some(Self {
-            justification: LineJustification::new(room, count, last, opportunities.summary())?,
-            opportunities,
-        })
-    }
-
-    /// Returns the room `cluster` takes before and after it; none outside
-    /// the justified range.
-    ///
-    /// On an ASCII line justified at spaces, the cluster's class decides
-    /// (`JustifyOpportunities::is_simple`).
-    #[inline]
-    fn room(&self, cluster: ClusterId) -> (InlineLayoutUnit, InlineLayoutUnit) {
-        let (before, after) = if self.opportunities.is_simple() {
-            (false, self.opportunities.simple_after(cluster))
-        } else {
-            self.opportunities.at(cluster)
-        };
-        self.justification.room(cluster, before, after)
-    }
-}
-
-/// Facts kept only for a justified line: 40 bytes.
-///
-/// `content_end` fits in the padding between the line key and the
-/// justification.
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-struct JustifiedLine {
-    line: LineId,
-    content_end: ClusterId,
-    justification: LineJustification,
-}
-impl Keyed for JustifiedLine {
-    type Key = LineId;
-    fn key(&self) -> LineId {
-        self.line
     }
 }
 
@@ -800,26 +659,17 @@ impl Keyed for SpreadText {
 }
 
 /// The tables of [`Fragments`] that only some content fills.
+#[derive(Default)]
 struct RareFragments {
-    /// The justified lines' amounts, sorted by line; empty where no line is
-    /// justified.
-    justified: SortedTable<JustifiedLine>,
+    /// The justified lines' amounts, in line order; empty where no line is
+    /// justified. Each line's item names its row.
+    justified: Table<JustifiedLineId, JustifiedLine>,
     /// The text items `ruby-align` spread room into, sorted by line and
     /// first cluster.
     spread: SortedTable<SpreadText>,
     /// The absolutely positioned boxes' static positions, in node order:
     /// one for each anchor in the content.
     anchors: Table<AnchorId, Anchor>,
-}
-
-impl Default for RareFragments {
-    fn default() -> Self {
-        Self {
-            justified: SortedTable::new(),
-            spread: SortedTable::new(),
-            anchors: Table::new(),
-        }
-    }
 }
 
 heap_bytes! {
@@ -870,22 +720,16 @@ impl Fragments {
         self.rare.as_ref().map_or(0, |rare| rare.spread.len())
     }
 
-    /// Writes the spread rows of `pieces`' text, items of line `line`, in
-    /// any order: [`settle_spread`](Self::settle_spread) sorts them.
-    fn push_spread(&mut self, line: LineId, pieces: &[Piece]) {
-        for piece in pieces {
-            work::step();
-            if piece.kind == PieceKind::Text
-                && piece.room != (InlineLayoutUnit::ZERO, InlineLayoutUnit::ZERO)
-            {
-                self.rare_mut().spread.push_unsorted(SpreadText {
-                    line,
-                    cluster: piece.start,
-                    left: piece.room.0,
-                    right: piece.room.1,
-                });
-            }
-        }
+    /// Writes the spread row of `piece`, text of line `line` that took room
+    /// in, in any order: [`settle_spread`](Self::settle_spread) sorts them.
+    fn push_spread(&mut self, line: LineId, piece: &Piece) {
+        debug_assert_eq!(piece.kind, PieceKind::Text, "only text takes room in");
+        self.rare_mut().spread.push_unsorted(SpreadText {
+            line,
+            cluster: piece.start,
+            left: piece.room.0,
+            right: piece.room.1,
+        });
     }
 
     /// Sorts the spread rows the line being written pushed since `mark`.
@@ -999,14 +843,57 @@ impl Fragments {
     /// Returns `line`'s justification record, or `None` where it is not
     /// justified.
     ///
-    /// The lookup is a binary search, skipped where no line is justified.
+    /// The line's item names the record. Nothing is read where no line is
+    /// justified.
     #[inline]
-    fn justification(&self, line: LineId) -> Option<JustifiedLine> {
+    fn line_justification(&self, line: LineId) -> Option<JustifiedLine> {
         let justified = &self.rare.as_deref()?.justified;
         if justified.is_empty() {
             return None;
         }
-        justified.get(line).copied()
+        let head = self.items.get(*self.line_heads.get(line)?)?;
+        justified.get(head.justified_line()?).copied()
+    }
+
+    /// Returns the baseline of the innermost kept box around the culled box
+    /// `node` on `line`, from the line box's top; `None` where no kept box
+    /// there holds it, and the box stands on the line's baseline.
+    ///
+    /// A culled box has no shift of its own, so it stands on its parent's
+    /// baseline. Among the line's own items, the painted links from the
+    /// line's item visit every box item. Inside a ruby annotation,
+    /// `annotated`, the line's annotation items are searched.
+    pub(crate) fn culled_baseline(
+        &self,
+        nodes: &Nodes,
+        line: LineId,
+        node: NodeId,
+        annotated: bool,
+    ) -> Option<LayoutUnit> {
+        let around = |item: &FragmentItem| {
+            item.kind() == FragmentItemKind::Box && nodes.contains(item.node, node)
+        };
+        if annotated {
+            let items = self.items.get_slice(self.annotation_ids(line));
+            return (items.unwrap_or_default().iter())
+                .filter(|item| around(item))
+                .max_by_key(|item| item.node)
+                .map(|item| item.block);
+        }
+        let own = self.line_item_ids(line);
+        let head = self.items.get(self.line_span_ids(line).start)?;
+        let mut innermost: Option<&FragmentItem> = None;
+        let mut next = head.painted_next();
+        while let Some(at) = next.filter(|at| own.contains(at))
+            && let Some(item) = self.items.get(at)
+        {
+            work::step();
+            if around(item) && innermost.is_none_or(|found| found.node < item.node) {
+                innermost = Some(item);
+            }
+            next = item.painted_next();
+        }
+        innermost.map(|item| item.block)
     }
 
     /// Returns the justified lines' amounts, sorted by line, for the tests.
@@ -1022,29 +909,9 @@ heap_bytes! {
     Fragments { items, line_heads, rare }
 }
 
-/// Returns `node`'s baseline on a line of `items`, from the line box's top.
-///
-/// A kept box's baseline is its own item's. Anything else takes the
-/// innermost kept box around it, or `line`'s baseline outside every box. A
-/// culled box has no shift of its own, so this is right for it too. The walk
-/// visits the items once.
-pub(crate) fn box_baseline(
-    content: &Content,
-    line: &lines::LineRecord,
-    items: &[FragmentItem],
-    node: NodeId,
-) -> LayoutUnit {
-    let nodes = &content.nodes;
-    items
-        .iter()
-        .filter(|item| item.kind() == FragmentItemKind::Box && nodes.contains(item.node, node))
-        .max_by_key(|item| item.node)
-        .map_or_else(|| line.ascent(), |item| item.block)
-}
-
 // The placer and the pieces its files share: `place` builds and drives
-// them, and `pieces`, `boxes`, `cut` and `ruby` each
-// add to `Placer`'s `impl`.
+// them, and `pieces`, `justify`, `boxes`, `cut`, `ruby`, `annotations` and
+// `anchors` each add to `Placer`'s `impl`.
 
 /// What a piece is.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -1102,7 +969,7 @@ impl PieceKind {
     /// Whether the piece is an item of its own.
     #[inline]
     fn is_leaf(self) -> bool {
-        self.fragment().is_some()
+        self.item_kind().is_some()
     }
 
     /// Whether the piece has no level of its own. Reordering gives it the
@@ -1114,7 +981,7 @@ impl PieceKind {
     /// Returns the item kind a piece of this kind writes, or `None` where it
     /// writes no item.
     #[inline]
-    fn fragment(self) -> Option<FragmentItemKind> {
+    fn item_kind(self) -> Option<FragmentItemKind> {
         match self {
             Self::Text => Some(FragmentItemKind::Text),
             Self::Atomic => Some(FragmentItemKind::Atomic),
@@ -1224,7 +1091,7 @@ impl Piece {
     ///
     /// Text names its shaping run and its content item.
     #[inline]
-    fn item(
+    fn fragment_item(
         &self,
         kind: FragmentItemKind,
         flags: FragmentItemFlags,
@@ -1279,7 +1146,8 @@ impl Piece {
     }
 }
 
-/// Line layout's view of the prepared tables, and its cursors.
+/// Line layout's view of the prepared tables, its cursors, and the state of
+/// the line being laid out.
 ///
 /// The block's first line uses the first line's shaping, measure and
 /// `::first-line` styles where it has them. [`enter`](Self::enter) switches
@@ -1294,14 +1162,41 @@ struct Placer<'a> {
     item_clusters: &'a ItemClusters,
     count: ClusterId,
     /// The boxes that keep a fragment, in node order.
-    boxes: &'a KeptBoxes,
+    kept_boxes: &'a KeptBoxes,
     lines: &'a Lines,
     /// The block result from breaking, which places every line.
     block: BlockResult,
-    /// The current line's paragraph, and its level, read once on entering
-    /// it.
-    paragraph: ParagraphId,
-    level: BidiLevel,
+    /// What every line reads the same.
+    gates: Gates,
+    /// The ruby columns, in text order, and their levels.
+    rubies: &'a RubyColumns,
+    /// The first item not yet placed. The lines take items in order.
+    item: ItemId,
+    /// The levels of the box controls not yet met, in item order.
+    controls: &'a [ControlLevel],
+    /// The shaping run the walk is in, and where it ends. It only moves
+    /// forward, a run at a time.
+    run: RunCursor<ShapedRunId, ClusterId>,
+    /// The first kept box not yet opened.
+    next_kept: KeptBoxId,
+    /// Where the walk over the measured baseline shifts stands, once a box
+    /// has asked for one.
+    shift_rows: Option<SortedCursor<'a, (NodeId, LayoutUnit)>>,
+    /// The first ruby column not yet met. The lines meet columns in order.
+    column: RubyColumnId,
+    /// How many inline boxes the items so far open and don't close: those
+    /// open across the next line's start.
+    open_boxes: u32,
+    /// The state of the line being laid out.
+    line_state: LineState<'a>,
+}
+
+/// What line layout reads the same on every line: the content's gates,
+/// which skip work no line needs, and the block's settings.
+///
+/// It is built once, before the first line.
+#[derive(Copy, Clone, Debug)]
+struct Gates {
     text_align: TextAlign,
     text_align_last: TextAlignLast,
     /// Some box has an edge with room. Without it, no edge takes room and no
@@ -1317,25 +1212,11 @@ struct Placer<'a> {
     /// The last paragraph holds clusters, so every item at the text's end is
     /// on the last line.
     ends_on_a_line: bool,
-    /// The first item not yet placed. The lines take items in order.
-    item: ItemId,
-    /// The levels of the box controls not yet met, in item order.
-    controls: &'a [ControlLevel],
-    /// The shaping run the walk is in, and where it ends. It only moves
-    /// forward, a run at a time.
-    run: RunCursor<ShapedRunId, ClusterId>,
-    /// The first kept box not yet opened.
-    kept: KeptBoxId,
-    /// Where the walk over the measured baseline shifts stands, once a box
-    /// has asked for one.
-    shift_rows: Option<SortedCursor<'a, (NodeId, LayoutUnit)>>,
     /// Some paragraph has a tab.
     has_tabs: bool,
     /// The area the lines were broken in. Tab stops count from its content
     /// edge.
     area: LineBand,
-    /// The line's tabs.
-    tab_line: TabLine,
     /// Whether a justified line widens its tabs.
     justification: TabJustification,
     /// Whether a space before an ellipsis stays before it.
@@ -1344,50 +1225,88 @@ struct Placer<'a> {
     has_line_padding: bool,
     /// How `text-group-align` narrows every line's band.
     group: Group,
-    /// The ruby columns, in text order, and their levels.
-    rubies: &'a RubyColumns,
-    /// The first ruby column not yet met. The lines meet columns in order.
-    column: RubyColumnId,
-    /// Where `column` stood as the line started, before it went back to
-    /// the first column continued onto the line.
-    line_column: RubyColumnId,
-    /// The ruby column pieces continued onto this line.
-    ruby_pieces: &'a [RubyPiece],
-    /// The room a spread ruby base shares among its justification
-    /// opportunities, given out as its pieces are made.
-    ///
-    /// This is what Chrome's `JustifyResults` spreads over a ruby line.
-    spread: Option<Justified<'a>>,
-    /// The generated text of the hyphen the current line ends with, found
-    /// once as its piece is made.
-    ///
-    /// A line has one hyphen at most, so the pieces don't carry it.
-    hyphen: Option<GeneratedPieces>,
-    /// The innermost ruby column open where the walk is, as an index into
-    /// the line's columns.
-    open_column: Option<usize>,
     /// The block has ruby and some right-to-left text.
     ///
     /// Then no ruby column sits flush with a line's edge, as in Chrome when
     /// bidi is on.
     ruby_in_bidi: bool,
-    /// Which ends of the current line a ruby column sits flush with.
-    ruby_edges: RubyEdges,
-    /// Some style sets emphasis marks, so text items are flagged.
-    has_emphasis: bool,
     /// Some box decorates its text (`ContentFlags::DECORATED_BOXES`). Then
     /// each line says whether an inline box holds some of it.
     has_decorated_boxes: bool,
-    /// How many inline boxes the items so far open and don't close: those
-    /// open across the next line's start.
-    open_boxes: u32,
-    /// An inline box holds some of the line being laid out, or is open
-    /// across it.
-    boxed: bool,
     /// Some text stands upright in a vertical line. Only then can two runs
     /// differ in orientation, so only then do pieces split by it.
     has_upright: bool,
     /// The content holds an absolutely positioned box, whose anchor line
     /// layout places.
     has_anchors: bool,
+}
+
+// What the views of a laid-out layout read of an item.
+impl FragmentItem {
+    /// Returns the text a leaf holds, in the text `clusters` divides.
+    ///
+    /// Generated text has an empty range at its boundary, and a line or a
+    /// box an empty range at the text's start.
+    #[inline]
+    pub(crate) fn text_range(&self, clusters: &Clusters) -> Range<TextOffset> {
+        let held = self.clusters();
+        clusters.start(held.start)..clusters.start(held.end)
+    }
+
+    /// Returns where it starts and ends along the line, in pixels: its exact
+    /// start, and that plus its exact advance.
+    #[inline]
+    pub(crate) fn inline_extents(&self) -> lines::InlineExtents {
+        lines::InlineExtents::from_exact(self.inline, self.inline + self.advance())
+    }
+
+    /// Returns whether it is a leaf that is drawn: text, an atomic inline or
+    /// generated text that no ellipsis hides.
+    #[inline]
+    pub(crate) fn is_painted_leaf(&self) -> bool {
+        self.is_leaf() && !self.flags.contains(FragmentItemFlags::HIDDEN)
+    }
+}
+
+/// The state of the line being laid out: what it reads once as it starts,
+/// and what its piece walk carries.
+///
+/// One constructor writes it whole as each line starts.
+struct LineState<'a> {
+    /// The line's paragraph, and its level.
+    paragraph: ParagraphId,
+    level: BidiLevel,
+    /// Its band, narrowed by `text-group-align`, and its alignment.
+    band: LineBand,
+    align: TextAlign,
+    /// Which ends of the line a ruby column sits flush with.
+    ruby_edges: RubyEdges,
+    /// The parts of split ruby columns the line sets.
+    column_parts: &'a [ColumnPart],
+    /// Where the ruby column cursor stood as the line started, before it
+    /// went back to the first column continued onto the line.
+    line_column: RubyColumnId,
+    /// The line's tabs.
+    tab_line: TabLine,
+    /// The room a spread ruby base shares among its justification
+    /// opportunities, given out as its pieces are made.
+    ///
+    /// This is what Chrome's `JustifyResults` spreads over a ruby line.
+    spread: Option<Justified<'a>>,
+    /// The generated text of the hyphen the line ends with, found once as
+    /// its piece is made.
+    ///
+    /// A line has one hyphen at most, so the pieces don't carry it.
+    hyphen: Option<GeneratedItems>,
+    /// The innermost ruby column open where the walk is, as an index into
+    /// the line's columns.
+    open_column: Option<usize>,
+    /// An inline box holds some of the line, or is open across it.
+    boxed: bool,
+}
+
+/// Whether `ruby-align` places room among a base's or an annotation's
+/// justification opportunities, so that their count matters.
+fn spreads_inside(align: RubyAlign) -> bool {
+    matches!(align, RubyAlign::SpaceAround | RubyAlign::SpaceBetween)
 }

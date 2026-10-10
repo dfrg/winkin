@@ -3,6 +3,7 @@
 use super::{Extent, MeasureInput, MeasuredText, TextMetrics};
 use crate::config::{DominantBaselines, SuperSubPosition};
 use crate::data::{Id, IdRange, Table};
+use crate::stages::analysis::ClusterId;
 use crate::stages::content::{
     BoxFlags, ContentFlags, ItemFlags, ItemId, ItemKind, NodeId, NodeKind, TextFactsId,
 };
@@ -13,17 +14,18 @@ use crate::work;
 
 /// Prepares fixed shifts and retained box extents in node order. Ruby's
 /// look-ahead reads the shifts, so this runs before the cluster scan. The
-/// initial letter has already been measured and keeps its ink extent.
+/// initial letter has already been measured and keeps its ink extent. Nodes
+/// opening past `reach`, where the scan stops, are left out.
 pub(super) fn prepare_boxes(
     input: &MeasureInput<'_>,
     variant: FirstLineVariant,
+    reach: ClusterId,
     metrics: &Table<TextFactsId, TextMetrics>,
     out: &mut MeasuredText,
 ) {
     let content = input.content;
     let (nodes, facts) = (&content.nodes, &content.facts);
     let clusters = &input.analysis.item_clusters;
-    let reach = input.reach(variant).end;
     let dominant = input.dominant_baseline == DominantBaselines::Applied
         && content.flags.contains(ContentFlags::DOMINANT_BASELINE);
     let shifting = dominant || content.flags.contains(ContentFlags::VERTICAL_ALIGN);

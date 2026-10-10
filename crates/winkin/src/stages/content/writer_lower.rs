@@ -7,9 +7,9 @@ use alloc::boxed::Box;
 use super::facts_check;
 use super::memo::StyleKey;
 use super::transform::{TextTransformer, Transforms, case_langid};
+use super::writer::{ContentWriter, InitialLetterUse, LoweredNode, NodeFacts};
 use super::{
-    BoxFactsId, Content, ContentFlags, ContentWriter, InitialLetterUse, LoweredNode, NodeFacts,
-    NodeId, NodeKind, TextFacts, TextFactsId, TextFlags,
+    BoxFactsId, Content, ContentFlags, NodeId, NodeKind, TextFacts, TextFactsId, TextFlags,
 };
 use crate::style::{
     BidiGroup, ComputedStyle, Direction, FirstLineVariant, RubyGroup, TextTransform,
@@ -21,7 +21,26 @@ impl ContentWriter<'_> {
     pub(super) fn key(&mut self, style: &ComputedStyle<'_>) -> StyleKey {
         self.content
             .lists
-            .key(style, &mut self.report.replaced_styles)
+            .key(style, &mut self.room.report.replaced_styles)
+    }
+
+    /// Returns a node's style keyed with `initial-letter` as `letter` uses
+    /// it, and, where the block has `::first-line`, its first-line style
+    /// pinned and keyed the same way: `first_line`, or its own where that is
+    /// `None`.
+    pub(super) fn key_styles(
+        &mut self,
+        letter: InitialLetterUse,
+        style: &ComputedStyle<'_>,
+        first_line: Option<&ComputedStyle<'_>>,
+    ) -> (StyleKey, Option<StyleKey>) {
+        let style = &letter.apply(style);
+        let own = self.key(style);
+        let first_line = self.first_line.styled.then(|| match first_line {
+            Some(first_line) => self.key(&letter.apply(&style.pinned_first_line(first_line))),
+            None => own,
+        });
+        (own, first_line)
     }
 
     /// Lowers a node's style, and its pinned first-line style where the
@@ -41,12 +60,7 @@ impl ContentWriter<'_> {
         inline_box: bool,
     ) -> LoweredNode {
         let letter = self.initial_letter_use(style, inline_box);
-        let style = &letter.apply(style);
-        let own = self.key(style);
-        let first_line = self.first_line.then(|| match first_line {
-            Some(first_line) => self.key(&letter.apply(&style.pinned_first_line(first_line))),
-            None => own,
-        });
+        let (own, first_line) = self.key_styles(letter, style, first_line);
         let around = self.container_facts();
         self.lower_both(&own, first_line.as_ref(), kind, Some(around))
     }
@@ -130,11 +144,11 @@ impl ContentWriter<'_> {
         #[cfg(any(debug_assertions, test))]
         facts_check::lowered(self.content, style, kind, text, box_.id);
         let text = text.unwrap_or_else(|| {
-            self.report.replace_style();
+            self.room.report.replace_style();
             stand_in
         });
         let box_ = box_.id.unwrap_or_else(|| {
-            self.report.replace_style();
+            self.room.report.replace_style();
             BoxFactsId::INITIAL
         });
         NodeFacts { text, box_ }
@@ -182,7 +196,7 @@ impl ContentWriter<'_> {
         #[cfg(any(debug_assertions, test))]
         facts_check::lowered(self.content, &style, kind, None, box_.id);
         box_.id.unwrap_or_else(|| {
-            self.report.replace_style();
+            self.room.report.replace_style();
             BoxFactsId::INITIAL
         })
     }
@@ -204,7 +218,7 @@ impl ContentWriter<'_> {
             return InitialLetterUse::Unset;
         }
         if inline_box && self.may_open_initial_letter() {
-            self.initial_letter = true;
+            self.letters.initial_letter = true;
             return InitialLetterUse::Kept;
         }
         InitialLetterUse::Normal
@@ -214,7 +228,7 @@ impl ContentWriter<'_> {
     /// where only opening edges and float anchors have been written, and no
     /// box has taken it.
     pub(super) fn may_open_initial_letter(&self) -> bool {
-        self.at_start && self.content.text.is_empty() && !self.initial_letter
+        self.letters.at_start && self.content.text.is_empty() && !self.letters.initial_letter
     }
 
     /// Returns `node`'s own text facts.
@@ -283,7 +297,10 @@ impl ContentWriter<'_> {
         };
         LoweredNode {
             own: facts(FirstLineVariant::Standard),
-            first_line: self.first_line.then(|| facts(FirstLineVariant::FirstLine)),
+            first_line: self
+                .first_line
+                .styled
+                .then(|| facts(FirstLineVariant::FirstLine)),
             restyles: false,
             transforms: self.container_transforms(),
         }
@@ -305,7 +322,7 @@ impl ContentWriter<'_> {
         }
         let facts = &self.content.facts;
         if facts.text(own.text).shaping != facts.text(first_line.text).shaping {
-            self.content.flags.insert(ContentFlags::FIRST_LINE_RESHAPES);
+            self.content.flags.insert(ContentFlags::FIRST_LINE_SHAPING);
         }
     }
 }

@@ -14,6 +14,7 @@ use super::paint::{Decorates, Paint, PaintWalk};
 use super::ruby::Annotations;
 use super::{Annotation, Atomic, BoxFragment, FloatPlacement, Layout, TextRun};
 use crate::data::Id;
+use crate::stages::LineStages;
 use crate::stages::analysis::BidiLevel;
 use crate::stages::content::NodeKey;
 use crate::stages::fragments::{
@@ -243,16 +244,34 @@ impl<'a> Line<'a> {
         self.record.variant()
     }
 
+    /// The prepared stages as it reads them: in its variant, resolved once.
+    #[inline]
+    pub(crate) fn stages(&self) -> LineStages<'a> {
+        self.layout.stages().variant(self.variant())
+    }
+
     /// The glyphs of its text item `item`, placed exactly.
     #[inline]
     pub(super) fn glyph_walk(&self, item: &FragmentItem) -> GlyphWalk<'a> {
-        GlyphWalk::new(&self.layout.read_input(), self.id, self.record, item)
+        GlyphWalk::new(
+            &self.layout.read_input(),
+            &self.stages(),
+            self.id,
+            self.record,
+            item,
+        )
     }
 
     /// The clusters of its text item `item`, each placed exactly.
     #[inline]
     pub(super) fn cluster_walk(&self, item: &FragmentItem) -> ClusterWalk<'a> {
-        ClusterWalk::new(&self.layout.read_input(), self.id, self.record, item)
+        ClusterWalk::new(
+            &self.layout.read_input(),
+            &self.stages(),
+            self.id,
+            self.record,
+            item,
+        )
     }
 }
 

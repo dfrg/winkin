@@ -270,7 +270,7 @@ pub(super) fn line_edge(layout: &Layout, line: &Line<'_>, forward: bool) -> Clus
     let mut hanging = None;
     for leaf in place::leaves(*line) {
         work::step();
-        let (start, end) = (leaf.start(), leaf.end());
+        let (start, end) = (leaf.start, leaf.end);
         match leaf.run() {
             Some(run) if run.is_hanging() => {
                 hanging = Some(hanging.map_or(start, |at: usize| at.min(start)));

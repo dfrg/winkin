@@ -20,6 +20,7 @@ use crate::stages::analysis::{
 };
 use crate::stages::content::{ItemFlags, ItemId, ItemKind, ShapingFactsId};
 use crate::stages::fonts::{FontRunId, FontRuns, UsedFontId};
+use crate::stages::measure::PrefixAdvances;
 use crate::style::FirstLineVariant;
 use crate::unit::{InlineLayoutUnit, LayoutUnit, TextUnit};
 use crate::work;
@@ -27,7 +28,7 @@ use crate::work;
 /// Shapes the clusters before `end` in `variant`'s styles, fonts and text
 /// into `out` and `advances`.
 ///
-/// Returns how many glyphs were left out, and the flags for the shaping.
+/// Returns how many glyphs were left out, and the flags the glyphs give.
 pub(super) fn shape_text(
     input: &ShapeInput<'_>,
     variant: FirstLineVariant,
@@ -53,7 +54,7 @@ pub(super) fn shape_text(
         .count();
     glyphs.words.reserve(end.get());
     runs.reserve(end.get(), script_runs);
-    make_room(advances, end.get() + 1);
+    make_room(advances, PrefixAdvances::capacity_needed(end.get()));
     // A cluster of one expanded glyph points at the entry already holding
     // it. Upright text draws a few hundred glyphs thousands of times.
     let mut shared = cx.take_shared_glyphs();
@@ -63,6 +64,7 @@ pub(super) fn shape_text(
     let source = ShapingSource::new(input.content, analysis, variant);
     let paragraphs = &analysis.paragraphs;
     let mut paragraph = paragraphs.cursor(ParagraphId::new(0));
+    let mut facts = ParagraphFacts::new(analysis, paragraph.id(), paragraph.end(), end);
     // Combined units are looked for only where analysis made some.
     let mut units = analysis
         .flags
@@ -77,12 +79,15 @@ pub(super) fn shape_text(
         let run = walk.open();
         let annotation = walk.annotation;
         paragraphs.step_to(&mut paragraph, run.start);
-        let run_end = walk.run_end(paragraph.end(), paragraphs.flags(paragraph.id()));
+        if paragraph.id() != facts.id {
+            facts = ParagraphFacts::new(analysis, paragraph.id(), paragraph.end(), end);
+        }
+        let run_end = walk.run_end(&facts);
         let after = (run_end < end).then(|| walk.font());
         let neighbours = NeighbourFonts::new(input.fonts, before, after);
         before = Some(run.font);
         if let Some(units) = &mut units {
-            units.before(cx, runs, &mut sink, combined, &run, paragraph.id());
+            units.before(cx, runs, &mut sink, combined, &run, facts.id);
         }
         // No more runs than clusters, which a run id can always name.
         let pushed = runs.push(run, run_end);
@@ -94,7 +99,7 @@ pub(super) fn shape_text(
             &mut sink,
             &run,
             run.start..run_end,
-            paragraph_text(analysis, paragraph.id()),
+            facts.text.clone(),
             annotation,
             neighbours,
             None,
@@ -112,10 +117,44 @@ pub(super) fn shape_text(
     if any_unsafe {
         flags.insert(ShapedFlags::HAS_UNSAFE);
     }
-    if input.punctuation_trim.halves_advances() {
-        flags.insert(ShapedFlags::HALVES_PUNCTUATION);
-    }
     (dropped, flags)
+}
+
+/// What the walk reads of the paragraph it is in, read once as it enters
+/// the paragraph.
+struct ParagraphFacts {
+    id: ParagraphId,
+    /// Its text, its separator included ([`paragraph_text`]).
+    text: Range<TextOffset>,
+    flags: ParagraphFlags,
+    /// Where the fast path stops finding runs by their boundaries: the
+    /// paragraph's end, or the walk's where that is sooner, less a final
+    /// separator, which gets a run of its own.
+    plain_end: ClusterId,
+}
+
+impl ParagraphFacts {
+    /// Reads `paragraph` of `analysis`, which ends at cluster `end`, for a
+    /// walk ending at `walk_end`.
+    fn new(
+        analysis: &Analysis,
+        paragraph: ParagraphId,
+        end: ClusterId,
+        walk_end: ClusterId,
+    ) -> Self {
+        let end = end.min(walk_end);
+        let last = ClusterId::new(end.get().saturating_sub(1));
+        let separated = analysis
+            .clusters
+            .attrs(last)
+            .is_some_and(|attrs| attrs.class() == ClusterClass::Separator);
+        Self {
+            id: paragraph,
+            text: paragraph_text(analysis, paragraph),
+            flags: analysis.paragraphs.flags(paragraph),
+            plain_end: if separated { last } else { end },
+        }
+    }
 }
 
 /// The walk over the clusters that finds where shaping runs end.
@@ -201,21 +240,9 @@ impl<'a> Walk<'a> {
     // Keep both discovery loops out of the shaping loop: inlining them slows
     // preparation in the article benchmarks.
     #[inline(never)]
-    fn run_end(&mut self, paragraph_end: ClusterId, flags: ParagraphFlags) -> ClusterId {
-        if work::fast_paths() && !flags.contains(ParagraphFlags::HAS_SHAPING_STOPS) {
-            let end = paragraph_end.min(self.end);
-            let last = ClusterId::new(end.get().saturating_sub(1));
-            let plain_end = if self
-                .input
-                .analysis
-                .clusters
-                .attrs(last)
-                .is_some_and(|attrs| attrs.class() == ClusterClass::Separator)
-            {
-                last
-            } else {
-                end
-            };
+    fn run_end(&mut self, paragraph: &ParagraphFacts) -> ClusterId {
+        if work::fast_paths() && !paragraph.flags.contains(ParagraphFlags::HAS_SHAPING_STOPS) {
+            let plain_end = paragraph.plain_end;
             while self.at < plain_end {
                 let next = self.next.min(plain_end);
                 if next >= self.end {

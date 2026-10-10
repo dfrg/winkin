@@ -16,7 +16,6 @@ use crate::stages::content::NodeKey;
 use crate::stages::fragments::{FragmentItem, FragmentItemKind};
 use crate::stages::lines::InlineExtents;
 use crate::stages::measure::RubySide;
-use crate::unit::InlineLayoutUnit;
 use crate::work;
 use core::fmt;
 use core::slice::Iter;
@@ -90,12 +89,7 @@ impl<'a> Annotation<'a> {
     ///
     /// Uses the maximum width of the base and annotations, including overhang.
     pub fn inline(&self) -> InlineExtents {
-        let left = self.head.inline;
-        let right = left + InlineLayoutUnit::from_layout(self.head.size);
-        InlineExtents {
-            left: left.to_px(),
-            right: right.to_px(),
-        }
+        self.head.inline_extents()
     }
 
     /// Returns the baseline offset from line-box top.
@@ -107,14 +101,7 @@ impl<'a> Annotation<'a> {
     pub fn is_under(&self) -> bool {
         self.head
             .ruby_level()
-            .and_then(|level| {
-                self.line
-                    .layout()
-                    .measured()
-                    .text(self.line.variant())
-                    .ruby_columns()
-                    .level(level)
-            })
+            .and_then(|level| self.line.stages().measured().ruby_columns().level(level))
             .is_some_and(|level| level.side == RubySide::Under)
     }
 

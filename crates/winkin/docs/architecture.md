@@ -79,7 +79,7 @@ in, what comes out and where to read next.
 - **[fragments](../src/stages/fragments/mod.rs).** In: every prepared table
   and the lines. Out: `Fragments`, one flat table of positioned items per
   block, each line's items in visual order after alignment, justification
-  and bidi reordering. Start at `place_fragments`, then `Placer::lines` in
+  and bidi reordering. Start at `place_fragments`, then `Placer::place_lines` in
   [`place.rs`](../src/stages/fragments/place.rs).
 
 Both drivers are in [`layout/mod.rs`](../src/layout/mod.rs):

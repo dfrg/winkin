@@ -1469,11 +1469,7 @@ fn split_ruby_refits_and_rewinds_with_exclusions() {
         let actual = split_ruby_rows(&layout);
         let count = layout.lines().count();
         if let Some(ruby) = &layout.line_records().ruby {
-            assert!(
-                ruby.pieces
-                    .iter()
-                    .all(|(_, piece)| piece.line.get() < count)
-            );
+            assert!(ruby.parts().iter().all(|part| part.line.get() < count));
         }
         layout.break_lines(
             &mut cx,

@@ -163,9 +163,7 @@ fn dominant_baseline_moves_a_box_only_where_the_config_applies_it() {
     let central = |node: usize, layout: &Layout| {
         let nodes = &layout.content().nodes;
         let id = nodes.text_facts(NodeId::new(node), FirstLineVariant::Standard);
-        layout
-            .primary(id)
-            .map_or(0.0, |used| used.metrics.central.to_px())
+        primary(layout, id).map_or(0.0, |used| used.metrics.central.to_px())
     };
     let raise = central(4, &layout) - central(0, &layout);
     assert_ne!(raise, 0.0);

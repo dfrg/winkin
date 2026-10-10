@@ -129,6 +129,14 @@ impl MapUnit {
     }
 }
 
+/// A place in the offset map to take it back to: how many units it had,
+/// and its last unit then, which a later unit may have joined.
+#[derive(Copy, Clone, Debug)]
+pub(super) struct MapMark {
+    units: MapUnitId,
+    last: Option<MapUnit>,
+}
+
 /// The offset map, filled only where the build asked for it.
 #[derive(Default)]
 pub(super) struct Map {
@@ -146,6 +154,16 @@ pub(super) struct Map {
 }
 
 impl Map {
+    /// An empty map that records nothing, allocating nothing.
+    pub(super) const fn new() -> Self {
+        Self {
+            recording: false,
+            units: Table::new(),
+            first_unit: Table::new(),
+            letter_key: None,
+        }
+    }
+
     /// Removes every unit and keeps the allocations, for a new build that
     /// records the map where `recording`.
     pub(super) fn clear(&mut self, recording: bool) {
@@ -194,6 +212,26 @@ impl Map {
         // which a `u32` counts well past what fits in memory.
         debug_assert!(id.is_some(), "the map's units fit");
         id
+    }
+
+    /// Returns a mark that [`truncate`](Self::truncate) takes the units back
+    /// to.
+    pub(super) fn mark(&self) -> MapMark {
+        MapMark {
+            units: self.units.next_id(),
+            last: self.units.last().copied(),
+        }
+    }
+
+    /// Takes back every unit recorded since `mark`, and whatever was joined
+    /// to the unit that was last there.
+    pub(super) fn truncate(&mut self, mark: MapMark) {
+        self.units.truncate(mark.units);
+        if let Some(last) = mark.last
+            && let Some(slot) = self.units.last_mut()
+        {
+            *slot = last;
+        }
     }
 
     /// Returns how far the text of the node made last has got: the end of

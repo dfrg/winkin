@@ -32,6 +32,7 @@ use crate::config::RubyOverhangRule;
 use crate::config::{Config, DominantBaselines, SuperSubPosition, WordSpacing};
 use crate::data::IdRange;
 use crate::data::{Id, Keyed};
+use crate::layout::primary;
 use crate::stages::LineStages;
 use crate::stages::analysis::{ClusterAttrs, ClusterClass, ParagraphFlags, ParagraphId};
 use crate::stages::content::{
@@ -117,7 +118,7 @@ fn fixture() -> Fixture {
     Fixture::new(
         &[metrics(), narrow(), latin(), han()],
         han_fallback("Test Han"),
-        StageCheck::Built(|_, layout| check(layout)),
+        StageCheck::Built(check),
     )
 }
 

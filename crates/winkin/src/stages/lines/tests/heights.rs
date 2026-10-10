@@ -283,9 +283,7 @@ fn every_value_of_vertical_align_moves_a_box_as_chrome_moves_it() {
         fixture.text(&mut layout, &root, "X");
         let nodes = &layout.content().nodes;
         let text = nodes.text_facts(NodeId::BLOCK, FirstLineVariant::Standard);
-        layout
-            .primary(text)
-            .map_or(0.0, |used| used.metrics.x_height.to_px())
+        primary(&layout, text).map_or(0.0, |used| used.metrics.x_height.to_px())
     };
     let half_x = LayoutUnit::from_px(x_height / 2.0).to_px();
     let cases = [

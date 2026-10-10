@@ -30,16 +30,20 @@
 use core::ops::Range;
 
 use super::fit::ReshapedStart;
-use super::{Breaker, BreakerParagraph, EdgeShape, Fitting, Lines, ReshapedPiece, StartWindow};
+use super::{
+    Breaker, BreakerParagraph, EdgeShape, LineHead, LineStart, Lines, ReshapedPiece,
+    ReshapedPieces, StartWindow,
+};
 use crate::data::Id;
 use crate::data::IdRange;
-use crate::stages::Step;
 use crate::stages::analysis::{ClusterAttrs, ClusterClass, ClusterId};
+use crate::stages::content::ContentFlags;
 use crate::stages::measure::LetterWordSpacing;
 use crate::stages::shape::{
-    NeighbourFonts, ShapedRunId, ShapingEdges, ShapingKey, ShapingSource, maybe_closing_mark,
-    maybe_opening_mark, shape_range,
+    NeighbourFonts, ShapedFlags, ShapedRunId, ShapingEdges, ShapingKey, ShapingSource,
+    maybe_closing_mark, maybe_opening_mark, shape_range,
 };
+use crate::stages::{Segments, Step};
 use crate::style::TextSpacingTrim;
 use crate::unit::{InlineLayoutUnit, TextUnit};
 
@@ -86,35 +90,140 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
         Some((window, head))
     }
 
-    /// Returns the piece of the start window, `window`, shaping it again if
-    /// a one-piece candidate took it back.
+    /// Returns the reshape window of a line starting at `start`, and the
+    /// line's head in the edge tables, with the window's piece.
+    ///
+    /// A start the font shaped across is reshaped. So is a wrapped line's
+    /// opening mark its style trims, even where the font did not shape
+    /// across it. Every fit of the line shares the piece.
+    ///
+    /// It is inlined into each line's layout. Out of line, the copy of what
+    /// it returns stalls on the stores just made, and relayout is up to 8%
+    /// slower.
+    #[inline(always)]
+    pub(super) fn line_head(
+        &mut self,
+        out: &mut Lines,
+        para: &BreakerParagraph,
+        start: ClusterId,
+    ) -> (Option<StartWindow>, LineHead) {
+        let mark = out.edges.mark();
+        let wrapped = start > para.start;
+        let trims = wrapped
+            && self
+                .stages
+                .content
+                .flags
+                .contains(ContentFlags::TRIMS_WRAPPED_START)
+            && self.trims_start(start);
+        let shaped_across = wrapped
+            && self.shaped.contains(ShapedFlags::HAS_UNSAFE)
+            && self.stages.shaped.glyphs.word(start).is_unsafe_to_break();
+        let (window, head) = if shaped_across || trims {
+            self.start_window(out, para, start, trims).unzip()
+        } else {
+            (None, None)
+        };
+        (window, LineHead { mark, shaped: head })
+    }
+
+    /// Returns the piece of the start window, `window`, of a line from
+    /// `start`, shaping it again if a one-piece line took it back from
+    /// `head`.
     ///
     /// A newly shaped piece stays first in the edge tables for the later
     /// candidates.
-    pub(super) fn head(
+    fn head(
         &mut self,
         out: &mut Lines,
-        fitting: &mut Fitting<'_>,
+        para: &BreakerParagraph,
+        start: ClusterId,
         window: StartWindow,
+        head: &mut LineHead,
     ) -> Option<ReshapedPiece> {
-        if let Some(head) = fitting.head {
-            return head.piece;
+        if let Some(shaped) = head.shaped {
+            return shaped.piece;
         }
-        out.edges.rewind(fitting.mark);
-        let range = fitting.start..window.end;
-        let piece = self.reshape(
-            out,
-            fitting.para,
-            window.run,
-            range,
-            StartWindow::edges(window.trims),
-            false,
-        );
-        fitting.head = Some(ReshapedStart {
+        out.edges.rewind(head.mark);
+        let range = start..window.end;
+        let edges = StartWindow::edges(window.trims);
+        let piece = self.reshape(out, para, window.run, range, edges, false);
+        head.shaped = Some(ReshapedStart {
             piece,
             after: out.edges.mark(),
         });
         piece
+    }
+
+    /// Reshapes the edges of `line`, a line's clusters from its start to
+    /// its shaped end, and returns its pieces.
+    ///
+    /// The start's `window` has its piece in the edge tables after `head`'s
+    /// mark. A line ending inside the window is one piece, in place of the
+    /// window's. Otherwise the window's piece leads, and the end is
+    /// reshaped as `end` says. Where the end's piece may not start after
+    /// the window, the line is one piece. A line with no window reshapes
+    /// only its end.
+    ///
+    /// It is inlined into each candidate's measure. Out of line, the copy of
+    /// the pieces it returns stalls on the stores just made, and relayout
+    /// is up to 8% slower.
+    #[inline(always)]
+    pub(super) fn edge_pieces(
+        &mut self,
+        out: &mut Lines,
+        para: &BreakerParagraph,
+        line: Range<ClusterId>,
+        window: Option<StartWindow>,
+        head: &mut LineHead,
+        end: EdgeEnd,
+    ) -> ReshapedPieces {
+        let mut pieces = ReshapedPieces::default();
+        let Range {
+            start,
+            end: shaped_end,
+        } = line.clone();
+        let gives_back = end.seam > InlineLayoutUnit::ZERO;
+        let Some(window) = window else {
+            if end.reshaped
+                && let EndPiece::Piece(piece) =
+                    self.end_piece(out, para, start, shaped_end, true, end.trims)
+            {
+                pieces.push(Some(piece));
+            } else if gives_back {
+                pieces.push(self.given_back(out, shaped_end, end.seam));
+            }
+            return pieces;
+        };
+        let inside =
+            shaped_end < window.end || (shaped_end == window.end && end.whole_at_window_end);
+        if inside {
+            out.edges.rewind(head.mark);
+            head.shaped = None;
+            pieces.push(self.reshape(out, para, window.run, line, end.whole, true));
+            return pieces;
+        }
+        pieces.push(self.head(out, para, start, window, head));
+        if !end.reshaped {
+            if gives_back {
+                pieces.push(self.given_back(out, shaped_end, end.seam));
+            }
+            return pieces;
+        }
+        match self.end_piece(out, para, window.end, shaped_end, false, end.trims) {
+            EndPiece::Piece(piece) => pieces.push(Some(piece)),
+            EndPiece::None if gives_back => {
+                pieces.push(self.given_back(out, shaped_end, end.seam));
+            }
+            EndPiece::None => {}
+            EndPiece::Whole(run) => {
+                out.edges.rewind(head.mark);
+                head.shaped = None;
+                pieces = ReshapedPieces::default();
+                pieces.push(self.reshape(out, para, run, line, end.whole, true));
+            }
+        }
+        pieces
     }
 
     /// Reshapes the end of a line ending at the unsafe `end`, from the last
@@ -132,7 +241,7 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
     /// starting there joins exactly as the run did, whatever the shaper
     /// says. A piece reaching past it would shape earlier runs in this
     /// run's font and style.
-    pub(super) fn end_piece(
+    fn end_piece(
         &mut self,
         out: &mut Lines,
         para: &BreakerParagraph,
@@ -181,7 +290,7 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
     /// `id` names the shaping run holding the whole range. `edges` says how
     /// its ends are shaped. `ends_line` says it ends the line, which gives
     /// back a seam's room after it.
-    pub(super) fn reshape(
+    fn reshape(
         &mut self,
         out: &mut Lines,
         para: &BreakerParagraph,
@@ -219,13 +328,13 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
             content,
             analysis,
             stages.fonts,
-            self.halves_punctuation,
+            self.shaped.contains(ShapedFlags::HALVES_PUNCTUATION),
         );
         let source = ShapingSource::new(content, analysis, stages.variant);
         let mark = out.edges.mark();
-        let start_unsafe = {
+        let (start_unsafe, written) = {
             let mut sink = out.edges.sink();
-            shape_range(
+            let start_unsafe = shape_range(
                 self.shaping,
                 &source,
                 para.text.clone(),
@@ -234,21 +343,21 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
                 edges,
                 neighbours,
                 &mut sink,
-            )
+            );
+            (start_unsafe, sink.words_written())
         };
         // The piece's entries in the edge tables: a word and an advance per
         // cluster.
         let entries = mark.clusters..out.edges.words.next_id();
-        if out.edges.words.len() != mark.clusters.get() + count
-            || out.edges.advances.len() != mark.clusters.get() + count
-        {
+        if written != count {
             // A table could not take the piece, so the line is measured with
             // the paragraph's glyphs.
             out.edges.rewind(mark);
             return None;
         }
         let seams = para.seams;
-        if self.spaced || seams {
+        let letter_or_word = content.flags.contains(ContentFlags::NONZERO_SPACING);
+        if letter_or_word || seams {
             // Add the prefix's spacing to the piece's own advances, as Chrome
             // spaces a reshaped result. A ligature that differs between the
             // paragraph and the piece is spaced as the piece has it.
@@ -327,15 +436,15 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
     pub(super) fn trims_end(&self, para: &BreakerParagraph, mark: ClusterId) -> bool {
         mark < para.end
             && self
+                .clusters
+                .attrs(mark)
+                .is_some_and(|attrs| attrs.has(ClusterAttrs::BREAK_AFTER))
+            && self
                 .stages
                 .measured
                 .ruby_columns()
                 .interior(ClusterId::new(mark.get() + 1), &self.column)
                 .is_none()
-            && self
-                .clusters
-                .attrs(mark)
-                .is_some_and(|attrs| attrs.has(ClusterAttrs::BREAK_AFTER))
             && self
                 .clusters
                 .first_char(self.stages.text(), mark)
@@ -365,7 +474,7 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
     ///
     /// The glyphs are copied, not reshaped, as Chrome's `UnapplyAutoSpacing`
     /// copies its line's last glyph.
-    pub(super) fn given_back(
+    fn given_back(
         &mut self,
         out: &mut Lines,
         end: ClusterId,
@@ -394,16 +503,16 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
     /// Returns where a line's text ends without its trailing collapsible
     /// spaces, where the paragraph shaped across them.
     ///
-    /// The line is the one `fitting` fits, ending at `end`. Returns `None`
-    /// where it ends with no such space, or the text was not shaped across
-    /// it. Then the line keeps the paragraph's glyphs.
+    /// The line is `line`, ending at `end`. Returns `None` where it ends with
+    /// no such space, or the text was not shaped across it. Then the line
+    /// keeps the paragraph's glyphs.
     ///
     /// Chrome's `TruncateLineEndResult` reshapes here only where the line
     /// needs its exact end, for alignment, a background or a decoration.
     /// Elsewhere its last letter stays kerned against a removed space. CSS
     /// removes the space, and so does this, everywhere.
-    pub(super) fn removed_end(&self, fitting: &Fitting<'_>, end: ClusterId) -> Option<ClusterId> {
-        let start = fitting.start;
+    pub(super) fn removed_end(&self, line: &LineStart<'_>, end: ClusterId) -> Option<ClusterId> {
+        let start = line.start;
         let mut at = end;
         let mut spaces = false;
         while at > start {
@@ -416,29 +525,25 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
             at = last;
         }
         // Checked cheapest first. Most lines end at a space their text was
-        // not shaped across, and finding a space's text takes a walk.
+        // not shaped across, and finding a space's text takes a seek.
         let removed = spaces
             && at > start
             && self.stages.shaped.glyphs.word(at).is_unsafe_to_break()
-            && self.spaces_collapse(fitting, at..end);
+            && self.spaces_collapse(at..end);
         removed.then_some(at)
     }
 
-    /// Returns whether every space in `clusters`, of the line `fitting`
-    /// fits, collapses away at a break after it.
+    /// Returns whether every space in `clusters` collapses away at a break
+    /// after it.
     ///
     /// Such a space hangs, and its text collapses white space. Returns
     /// `false` where the walk ends short, which happens only where a row is
-    /// missing. The walk starts from the line's first item.
-    pub(super) fn spaces_collapse(
-        &self,
-        fitting: &Fitting<'_>,
-        clusters: Range<ClusterId>,
-    ) -> bool {
+    /// missing. The walk seeks the clusters' start.
+    pub(super) fn spaces_collapse(&self, clusters: Range<ClusterId>) -> bool {
         let stages = &self.stages;
         let facts = &stages.content.facts;
         let mut walked = clusters.start;
-        for step in self.line_segments(fitting, clusters.clone()) {
+        for step in Segments::new(&self.stages, clusters.clone()) {
             let Step::Segment(segment) = step else {
                 continue;
             };
@@ -461,8 +566,24 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
     }
 }
 
+/// How [`Breaker::edge_pieces`] reshapes a line's end.
+#[derive(Copy, Clone, Debug)]
+pub(super) struct EdgeEnd {
+    /// How the line is shaped where it becomes one piece.
+    pub(super) whole: ShapingEdges,
+    /// The end may not keep the paragraph's glyphs: the font shaped across
+    /// it, its spaces are removed, or its closing mark is trimmed.
+    pub(super) reshaped: bool,
+    /// It trims its closing mark.
+    pub(super) trims: bool,
+    /// The room of a seam it gives back, zero where it gives none.
+    pub(super) seam: InlineLayoutUnit,
+    /// A line ending at its start window's end is one piece too.
+    pub(super) whole_at_window_end: bool,
+}
+
 /// A line ending's reshape, as [`Breaker::end_piece`] finds it.
-pub(super) enum EndPiece {
+enum EndPiece {
     /// The piece, in the edge tables.
     Piece(ReshapedPiece),
     /// Its window reaches the line's start window and still may not join

@@ -39,8 +39,8 @@ use core::ops::Range;
 
 use super::annotate::Carry;
 use super::fit::{ParagraphLines, ParagraphPlan, Resume};
-use super::fit_search::end_cost;
-use super::score::{BALANCE_LINES, BreakCandidate, LineChoice, PlannedEnds, ScoreRule, WrapLineId};
+use super::fit_measure::end_cost;
+use super::score::{BALANCE_LINES, BreakPoint, LineChoice, PlannedEnds, ScoreRule, WrapLineId};
 use super::{
     Breaker, BreakerParagraph, Cursor, Exclusions, ExclusionsCheckpoint, LineFlags, LineId,
     LineRecord, Lines, LinesMark,
@@ -59,7 +59,7 @@ use crate::work;
 /// It records the host's floats, the lines' tables, the cursor and the
 /// carry.
 #[derive(Copy, Clone, Debug)]
-pub(super) struct Mark {
+pub(super) struct LayoutMark {
     from: Resume,
     cursor: Cursor,
     stage: LinesMark,
@@ -67,7 +67,7 @@ pub(super) struct Mark {
     carry: Carry,
 }
 
-impl Mark {
+impl LayoutMark {
     /// Returns where the lines stand now, before the paragraph's line
     /// `from`.
     pub(super) fn new(
@@ -105,7 +105,7 @@ const RECENT: usize = BALANCE_LINES;
 /// start. So a long paragraph whose last lines `pretty` changes is laid out
 /// again only from them.
 pub(super) struct RecentMarks {
-    marks: [Option<Mark>; RECENT],
+    marks: [Option<LayoutMark>; RECENT],
 }
 
 impl RecentMarks {
@@ -117,14 +117,14 @@ impl RecentMarks {
     }
 
     /// Keeps `mark`, in place of the mark [`RECENT`] lines before it.
-    pub(super) fn record(&mut self, mark: Mark) {
+    pub(super) fn record(&mut self, mark: LayoutMark) {
         if let Some(slot) = self.marks.get_mut(mark.from.line.get() % RECENT) {
             *slot = Some(mark);
         }
     }
 
     /// Returns the mark of the paragraph's `line`, where it is kept.
-    fn get(&self, line: WrapLineId) -> Option<&Mark> {
+    fn get(&self, line: WrapLineId) -> Option<&LayoutMark> {
         self.marks
             .get(line.get() % RECENT)?
             .as_ref()
@@ -180,7 +180,7 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
         cursor: &mut Cursor,
     ) {
         let from = Resume::new(lines.para.start, WrapLineId::new(0));
-        let mark = Mark::new(from, self.carry, cursor, out, self.exclusions);
+        let mark = LayoutMark::new(from, self.carry, cursor, out, self.exclusions);
         let mut recent = RecentMarks::new();
         let recording = Some(&mut recent);
         self.paragraph_lines::<FLOATS>(out, lines, ParagraphPlan::Greedy, from, cursor, recording);
@@ -218,7 +218,7 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
     }
 
     /// Takes back what was laid out since `mark`, and the carry with it.
-    fn take_back(&mut self, out: &mut Lines, mark: &Mark, cursor: &mut Cursor) {
+    fn take_back(&mut self, out: &mut Lines, mark: &LayoutMark, cursor: &mut Cursor) {
         mark.rewind(cursor, out, self.exclusions);
         self.scratch.placements.truncate(out.lines.next_id());
         self.carry = mark.carry;
@@ -245,7 +245,7 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
             return WrapDecision::Keep;
         }
         let scorable = greedy_lines.len() <= BALANCE_LINES
-            && !lines.para.walk
+            && !lines.para.walks()
             && !first.flags.contains(LineFlags::FIRST_LINE)
             && !self.holds_floats(out, greedy_lines, lines.para.start);
         let rule = scorable.then(|| self.score_rule(LineChoice::Balance, last));
@@ -278,13 +278,13 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
         rule: Pretty,
     ) -> WrapDecision {
         let count = greedy.end.get().saturating_sub(greedy.start.get());
-        if count <= 1 || para.walk {
+        if count <= 1 || para.walks() {
             return WrapDecision::Keep;
         }
-        // The window is the last lines. A first line in its own variant
+        // The scored lines are the last ones. A first line in its own variant
         // stays as it is, since the standard prefix does not measure it.
         let choice = LineChoice::Pretty(rule);
-        let mut from = LineId::new(greedy.end.get() - count.min(choice.window()));
+        let mut from = LineId::new(greedy.end.get() - count.min(choice.scored()));
         if out
             .lines
             .get(from)
@@ -292,8 +292,8 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
         {
             from = LineId::new(from.get() + 1);
         }
-        let window = out.lines.slice(from..greedy.end);
-        let (Some(first), Some(last)) = (window.first(), window.last()) else {
+        let scored = out.lines.slice(from..greedy.end);
+        let (Some(first), Some(last)) = (scored.first(), scored.last()) else {
             return WrapDecision::Keep;
         };
         let Some(facts) = self
@@ -303,10 +303,10 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
         else {
             return WrapDecision::Keep;
         };
-        if window.len() <= 1
-            || window.iter().any(|line| line.flags.overflowed())
-            || !self.ends_short(window, facts.content_end, rule)
-            || self.holds_floats(out, window, first.clusters().start)
+        if scored.len() <= 1
+            || scored.iter().any(|line| line.flags.overflowed())
+            || !self.ends_short(scored, facts.content_end, rule)
+            || self.holds_floats(out, scored, first.clusters().start)
         {
             return WrapDecision::Keep;
         }
@@ -317,13 +317,13 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
             })
     }
 
-    /// Returns whether the last of `window` ends short by `rule`.
+    /// Returns whether the last of `scored` ends short by `rule`.
     ///
     /// Chrome's `ShouldOptimize` calls it short when it is one word under a
     /// third of its room, or the two lines before it are hyphenated.
     /// `Pretty::Even` also counts any last line under a fifth of its room.
-    fn ends_short(&self, window: &[LineRecord], content_end: ClusterId, rule: Pretty) -> bool {
-        let Some(last) = window.last() else {
+    fn ends_short(&self, scored: &[LineRecord], content_end: ClusterId, rule: Pretty) -> bool {
+        let Some(last) = scored.last() else {
             return false;
         };
         let width = last.width + last.indent;
@@ -332,13 +332,13 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
             return true;
         }
         let hyphenated = |back: usize| {
-            window
+            scored
                 .len()
                 .checked_sub(back)
-                .and_then(|at| window.get(at))
+                .and_then(|at| scored.get(at))
                 .is_some_and(|line| line.flags.contains(LineFlags::HYPHENATED))
         };
-        if window.len() >= 3 && hyphenated(2) && hyphenated(3) {
+        if scored.len() >= 3 && hyphenated(2) && hyphenated(3) {
             return true;
         }
         rule == Pretty::Even && width < room.divided(5)
@@ -349,7 +349,7 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
     fn breaks_inside(&self, line: &LineRecord, content_end: ClusterId) -> bool {
         let start = line.clusters().start;
         let last = ClusterId::new(content_end.get().saturating_sub(1));
-        start < last && self.first_opportunity(start..last).is_some()
+        start < last && self.opportunity(start..last, false, false).is_some()
     }
 
     /// Returns whether any of `lines` holds a float anchored after `from`.
@@ -393,26 +393,26 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
         from: LineId,
         rule: &ScoreRule,
     ) -> Option<PlannedEnds> {
-        let window = out.lines.slice(from..greedy.end);
-        let (first, last) = (window.first()?, window.last()?);
+        let scored = out.lines.slice(from..greedy.end);
+        let (first, last) = (scored.first()?, scored.last()?);
         let (start, end) = (first.clusters().start, last.clusters().end);
-        // The costs move forward with the candidates, from the window's
-        // start.
+        // The costs move forward with the break points, from the scored
+        // lines' start.
         let mut costs = self.edge_costs(para, start);
         let scoring = &mut self.scratch.scoring;
         scoring.begin(WrapLineId::new(from.get() - greedy.start.get()));
-        for line in window {
+        for line in scored {
             work::step();
             if !scoring.push_room(line.band.width() - line.indent) {
                 return None;
             }
         }
-        // The window's start, every opportunity inside it, and its end. A
-        // `hanging-punctuation: first` mark hangs only from the block's
-        // first line.
-        let opening = BreakCandidate::new(
+        // The scored lines' start, every opportunity inside them, and their
+        // end. A `hanging-punctuation: first` mark hangs only from the
+        // block's first line.
+        let opening = BreakPoint::new(
             start,
-            self.line_start(para, &mut costs, start, from == LineId::new(0)),
+            self.start_position(para, &mut costs, start, from == LineId::new(0)),
             LayoutUnit::ZERO,
             false,
             rule.hyphen,
@@ -422,7 +422,7 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
         }
         let before_end = ClusterId::new(end.get().saturating_sub(1));
         let mut next = start;
-        while let Some(opportunity) = self.first_opportunity(next..before_end) {
+        while let Some(opportunity) = self.opportunity(next..before_end, false, false) {
             work::step();
             // Hanging white space after an opportunity belongs to the line
             // before, as in the greedy fit and Blink's `AppendTrailingSpaces`.
@@ -437,20 +437,20 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
                 break;
             }
             let (reach, hyphenated) = self.line_end(para, &mut costs, start, at);
-            let candidate = BreakCandidate::new(
+            let point = BreakPoint::new(
                 at,
-                self.line_start(para, &mut costs, at, false),
+                self.start_position(para, &mut costs, at, false),
                 reach,
                 hyphenated,
                 rule.hyphen,
             );
-            if !self.scratch.scoring.push(candidate) {
+            if !self.scratch.scoring.push(point) {
                 return None;
             }
             next = at;
         }
         let (reach, hyphenated) = self.line_end(para, &mut costs, start, end);
-        let closing = BreakCandidate::new(end, LayoutUnit::ZERO, reach, hyphenated, rule.hyphen);
+        let closing = BreakPoint::new(end, LayoutUnit::ZERO, reach, hyphenated, rule.hyphen);
         if !self.scratch.scoring.push(closing) {
             return None;
         }
@@ -461,7 +461,7 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
     /// paragraph's start, less its start cost.
     ///
     /// `first` marks the block's first line. `costs` moves to `start`.
-    fn line_start(
+    fn start_position(
         &self,
         para: &BreakerParagraph,
         costs: &mut Option<SortedCursor<'_, LineEdgeCost>>,
@@ -490,13 +490,8 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
         let reach =
             self.stages.measured.prefix.get(end) - para.origin - self.seam_before(para, end) - tail;
         let cost = end_cost(para, costs, end);
-        let flex = if cost.flags.contains(LineEdgeFlags::HANG_FORCED) {
-            cost.flex
-        } else {
-            LayoutUnit::ZERO
-        };
         (
-            reach.ceil_to_grid().to_layout() + cost.end - flex,
+            reach.ceil_to_grid().to_layout() + cost.charged_end(),
             cost.flags.contains(LineEdgeFlags::HYPHEN),
         )
     }
@@ -511,7 +506,7 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
         &mut self,
         out: &mut Lines,
         lines: &ParagraphLines<'_>,
-        mark: &Mark,
+        mark: &LayoutMark,
         halving: Halving,
         cursor: &mut Cursor,
     ) {

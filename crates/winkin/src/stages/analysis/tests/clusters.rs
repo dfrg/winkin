@@ -5,6 +5,8 @@
 //! - each cluster's class.
 
 use super::*;
+use crate::data::TextOffset;
+use crate::stages::content::ItemId;
 use crate::tests::unicode_test_data;
 
 /// Grapheme boundaries in `text`, `boundaries`, with the boundary clusters add
@@ -367,4 +369,41 @@ fn a_generated_zero_width_space_is_a_class_of_its_own() {
         [true, true, true, false, true, true, true, true, false, true]
     );
     assert_eq!(breaks(&layout), [4, 8, 15], "after each");
+}
+
+/// A walk to a byte from any cluster ends at the cluster the search finds:
+/// the one holding the byte, or the text's end past it.
+#[test]
+fn a_walk_to_a_byte_finds_the_cluster_holding_it() {
+    let layout = plain("ab\u{301}c d\u{1F600}e");
+    let clusters = &analysis(&layout).clusters;
+    for near in 0..=clusters.len() + 1 {
+        for at in 0..=layout.text().len() + 1 {
+            let at = TextOffset::new(at);
+            assert_eq!(
+                clusters.walk_to(ClusterId::new(near), at),
+                clusters.at(at),
+                "from {near} to {at:?}"
+            );
+        }
+    }
+}
+
+/// A walk to a cluster from any item ends at the item holding it, past the
+/// box edges at its start.
+#[test]
+fn a_walk_to_a_cluster_finds_the_item_holding_it() {
+    let style = ComputedStyle::initial();
+    let layout = pieces(&[("ab", &style), ("c", &style), ("de", &style)]);
+    let analysis = analysis(&layout);
+    let items = &analysis.item_clusters;
+    for from in 0..items.len() {
+        for cluster in analysis.clusters.ids() {
+            let item = items.walk_to_cluster(ItemId::new(from), cluster);
+            assert!(
+                items.range(item).contains(&cluster),
+                "from {from} to {cluster:?}"
+            );
+        }
+    }
 }

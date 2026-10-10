@@ -27,9 +27,15 @@ fn a_line_of_two_bidi_paragraphs_is_reordered_as_one() {
         .iter()
         .filter(|item| item.kind() == FragmentItemKind::Text)
         .flat_map(|item| {
-            GlyphWalk::new(&input, LineId::new(0), record, item)
-                .map(|glyph| glyph.cluster)
-                .collect::<Vec<_>>()
+            GlyphWalk::new(
+                &input,
+                &layout.stages().variant(record.variant()),
+                LineId::new(0),
+                record,
+                item,
+            )
+            .map(|glyph| glyph.cluster)
+            .collect::<Vec<_>>()
         })
         .collect();
     assert_eq!(drawn, [2, 1, 0, 3, 4].map(ClusterId::new));
@@ -60,9 +66,15 @@ fn a_right_to_left_line_is_drawn_from_its_end() {
     let clusters: Vec<ClusterId> = {
         let input = layout.read_input();
         let record = &layout.line_records().lines[LineId::new(0)];
-        GlyphWalk::new(&input, LineId::new(0), record, &line[0])
-            .map(|glyph| glyph.cluster)
-            .collect()
+        GlyphWalk::new(
+            &input,
+            &layout.stages().variant(record.variant()),
+            LineId::new(0),
+            record,
+            &line[0],
+        )
+        .map(|glyph| glyph.cluster)
+        .collect()
     };
     assert_eq!(
         clusters,

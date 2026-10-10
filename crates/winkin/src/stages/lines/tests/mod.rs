@@ -32,6 +32,7 @@ use super::*;
 use crate::build::FloatSide;
 use crate::data::IdRange;
 use crate::data::{Id, Keyed, Table};
+use crate::layout::primary;
 use crate::stages::analysis::{ClusterAttrs, ClusterClass, ClusterId, ParagraphFlags, ParagraphId};
 use crate::stages::content::{NodeId, NodeKind};
 use crate::stages::measure::{self, MeasureFlags};

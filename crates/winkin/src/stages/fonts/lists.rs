@@ -9,7 +9,7 @@
 //!   before a cluster needs it. Beside the lists it keeps the characters no
 //!   font maps.
 //!
-//! Each list is made whole from fontwich's answers the first time a segment
+//! Each list is made whole from fontwich's answers the first time a span
 //! asks for it, and grows only at its end.
 
 use alloc::boxed::Box;
@@ -510,7 +510,7 @@ heap_bytes! {
 /// The lists of fonts to try, and the characters no font maps.
 ///
 /// There is one list for each list, script, language, matching request and
-/// presentation a segment or a primary font has asked for, trimmed between
+/// presentation a span or a primary font has asked for, trimmed between
 /// builds to those asked for last. The unmapped memo holds the characters
 /// no font of the collection maps, whose miss no list walks again.
 pub(super) struct CandidateLists {

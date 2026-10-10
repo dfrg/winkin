@@ -2,8 +2,9 @@
 //! edges.
 
 use super::edges::logical_edges;
+use super::scan::{Scan, ScanWalk};
 use super::tabs::tab_advance;
-use super::{Extent, InitialLetter, Scan, ScanWalk};
+use super::{Extent, InitialLetter};
 use crate::data::{Id, IdRange};
 use crate::font::FontMetricsProvider;
 use crate::stages::analysis::{ClusterAttrs, ClusterClass};
@@ -45,7 +46,7 @@ pub(super) fn initial_letter(
     advances: &[InlineLayoutUnit],
     strut: Extent,
 ) -> Option<InitialLetter> {
-    let (content, input, variant) = (scan.content, scan.input, scan.variant);
+    let (content, input, variant) = (scan.input.content, scan.input, scan.variant);
     let node = content.block.initial_letter?;
     let (nodes, facts) = (&content.nodes, &content.facts);
     let text = nodes.text_facts(node, variant);
@@ -56,7 +57,7 @@ pub(super) fn initial_letter(
     let boxes = facts.box_facts(nodes.box_facts(node, variant));
     let items = nodes.items(node);
     let close = ItemId::new(items.end.get().checked_sub(1)?);
-    let item_clusters = &scan.analysis.item_clusters;
+    let item_clusters = &scan.input.analysis.item_clusters;
     let clusters = item_clusters.get(items.start)?..item_clusters.get(close)?;
     // Step each cluster as the scan will, and take the ink of its glyphs
     // where the pen will draw them.
@@ -72,6 +73,7 @@ pub(super) fn initial_letter(
         work::step();
         look.cross(scan, at, None);
         let class = scan
+            .input
             .analysis
             .clusters
             .attrs(at)
@@ -90,7 +92,7 @@ pub(super) fn initial_letter(
         }
         if let Some(font) = look.segment.and_then(|segment| scan.font(&segment)) {
             let mut unite = |x: InlineLayoutUnit, rise: LayoutUnit, glyph: u32| {
-                let Some(glyph) = scan.fonts.used.glyph_ink(font, glyph, provider) else {
+                let Some(glyph) = scan.input.fonts.used.glyph_ink(font, glyph, provider) else {
                     return;
                 };
                 let left = x + InlineLayoutUnit::from_layout(glyph.left);

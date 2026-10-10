@@ -46,7 +46,13 @@ fn glyphs_stand_at_the_exact_differences_of_the_prefix() {
                 if item.kind() != FragmentItemKind::Text {
                     continue;
                 }
-                for glyph in GlyphWalk::new(&input, id, line, item) {
+                for glyph in GlyphWalk::new(
+                    &input,
+                    &layout.stages().variant(line.variant()),
+                    id,
+                    line,
+                    item,
+                ) {
                     let pen = pen(&stages, glyph.cluster);
                     assert_eq!(glyph.x, pen - origin, "{id:?} at {width}: {glyph:?}");
                     count += 1;
@@ -193,13 +199,19 @@ fn text_items(layout: &Layout) -> Vec<TextItem> {
         .map(|item| {
             let start = item.clusters().start;
             assert_eq!(item.inline, pen(&stages, start) - origin);
-            let glyphs = GlyphWalk::new(&input, LineId::new(0), record, item)
-                .map(|glyph| {
-                    let pen = pen(&stages, glyph.cluster);
-                    assert_eq!(glyph.x, pen - origin, "{glyph:?}");
-                    (glyph.id, glyph.cluster, glyph.y > TextUnit::from_raw(0))
-                })
-                .collect();
+            let glyphs = GlyphWalk::new(
+                &input,
+                &layout.stages().variant(record.variant()),
+                LineId::new(0),
+                record,
+                item,
+            )
+            .map(|glyph| {
+                let pen = pen(&stages, glyph.cluster);
+                assert_eq!(glyph.x, pen - origin, "{glyph:?}");
+                (glyph.id, glyph.cluster, glyph.y > TextUnit::from_raw(0))
+            })
+            .collect();
             (
                 (item.clusters(), stages.content.nodes.key(item.node)),
                 glyphs,

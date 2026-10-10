@@ -37,6 +37,7 @@ mod scan_em_boxes;
 mod scan_ends;
 mod scan_initial_letter;
 mod scan_intrinsic;
+mod scan_overhang;
 mod scan_ruby;
 mod scan_walk;
 mod spacing;
@@ -54,24 +55,18 @@ use crate::config::{
 };
 use crate::data::{Id, Keyed, SortedTable, Table, define_flags, define_id, heap_bytes, make_room};
 use crate::stages::analysis::{Analysis, ClusterId, ParagraphId};
-use crate::stages::content::{
-    AtomicId, Content, FloatId, Item, ItemFlags, ItemId, ItemKind, NodeId, TextFacts, TextFactsId,
-    VariantText,
-};
-use crate::stages::fonts::{FontLineMetrics, Fonts, LineBaseline, UsedFontId};
-use crate::stages::shape::{Advances, ShapeSession, Shaped, ShapedText};
-use crate::stages::{Segment, Segments, Step};
-use crate::style::{FirstLine, FirstLineState, FirstLineVariant, WritingMode};
+use crate::stages::content::{AtomicId, Content, NodeId, TextFactsId};
+use crate::stages::fonts::{FontLineMetrics, Fonts, LineBaseline};
+use crate::stages::shape::{Advances, ShapeSession, Shaped};
+use crate::style::{FirstLine, FirstLineState, FirstLineVariant};
 use crate::unit::{InlineLayoutUnit, LayoutUnit};
-use autospace::SeamContext;
-use scan_ends::AnchoredFloats;
-use scan_walk::OverhangNeighbour;
+use scan::Scan;
 
 pub(super) use autospace::AutospaceRules;
 pub(crate) use edges::{BoundarySplit, edge_room, items_after_break};
 pub(crate) use extent::Extent;
 use generated::GeneratedTexts;
-pub(crate) use generated::{GeneratedPieces, ShapedGenerated};
+pub(crate) use generated::{GeneratedItems, ShapedGenerated};
 pub(crate) use items::KeptBoxes;
 use items::{ItemEmBoxes, ItemExtents};
 pub(crate) use justify::{JustifyOpportunities, JustifySummary};
@@ -80,7 +75,9 @@ use metrics::text_metrics;
 use prefix::LineEdgeCosts;
 pub(crate) use prefix::PrefixAdvances;
 pub(crate) use ruby::{RubySpread, em_box};
-pub(crate) use ruby_columns::{ColumnWalk, RubyColumn, RubyColumns, RubyLevel, RubySide};
+pub(crate) use ruby_columns::{
+    ColumnWalk, RubyColumn, RubyColumns, RubyLevel, RubySide, is_monolithic,
+};
 pub(crate) use spacing::{LetterWordSpacing, WordSpacingRule};
 #[cfg(test)]
 use tabs::tab_advance;
@@ -143,10 +140,12 @@ impl<'a> MeasureInput<'a> {
 /// Measures the text of `input` into `out`, turning shaping's `advances`
 /// into prefix sums in place.
 ///
-/// Writes each text's primary-font metrics first, once for both variants.
-/// Then shapes the hyphens and ellipses font selection chose fonts for, with
-/// the shaping caches in `cx`, so that a line ending at a soft hyphen is
-/// charged its hyphen's width. Where `::first-line` restyles something, it
+/// Where `new_fonts` says the fonts and text facts are new, as after a build,
+/// it first writes each text's primary-font metrics, once for both variants.
+/// Then it shapes the hyphens and ellipses font selection chose fonts for,
+/// with the shaping caches in `cx`, so that a line ending at a soft hyphen is
+/// charged its hyphen's width. Otherwise it keeps both, which depend only on
+/// the fonts and the text facts. Where `::first-line` restyles something, it
 /// measures the first paragraph again in its first-line styles, from the
 /// first line's advances or a copy of the text's.
 ///
@@ -158,15 +157,22 @@ pub(crate) fn measure_text(
     scratch: &mut MeasureScratch,
     advances: Advances,
     out: &mut Measured,
+    new_fonts: bool,
 ) {
     let (advances, mut first_advances) = advances.into_parts();
-    out.clear();
+    out.clear_text();
     out.word_spacing_rule = WordSpacingRule::new(input.word_spacing, input.content);
-    text_metrics(input, &mut out.text_metrics);
-    // The generated texts, whichever line they are on, where the font
-    // stage chose fonts for one.
-    if input.fonts.generated().iter().next().is_some() {
-        out.generated_mut().fill(input, cx);
+    if new_fonts {
+        out.text_metrics.clear();
+        text_metrics(input, &mut out.text_metrics);
+        if let Some(generated) = &mut out.generated {
+            generated.clear();
+        }
+        // The generated texts, whichever line they are on, where the font
+        // stage chose fonts for one.
+        if input.fonts.generated().iter().next().is_some() {
+            out.generated_mut().fill(input, cx);
+        }
     }
     let first = input.analysis.first_line_reach(input.content);
     if let Some(reach) = &first
@@ -176,7 +182,10 @@ pub(crate) fn measure_text(
         // with room for the end's entry the prefix adds, as shaping makes
         // room for it.
         let own = advances.get(..reach.end.get()).unwrap_or_default();
-        make_room(&mut first_advances, own.len() + 1);
+        make_room(
+            &mut first_advances,
+            PrefixAdvances::capacity_needed(own.len()),
+        );
         first_advances.extend_from_slice(own);
     }
     let Measured {
@@ -338,6 +347,18 @@ impl Keyed for LineEdgeCost {
     #[inline]
     fn key(&self) -> ClusterId {
         self.at
+    }
+}
+
+impl LineEdgeCost {
+    /// Returns what a line ending here pays, less the flex a forced hang
+    /// always takes back (`hanging-punctuation: force-end`).
+    pub(crate) fn charged_end(&self) -> LayoutUnit {
+        if self.flags.contains(LineEdgeFlags::HANG_FORCED) {
+            self.end - self.flex
+        } else {
+            self.end
+        }
     }
 }
 
@@ -715,11 +736,20 @@ impl Measured {
     /// Empties the measurements, keeping every allocation. Also what a layout
     /// holds when its builder was dropped without finishing.
     pub(crate) fn clear(&mut self) {
-        self.text.clear();
+        self.clear_text();
         self.text_metrics.clear();
         if let Some(generated) = &mut self.generated {
             generated.clear();
         }
+    }
+
+    /// Empties what depends on the boxes' geometry: the texts' measurements,
+    /// the intrinsic widths and the word-spacing rule.
+    ///
+    /// Keeps the text metrics and the generated texts, which depend only on
+    /// the fonts and the text facts.
+    fn clear_text(&mut self) {
+        self.text.clear();
         self.intrinsic = IntrinsicWidths::default();
         self.word_spacing_rule = WordSpacingRule::CHROME;
     }
@@ -733,14 +763,16 @@ impl Measured {
             .get_or_insert_with(|| Box::new(GeneratedTexts::new()))
     }
 
-    /// Empties the measurements and hands back the buffers the prefixes
-    /// were kept in.
+    /// Empties the texts' measurements and hands back the buffers the
+    /// prefixes were kept in.
     ///
     /// Shaping fills them with the next build's advances, and
     /// [`measure_text`] takes them back. One buffer each goes round, so a
-    /// warm rebuild allocates none.
+    /// warm rebuild allocates none. The text metrics and the generated texts
+    /// stay for a measure that keeps the fonts. [`measure_text`] makes them
+    /// again where the fonts are new.
     pub(crate) fn recycle(&mut self) -> Advances {
-        self.clear();
+        self.clear_text();
         let text = mem::take(&mut self.text.text_mut().prefix.sums);
         let first_line = self
             .text
@@ -854,240 +886,5 @@ heap_bytes! {
 impl Default for Measured {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-// The scan's state and what its files share: `scan` drives it, and
-// `scan_walk`, `scan_ends`, `scan_ruby`, `scan_em_boxes`, `scan_initial_letter`
-// and `scan_intrinsic` each add a part of it.
-
-/// What one variant's scan reads, fixed for that variant.
-///
-/// It holds the stages before measurement, the variant, where the scan
-/// stops, the text metrics and hyphens made earlier in the stage, and the
-/// block's initial letter. Its `has_*` gates say which phases the content
-/// needs at all. The walk ([`ScanWalk`]) moves and this doesn't, so a
-/// look-ahead copies the walk alone.
-struct Scan<'a> {
-    input: &'a MeasureInput<'a>,
-    content: &'a Content,
-    analysis: &'a Analysis,
-    fonts: &'a Fonts,
-    /// Whose styles the text is measured in.
-    variant: FirstLineVariant,
-    /// The variant's shaping: the glyphs, which say which clusters continue
-    /// a ligature, and the shaping runs the walk holds.
-    shaped: &'a ShapedText,
-    /// The text its clusters are read in.
-    source: VariantText<'a>,
-    /// Where the scan stops: the text's end, or the first paragraph's.
-    end: ClusterId,
-    writing_mode: WritingMode,
-    /// The baseline the lines are set on. An atomic inline without a
-    /// baseline of its own sits on it.
-    baseline: LineBaseline,
-    /// Which clusters take word-spacing: the build's rule.
-    words: WordSpacingRule,
-    /// The hyphens, shaped, which a line ending at a soft hyphen pays.
-    generated: &'a GeneratedTexts,
-    /// What each text's facts measure in its primary font.
-    metrics: &'a Table<TextFactsId, TextMetrics>,
-    /// The block's initial letter.
-    ///
-    /// Its box's edges take what its measure says, and its items take no
-    /// room across the line. The look-ahead that measures it reads a scan
-    /// with none.
-    letter: Option<InitialLetter>,
-    /// Where `text-autospace` puts room.
-    ///
-    /// The scan looks for seams only where some style sets it, and then only
-    /// in paragraphs with an ideograph.
-    autospace: AutospaceRules,
-    /// The text has a tab. Tab stops are sized only then.
-    has_tabs: bool,
-    /// Some box has an edge that takes room. Without one, no boundary takes
-    /// any.
-    has_edges: bool,
-    /// Some box with an edge clones its decoration where it breaks.
-    has_clones: bool,
-    /// Some style spaces its letters or words. Without one, the scan works
-    /// out no spacing.
-    has_spacing: bool,
-    /// Some style sets line padding. The scan tracks it only then.
-    has_padding: bool,
-    /// Some style hangs punctuation. The scan tracks it only then.
-    has_hanging: bool,
-    /// The content has ruby. The scan looks for columns and their overhang
-    /// only then.
-    has_ruby: bool,
-    /// Some text is combined (`text-combine-upright`). Combined text takes
-    /// no spacing and ends every autospace seam.
-    has_combined: bool,
-    /// The plain fast path is open ([`plain_fast_path`](Self::plain_fast_path)).
-    ///
-    /// No style sets anything that a cluster inside a text item could pay
-    /// for beyond its advance.
-    plain_fast_path_open: bool,
-}
-
-/// The scan's walk over the text, and the state that moves with it.
-///
-/// It holds:
-/// - the segment holding the cluster after the scan's boundary, with its
-///   item's text facts;
-/// - cursors on the atomic inlines and floats;
-/// - the edges of the cloned boxes open;
-/// - the last leaf passed, for a ruby column's overhang.
-///
-/// It is `Copy`. A look-ahead over a ruby column or the initial letter
-/// moves a copy, leaving the scan's own in place. Both read the same
-/// [`Scan`].
-#[derive(Copy, Clone)]
-struct ScanWalk<'a> {
-    /// The walk over the segments and the items between them.
-    segments: Segments<'a>,
-    /// What the walk yields next. The scan takes it when it reaches its
-    /// boundary.
-    ahead: Option<Step>,
-    /// The segment holding the clusters from the scan's boundary to
-    /// `until`.
-    segment: Option<Segment>,
-    /// The segment's item row, read where the scan enters the item.
-    item: Option<&'a Item>,
-    /// The segment's clusters are combined text.
-    ///
-    /// The scan reads the script run's orientation on entering the segment,
-    /// and only where some text is combined.
-    combined: bool,
-    /// The autospace facts and direction, resolved on entering a segment.
-    seam: Option<SeamContext>,
-    /// Where the segment ends. No item sits at a boundary before it.
-    until: ClusterId,
-    /// The text facts of the segment's item, in the variant.
-    text: TextFactsId,
-    /// The row `text` names.
-    facts: &'a TextFacts,
-    /// What the item's text adds after each of its clusters.
-    ///
-    /// This holds on whichever line the clusters are set: an annotation's
-    /// own or the base's. It is zero unless some style spaces text.
-    spacing: LetterWordSpacing,
-    /// The width of the U+FFFC where the item is an atomic inline: its
-    /// margin box.
-    atomic: Option<InlineLayoutUnit>,
-    /// The edges of the cloned boxes open so far.
-    cloned: EdgeAmounts,
-    /// The next atomic inline not passed.
-    atomics: AtomicId,
-    /// The next float not passed.
-    floats: FloatId,
-    /// The extent of the text item the scan is in under `line-height:
-    /// normal`, and the last font that widened it.
-    ///
-    /// The font of each of the item's segments widens it. The scan pushes it
-    /// once it leaves the item.
-    pending: Option<(Extent, UsedFontId)>,
-    /// The last thing the scan passed that holds a place, for a ruby
-    /// column's overhang.
-    leaf: OverhangNeighbour,
-    /// The item holding the cluster after the scan's boundary, as a leaf,
-    /// and its first cluster.
-    ///
-    /// Once the scan is past that cluster, the item becomes `leaf`. So a
-    /// ruby column starting at the boundary reads the leaf before it, not
-    /// its own base's first item.
-    entered: Option<(ClusterId, OverhangNeighbour)>,
-    /// How many open inline boxes have struts that reach past the block's.
-    ///
-    /// Each paragraph where it is above zero gets `BOXES_PAST_STRUT`.
-    past_strut: u32,
-}
-
-/// Amounts paid at a line's two ends: `start` by a line starting at a
-/// boundary, `end` by one ending there.
-///
-/// They hold the edges of the cloned boxes open across a break, and the
-/// line padding at each end. What the intrinsic sizes pay also gives back
-/// the marks that hang there.
-#[derive(Copy, Clone, Debug, Default)]
-struct EdgeAmounts {
-    start: InlineLayoutUnit,
-    end: InlineLayoutUnit,
-    /// What a min-content line ending here gives back beyond `end`.
-    ///
-    /// It is a mark that hangs only where the line would not fit with it
-    /// (`allow-end`), which max-content counts.
-    min_end_hang: InlineLayoutUnit,
-}
-
-/// The room the items at one boundary take along the line.
-///
-/// The edges that end the line before a break there ([`BoundarySplit`])
-/// come before the prefix entry there. The rest come after it. A ruby
-/// column ending there adds its width past its base to the leading closes.
-#[derive(Copy, Clone, Debug, Default)]
-struct BoundaryRoom {
-    /// The boundary is inside a whole ruby column, so no line edge falls
-    /// here.
-    inside_column: bool,
-    /// The edges that end the line before a break here.
-    leading_closes: InlineLayoutUnit,
-    /// The edges that start the line after a break here.
-    rest: InlineLayoutUnit,
-    /// Where a break falls among the items.
-    split: BoundarySplit,
-    /// The opening item of a ruby container that opens here.
-    ruby: Option<ItemId>,
-    /// The edges of the cloned boxes open across a break here.
-    ///
-    /// A break falls where [`BoundarySplit`] places it.
-    across: EdgeAmounts,
-    /// How far the ruby column ending here overhangs the text before it,
-    /// and the one starting here the text after it.
-    ///
-    /// A line that ends or starts here has no such text, so it pays the
-    /// overhang.
-    overhang: EdgeAmounts,
-    /// The floats anchored here. They take no room along the line and sit
-    /// beside it.
-    floats: AnchoredFloats,
-}
-
-impl EdgeAmounts {
-    /// Returns whether both amounts are zero.
-    fn is_empty(self) -> bool {
-        self.start == InlineLayoutUnit::ZERO && self.end == InlineLayoutUnit::ZERO
-    }
-}
-
-impl BoundaryRoom {
-    /// Returns no room at boundary `at`, before any of its items.
-    fn from_boundary(analysis: &Analysis, at: ClusterId) -> Self {
-        Self {
-            split: BoundarySplit::new(analysis, at),
-            ..Self::default()
-        }
-    }
-
-    /// Adds the room `item` takes.
-    ///
-    /// Annotation items, the annotation's own marks included, take nothing
-    /// on the base's line. Floats and empty text take nothing and leave the
-    /// leading closes leading. So a float anchored between two closing
-    /// edges doesn't part them.
-    fn add(&mut self, content: &Content, letter: Option<&InitialLetter>, item: &Item) {
-        if item.flags.contains(ItemFlags::ANNOTATION) {
-            return;
-        }
-        let kind = item.kind;
-        let (before, after) = (&mut self.leading_closes, &mut self.rest);
-        if kind.is_open() || kind.is_close() {
-            let room = edge_room(content, letter, item, kind.is_open());
-            self.split.take(kind, room, before, after);
-        } else if kind == ItemKind::Absolute {
-            // An anchor takes no room, but may hold what follows it on the
-            // line after.
-            self.split.take(kind, InlineLayoutUnit::ZERO, before, after);
-        }
     }
 }

@@ -10,14 +10,15 @@
 
 use core::fmt;
 use core::ops::Range;
+use core::slice;
 
 use crate::data::{Id, Table};
 use crate::layout::Layout;
 use crate::stages::analysis::{BidiLevel, ClusterId};
-use crate::stages::content::{Content, ItemFlags, NodeId, NodeKey, NodeKind, Nodes};
+use crate::stages::content::{Content, ItemFlags, KeyedBox, NodeId, NodeKey, Nodes};
 use crate::stages::fonts::LineBaseline;
 use crate::stages::fragments::{
-    self, FragmentItem, FragmentItemFlags, FragmentItemId, FragmentItemKind, Fragments,
+    FragmentItem, FragmentItemFlags, FragmentItemId, FragmentItemKind, Fragments,
 };
 use crate::stages::lines::{InlineExtents, LineId};
 use crate::stages::measure::{Extent, KeptBoxId, KeptBoxes};
@@ -56,9 +57,10 @@ impl<'a> Atomic<'a> {
     ///
     /// The range endpoints are the caret positions before and after the inline.
     pub fn text_range(&self) -> Range<usize> {
-        let clusters = self.item.clusters();
-        let ends = &self.line.layout().analysis().clusters;
-        ends.start(clusters.start).get()..ends.start(clusters.end).get()
+        let range = self
+            .item
+            .text_range(&self.line.layout().analysis().clusters);
+        range.start.get()..range.end.get()
     }
 
     /// Returns the margin-box width along the line, in pixels.
@@ -68,11 +70,7 @@ impl<'a> Atomic<'a> {
 
     /// Returns margin-box extents along the line, relative to line-box left.
     pub fn inline(&self) -> InlineExtents {
-        let left = self.item.inline;
-        InlineExtents {
-            left: left.to_px(),
-            right: (left + self.item.advance()).to_px(),
-        }
+        self.item.inline_extents()
     }
 
     /// Returns the baseline offset from line-box top.
@@ -111,11 +109,7 @@ impl<'a> Atomic<'a> {
                 )
             })
         } else {
-            layout
-                .measured()
-                .text(self.line.variant())
-                .extents
-                .get(atomic)
+            self.line.stages().measured().extents.get(atomic)
         };
         extent.around(self.item.block)
     }
@@ -171,7 +165,7 @@ impl<'a> BoxFragment<'a> {
         let layout = line.layout();
         Self {
             content: layout.content(),
-            kept: &layout.measured().text(line.variant()).kept_boxes,
+            kept: &line.stages().measured().kept_boxes,
             kept_box: item.kept_box(),
             node: item.node,
             line: line.id(),
@@ -202,10 +196,7 @@ impl<'a> BoxFragment<'a> {
 
     /// Returns border-box extents along the line, relative to line-box left.
     pub fn inline(&self) -> InlineExtents {
-        InlineExtents {
-            left: self.left.to_px(),
-            right: self.right.to_px(),
-        }
+        InlineExtents::from_exact(self.left, self.right)
     }
 
     /// Returns border-box extents across the line, relative to the line-over edge.
@@ -223,14 +214,10 @@ impl<'a> BoxFragment<'a> {
 
     /// The same, on layout's grid.
     ///
-    /// A kept box's extent is its row's. A box inside an annotation names
-    /// no row, so its row is sought.
+    /// A kept box's extent is its row's.
     fn block_extent(&self) -> (LayoutUnit, LayoutUnit) {
         self.across.unwrap_or_else(|| {
-            let extent = match self.kept_box {
-                Some(at) => self.kept.extent(at),
-                None => self.kept.get(self.node),
-            };
+            let extent = self.kept_box.and_then(|at| self.kept.extent(at));
             extent.unwrap_or(Extent::NONE).around(self.baseline)
         })
     }
@@ -318,9 +305,8 @@ impl fmt::Debug for BoxFragment<'_> {
 #[derive(Clone)]
 pub(super) struct BoxFragments<'a> {
     layout: &'a Layout,
-    key: NodeKey,
-    /// The next node to look at for a box of the key.
-    node: NodeId,
+    /// The boxes of the key not yet answered, in tree order.
+    boxes: slice::Iter<'a, KeyedBox>,
     /// The box being answered, and where.
     at: Option<Answering>,
 }
@@ -330,8 +316,7 @@ impl<'a> BoxFragments<'a> {
     pub(super) fn new(layout: &'a Layout, key: NodeKey) -> Self {
         Self {
             layout,
-            key,
-            node: NodeId::new(0),
+            boxes: layout.content().key_boxes(key).iter(),
             at: None,
         }
     }
@@ -507,12 +492,14 @@ fn next_culled<'a>(
     // stands on its parent's baseline: the innermost kept box's around it,
     // or the line's.
     let baseline = *at.baseline.get_or_insert_with(|| {
-        let own = table.get_slice(items.clone()).unwrap_or_default();
-        fragments::box_baseline(layout.content(), line.record(), own, at.node)
+        let nodes = &layout.content().nodes;
+        (layout.fragments())
+            .culled_baseline(nodes, line.id(), at.node, at.annotated)
+            .unwrap_or_else(|| line.record().ascent())
     });
     Some(BoxFragment {
         content: layout.content(),
-        kept: &layout.measured().text(line.variant()).kept_boxes,
+        kept: &line.stages().measured().kept_boxes,
         kept_box: None,
         node: at.node,
         line: line.id(),
@@ -639,8 +626,11 @@ fn culled_sides(line: Line<'_>, at: &Answering, rightmost: bool) -> FragmentItem
 /// box inside it too. The part holding its last leaf on a line is its
 /// rightmost there.
 fn is_counted(nodes: &Nodes, node: NodeId, item: &FragmentItem, boxes: bool) -> bool {
-    let kind = item.is_leaf() || (boxes && item.kind() == FragmentItemKind::Box);
-    kind && !item.flags.contains(FragmentItemFlags::HIDDEN) && nodes.contains(node, item.node)
+    let counted = item.is_painted_leaf()
+        || (boxes
+            && item.kind() == FragmentItemKind::Box
+            && !item.flags.contains(FragmentItemFlags::HIDDEN));
+    counted && nodes.contains(node, item.node)
 }
 
 /// A culled box's part as far as it has been found.
@@ -678,21 +668,12 @@ impl<'a> Iterator for BoxFragments<'a> {
         let nodes = &self.layout.content().nodes;
         loop {
             if self.at.is_none() {
-                // The next box of the key, in tree order.
+                // The next box of the key, in tree order. An anonymous ruby
+                // container takes its annotation's key, and answers nothing.
                 let node = loop {
                     work::step();
-                    if self.node.get() >= nodes.len() {
-                        return None;
-                    }
-                    let node = self.node;
-                    self.node = NodeId::new(node.get() + 1);
-                    let kind = nodes.kind(node);
-                    let ruby = || kind == Some(NodeKind::Ruby);
-                    if (kind.is_some_and(NodeKind::is_inline_box)
-                        || kind == Some(NodeKind::Annotation)
-                        || (ruby() && !nodes.is_anonymous_ruby(node)))
-                        && nodes.key(node) == self.key
-                    {
+                    let node = self.boxes.next()?.node;
+                    if !nodes.is_anonymous_ruby(node) {
                         break node;
                     }
                 };

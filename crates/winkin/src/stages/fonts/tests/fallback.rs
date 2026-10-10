@@ -373,7 +373,7 @@ fn letter_spacing_turns_the_common_ligatures_off() {
         .text_ids()
         .find(|&id| facts.shaping(facts.text(id).shaping).letter == TextUnit::from_px(1.5))
         .expect("the spaced text");
-    let primary = layout.primary_id(spaced_text).expect("fonts");
+    let primary = primary_id(&layout, spaced_text).expect("fonts");
     assert_eq!(features(primary).len(), 3);
 }
 

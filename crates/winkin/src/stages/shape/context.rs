@@ -239,14 +239,16 @@ impl<'c, 'p> ShapeSession<'c, 'p> {
         Self { context, provider }
     }
 
-    pub(super) fn shape<R>(
+    pub(super) fn shape_call<R>(
         &mut self,
         font: &UsedInstance,
-        call: &Call<'_>,
+        text: &CallText<'_>,
+        settings: &CallSettings,
         wanted: Features<'_>,
         read: impl FnOnce(&Buffer) -> R,
     ) -> Option<R> {
-        self.context.shape(font, call, wanted, self.provider, read)
+        self.context
+            .shape_call(font, text, settings, wanted, self.provider, read)
     }
 
     pub(crate) fn provider(&self) -> Option<&'p dyn FontMetricsProvider> {
@@ -268,7 +270,7 @@ impl DerefMut for ShapeSession<'_, '_> {
     }
 }
 
-/// What a call to harfrust fills: [`ShapeContext::shape`]'s scratch.
+/// What a call to harfrust fills: [`ShapeContext::shape_call`]'s scratch.
 ///
 /// It is kept between calls, and keeps the base features' conversion while
 /// their content is unchanged.
@@ -291,6 +293,58 @@ impl CallBuffers {
             buffer: Buffer::new(),
         }
     }
+
+    /// Sets the features a call in `font` shapes with, as `wanted` says,
+    /// shaping down the line where `vertical`.
+    ///
+    /// Returns them, how many of them the plan is compiled for, and the
+    /// buffer to fill. The plan is compiled for the features and one `halt`
+    /// range at most, and the call shapes with every range. A probe shapes
+    /// with no features, and the font's stay converted for the next call.
+    fn features(
+        &mut self,
+        font: &UsedInstance,
+        wanted: Features<'_>,
+        vertical: bool,
+    ) -> (&[Feature], usize, &mut Buffer) {
+        let Self {
+            base_features,
+            features,
+            buffer,
+        } = self;
+        let Features::Font { halt, narrow } = wanted else {
+            return (&[], 0, buffer);
+        };
+        if *base_features.as_slice() != *font.features {
+            base_features.clear();
+            base_features.extend_from_slice(&font.features);
+            features.clear();
+            features.extend(font.features.iter().map(to_shaper));
+        } else {
+            // Drop only the preceding call's ranged and width overrides.
+            features.truncate(base_features.len());
+        }
+        // After the style's, so that it holds whatever they say, as Blink's
+        // compressed font holds its width variant.
+        if let Some(tag) = narrow {
+            features.push(Feature {
+                tag: harfrust::Tag::new(tag),
+                value: 1,
+                start: 0,
+                end: u32::MAX,
+            });
+        }
+        let planned = features.len() + usize::from(!halt.is_empty());
+        // `vhal` down the line, as Blink's `HanKerning` applies it.
+        let tag = if vertical { b"vhal" } else { b"halt" };
+        features.extend(halt.iter().map(|mark| Feature {
+            tag: harfrust::Tag::new(tag),
+            value: 1,
+            start: mark.start(),
+            end: mark.end(),
+        }));
+        (features, planned, buffer)
+    }
 }
 
 /// Which features a call shapes with.
@@ -311,11 +365,11 @@ pub(super) enum Features<'a> {
     Plain,
 }
 
-/// What one call shapes, besides the font.
+/// The text one call shapes.
 ///
 /// The shaping function and the trim-font reader build one per call, and
-/// [`ShapeContext::shape`] reads it. It lives no longer than the call.
-pub(super) struct Call<'a> {
+/// [`ShapeContext::shape_call`] reads it. It lives no longer than the call.
+pub(super) struct CallText<'a> {
     /// The characters, which start at byte `base` of the text.
     pub(super) chars: &'a str,
     pub(super) base: u32,
@@ -324,6 +378,14 @@ pub(super) struct Call<'a> {
     pub(super) after: &'a str,
     /// The characters start their paragraph.
     pub(super) starts_paragraph: bool,
+}
+
+/// How one call shapes its text, besides the font and its features.
+///
+/// A run's come from its key (`ShapingKey::settings`); the trim-font reader
+/// writes its own for the probes.
+#[derive(Copy, Clone, Debug)]
+pub(super) struct CallSettings {
     pub(super) direction: Direction,
     pub(super) script: Option<Script>,
     pub(super) language: PlanLanguage,
@@ -491,16 +553,17 @@ impl ShapeContext {
         (self.verticals.len(), self.vertical_glyphs.len())
     }
 
-    /// Shapes `call` in `font`, a layout's used font, and hands the shaped
-    /// buffer to `read`.
+    /// Shapes `text` in `font`, a layout's used font, as `call` says,
+    /// and hands the shaped buffer to `read`.
     ///
     /// It uses `provider`'s glyph metrics where there is one. Returns `None`
     /// where harfrust refuses the call, which never happens for a buffer
     /// filled this way.
-    fn shape<R>(
+    fn shape_call<R>(
         &mut self,
         font: &UsedInstance,
-        call: &Call<'_>,
+        text: &CallText<'_>,
+        call: &CallSettings,
         wanted: Features<'_>,
         provider: Option<&dyn FontMetricsProvider>,
         read: impl FnOnce(&Buffer) -> R,
@@ -515,93 +578,33 @@ impl ShapeContext {
             plans,
             verticals,
             vertical_glyphs,
-            buffers:
-                CallBuffers {
-                    base_features,
-                    features,
-                    buffer,
-                },
+            buffers,
             ..
         } = self;
-        let held = &font.font;
-        // The plan is compiled for the features and one `halt` range at
-        // most, and the call shapes with every range.
-        let planned = match wanted {
-            Features::Font { halt, narrow } => {
-                if *base_features.as_slice() != *font.features {
-                    base_features.clear();
-                    base_features.extend_from_slice(&font.features);
-                    features.clear();
-                    features.extend(font.features.iter().map(to_shaper));
-                } else {
-                    // Drop only the preceding call's ranged and width overrides.
-                    features.truncate(base_features.len());
-                }
-                // After the style's, so that it holds whatever they say, as
-                // Blink's compressed font holds its width variant.
-                if let Some(tag) = narrow {
-                    features.push(Feature {
-                        tag: harfrust::Tag::new(tag),
-                        value: 1,
-                        start: 0,
-                        end: u32::MAX,
-                    });
-                }
-                let planned = features.len() + usize::from(!halt.is_empty());
-                // `vhal` down the line, as Blink's `HanKerning` applies it.
-                let tag = if matches!(
-                    call.direction,
-                    Direction::TopToBottom | Direction::BottomToTop
-                ) {
-                    b"vhal"
-                } else {
-                    b"halt"
-                };
-                features.extend(halt.iter().map(|mark| Feature {
-                    tag: harfrust::Tag::new(tag),
-                    value: 1,
-                    start: mark.start(),
-                    end: mark.end(),
-                }));
-                planned
-            }
-            Features::Plain => 0,
-        };
-        // A probe uses no style features, without discarding their cached conversion.
-        let features = if matches!(wanted, Features::Plain) {
-            &[][..]
-        } else {
-            features.as_slice()
-        };
+        let shapes_down = matches!(
+            call.direction,
+            Direction::TopToBottom | Direction::BottomToTop
+        );
+        let (features, planned, buffer) = buffers.features(font, wanted, shapes_down);
         let language = intern_language(languages, plans, call.language)
             .and_then(|id| Some((id, &languages.get(id)?.shaper)));
         let plan = cached_plan(
             plans,
             &PlanRequest {
                 font: font.key(),
-                instance: held,
+                instance: &font.font,
                 direction: call.direction,
                 script: call.script,
                 language,
                 features: features.get(..planned).unwrap_or_default(),
             },
         );
-        fill(buffer, call);
+        fill(buffer, text, call);
         // Trim probes shape at the font's em rather than a used CSS size;
         // they classify the font's design-space punctuation, not hinted ink.
         let provided = provider
             .filter(|_| matches!(wanted, Features::Font { .. }))
-            .map(|provider| {
-                let font = FontInstance {
-                    bytes: &font.bytes,
-                    index: font.index,
-                    coords: &font.coords,
-                    size: unit::TextUnit::from_raw(call.scale).to_px(),
-                    embolden: font.embolden,
-                    skew: font.skew,
-                };
-                (provider, font)
-            });
+            .map(|provider| (provider, provider_instance(font, call.scale)));
         let options = ShapeOptions::new()
             .plan(plan)
             .point_size(Some(call.point_size))
@@ -619,7 +622,7 @@ impl ShapeContext {
             None => {
                 let funcs =
                     provided.map(|(provider, request)| ProvidedFuncs::new(provider, request, None));
-                let mut shaper = ShaperFont::new(held);
+                let mut shaper = ShaperFont::new(&font.font);
                 shaper.set_scale(call.scale);
                 shaper.set_font_funcs(funcs.as_ref().map(|funcs| funcs as &dyn FontFuncs));
                 harfrust::shape(&shaper, buffer, options).is_ok()
@@ -730,27 +733,23 @@ impl ShapeContext {
         let tables = font.font.tables();
         // Whether either layout table names a feature, under any script,
         // as Blink's `OpenTypeFeatures` collects them.
-        let has = |tag: &[u8; 4]| {
-            let tag = Tag::new(tag);
-            let gsub = tables
+        let lists = [
+            tables
                 .gsub()
                 .ok()
-                .and_then(|table| table.feature_list().ok())
-                .is_some_and(|list| {
-                    list.feature_records()
-                        .iter()
-                        .any(|r| r.feature_tag() == tag)
-                });
-            let gpos = tables
+                .and_then(|table| table.feature_list().ok()),
+            tables
                 .gpos()
                 .ok()
-                .and_then(|table| table.feature_list().ok())
-                .is_some_and(|list| {
-                    list.feature_records()
-                        .iter()
-                        .any(|r| r.feature_tag() == tag)
-                });
-            gsub || gpos
+                .and_then(|table| table.feature_list().ok()),
+        ];
+        let has = |tag: &[u8; 4]| {
+            let tag = Tag::new(tag);
+            lists.iter().flatten().any(|list| {
+                list.feature_records()
+                    .iter()
+                    .any(|r| r.feature_tag() == tag)
+            })
         };
         let (halt, chws) = if horizontal {
             (has(b"halt"), has(b"chws"))
@@ -769,12 +768,14 @@ impl ShapeContext {
             len += ch.encode_utf8(&mut text[len..]).len();
         }
         let chars = str::from_utf8(&text[..len]).unwrap_or_default();
-        let call = Call {
+        let text = CallText {
             chars,
             base: 0,
             before: "",
             after: "",
             starts_paragraph: true,
+        };
+        let settings = CallSettings {
             direction: if horizontal {
                 Direction::LeftToRight
             } else {
@@ -788,7 +789,7 @@ impl ShapeContext {
             turkic: false,
             vertical: None,
         };
-        let shaped = self.shape(font, &call, Features::Plain, None, |output| {
+        let shaped = self.shape_call(font, &text, &settings, Features::Plain, None, |output| {
             let infos = output.glyph_infos();
             let positions = output.glyph_positions();
             if infos.len() != TRIM_PROBES.len() || positions.len() != TRIM_PROBES.len() {
@@ -854,6 +855,19 @@ heap_bytes! {
 heap_bytes! {
     /// The source and converted feature vectors; the buffer's own heap is harfrust's.
     CallBuffers { base_features, features; buffer }
+}
+
+/// Returns `font` at `scale`, harfrust's size in 1/65536 px, as a host's
+/// metrics provider is asked for it.
+fn provider_instance(font: &UsedInstance, scale: i32) -> FontInstance<'_> {
+    FontInstance {
+        bytes: &font.bytes,
+        index: font.index,
+        coords: &font.coords,
+        size: unit::TextUnit::from_raw(scale).to_px(),
+        embolden: font.embolden,
+        skew: font.skew,
+    }
 }
 
 /// Converts `feature` to harfrust's global form.
@@ -977,12 +991,12 @@ fn cached_plan<'p>(
     Some(&plans.get(id)?.plan)
 }
 
-/// Fills `buffer` for `call`.
+/// Fills `buffer` with `text`, as `call` sets it.
 ///
 /// It sets every property clearing reset, the context either side, and the
 /// characters. Each character is labelled with its byte in the text, so
 /// glyphs come back naming the clusters they draw.
-fn fill(buffer: &mut Buffer, call: &Call<'_>) {
+fn fill(buffer: &mut Buffer, text: &CallText<'_>, call: &CallSettings) {
     buffer.set_direction(call.direction);
     buffer.set_script(call.script);
     // Marks are not merged into their bases, so a cluster's glyphs are
@@ -994,16 +1008,16 @@ fn fill(buffer: &mut Buffer, call: &Call<'_>) {
     // Producing the flags makes the shaper track glyphs for lookups it then
     // rejects.
     let mut flags = BufferFlags::empty();
-    if call.starts_paragraph {
+    if text.starts_paragraph {
         flags |= BufferFlags::BEGINNING_OF_TEXT;
     }
     buffer.set_flags(flags);
-    buffer.set_pre_context(call.before);
-    for (at, ch) in call.chars.char_indices() {
+    buffer.set_pre_context(text.before);
+    for (at, ch) in text.chars.char_indices() {
         // Within the text, which is under 2^30 bytes, so this never
         // saturates.
         let at = u32::try_from(at).unwrap_or(u32::MAX);
-        let label = call.base.saturating_add(at);
+        let label = text.base.saturating_add(at);
         // Each character a case mapping makes is labelled with the byte of
         // the one it came from, as Blink's `CaseMappingHarfBuzzBufferFiller`
         // adds them at one cluster: an uppercased `ß` is two glyphs in one
@@ -1026,7 +1040,7 @@ fn fill(buffer: &mut Buffer, call: &Call<'_>) {
         }
     }
     // After the characters, as HarfBuzz sets the context after the text.
-    buffer.set_post_context(call.after);
+    buffer.set_post_context(text.after);
 }
 
 /// Shapes `buffer` down the line with `options`, in `font` at `scale`, and
@@ -1127,12 +1141,14 @@ mod tests {
         let bytes = FontBytes::from(font.build());
         let disabled = [FontFeature::new(parlance::Tag::new(b"liga"), 0)];
         let mut font = record(bytes.clone(), &[], &disabled);
-        let call = Call {
+        let text = CallText {
             chars: "fi",
             base: 0,
             before: "",
             after: "",
             starts_paragraph: true,
+        };
+        let call = CallSettings {
             direction: Direction::LeftToRight,
             script: Some(Script::LATIN),
             language: PlanLanguage::Text(parlance::Language::UND),
@@ -1148,15 +1164,27 @@ mod tests {
             narrow: None,
         };
         let count = |output: &Buffer| output.glyph_infos().len();
-        assert_eq!(cx.shape(&font, &call, wanted, None, count), Some(2));
         assert_eq!(
-            cx.shape(&font, &call, Features::Plain, None, count),
+            cx.shape_call(&font, &text, &call, wanted, None, count),
+            Some(2)
+        );
+        assert_eq!(
+            cx.shape_call(&font, &text, &call, Features::Plain, None, count),
             Some(1)
         );
-        assert_eq!(cx.shape(&font, &call, wanted, None, count), Some(2));
+        assert_eq!(
+            cx.shape_call(&font, &text, &call, wanted, None, count),
+            Some(2)
+        );
         font.features = Box::default();
-        assert_eq!(cx.shape(&font, &call, wanted, None, count), Some(1));
+        assert_eq!(
+            cx.shape_call(&font, &text, &call, wanted, None, count),
+            Some(1)
+        );
         font.features = Box::from(disabled);
-        assert_eq!(cx.shape(&font, &call, wanted, None, count), Some(2));
+        assert_eq!(
+            cx.shape_call(&font, &text, &call, wanted, None, count),
+            Some(2)
+        );
     }
 }

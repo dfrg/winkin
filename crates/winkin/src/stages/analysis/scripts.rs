@@ -46,7 +46,7 @@ pub(super) struct PendingRun {
 }
 
 /// What a cluster does to the script run it meets.
-enum Step {
+enum ScriptStep {
     /// It joins the run, which keeps its script or lack of one.
     Joins,
     /// It joins the run and decides its script, which the run's clusters
@@ -93,7 +93,7 @@ impl ScriptState {
     /// pairs them: a closing bracket that closes an opener is the opener's
     /// script, and an opener takes the script of the run it opens in, which
     /// its own script decides first.
-    fn step(&mut self, props: CoreProps) -> Step {
+    fn step(&mut self, props: CoreProps) -> ScriptStep {
         let bracket = props.bracket_pair();
         let closes = match bracket {
             Some(pair) if !props.opens_bracket() => self.close(pair),
@@ -101,7 +101,7 @@ impl ScriptState {
         };
         let step = match (closes, props.scripts().single()) {
             (Some(script), _) => self.real(script),
-            (None, Some(script)) if is_shared(script) => Step::Joins,
+            (None, Some(script)) if is_shared(script) => ScriptStep::Joins,
             (None, Some(script)) => self.real(script),
             (None, None) => self.shared(unicode::script_extensions(props), unicode::script(props)),
         };
@@ -114,38 +114,38 @@ impl ScriptState {
     }
 
     /// A character of one real script.
-    fn real(&mut self, script: ScriptId) -> Step {
+    fn real(&mut self, script: ScriptId) -> ScriptStep {
         match self.script {
-            Some(current) if current == script => Step::Joins,
+            Some(current) if current == script => ScriptStep::Joins,
             Some(_) => self.restart(Some(script), &[]),
             None if !self.candidates.is_empty() && !self.allows(script) => {
                 self.restart(Some(script), &[])
             }
             None => {
                 self.resolve(script);
-                Step::Resolves(script)
+                ScriptStep::Resolves(script)
             }
         }
     }
 
     /// A character that may be any of `scripts`, whose own Script is `own`.
-    fn shared(&mut self, scripts: &'static [ScriptId], own: ScriptId) -> Step {
+    fn shared(&mut self, scripts: &'static [ScriptId], own: ScriptId) -> ScriptStep {
         if scripts.is_empty() {
             // A set of nothing is no constraint; the table has none, but it
             // costs nothing to be sure.
             return if is_shared(own) {
-                Step::Joins
+                ScriptStep::Joins
             } else {
                 self.real(own)
             };
         }
         match self.script {
-            Some(current) if scripts.contains(&current) => Step::Joins,
+            Some(current) if scripts.contains(&current) => ScriptStep::Joins,
             Some(_) => self.restart(None, scripts),
             None if self.candidates.is_empty() => {
                 self.candidates = scripts;
                 self.allowed = all(scripts);
-                Step::Joins
+                ScriptStep::Joins
             }
             None => {
                 let allowed = self.allowed & within(self.candidates, scripts);
@@ -153,7 +153,7 @@ impl ScriptState {
                     self.restart(None, scripts)
                 } else {
                     self.allowed = allowed;
-                    Step::Joins
+                    ScriptStep::Joins
                 }
             }
         }
@@ -200,13 +200,13 @@ impl ScriptState {
 
     /// Ends the run and starts another, decided as `script` or undecided
     /// among `candidates`, and says what the ended run was.
-    fn restart(&mut self, script: Option<ScriptId>, candidates: &'static [ScriptId]) -> Step {
+    fn restart(&mut self, script: Option<ScriptId>, candidates: &'static [ScriptId]) -> ScriptStep {
         let ended = self.settled();
         self.script = script;
         self.candidates = candidates;
         self.allowed = all(candidates);
         self.undecided_from = self.depth;
-        Step::Breaks(ended)
+        ScriptStep::Breaks(ended)
     }
 
     /// Decides the run as `script`, and the brackets it opened undecided.
@@ -333,7 +333,7 @@ impl Setting {
 }
 
 /// Builds the runs, a cluster at a time, into the scratch list.
-pub(super) struct Runs {
+pub(super) struct RunBuilder {
     state: ScriptState,
     /// The language of the run open, or `None` before the first.
     language: Option<LanguageId>,
@@ -344,7 +344,7 @@ pub(super) struct Runs {
     from: usize,
 }
 
-impl Runs {
+impl RunBuilder {
     pub(super) fn new() -> Self {
         Self {
             state: ScriptState::new(),
@@ -380,17 +380,17 @@ impl Runs {
     ) -> Option<RunOrientation> {
         let step = self.state.step(props);
         let breaks = match step {
-            Step::Breaks(ended) => {
+            ScriptStep::Breaks(ended) => {
                 settle(runs, self.from, ended);
                 self.from = runs.len();
                 true
             }
-            Step::Resolves(script) => {
+            ScriptStep::Resolves(script) => {
                 settle(runs, self.from, script);
                 self.setting = self.setting.resolve(script);
                 false
             }
-            Step::Joins => false,
+            ScriptStep::Joins => false,
         };
         let setting = match self.state.script {
             Some(script) => setting.resolve(script),

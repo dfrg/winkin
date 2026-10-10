@@ -46,7 +46,9 @@
 use alloc::vec::Vec;
 use core::ops::Range;
 
-use super::{Analysis, BidiLevel, ClusterId, Clusters, ItemClusters, ParagraphFlags};
+use super::{
+    Analysis, BidiLevel, ClusterId, Clusters, ItemClusters, ParagraphFlags, ParagraphState,
+};
 use crate::data::{HeapBytes, Id, IdRange};
 use crate::stages::content::{
     BoxFacts, Content, Item, ItemId, ItemKind, NodeId, NodeKind, TextFlags,
@@ -398,12 +400,10 @@ impl BidiInput {
                 && controls.end <= at
             {
                 rest = tail;
-                let kept = match left {
-                    _ if controls.anchor => true,
-                    Some(left) => lowest(controls).is_some_and(|level| level < left.min(right)),
-                    None => false,
+                let Some(level) = lowest(controls) else {
+                    continue;
                 };
-                if kept && let Some(level) = lowest(controls) {
+                if controls.anchor || left.is_some_and(|left| level < left.min(right)) {
                     control_levels.push(ControlLevel {
                         item: controls.item,
                         level: BidiLevel::new(level),
@@ -504,14 +504,11 @@ impl BidiInput {
     }
 }
 
-/// Resolves the paragraph over `range` of the clusters and returns its base
-/// level and flags.
+/// Resolves `paragraph`, whose clusters end at the last one `analysis`
+/// holds, and returns its base level and flags.
 ///
-/// - `first_item` holds the paragraph's first cluster.
-/// - `requested` is the level the block's direction sets, or `None` under
-///   `auto`.
-/// - `may_differ` says whether the paragraph holds anything right to left
-///   or a control, which can take a cluster off its level.
+/// `requested` is the level the block's direction sets, or `None` under
+/// `auto`.
 ///
 /// If some cluster's level differs from the paragraph's, this records the
 /// changes in `input` and sets `MIXED_LEVELS`. It sets `RIGHT_TO_LEFT` if
@@ -520,11 +517,10 @@ pub(super) fn resolve(
     content: &Content,
     analysis: &Analysis,
     input: &mut BidiInput,
-    range: Range<ClusterId>,
-    first_item: ItemId,
+    paragraph: &ParagraphState,
     requested: Option<BidiLevel>,
-    may_differ: bool,
 ) -> (BidiLevel, ParagraphFlags) {
+    let range = paragraph.start..analysis.clusters.end_id();
     // A paragraph at `base` whose clusters all are.
     let own = |base: u8| {
         let level = BidiLevel::new(base);
@@ -539,7 +535,7 @@ pub(super) fn resolve(
     // Nothing to resolve: its own level, which with nothing right to left
     // in it is 0 under `auto` too.
     let base = requested.unwrap_or(0);
-    if !(may_differ || requested == Some(1)) || range.is_empty() {
+    if !(paragraph.may_differ() || requested == Some(1)) || range.is_empty() {
         return own(base);
     }
     let mask = bidi_units(
@@ -547,7 +543,7 @@ pub(super) fn resolve(
         &analysis.clusters,
         &analysis.item_clusters,
         range.clone(),
-        first_item,
+        paragraph.first_item,
         input,
     );
     if requested != Some(1) && mask & BIDI_MASK == 0 {

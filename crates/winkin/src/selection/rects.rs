@@ -78,8 +78,17 @@ pub(crate) struct SelectionRects<'a> {
     next: LineId,
     last: Option<LineId>,
     /// The line being read, and its items still to read.
-    current: Option<(Line<'a>, LineItems<'a>)>,
+    current: Option<Reading<'a>>,
     annotation: Option<AnnotationRuns<'a>>,
+}
+
+/// A line the rectangles are being read from.
+struct Reading<'a> {
+    line: Line<'a>,
+    /// The line box's height, which each rectangle is at least as tall as.
+    height: f32,
+    /// Its items still to read.
+    items: LineItems<'a>,
 }
 
 impl<'a> SelectionRects<'a> {
@@ -158,14 +167,10 @@ impl<'a> SelectionRects<'a> {
         }
     }
 
-    /// Returns the rectangle `item` of `line` paints, where it paints one.
-    fn item_rect(&self, line: &Line<'a>, item: Item<'a>) -> Option<SelectionRect> {
+    /// Returns the rectangle `item` of `line`, a line box `height` tall, paints, where it paints one.
+    fn item_rect(&self, line: &Line<'a>, height: f32, item: Item<'a>) -> Option<SelectionRect> {
         let (start, end) = (self.start, self.end);
-        let height = line.metrics().height();
-        let line_box = CrossExtents {
-            over: 0.0,
-            under: height,
-        };
+        let line_box = CrossExtents::from_line_height(height);
         let rect = |inline: InlineExtents, block: CrossExtents, kind| SelectionRect {
             line: line.index(),
             inline,
@@ -206,10 +211,7 @@ impl<'a> SelectionRects<'a> {
                 )?;
                 let text = run.block();
                 Some(rect(
-                    InlineExtents {
-                        left: left.to_px(),
-                        right: right.to_px(),
-                    },
+                    InlineExtents::from_exact(left, right),
                     CrossExtents {
                         over: text.over.min(0.0),
                         under: text.under.max(height),
@@ -248,12 +250,12 @@ impl<'a> SelectionRects<'a> {
             None => start < at && at < end,
         };
         // The logically last leaf the line placed.
-        let last = place::leaves(*line).max_by_key(Leaf::end);
+        let last = place::leaves(*line).max_by_key(|leaf| leaf.end);
         let metrics = line.metrics();
         let rtl = line.level().is_rtl();
         let (space, edge) = match last {
             Some(leaf) => {
-                let at = leaf.end();
+                let at = leaf.end;
                 if leaf.is_rtl() != rtl || !marked(at) {
                     return None;
                 }
@@ -287,10 +289,7 @@ impl<'a> SelectionRects<'a> {
         Some(SelectionRect {
             line: line.index(),
             inline,
-            block: CrossExtents {
-                over: 0.0,
-                under: metrics.height(),
-            },
+            block: CrossExtents::from_line_height(metrics.height()),
             kind: SelectionRectKind::LineEnd,
         })
     }
@@ -350,10 +349,11 @@ impl<'a> Iterator for SelectionRects<'a> {
 
     fn next(&mut self) -> Option<SelectionRect> {
         loop {
-            if let Some((line, mut items)) = self.current.take() {
-                while let Some(item) = items.next() {
-                    if let Some(rect) = self.item_rect(&line, item) {
-                        self.current = Some((line, items));
+            if let Some(mut reading) = self.current.take() {
+                let (line, height) = (reading.line, reading.height);
+                while let Some(item) = reading.items.next() {
+                    if let Some(rect) = self.item_rect(&line, height, item) {
+                        self.current = Some(reading);
                         return Some(rect);
                     }
                 }
@@ -361,8 +361,8 @@ impl<'a> Iterator for SelectionRects<'a> {
                     self.annotation = Some(line.annotation_runs());
                 }
                 while let Some(run) = self.annotation.as_mut().and_then(Iterator::next) {
-                    if let Some(rect) = self.item_rect(&line, Item::Text(run)) {
-                        self.current = Some((line, items));
+                    if let Some(rect) = self.item_rect(&line, height, Item::Text(run)) {
+                        self.current = Some(reading);
                         return Some(rect);
                     }
                 }
@@ -378,7 +378,11 @@ impl<'a> Iterator for SelectionRects<'a> {
             let line = Line::new(self.layout, self.next)?;
             self.next = LineId::new(self.next.get() + 1);
             self.annotation = None;
-            self.current = Some((line, LineItems::new(&line, true)));
+            self.current = Some(Reading {
+                line,
+                height: line.metrics().height(),
+                items: LineItems::new(&line, true),
+            });
         }
     }
 }

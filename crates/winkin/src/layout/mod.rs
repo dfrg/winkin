@@ -43,11 +43,14 @@ mod emphasis;
 mod floats;
 mod line;
 pub mod paint;
+mod places;
 mod positioned;
 mod ruby;
 mod run;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(crate) use tests::{primary, primary_id};
 
 #[cfg(test)]
 use alloc::vec::Vec;
@@ -67,13 +70,11 @@ use crate::selection::{
 };
 use crate::stages::Stages;
 use crate::stages::analysis::{self, Analysis, AnalysisInput};
-#[cfg(test)]
-use crate::stages::content::TextFactsId;
 use crate::stages::content::{AtomicId, Content, FloatId, NodeKey, SizeChange};
 use crate::stages::content::{ContentLimits, ContentScratch, ContentWriter};
 use crate::stages::fonts::{self, FontInput, Fonts};
 use crate::stages::fragments::{self, Fragments, PlaceInput, ReadInput};
-use crate::stages::lines::{self, Area, BreakInput, Exclusions, LineFloatId, LineId, TextBoxTrims};
+use crate::stages::lines::{self, Area, BreakInput, Exclusions, LineFloatId, LineId};
 use crate::stages::measure::{self, IntrinsicSizes, MeasureInput, Measured};
 use crate::stages::shape::{self, ShapeInput, ShapeSession, Shaped};
 #[cfg(test)]
@@ -97,7 +98,7 @@ pub use run::{Cluster, FontInstance, Glyph, TextRun};
 // glyphs and clusters, which the path and the selection hold as they read.
 #[cfg(test)]
 use crate::unit::InlineLayoutUnit;
-use run::Places;
+use places::Places;
 pub(crate) use run::{RunClusters, RunGlyphs};
 
 /// A reusable inline formatting context.
@@ -206,16 +207,32 @@ impl PreparedStages {
             &mut ShapeSession::new(cx.shaping(), provider),
             &mut self.shaped,
         );
-        self.measure(content, cx, provider);
+        self.measure_stage(content, cx, provider, true);
     }
 
     /// Runs measurement again from the shaped advances, with the boxes'
     /// sizes and edges as `content` holds them now.
+    ///
+    /// The text metrics and the shaped hyphens and ellipses stay as the
+    /// build made them: they depend only on the fonts and the text facts.
     pub(crate) fn measure(
         &mut self,
         content: &Content,
         cx: &mut Context,
         provider: Option<&dyn FontMetricsProvider>,
+    ) {
+        self.measure_stage(content, cx, provider, false);
+    }
+
+    /// Runs measurement from the shaped advances. Where `new_fonts` says the
+    /// fonts are new, it also measures the text metrics and shapes the
+    /// hyphens and ellipses.
+    fn measure_stage(
+        &mut self,
+        content: &Content,
+        cx: &mut Context,
+        provider: Option<&dyn FontMetricsProvider>,
+        new_fonts: bool,
     ) {
         let config = *cx.config();
         // The buffers the last prefix sums were kept in, the text's and the
@@ -239,6 +256,7 @@ impl PreparedStages {
             scratch,
             advances,
             &mut self.measured,
+            new_fonts,
         );
     }
 
@@ -312,7 +330,6 @@ impl Layout {
     pub fn measure<I>(&mut self, cx: &mut Context, basis: f32, sizes: I) -> bool
     where
         I: IntoIterator<Item = (NodeKey, BoxSize)>,
-        I::IntoIter: Clone,
     {
         self.measure_with_provider(cx, basis, sizes, None)
     }
@@ -331,7 +348,6 @@ impl Layout {
     ) -> bool
     where
         I: IntoIterator<Item = (NodeKey, BoxSize)>,
-        I::IntoIter: Clone,
     {
         self.measure_with_provider(cx, basis, sizes, Some(provider))
     }
@@ -345,17 +361,15 @@ impl Layout {
     ) -> bool
     where
         I: IntoIterator<Item = (NodeKey, BoxSize)>,
-        I::IntoIter: Clone,
     {
         let basis = if basis.is_finite() { basis } else { 0.0 };
-        let sizes = sizes.into_iter();
         // Whether measurement runs again whole, and whether some atomic
         // inline's extent alone changed.
         let mut again = self.content.set_basis(basis);
         let mut across = false;
         let in_place = self.content.can_resize_atomics();
         let mut cursor = AtomicId::new(0);
-        for (key, size) in sizes.clone() {
+        for (key, size) in sizes {
             let size = size.sanitized();
             let mut search = self.content.keyed_atomics(key, cursor);
             let mut found = false;
@@ -363,7 +377,15 @@ impl Layout {
                 found = true;
                 match self.content.set_atomic_size(atomic, size) {
                     SizeChange::None => {}
-                    SizeChange::Across if in_place => across = true,
+                    // Its extent alone is measured again, now. Measuring
+                    // again whole, if a later pair asks for it, writes
+                    // every extent over.
+                    SizeChange::Across if in_place => {
+                        across = true;
+                        if !again {
+                            self.stages.measured.remeasure_atomic(&self.content, atomic);
+                        }
+                    }
                     SizeChange::Across | SizeChange::Along => again = true,
                 }
             }
@@ -374,16 +396,7 @@ impl Layout {
         }
         if again {
             self.stages.measure(&self.content, cx, provider);
-        } else if across {
-            let mut cursor = AtomicId::new(0);
-            for (key, _) in sizes {
-                let mut search = self.content.keyed_atomics(key, cursor);
-                while let Some(atomic) = search.next_match(&self.content) {
-                    self.stages.measured.remeasure_atomic(&self.content, atomic);
-                }
-                cursor = search.cursor();
-            }
-        } else {
+        } else if !across {
             return false;
         }
         self.clear_lines();
@@ -600,15 +613,12 @@ impl Layout {
     /// For content without annotations or emphasis marks, computes the value
     /// on demand from the last line rather than during relayout.
     pub fn room_below(&self) -> f32 {
-        let stages = self.stages();
         // Chrome trims what the annotations push down with the last line, and
         // lends nothing past a trimmed end (`trim_block_end_by`).
-        let trims_end =
-            TextBoxTrims::new(stages.content, stages.fonts).is_some_and(|trims| trims.ends);
-        if trims_end {
+        if self.lines.block.trims_end {
             return 0.0;
         }
-        self.lines.room_below(stages).to_px()
+        self.lines.room_below(self.stages()).to_px()
     }
 
     /// Returns the nearest caret position to a point.
@@ -861,22 +871,8 @@ impl Layout {
         &self.stages.fonts
     }
 
-    /// Returns the primary font of text with the text facts `text`, through
-    /// its font request.
+    /// Returns the shaped glyphs, which the views read through a line's stages.
     #[cfg(test)]
-    pub(crate) fn primary(&self, text: TextFactsId) -> Option<&fonts::UsedFont> {
-        let request = self.content.facts.text_request(text);
-        self.stages.fonts.primary_font(request)
-    }
-
-    /// Returns the id of [`primary`](Self::primary).
-    #[cfg(test)]
-    pub(crate) fn primary_id(&self, text: TextFactsId) -> Option<fonts::UsedFontId> {
-        let request = self.content.facts.text_request(text);
-        Some(self.stages.fonts.resolution(request)?.primary)
-    }
-
-    /// Returns the shaped glyphs.
     pub(crate) fn shaped(&self) -> &Shaped {
         &self.stages.shaped
     }
@@ -904,7 +900,7 @@ impl Layout {
 
     /// Returns each cluster's advance as shaping hands it on, for tests.
     #[cfg(test)]
-    pub(crate) fn shaped_advances(&self, _cx: &mut Context) -> Vec<InlineLayoutUnit> {
+    pub(crate) fn shaped_advances(&self) -> Vec<InlineLayoutUnit> {
         self.stages
             .shaped
             .text(FirstLineVariant::Standard)

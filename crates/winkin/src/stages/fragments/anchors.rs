@@ -117,13 +117,17 @@ impl Placer<'_> {
     /// takes it: its own direction, or the current paragraph's under `auto`.
     fn block_rtl(&self) -> bool {
         BidiLevel::from_direction(self.stages.content.block.direction)
-            .unwrap_or(self.level)
+            .unwrap_or(self.line_state.level)
             .is_rtl()
     }
 
     /// Returns the area's edge a line starts from, the right where `rtl`.
     fn start_edge(&self, rtl: bool) -> InlineLayoutUnit {
-        InlineLayoutUnit::from_layout(if rtl { self.area.right } else { self.area.left })
+        InlineLayoutUnit::from_layout(if rtl {
+            self.gates.area.right
+        } else {
+            self.gates.area.left
+        })
     }
 
     /// Returns where the content of an empty line after the last starts,
@@ -135,22 +139,22 @@ impl Placer<'_> {
         let indent = self.stages.content.block.text_indent;
         let first = self.lines.lines.is_empty();
         let indent = if (first || indent.each_line) != indent.hanging {
-            indent.length(self.area.width())
+            indent.length(self.gates.area.width())
         } else {
             LayoutUnit::ZERO
         };
-        let align = self.text_align_last.resolve(self.text_align);
-        let spare = self.area.width() - indent;
-        let left = self.area.left + Side::from_align(align, rtl).left_offset(rtl, spare);
+        let align = self.gates.text_align_last.resolve(self.gates.text_align);
+        let spare = self.gates.area.width() - indent;
+        let left = self.gates.area.left + Side::from_align(align, rtl).left_offset(rtl, spare);
         InlineLayoutUnit::from_layout(if rtl { left } else { left + indent })
     }
 }
 
 /// Adds `anchor` to `out`'s anchors.
 fn push(out: &mut Fragments, anchor: Anchor) {
-    if out.rare_mut().anchors.push(anchor).is_none() {
-        debug_assert!(false, "no more anchors than an AnchorId names");
-    }
+    out.rare_mut()
+        .anchors
+        .push_bounded(anchor, "no more anchors than an AnchorId names");
 }
 
 /// Returns whether in-flow content comes before the anchor of `node`, the
@@ -172,7 +176,7 @@ fn content_precedes(placer: &Placer<'_>, pieces: &LinePieces, at: PieceId, node:
     let Some(visual) = order.iter().position(|&logical| logical == at) else {
         return false;
     };
-    let before = if placer.level.is_rtl() {
+    let before = if placer.line_state.level.is_rtl() {
         order.get(visual + 1..)
     } else {
         order.get(..visual)

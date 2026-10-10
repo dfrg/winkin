@@ -17,9 +17,15 @@ fn cluster_steps(layout: &Layout, n: usize) -> Vec<(f32, f32)> {
         .iter()
         .filter(|item| item.kind() == FragmentItemKind::Text)
         .flat_map(|item| {
-            ClusterWalk::new(&input, id, line, item)
-                .map(|(_, left, step)| (left.to_px(), step.to_px()))
-                .collect::<Vec<_>>()
+            ClusterWalk::new(
+                &input,
+                &layout.stages().variant(line.variant()),
+                id,
+                line,
+                item,
+            )
+            .map(|(_, left, step)| (left.to_px(), step.to_px()))
+            .collect::<Vec<_>>()
         })
         .collect()
 }
@@ -34,7 +40,16 @@ fn cluster_walk(layout: &Layout, n: usize) -> Vec<(ClusterId, InlineLayoutUnit, 
     let mut walked: Vec<_> = items(layout, n)
         .iter()
         .filter(|item| item.kind() == FragmentItemKind::Text)
-        .flat_map(|item| ClusterWalk::new(&input, id, line, item).collect::<Vec<_>>())
+        .flat_map(|item| {
+            ClusterWalk::new(
+                &input,
+                &layout.stages().variant(line.variant()),
+                id,
+                line,
+                item,
+            )
+            .collect::<Vec<_>>()
+        })
         .collect();
     walked.sort_by_key(|&(cluster, _, _)| cluster);
     walked

@@ -38,16 +38,17 @@
 //! no `halt` and the config asks for it, the mark's advance is halved
 //! instead, which Chrome does not do.
 
-use super::sink::{AdvanceStore, AdvanceUnit, Flags, GlyphSink, Halved, along};
+use super::sink::{AdvanceStore, AdvanceUnit, Flags, GlyphSink, Halved, along, sidecar_glyph};
 #[cfg(test)]
 use core::cell::Cell;
+use core::iter::Peekable;
 use core::ops::Range;
-use core::ptr;
+use core::{ptr, slice};
 
 use harfrust::{Buffer, Direction, GlyphInfo, GlyphPosition};
 use parlance::{Language, Script};
 
-use super::context::{Call, Features, PlanLanguage, ShapeSession};
+use super::context::{CallSettings, CallText, Features, PlanLanguage, ShapeSession};
 use super::trim::{self, ShapingEdges, TrimClass, TrimMark};
 use super::vertical::VerticalFallback;
 use super::{CombineWidth, ShapedRun, SidecarGlyph, SidecarGlyphId};
@@ -293,25 +294,9 @@ impl<'a> ShapingKey<'a> {
         }
     }
 
-    /// Returns the call that shapes `chars` as this key says.
-    ///
-    /// `chars` start at byte `base` of the text, with `before` and `after`
-    /// around them for context. `starts_paragraph` says they start their
-    /// paragraph.
-    fn call<'c>(
-        &self,
-        chars: &'c str,
-        base: u32,
-        before: &'c str,
-        after: &'c str,
-        starts_paragraph: bool,
-    ) -> Call<'c> {
-        Call {
-            chars,
-            base,
-            before,
-            after,
-            starts_paragraph,
+    /// Returns how a call shapes text as this key says.
+    fn settings(&self) -> CallSettings {
+        CallSettings {
             direction: self.direction(),
             script: harfrust::Script::from_iso15924_tag(harfrust::Tag::new(
                 &self.script.to_bytes(),
@@ -448,14 +433,15 @@ pub(crate) fn shape_range<I: Id, A: AdvanceUnit, S: AdvanceStore<A>>(
     let paragraph = source.range(paragraph);
     let slice =
         |from: TextOffset, to: TextOffset| text.get(from.get()..to.get()).unwrap_or_default();
-    let call = key.call(
-        slice(start, end),
-        start.to_u32(),
-        slice(paragraph.start, start),
-        slice(end, paragraph.end),
-        start == paragraph.start,
-    );
-    let direction = call.direction;
+    let call = CallText {
+        chars: slice(start, end),
+        base: start.to_u32(),
+        before: slice(paragraph.start, start),
+        after: slice(end, paragraph.end),
+        starts_paragraph: start == paragraph.start,
+    };
+    let settings = key.settings();
+    let direction = settings.direction;
     // Find the marks that give their blanks back into the context's
     // scratch, which is taken for the call and given back.
     let mut found = cx.take_trim_marks();
@@ -506,9 +492,13 @@ pub(crate) fn shape_range<I: Id, A: AdvanceUnit, S: AdvanceStore<A>>(
     };
     let shaped = key.font.as_ref().and_then(|font| {
         let narrow = key.narrow.map(CombineWidth::feature);
-        cx.shape(font, &call, Features::Font { halt, narrow }, |output| {
-            write(output, source, range.clone(), direction, &marks, out)
-        })
+        cx.shape_call(
+            font,
+            &call,
+            &settings,
+            Features::Font { halt, narrow },
+            |output| sink_output(output, source, range.clone(), direction, &marks, out),
+        )
     });
     cx.restore_trim_marks(found);
     match shaped {
@@ -546,29 +536,30 @@ pub(crate) fn shape_generated(
     // Across the line, or down it where it stands upright, as its key has
     // it. Offsets are kept in the line's terms, as a run's are.
     let vertical = key.is_vertical();
-    let call = key.call(text, 0, "", "", true);
+    let call = CallText {
+        chars: text,
+        base: 0,
+        before: "",
+        after: "",
+        starts_paragraph: true,
+    };
     let start = out.next_id();
     let features = Features::Font {
         halt: &[],
         narrow: None,
     };
-    let shaped = cx.shape(font, &call, features, |output| {
+    let shaped = cx.shape_call(font, &call, &key.settings(), features, |output| {
         let mut advance = 0i64;
         for (glyph, position) in output.glyph_infos().iter().zip(output.glyph_positions()) {
             work::step();
-            let step = along(position, vertical);
-            let (across, over) = if vertical {
-                (position.y_offset.saturating_neg(), position.x_offset)
-            } else {
-                (position.x_offset, position.y_offset)
-            };
-            out.push(SidecarGlyph {
-                id: glyph.glyph_id & !SidecarGlyph::LAST,
-                x_offset: TextUnit::from_raw(across),
-                y_offset: TextUnit::from_raw(over),
-                advance: TextUnit::from_raw(i32::try_from(step).unwrap_or(0)),
-            })?;
-            advance += step;
+            out.push(sidecar_glyph(
+                glyph,
+                position,
+                vertical,
+                Halved::default(),
+                false,
+            ))?;
+            advance += along(position, vertical);
         }
         Some(advance)
     });
@@ -586,7 +577,7 @@ pub(crate) fn shape_generated(
 ///
 /// It only moves forward, which labels that never decrease in the text's
 /// order allow.
-struct Cursor<'a> {
+struct ClusterCursor<'a> {
     source: &'a ShapingSource<'a>,
     at: ClusterId,
     end: ClusterId,
@@ -596,7 +587,7 @@ struct Cursor<'a> {
     next: Option<TextOffset>,
 }
 
-impl<'a> Cursor<'a> {
+impl<'a> ClusterCursor<'a> {
     fn new(source: &'a ShapingSource<'a>, range: &Range<ClusterId>) -> Self {
         let mut cursor = Self {
             source,
@@ -672,7 +663,7 @@ fn has_exclusive_feature(features: &[parlance::FontFeature]) -> bool {
     })
 }
 
-/// The marks of a call, as [`write`](fn@write) reads them.
+/// The marks of a call, as [`sink_output`] reads them.
 ///
 /// `unsafe_before` lists where breaking is unsafe because a pair meets.
 /// `halving`, where marks are halved, lists them with the least advance a
@@ -687,9 +678,9 @@ struct CallMarks<'a> {
 ///
 /// `marks` adds unsafe bits and halving. Most text has no kerned or halved
 /// mark and comes back in the text's order along a horizontal line. That
-/// text takes the plain path, [`write_clusters`] with `MARKED` unset, which
+/// text takes the plain path, [`sink_clusters`] with `MARKED` unset, which
 /// skips the per-cluster mark checks.
-fn write<I: Id, A: AdvanceUnit, S: AdvanceStore<A>>(
+fn sink_output<I: Id, A: AdvanceUnit, S: AdvanceStore<A>>(
     output: &Buffer,
     source: &ShapingSource<'_>,
     range: Range<ClusterId>,
@@ -707,17 +698,19 @@ fn write<I: Id, A: AdvanceUnit, S: AdvanceStore<A>>(
         && marks.halving.is_none()
         && plain_paths()
     {
-        write_clusters::<false, I, A, S>(infos, positions, source, range, direction, marks, out)
+        sink_clusters::<false, I, A, S>(infos, positions, source, range, direction, marks, out)
     } else {
-        write_clusters::<true, I, A, S>(infos, positions, source, range, direction, marks, out)
+        sink_clusters::<true, I, A, S>(infos, positions, source, range, direction, marks, out)
     }
 }
 
 /// Writes `infos` and `positions`, harfrust's output for `range` set in
-/// `direction`, into `out` as [`write`](fn@write) says.
+/// `direction`, into `out` as [`sink_output`] says.
 ///
 /// Each cluster's glyphs are one slice of the output. The walk goes in the
 /// text's order, and one cursor finds each cluster, its start found once.
+/// A [`ClusterWriter`] writes each cluster found, and the empty ones before
+/// it.
 ///
 /// One body gives two paths:
 /// - `MARKED` reads glyphs backwards for right-to-left text, down the line
@@ -725,7 +718,7 @@ fn write<I: Id, A: AdvanceUnit, S: AdvanceStore<A>>(
 /// - The plain path is for horizontal glyphs in the text's order with empty
 ///   `marks`. It skips those checks, and writes a one-glyph cluster compact
 ///   where it can without further checks.
-fn write_clusters<const MARKED: bool, I: Id, A: AdvanceUnit, S: AdvanceStore<A>>(
+fn sink_clusters<const MARKED: bool, I: Id, A: AdvanceUnit, S: AdvanceStore<A>>(
     infos: &[GlyphInfo],
     positions: &[GlyphPosition],
     source: &ShapingSource<'_>,
@@ -742,74 +735,8 @@ fn write_clusters<const MARKED: bool, I: Id, A: AdvanceUnit, S: AdvanceStore<A>>
         let at = if backward { count - 1 - k } else { k };
         TextOffset::from_u32(infos.get(at).map_or(0, |info| info.cluster))
     };
-    let mut cursor = Cursor::new(source, &range);
-    let mut next = range.start;
-    // Whether a cluster of the range has had glyphs: an empty one after is
-    // a continuation.
-    let mut drawn = false;
-    let mut first = false;
-    // Where a pair makes breaking unsafe, and the marks halved, each read
-    // once in order: clusters are written in the text's order.
-    let mut kerned = marks.unsafe_before.iter().peekable();
-    let mut halved = marks
-        .halving
-        .map_or(&[][..], |(marks, _)| marks)
-        .iter()
-        .peekable();
-    let least = marks.halving.map_or(i32::MAX, |(_, least)| least);
-    // Whether a pair makes breaking before a cluster starting at `start`
-    // unsafe: never on the plain path.
-    let mut kerned_at = |start: TextOffset| {
-        if !MARKED {
-            return false;
-        }
-        let start = start.to_u32();
-        let mut found = false;
-        while let Some(&&at) = kerned.peek() {
-            if at > start {
-                break;
-            }
-            found |= at == start;
-            kerned.next();
-        }
-        found
-    };
-    // How a cluster starting at `start`, whose glyphs are `placed`, moves.
-    // It is halved where it is a found mark at least nine tenths of an em
-    // wide (Chrome's `HanKerning::ApplyKerning`), and never on the plain
-    // path.
-    let mut halve = |start: TextOffset, placed: &[GlyphPosition]| {
-        if !MARKED || marks.halving.is_none() {
-            return Halved::default();
-        }
-        let start = start.to_u32();
-        while halved.peek().is_some_and(|mark| mark.start() < start) {
-            halved.next();
-        }
-        let Some(mark) = halved.peek().filter(|mark| mark.start() == start) else {
-            return Halved::default();
-        };
-        let advance: i64 = placed
-            .iter()
-            .map(|position| along(position, vertical))
-            .sum();
-        if advance < i64::from(least) {
-            return Halved::default();
-        }
-        // Half, toward zero, as Chrome halves a `TextRunLayoutUnit`.
-        let half = -i32::try_from(advance / 2).unwrap_or(0);
-        match mark.class() {
-            TrimClass::Open => Halved {
-                shift: half,
-                trim: 0,
-            },
-            TrimClass::Close => Halved {
-                shift: 0,
-                trim: half,
-            },
-            _ => Halved::default(),
-        }
-    };
+    let mut cursor = ClusterCursor::new(source, &range);
+    let mut writer = ClusterWriter::<MARKED>::new(source, &range, vertical, marks);
     let mut k = 0;
     while k < count {
         work::step();
@@ -842,74 +769,193 @@ fn write_clusters<const MARKED: bool, I: Id, A: AdvanceUnit, S: AdvanceStore<A>>
         } else {
             (k, e)
         };
-        while next < cluster {
-            let kerned = kerned_at(source.start(next));
-            let flags = settle(next, range.start, true, kerned, drawn, &mut first);
-            out.cluster(&[], &[], vertical, flags, Halved::default());
-            next = ClusterId::new(next.get() + 1);
-        }
         let glyphs = infos.get(lo..hi).unwrap_or_default();
-        let raw = is_unsafe_start(glyphs, start);
         let placed = positions.get(lo..hi).unwrap_or_default();
-        let moved = halve(start, placed);
-        let flags = settle(
-            cluster,
-            range.start,
-            raw,
-            kerned_at(start),
-            false,
-            &mut first,
-        );
-        match (glyphs, placed) {
-            ([glyph], [position]) if !MARKED => out.one(glyph, position, flags),
-            _ => out.cluster(glyphs, placed, vertical, flags, moved),
-        }
-        drawn = true;
-        next = ClusterId::new(cluster.get() + 1);
+        writer.write(cluster, start, glyphs, placed, out);
         k = e;
     }
-    while next < range.end {
-        let kerned = kerned_at(source.start(next));
-        let flags = settle(next, range.start, true, kerned, drawn, &mut first);
-        out.cluster(&[], &[], vertical, flags, Halved::default());
-        next = ClusterId::new(next.get() + 1);
-    }
-    first
+    writer.fill_empty(range.end, out);
+    writer.first
 }
 
-/// Returns the flags `cluster` is written with.
+/// What [`sink_clusters`] carries from one cluster it writes to the next.
 ///
-/// - `raw` is whether harfrust says breaking before it is unsafe.
-/// - `kerned` is whether a pair meeting before it makes breaking unsafe.
-/// - `continuation` is whether it has no glyphs after a cluster that had
-///   some.
-///
-/// The range's start keeps no unsafe bit of its own. For it, `raw` is
-/// recorded in `first` instead.
-fn settle(
-    cluster: ClusterId,
+/// It writes each cluster in the text's order, and reads the call's marks
+/// once each as it passes them.
+struct ClusterWriter<'a, const MARKED: bool> {
+    source: &'a ShapingSource<'a>,
+    /// The next cluster to write.
+    next: ClusterId,
+    /// The range's first cluster, which keeps no unsafe bit of its own.
     range_start: ClusterId,
-    raw: bool,
-    kerned: bool,
-    continuation: bool,
-    first: &mut bool,
-) -> Flags {
-    if cluster == range_start {
-        *first = raw;
-        // Kept only where a pair meets there, since the start of the shaped
-        // range is shaped as a start.
-        return Flags {
-            unsafe_to_break: kerned,
-            continuation,
-        };
+    /// Whether a cluster of the range has had glyphs: an empty one after is
+    /// a continuation.
+    drawn: bool,
+    /// Whether harfrust says breaking before the range's start is unsafe.
+    first: bool,
+    /// The glyphs were shaped down the line.
+    vertical: bool,
+    /// Where a pair makes breaking unsafe, not yet passed.
+    kerned: Peekable<slice::Iter<'a, u32>>,
+    /// The marks halved, not yet passed.
+    halved: Peekable<slice::Iter<'a, TrimMark>>,
+    /// The least advance a mark needs to be halved, or `None` where marks
+    /// are not halved.
+    least: Option<i32>,
+}
+
+impl<'a, const MARKED: bool> ClusterWriter<'a, MARKED> {
+    fn new(
+        source: &'a ShapingSource<'a>,
+        range: &Range<ClusterId>,
+        vertical: bool,
+        marks: &CallMarks<'a>,
+    ) -> Self {
+        Self {
+            source,
+            next: range.start,
+            range_start: range.start,
+            drawn: false,
+            first: false,
+            vertical,
+            kerned: marks.unsafe_before.iter().peekable(),
+            halved: marks
+                .halving
+                .map_or(&[][..], |(marks, _)| marks)
+                .iter()
+                .peekable(),
+            least: marks.halving.map(|(_, least)| least),
+        }
     }
-    Flags {
-        unsafe_to_break: raw || kerned,
-        continuation,
+
+    /// Writes `cluster`, which starts at `start` and is drawn by `glyphs`
+    /// placed at `placed`, after the empty clusters before it.
+    fn write<I: Id, A: AdvanceUnit, S: AdvanceStore<A>>(
+        &mut self,
+        cluster: ClusterId,
+        start: TextOffset,
+        glyphs: &[GlyphInfo],
+        placed: &[GlyphPosition],
+        out: &mut GlyphSink<'_, I, A, S>,
+    ) {
+        self.fill_empty(cluster, out);
+        let moved = self.halve(start, placed);
+        let flags = self.flags(cluster, start, is_unsafe_start(glyphs, start), false);
+        match (glyphs, placed) {
+            ([glyph], [position]) if !MARKED => out.one(glyph, position, flags),
+            _ => out.cluster(glyphs, placed, self.vertical, flags, moved),
+        }
+        self.drawn = true;
+        self.next = ClusterId::new(cluster.get() + 1);
+    }
+
+    /// Writes the clusters from the next one up to `end` with no glyphs:
+    /// unsafe, since they lie inside something merged, and continuations
+    /// once a cluster of the range has drawn.
+    fn fill_empty<I: Id, A: AdvanceUnit, S: AdvanceStore<A>>(
+        &mut self,
+        end: ClusterId,
+        out: &mut GlyphSink<'_, I, A, S>,
+    ) {
+        while self.next < end {
+            let next = self.next;
+            let flags = self.flags(next, self.source.start(next), true, self.drawn);
+            out.cluster(&[], &[], self.vertical, flags, Halved::default());
+            self.next = ClusterId::new(next.get() + 1);
+        }
+    }
+
+    /// Returns the flags `cluster`, starting at `start`, is written with.
+    ///
+    /// - `raw` is whether harfrust says breaking before it is unsafe.
+    /// - A pair meeting before it also makes breaking unsafe.
+    /// - `continuation` is whether it has no glyphs after a cluster that had
+    ///   some.
+    ///
+    /// The range's start keeps no unsafe bit of its own. For it, `raw` is
+    /// recorded in `first` instead.
+    fn flags(
+        &mut self,
+        cluster: ClusterId,
+        start: TextOffset,
+        raw: bool,
+        continuation: bool,
+    ) -> Flags {
+        let kerned = self.is_kerned(start);
+        if cluster == self.range_start {
+            self.first = raw;
+            // Kept only where a pair meets there, since the start of the
+            // shaped range is shaped as a start.
+            return Flags {
+                unsafe_to_break: kerned,
+                continuation,
+            };
+        }
+        Flags {
+            unsafe_to_break: raw || kerned,
+            continuation,
+        }
+    }
+
+    /// Whether a pair makes breaking before a cluster starting at `start`
+    /// unsafe: never on the plain path.
+    fn is_kerned(&mut self, start: TextOffset) -> bool {
+        if !MARKED {
+            return false;
+        }
+        let start = start.to_u32();
+        let mut found = false;
+        while let Some(&&at) = self.kerned.peek() {
+            if at > start {
+                break;
+            }
+            found |= at == start;
+            self.kerned.next();
+        }
+        found
+    }
+
+    /// Returns how a cluster starting at `start`, whose glyphs are `placed`,
+    /// moves.
+    ///
+    /// It is halved where it is a found mark at least nine tenths of an em
+    /// wide (Chrome's `HanKerning::ApplyKerning`), and never on the plain
+    /// path.
+    fn halve(&mut self, start: TextOffset, placed: &[GlyphPosition]) -> Halved {
+        let Some(least) = self.least.filter(|_| MARKED) else {
+            return Halved::default();
+        };
+        let start = start.to_u32();
+        while self.halved.peek().is_some_and(|mark| mark.start() < start) {
+            self.halved.next();
+        }
+        let Some(mark) = self.halved.peek().filter(|mark| mark.start() == start) else {
+            return Halved::default();
+        };
+        let advance: i64 = placed
+            .iter()
+            .map(|position| along(position, self.vertical))
+            .sum();
+        if advance < i64::from(least) {
+            return Halved::default();
+        }
+        // Half, toward zero, as Chrome halves a `TextRunLayoutUnit`.
+        let half = -i32::try_from(advance / 2).unwrap_or(0);
+        match mark.class() {
+            TrimClass::Open => Halved {
+                shift: half,
+                trim: 0,
+            },
+            TrimClass::Close => Halved {
+                shift: 0,
+                trim: half,
+            },
+            _ => Halved::default(),
+        }
     }
 }
 
-/// Whether [`write`](fn@write) takes its plain path where it can.
+/// Whether [`sink_output`] takes its plain path where it can.
 ///
 /// It always does, except in tests that force the marked path.
 fn plain_paths() -> bool {
@@ -925,7 +971,7 @@ fn plain_paths() -> bool {
 
 #[cfg(test)]
 std::thread_local! {
-    /// When set, [`write`](fn@write) on this thread takes the marked path
+    /// When set, [`sink_output`] on this thread takes the marked path
     /// even where there are no marks, so tests can compare it with the plain
     /// path.
     pub(super) static MARKED_ONLY: Cell<bool> = const { Cell::new(false) };

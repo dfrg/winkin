@@ -169,6 +169,21 @@ impl LetterWordSpacing {
         self.letter.raw() == 0 && self.word.raw() == 0
     }
 
+    /// Returns whether a cluster of `class` may take some of it, before its
+    /// text is read.
+    ///
+    /// Where this is false, [`after`](Self::after) returns zero whatever the
+    /// text.
+    #[inline]
+    pub(super) fn may_space(self, class: ClusterClass) -> bool {
+        (self.letter.raw() != 0 && takes_letter_spacing(class))
+            || (self.word.raw() != 0
+                && matches!(
+                    class,
+                    ClusterClass::Space | ClusterClass::NoBreakSpace | ClusterClass::Text
+                ))
+    }
+
     /// Returns the room after a cluster of `class` whose text is `text`.
     ///
     /// Letter-spacing applies unless the cluster is a ligature's

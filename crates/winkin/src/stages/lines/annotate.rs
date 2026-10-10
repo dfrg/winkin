@@ -34,7 +34,7 @@
 //! on their bases' em boxes as shifts inside each column move them. The rest
 //! is reckoned on the line's baseline, and line layout's placement moves it.
 
-use super::{RubyLines, RubyPiece};
+use super::{ColumnPart, RubyLines};
 use crate::stages::measure::{ColumnWalk, RubyLevelId};
 use alloc::vec::Vec;
 use core::ops::Range;
@@ -68,7 +68,7 @@ struct LevelBand {
 ///
 /// A side with no annotations is `None`.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
-pub(crate) struct AnnotationReach {
+struct AnnotationReach {
     over: Option<LayoutUnit>,
     under: Option<LayoutUnit>,
 }
@@ -94,14 +94,13 @@ impl LevelBands {
         }
     }
 
-    /// Stacks the annotation levels of a line's `columns` and returns how far
-    /// they reach.
+    /// Stacks the annotation levels of a line's `columns`.
     ///
     /// The columns are those open across the line's start and on it, then
     /// those whose bases start on it. Each level's em box sits on the one
     /// inside it, and the first sits on the bases'. Where every base under a
     /// side is empty, its levels stand on `line`, the line box's extent, as
-    /// Chrome's do. `pieces`, the line's pieces with the table of their
+    /// Chrome's do. `parts`, the line's parts with the table of their
     /// levels, skips the empty levels of columns split across lines. Linear
     /// in the levels.
     pub(crate) fn stack(
@@ -109,7 +108,19 @@ impl LevelBands {
         rubies: &RubyColumns,
         columns: impl Iterator<Item = RubyColumnId> + Clone,
         line: Extent,
-        pieces: Option<(&RubyLines, &[RubyPiece])>,
+        parts: Option<(&RubyLines, &[ColumnPart])>,
+    ) {
+        self.stack_reach(rubies, columns, line, parts);
+    }
+
+    /// Stacks the levels as [`stack`](Self::stack) does, and returns how far
+    /// they reach.
+    fn stack_reach(
+        &mut self,
+        rubies: &RubyColumns,
+        columns: impl Iterator<Item = RubyColumnId> + Clone,
+        line: Extent,
+        parts: Option<(&RubyLines, &[ColumnPart])>,
     ) -> AnnotationReach {
         let out = &mut self.bands;
         out.clear();
@@ -123,14 +134,14 @@ impl LevelBands {
                     continue;
                 };
                 let mut index = from;
-                let piece = pieces
-                    .and_then(|(_, on_line)| on_line.iter().rev().find(|piece| piece.column == id));
+                let part = parts
+                    .and_then(|(_, on_line)| on_line.iter().rev().find(|part| part.column == id));
                 for (offset, level) in rubies.levels(column).iter().enumerate() {
-                    if let Some(piece) = piece {
-                        let empty = pieces
-                            .and_then(|(pieces, _)| {
-                                pieces.level(
-                                    piece,
+                    if let Some(part) = part {
+                        let empty = parts
+                            .and_then(|(parts, _)| {
+                                parts.level(
+                                    part,
                                     RubyLevelId::new(column.levels.start.get() + offset),
                                 )
                             })
@@ -258,14 +269,14 @@ pub(super) struct AnnotationRoom<'a> {
 pub(super) type Carry = LayoutUnit;
 
 /// What a line's room reads past its own items: what the line before left,
-/// the line's ruby columns, and its pieces of split columns.
+/// the line's ruby columns, and its parts of split columns.
 pub(super) struct AnnotationContinuation<'a> {
     pub(super) carry: Carry,
     /// The columns whose bases start on the line.
     pub(super) columns: Range<RubyColumnId>,
-    /// The line's pieces, with the table of their levels, where any column
+    /// The line's parts, with the table of their levels, where any column
     /// is split.
-    pub(super) pieces: Option<(&'a RubyLines, &'a [RubyPiece])>,
+    pub(super) parts: Option<(&'a RubyLines, &'a [ColumnPart])>,
 }
 
 impl<'a> AnnotationRoom<'a> {
@@ -298,14 +309,14 @@ impl<'a> AnnotationRoom<'a> {
     /// Returns the extent of the line over `clusters` with its annotation
     /// and mark room folded in, and what it leaves the next line.
     ///
-    /// `natural` is the line's own extent and `from` its first item.
-    /// `continuation` carries what the line before left. The module doc
-    /// gives the rules.
+    /// `natural` is the line's own extent, and `ems` what its em boxes and
+    /// marks reach, gathered as its extent was measured. `continuation`
+    /// carries what the line before left. The module doc gives the rules.
     pub(super) fn room(
         &self,
         stages: &LineStages<'_>,
         bands: &mut LevelBands,
-        from: ItemId,
+        ems: &LineEms,
         clusters: Range<ClusterId>,
         natural: Extent,
         continuation: AnnotationContinuation<'_>,
@@ -313,84 +324,56 @@ impl<'a> AnnotationRoom<'a> {
         let AnnotationContinuation {
             carry: before,
             columns: line_columns,
-            pieces,
+            parts,
         } = continuation;
         if natural.is_none() {
             return (natural, LayoutUnit::ZERO);
         }
-        let Range { start, end } = clusters;
+        let start = clusters.start;
         let (ascent, descent) = (natural.ascent(), natural.descent());
         let rubies = stages.measured.ruby_columns();
         // The columns split across the line's start, then those on it.
-        let open = pieces
+        let open = parts
             .map_or(&[][..], |(_, on_line)| on_line)
             .iter()
-            .map(|piece| piece.column)
+            .map(|part| part.column)
             .filter(|&column| column < line_columns.start);
         let reach = if rubies.is_empty() {
             AnnotationReach::default()
         } else {
-            bands.stack(
+            bands.stack_reach(
                 rubies,
                 open.chain(
                     (line_columns.start.get()..line_columns.end.get()).map(RubyColumnId::new),
                 ),
                 natural,
-                pieces,
+                parts,
             )
         };
         // What the content reaches from the baseline: the em boxes, their
         // marks and the annotations.
-        let mut over = LayoutUnit::MIN;
-        let mut under = LayoutUnit::MIN;
+        let (mut over, mut under) = (ems.over, ems.under);
         let mut marked_over = false;
         let mut marked_under = false;
-        // For uniform emphasis room: the tallest marks each side, and the
-        // text they mark.
-        let mut marks_over = LayoutUnit::ZERO;
-        let mut marks_under = LayoutUnit::ZERO;
-        let mut marked = Extent::NONE;
         // The line's columns not yet passed. The marked text comes in text
         // order, as the columns do.
-        let facts = &stages.content.facts;
         let mut columns = ColumnWalk::from_column(rubies, line_columns.start, start);
-        stages.ems_on_line(from, start, end, |item, text, em, first| {
-            over = over.max(em.ascent());
-            under = under.max(em.descent());
-            let Some(measured) = self.marks else {
-                return;
-            };
-            let row = facts.text(text);
-            if item.kind != ItemKind::Text || !row.has(TextFlags::EMPHASIS) {
-                return;
-            }
-            let Some(metrics) = measured.text_metrics(text) else {
-                return;
-            };
-            let side = row.emphasis_side;
-            let height = metrics.mark.height();
-            if self.rule == EmphasisRoom::Uniform {
-                marked = marked.unite(em);
-                match side {
-                    EmphasisSide::Over => marks_over = marks_over.max(height),
-                    EmphasisSide::Under => marks_under = marks_under.max(height),
-                }
-                return;
-            }
+        for mark in &ems.marks {
             // A mark on the side of its column's annotation is set past
             // the annotation.
-            let past = annotation_past(rubies, &mut columns, bands, first, side);
-            match side {
+            let past = annotation_past(rubies, &mut columns, bands, mark.first, mark.side);
+            let em = mark.em;
+            match mark.side {
                 EmphasisSide::Over => {
-                    over = over.max(past.unwrap_or(em.ascent()) + height);
+                    over = over.max(past.unwrap_or(em.ascent()) + mark.height);
                     marked_over = true;
                 }
                 EmphasisSide::Under => {
-                    under = under.max(past.unwrap_or(em.descent()) + height);
+                    under = under.max(past.unwrap_or(em.descent()) + mark.height);
                     marked_under = true;
                 }
             }
-        });
+        }
         if let Some(reach) = reach.over {
             over = over.max(reach);
         }
@@ -399,15 +382,7 @@ impl<'a> AnnotationRoom<'a> {
         }
         let annotated_over = reach.over.is_some() || marked_over;
         let annotated_under = reach.under.is_some() || marked_under;
-        // A line with next to nothing on it keeps room for a letter of the
-        // block's size in its line box, as Chrome's does.
-        let height = ascent + descent;
-        let size = LayoutUnit::from_px(stages.block_size());
-        if over == LayoutUnit::MIN || under == LayoutUnit::MIN || over + under < size {
-            let leading = ((height - size).half()).max(LayoutUnit::ZERO);
-            over = ascent - leading;
-            under = descent - leading;
-        }
+        let (mut over, mut under) = stages.letter_room(natural, over, under);
         // Content past the line box counts only where annotations or marks
         // are on that side: a font's letters may reach past it anyway.
         if over > ascent && !annotated_over {
@@ -439,8 +414,9 @@ impl<'a> AnnotationRoom<'a> {
         // Uniform room for marks: what the marks and their text need past
         // the line box, split over and under in proportion to the marks.
         // The first line takes off the room above the block.
-        if self.rule == EmphasisRoom::Uniform && !marked.is_none() {
-            let wanted = marks_over + marked.height() + marks_under;
+        if self.rule == EmphasisRoom::Uniform && !ems.marked.is_none() {
+            let (marks_over, marks_under) = (ems.marks_over, ems.marks_under);
+            let wanted = marks_over + ems.marked.height() + marks_under;
             let lent = if start == ClusterId::new(0) {
                 before.max(LayoutUnit::ZERO)
             } else {
@@ -476,12 +452,11 @@ impl LineStages<'_> {
     /// It equals the carry [`AnnotationRoom::room`] gives such a line, with
     /// nothing left by the line before. It serves
     /// [`Lines::room_below`](super::Lines::room_below) for the last line.
-    /// It walks the em boxes once and stacks no levels.
+    /// It walks the em boxes once, from item `from`, and stacks no levels.
     pub(super) fn plain_carry(
         &self,
         from: ItemId,
-        start: ClusterId,
-        end: ClusterId,
+        clusters: Range<ClusterId>,
         natural: Extent,
     ) -> Carry {
         debug_assert!(
@@ -491,70 +466,48 @@ impl LineStages<'_> {
         if natural.is_none() {
             return LayoutUnit::ZERO;
         }
-        let (ascent, descent) = (natural.ascent(), natural.descent());
-        let (mut over, mut under) = (LayoutUnit::MIN, LayoutUnit::MIN);
-        self.ems_on_line(from, start, end, |_, _, em, _| {
-            over = over.max(em.ascent());
-            under = under.max(em.descent());
-        });
-        // This settles it as `room` does with nothing past the line box. A
-        // nearly empty line keeps room for a letter of the block's size.
-        // Content reaching under the line box counts to its bottom.
-        let size = LayoutUnit::from_px(self.block_size());
-        if over == LayoutUnit::MIN || under == LayoutUnit::MIN || over + under < size {
-            let leading = ((ascent + descent - size).half()).max(LayoutUnit::ZERO);
-            under = descent - leading;
+        let mut ems = LineEms::new();
+        let mut walk = EmWalk::new(self, None, &mut ems, clusters.clone());
+        let items = &self.content.items;
+        let item_clusters = &self.analysis.item_clusters;
+        let mut id = from;
+        while items.get(id).is_some() {
+            work::step();
+            let on_line = item_clusters.range(id);
+            if on_line.start >= clusters.end {
+                break;
+            }
+            if on_line.end > clusters.start {
+                walk.visit(self, id, on_line);
+            }
+            id = ItemId::new(id.get() + 1);
         }
+        // This settles it as `room` does with nothing past the line box.
+        // Content reaching under the line box counts to its bottom.
+        let (_, under) = self.letter_room(natural, ems.over, ems.under);
+        let descent = natural.descent();
         (descent - under.min(descent)).max(LayoutUnit::ZERO)
     }
 
-    /// Calls `each` for every item on the line from `start` to `end` that
-    /// has an em box, starting at item `from`.
+    /// Returns how far a line's content reaches over and under its
+    /// baseline, `over` and `under`, where it keeps room for a letter.
     ///
-    /// `each` gets the item, its text facts, its em box from
-    /// [`em`](Self::em) and its first cluster. Annotations are skipped,
-    /// since they belong to their column. So is the initial letter, which
-    /// stands on no line: Chrome's letter box adds no height to the line
-    /// its annotation room is measured from (`ComputeAnnotationOverflow`).
-    #[inline]
-    fn ems_on_line(
+    /// A line with next to nothing on it keeps room for a letter of the
+    /// block's size in its line box, `natural`, as Chrome's does: its
+    /// content reaches the box less half the leading such a letter leaves.
+    fn letter_room(
         &self,
-        from: ItemId,
-        start: ClusterId,
-        end: ClusterId,
-        mut each: impl FnMut(&Item, TextFactsId, Extent, ClusterId),
-    ) {
-        let items = &self.content.items;
-        let item_clusters = &self.analysis.item_clusters;
-        let letter = self.measured.initial_letter().map(|letter| letter.node);
-        // The font runs, for a text item with no single em box. The cursor
-        // is sought once and walks with the items.
-        let mut runs = None;
-        let mut id = from;
-        while let Some(item) = items.get(id) {
-            work::step();
-            let Range {
-                start: first,
-                end: next,
-            } = item_clusters.range(id);
-            if first >= end {
-                break;
-            }
-            let this = id;
-            id = ItemId::new(id.get() + 1);
-            let on_line = first < next && next > start;
-            if !on_line || item.flags.contains(ItemFlags::ANNOTATION) {
-                continue;
-            }
-            if letter.is_some_and(|letter| self.content.nodes.contains(letter, item.node)) {
-                continue;
-            }
-            let text = self.text_facts(item.node);
-            let em = self.em(this, item, text, first.max(start)..next.min(end), &mut runs);
-            if !em.is_none() {
-                each(item, text, em, first);
-            }
+        natural: Extent,
+        over: LayoutUnit,
+        under: LayoutUnit,
+    ) -> (LayoutUnit, LayoutUnit) {
+        let (ascent, descent) = (natural.ascent(), natural.descent());
+        let size = LayoutUnit::from_px(self.block_size());
+        if over == LayoutUnit::MIN || under == LayoutUnit::MIN || over + under < size {
+            let leading = ((ascent + descent - size).half()).max(LayoutUnit::ZERO);
+            return (ascent - leading, descent - leading);
         }
+        (over, under)
     }
 
     /// Returns the em box of item `id` over its `clusters` on a line.
@@ -586,6 +539,166 @@ impl LineStages<'_> {
             ItemKind::Atomic => self.measured.extents.get(id),
             _ => Extent::NONE,
         }
+    }
+}
+
+/// What a line's em boxes and emphasis marks reach, gathered by an
+/// [`EmWalk`] in the walk over its items that measures its extent.
+///
+/// [`AnnotationRoom::room`] then does only arithmetic over it, and walks
+/// the marks set past an annotation. The breaker keeps one in its scratch,
+/// so a warm relayout allocates nothing.
+pub(super) struct LineEms {
+    /// How far the em boxes reach over and under the baseline: `MIN` on a
+    /// line with none.
+    over: LayoutUnit,
+    under: LayoutUnit,
+    /// Under uniform emphasis room, the tallest marks each side, and the
+    /// text they mark.
+    marks_over: LayoutUnit,
+    marks_under: LayoutUnit,
+    marked: Extent,
+    /// Otherwise, the marked text items, in text order.
+    marks: Vec<EmMark>,
+}
+
+/// A marked text item on a line, as [`LineEms`] keeps it.
+#[derive(Copy, Clone, Debug)]
+struct EmMark {
+    /// Its first cluster, which names the column whose annotation its
+    /// marks may be set past.
+    first: ClusterId,
+    /// Its em box on the line.
+    em: Extent,
+    side: EmphasisSide,
+    /// Its marks' height.
+    height: LayoutUnit,
+}
+
+impl LineEms {
+    /// Returns an empty record, allocating nothing.
+    pub(super) const fn new() -> Self {
+        Self {
+            over: LayoutUnit::MIN,
+            under: LayoutUnit::MIN,
+            marks_over: LayoutUnit::ZERO,
+            marks_under: LayoutUnit::ZERO,
+            marked: Extent::NONE,
+            marks: Vec::new(),
+        }
+    }
+
+    /// Forgets the last line's, keeping the allocation of its marks.
+    fn clear(&mut self) {
+        self.over = LayoutUnit::MIN;
+        self.under = LayoutUnit::MIN;
+        self.marks_over = LayoutUnit::ZERO;
+        self.marks_under = LayoutUnit::ZERO;
+        self.marked = Extent::NONE;
+        self.marks.clear();
+    }
+}
+
+heap_bytes! {
+    LineEms { marks; over, under, marks_over, marks_under, marked }
+}
+
+/// The gathering of one line's [`LineEms`], item by item.
+///
+/// It holds the rules for marks, the initial letter's node, which stands on
+/// no line, and the cursor over the font runs for a text item with no
+/// single em box, sought once and walked with the items.
+pub(super) struct EmWalk<'w, 'a> {
+    /// The rules for marks, where the line makes room for them.
+    room: Option<&'w AnnotationRoom<'a>>,
+    ems: &'w mut LineEms,
+    letter: Option<NodeId>,
+    runs: Option<RunCursor<FontRunId, ClusterId>>,
+    line: Range<ClusterId>,
+}
+
+impl<'w, 'a> EmWalk<'w, 'a> {
+    /// Starts gathering the line over `line` into `ems`, forgetting the
+    /// last line's, its marks made room for as `room` says.
+    pub(super) fn new(
+        stages: &LineStages<'_>,
+        room: Option<&'w AnnotationRoom<'a>>,
+        ems: &'w mut LineEms,
+        line: Range<ClusterId>,
+    ) -> Self {
+        ems.clear();
+        Self {
+            room,
+            ems,
+            letter: stages.measured.initial_letter().map(|letter| letter.node),
+            runs: None,
+            line,
+        }
+    }
+
+    /// Adds item `id`, which holds `clusters` and some of the line's.
+    ///
+    /// Annotations are skipped, since they belong to their column. So is
+    /// the initial letter, which stands on no line: Chrome's letter box adds
+    /// no height to the line its annotation room is measured from
+    /// (`ComputeAnnotationOverflow`). So is an item holding no cluster.
+    pub(super) fn visit(
+        &mut self,
+        stages: &LineStages<'_>,
+        id: ItemId,
+        clusters: Range<ClusterId>,
+    ) {
+        let Some(item) = stages.content.items.get(id) else {
+            return;
+        };
+        if clusters.is_empty() || item.flags.contains(ItemFlags::ANNOTATION) {
+            return;
+        }
+        let content = stages.content;
+        if self
+            .letter
+            .is_some_and(|letter| content.nodes.contains(letter, item.node))
+        {
+            return;
+        }
+        let text = stages.text_facts(item.node);
+        let on_line = clusters.start.max(self.line.start)..clusters.end.min(self.line.end);
+        let em = stages.em(id, item, text, on_line, &mut self.runs);
+        if em.is_none() {
+            return;
+        }
+        let ems = &mut *self.ems;
+        ems.over = ems.over.max(em.ascent());
+        ems.under = ems.under.max(em.descent());
+        let Some(room) = self.room else {
+            return;
+        };
+        let Some(measured) = room.marks else {
+            return;
+        };
+        let row = content.facts.text(text);
+        if item.kind != ItemKind::Text || !row.has(TextFlags::EMPHASIS) {
+            return;
+        }
+        let Some(metrics) = measured.text_metrics(text) else {
+            return;
+        };
+        let (side, height) = (row.emphasis_side, metrics.mark.height());
+        if room.rule == EmphasisRoom::Uniform {
+            ems.marked = ems.marked.unite(em);
+            match side {
+                EmphasisSide::Over => ems.marks_over = ems.marks_over.max(height),
+                EmphasisSide::Under => ems.marks_under = ems.marks_under.max(height),
+            }
+            return;
+        }
+        let first = clusters.start;
+        ems.marks.push(EmMark {
+            first,
+            em,
+            side,
+            height,
+        });
     }
 }
 

@@ -3,6 +3,7 @@
 //!   before left under its text;
 //! - the block's first line uses the room above the block the host names;
 //! - what reaches under moves the next line down;
+//! - the room a block lends below, none past a trimmed end;
 //! - under `Config::emphasis_room = Uniform` every marked line grows alike.
 //!
 //! Figures are measured with Chrome 153 on 40px Ahem, where an annotation
@@ -13,6 +14,7 @@ use alloc::vec::Vec;
 use super::*;
 use crate::config::{Config, EmphasisRoom};
 use crate::style::{LineHeight, RubyPosition, TextBoxTrim};
+use crate::tests::no_fonts;
 
 /// Returns `style` at a line height of `factor` times its size.
 fn leaded(style: &ComputedStyle<'static>, factor: f32) -> ComputedStyle<'static> {
@@ -228,6 +230,30 @@ fn a_block_reports_what_its_last_annotation_reaches_past_it() {
     fixture.build(&mut layout, &trimmed, |b| b.text(NodeKey(1), "XX"));
     fixture.lay_out(&mut layout, 100.0);
     assert_eq!(layout.room_below(), 0.0);
+}
+
+/// A block in a context with no fonts trims its end by the metrics its
+/// text falls back to, and then lends no room below, as a block with fonts
+/// does. Untrimmed, it lends the half leading under its last line.
+#[test]
+fn a_block_with_no_fonts_lends_no_room_below_a_trimmed_end() {
+    let mut fixture = fixture();
+    fixture.cx = no_fonts();
+    let mut layout = Layout::new();
+    let plain = leaded(&ahem(20.0), 1.5);
+    let mut below = Vec::new();
+    for trim in [TextBoxTrim::None, TextBoxTrim::TrimEnd] {
+        let block = ComputedBlockStyle {
+            style: &plain,
+            text_box_trim: trim,
+            ..ComputedBlockStyle::default()
+        };
+        fixture.build(&mut layout, &block, |b| b.text(NodeKey(1), "XX"));
+        fixture.lay_out(&mut layout, 100.0);
+        let trims_end = layout.line_records().block.trims_end;
+        below.push((trims_end, layout.room_below()));
+    }
+    assert_eq!(below, [(false, 5.0), (true, 0.0)]);
 }
 
 /// Marked lines take their room from what the line before leaves, as in

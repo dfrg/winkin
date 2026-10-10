@@ -60,12 +60,15 @@
 
 use alloc::string::String;
 use core::fmt;
+use core::ops::Range;
+use core::str::CharIndices;
 
 use icu_casemap::options::{LeadingAdjustment, TitlecaseOptions, TrailingCase};
 use icu_casemap::{CaseMapper, CaseMapperBorrowed};
 use icu_locale_core::{LanguageIdentifier, langid};
 use writeable::Writeable;
 
+use crate::data::TextOffset;
 use crate::style::{Language, TextCase, TextTransform};
 use crate::unicode::{has_stand_ins, segmenter_char, word_boundaries, word_segmenter};
 use crate::work;
@@ -388,6 +391,73 @@ impl Transforms {
             }
         });
     }
+}
+
+/// What two transforms each made of one of the caller's characters: the
+/// bytes each made, from the start of what each made of the whole run, and
+/// how many characters.
+#[derive(Clone, Debug)]
+pub(super) struct Made {
+    pub(super) ours: Range<TextOffset>,
+    pub(super) theirs: Range<TextOffset>,
+    counts: (usize, usize),
+}
+
+impl Made {
+    /// Whether each made one character of it, and the two are as long.
+    pub(super) fn is_aligned(&self) -> bool {
+        let len = |range: &Range<TextOffset>| range.end.get() - range.start.get();
+        self.counts == (1, 1) && len(&self.ours) == len(&self.theirs)
+    }
+}
+
+/// Walks `ours` and `theirs`, two transforms of one run of the caller's
+/// text, a caller's character at a time.
+///
+/// `counts` calls its argument with each of the caller's characters in
+/// order and how many characters each transform made of it on its own, as
+/// [`Transforms::counts`] does. `each` gets what each made of it. Returns
+/// whether those counts walk both texts exactly to their ends. Where they do
+/// not, as where a context mapped the characters otherwise than each alone,
+/// `each` is not called past the first character that does not fit, and the
+/// caller takes the run as a whole.
+pub(super) fn align_counts(
+    ours: &str,
+    theirs: &str,
+    counts: impl FnOnce(&mut dyn FnMut(char, usize, usize)),
+    mut each: impl FnMut(Made),
+) -> bool {
+    let mut ours_chars = ours.char_indices();
+    let mut theirs_chars = theirs.char_indices();
+    // Where each has got to, in bytes from where it started.
+    let (mut here, mut there) = (0, 0);
+    let mut whole = true;
+    // Takes `count` characters of `chars`, moving `to` past them.
+    let take = |chars: &mut CharIndices<'_>, count: usize, to: &mut usize| {
+        for _ in 0..count {
+            let Some((at, ch)) = chars.next() else {
+                return false;
+            };
+            *to = at + ch.len_utf8();
+        }
+        true
+    };
+    counts(&mut |_, ours_count, theirs_count| {
+        if !whole {
+            return;
+        }
+        let (was_here, was_there) = (here, there);
+        whole = take(&mut ours_chars, ours_count, &mut here)
+            && take(&mut theirs_chars, theirs_count, &mut there);
+        if whole {
+            each(Made {
+                ours: TextOffset::new(was_here)..TextOffset::new(here),
+                theirs: TextOffset::new(was_there)..TextOffset::new(there),
+                counts: (ours_count, theirs_count),
+            });
+        }
+    });
+    whole && ours_chars.next().is_none() && theirs_chars.next().is_none()
 }
 
 /// The most bytes a case mapping, `full-width` or `full-size-kana` makes of

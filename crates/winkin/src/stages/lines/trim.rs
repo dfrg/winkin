@@ -20,14 +20,14 @@ use crate::unit::LayoutUnit;
 
 /// A block's `text-box-trim`: its trim edges and which ends it trims.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub(crate) struct TextBoxTrims {
+pub(super) struct TextBoxTrims {
     /// How far the over edge stands over the baseline, and the under edge
     /// under it.
     over: LayoutUnit,
     under: LayoutUnit,
     starts: bool,
     /// Whether it trims the block's end.
-    pub(crate) ends: bool,
+    pub(super) ends: bool,
     /// Whether the lines flip, so the start is their under side.
     flipped: bool,
 }
@@ -37,7 +37,7 @@ impl TextBoxTrims {
     ///
     /// Returns `None` where the block trims nothing or has no font, as in
     /// content never built.
-    pub(crate) fn new(content: &Content, fonts: &Fonts) -> Option<Self> {
+    pub(super) fn new(content: &Content, fonts: &Fonts) -> Option<Self> {
         let block = content.block;
         let (starts, ends) = block.text_box_trim.sides();
         if !starts && !ends {

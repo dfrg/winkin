@@ -75,7 +75,7 @@ fn any_font_size_gives_valid_advances() {
     // its advance summed in 48.16, the prefix's own type.
     let mut layout = Layout::new();
     fixture.span(&mut layout, &sized(&LATIN_HEBREW, 50_000.0), "Q");
-    let q = layout.shaped_advances(&mut fixture.cx);
+    let q = layout.shaped_advances();
     assert_eq!(q[0].raw(), 7_500 * 65_536, "three quarters of an em");
 }
 
@@ -372,10 +372,10 @@ fn no_font_at_all_draws_nothing() {
     b.line_break(NodeKey(2));
     b.text(NodeKey(3), "at all");
     assert!(b.finish(&mut cx).is_complete());
-    check(&mut cx, &layout);
+    check(&layout);
     let shaped = layout.shaped().text(FirstLineVariant::Standard);
     assert!(shaped.glyphs.iter().all(|(_, &w)| w == GlyphWord::EMPTY));
-    assert!(advances(&mut cx, &layout).iter().all(|&a| a == 0));
+    assert!(advances(&layout).iter().all(|&a| a == 0));
     assert!(!shaped.runs.is_empty());
 }
 

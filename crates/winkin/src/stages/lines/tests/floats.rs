@@ -1004,7 +1004,7 @@ fn any_host_gives_valid_lines() {
     let line = layout.line(0).expect("a line");
     assert_eq!(
         line.metrics().top,
-        super::super::fit_floats::MAX_MOVES_DOWN as f32 / 64.0
+        super::super::fit::MAX_MOVES_DOWN as f32 / 64.0
     );
     assert!(records(&layout)[0].flags.contains(LineFlags::OVERFLOWS));
 }

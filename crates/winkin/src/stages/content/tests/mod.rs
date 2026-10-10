@@ -30,7 +30,7 @@ use crate::style::{
     ComputedStyle, EdgesGroup, FirstLineVariant, FontFamilyName, FontFeature, FontGroup,
     GenericFamily, Language, LineBreak, Sides, Tag, TextAutospace, TextCase, TextCombineUpright,
     TextGroup, TextOrientation, TextSecurity, TextSpacingTrim, TextTransform, TextWrapMode,
-    UnicodeBidi, WhiteSpaceCollapse, WhiteSpaceTrim, WordBreak,
+    UnicodeBidi, WhiteSpaceCollapse, WhiteSpaceTrim, WordBreak, WritingMode,
 };
 use crate::tests::{key, no_fonts, nowrap, styled, white_space};
 use crate::unit::TextUnit;

@@ -261,7 +261,14 @@ fn clusters_and_glyphs_add_up_to_their_run() {
                     (sum - advance).abs() < 1e-3,
                     "{width}: {sum} against {advance}"
                 );
-                let placed: Vec<_> = GlyphWalk::new(&input, id, record, item).collect();
+                let placed: Vec<_> = GlyphWalk::new(
+                    &input,
+                    &layout.stages().variant(record.variant()),
+                    id,
+                    record,
+                    item,
+                )
+                .collect();
                 assert_eq!(glyphs.len(), placed.len());
                 for (glyph, walked) in glyphs.iter().zip(&placed) {
                     assert_eq!(glyph.id, walked.id);

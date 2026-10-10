@@ -650,11 +650,7 @@ fn generated_text_falls_back_as_the_text_does() {
     let arrows = TestFont::new("Test Arrow Block", &[(0x2190, 0x2193)]);
     let other = TestFont::new("Test Other Arrows", &[(0x2192, 0x2192)]);
     let fallback = ahem_fallback().family("Test Arrow Block");
-    let mut fixture = Fixture::new(
-        &[ascii, arrows, other],
-        fallback,
-        StageCheck::Built(|_, layout| check(layout)),
-    );
+    let mut fixture = Fixture::new(&[ascii, arrows, other], fallback, StageCheck::Built(check));
     let mut layout = Layout::new();
     let runs_of = |fixture: &Fixture, layout: &Layout, kind| -> Vec<(usize, String)> {
         let block = layout
@@ -792,7 +788,7 @@ fn generated_text_says_what_the_primary_font_maps() {
         check(&layout);
         let generated = layout.fonts().generated();
         let text = block_text(&layout);
-        let primary = layout.primary_id(text);
+        let primary = primary_id(&layout, text);
         let found = |kind| generated.text(text, kind).expect("chosen");
         assert_eq!(found(Generated::Hyphen).string, hyphen, "{family}");
         assert_eq!(found(Generated::Ellipsis).string, ellipsis, "{family}");

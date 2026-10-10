@@ -30,7 +30,8 @@
 //!   paragraph's side. A motion that finds no stop ends at the last one it
 //!   reached.
 //! - Inside a leaf a step follows text order, so a word crossed costs its
-//!   length. Each leaf edge costs a walk of its line.
+//!   length. Each leaf edge costs a walk of the leaves the step reads, from
+//!   the focus's on.
 //! - To a line's end, the motion goes to the edge of the leaf drawn there.
 //!   Where that edge is the line's logical end or start, it is End or Home in
 //!   text order. Elsewhere it is the position a point past that end hits.
@@ -218,8 +219,8 @@ pub(super) fn line_end(
         if right || end.is_none() {
             end = Some(leaf);
         }
-        first = first.min(leaf.start());
-        last = last.max(leaf.end());
+        first = first.min(leaf.start);
+        last = last.max(leaf.end);
     }
     let Some(end) = end else {
         // A line with nothing on it has one position, found in text order.
@@ -228,10 +229,10 @@ pub(super) fn line_end(
     // The leaf's edge that way is its logical end where it reads that way,
     // and its start where it reads the other way.
     if right != end.is_rtl() {
-        if end.end() == last {
+        if end.end == last {
             return motion::line_edge(layout, &line, true);
         }
-    } else if end.start() == first {
+    } else if end.start == first {
         return motion::line_edge(layout, &line, false);
     }
     let x = if right { f32::MAX } else { f32::MIN };
@@ -494,52 +495,42 @@ struct Stop {
 /// is none.
 fn step(layout: &Layout, focus: ClusteredPosition, caret: &Caret, right: bool) -> Option<Landing> {
     let mut line = Line::new(layout, LineId::new(caret.line))?;
-    let mut past = focus_place(layout, &line, focus, caret, right);
+    let mut stops = stops(layout, line, right, Some((focus, caret)));
     let mut on_focus_line = true;
     loop {
-        work::step();
-        let Some(stop) = nearest(layout, &line, past, right) else {
-            // Screen order continues right onto the next line, left onto the previous.
-            let next = if right {
-                line.index().checked_add(1)
-            } else {
-                line.index().checked_sub(1)
-            }?;
-            line = Line::new(layout, LineId::new(next))?;
-            let near_end = if right {
-                f32::NEG_INFINITY
-            } else {
-                f32::INFINITY
-            };
-            past = Place::new(near_end, right);
-            on_focus_line = false;
-            continue;
-        };
-        past = stop.place;
-        // A builder break opportunity's two sides are one stop, and a
-        // position is one stop with itself.
-        if only_generated_between(layout, focus.cluster, stop.located.cluster) {
-            continue;
-        }
-        // Skip another position drawn where the caret is, across a change
-        // of direction; the arrow would not move the caret.
-        let in_place = on_focus_line
-            && caret.inline.left == caret.inline.right
-            && stop.place.x == caret.inline.left
-            && stop.rtl != caret.rtl;
-        if in_place {
-            continue;
-        }
-        // At a leaf's edge, a stop counts only where its caret is drawn there.
-        if stop.edge && !is_drawn(layout, &line, stop.located, stop.place.x) {
-            continue;
-        }
-        let (located, caret) = downstream(layout, stop.located, &line);
-        return Some(Landing {
-            located,
-            inside: stop.inside,
-            caret,
+        let landing = stops.find(|stop| {
+            // A builder break opportunity's two sides are one stop, and a
+            // position is one stop with itself.
+            if only_generated_between(layout, focus.cluster, stop.located.cluster) {
+                return false;
+            }
+            // Skip another position drawn where the caret is, across a change
+            // of direction; the arrow would not move the caret.
+            let in_place = on_focus_line
+                && caret.inline.left == caret.inline.right
+                && stop.place.x == caret.inline.left
+                && stop.rtl != caret.rtl;
+            // At a leaf's edge, a stop counts only where its caret is drawn
+            // there.
+            !in_place && (!stop.edge || is_drawn(layout, &line, stop.located, stop.place.x))
         });
+        if let Some(stop) = landing {
+            let (located, caret) = downstream(layout, stop.located, &line);
+            return Some(Landing {
+                located,
+                inside: stop.inside,
+                caret,
+            });
+        }
+        // Screen order continues right onto the next line, left onto the previous.
+        let next = if right {
+            line.index().checked_add(1)
+        } else {
+            line.index().checked_sub(1)
+        }?;
+        line = Line::new(layout, LineId::new(next))?;
+        stops = self::stops(layout, line, right, None);
+        on_focus_line = false;
     }
 }
 
@@ -556,48 +547,194 @@ fn within(layout: &Layout, at: ClusteredPosition, leaf: Inside, right: bool) -> 
     })
 }
 
-/// Returns the stop of `line` nearest past `past` the way a walk goes, right or left.
+/// A line's caret stops past a place, nearest first, the way a walk on the
+/// screen goes: right, from left to right; left, from right to left.
 ///
-/// `None` where there is none.
-fn nearest(layout: &Layout, line: &Line<'_>, past: Place, right: bool) -> Option<Stop> {
-    let mut best: Option<Stop> = None;
-    each_stop(layout, line, |stop| {
-        let nearer = best.is_none_or(|best| best.place.is_past(&stop.place, right));
-        if nearer
-            && stop.place.is_past(&past, right)
-            && place::is_stop(layout, stop.located.cluster)
-        {
-            best = Some(stop);
-        }
-    });
-    best
+/// Its leaves come in the order they are drawn, and each leaf's stops by
+/// place. A stop that is no caret stop ([`place::is_stop`]) is passed over.
+/// Each stop handed out costs a walk of the leaf it is in, so a step costs
+/// the leaves it reads, not a walk of its line for each stop it passes over.
+struct Stops<'a, I> {
+    layout: &'a Layout,
+    line: Line<'a>,
+    right: bool,
+    /// The leaves still to read, the next from the end the walk goes toward.
+    leaves: I,
+    /// The index, left to right, of the next leaf read.
+    next: i64,
+    /// The leaf being read, with its index left to right.
+    leaf: Option<(i64, Leaf<'a>)>,
+    /// The place of the stop handed out last, or where the walk starts.
+    past: Place,
+    /// Whether the line has no leaf and its one stop, its start, is still to
+    /// hand out.
+    bare: bool,
 }
 
-/// Returns where `focus`, whose caret is `caret` on `line`, is among the line's stops.
+/// Returns the stops of `line` past where a walk on the screen enters it.
 ///
-/// It is the first stop at its offset drawn where its caret is. Where there
-/// is none, it is the caret's x, before every stop there for a walk right and
-/// after every one for a walk left.
-fn focus_place(
-    layout: &Layout,
-    line: &Line<'_>,
-    focus: ClusteredPosition,
-    caret: &Caret,
+/// Where `focus` gives a position on the line and its caret, the walk starts
+/// at the first stop at its offset drawn where its caret is, among the
+/// leaves holding the offset. Where there is none, it starts at the caret's
+/// x, before every stop there for a walk right and after every one for a
+/// walk left. Without `focus`, the walk enters the line at its edge: its left
+/// for a walk right, its right for a walk left.
+fn stops<'a>(
+    layout: &'a Layout,
+    line: Line<'a>,
     right: bool,
-) -> Place {
-    let mut found = None;
-    each_stop(layout, line, |stop| {
-        let there = caret.inline.left <= stop.place.x && stop.place.x <= caret.inline.right;
-        if found.is_none() && stop.located.offset() == focus.offset() && there {
-            found = Some(stop.place);
+    focus: Option<(ClusteredPosition, &Caret)>,
+) -> Stops<'a, impl DoubleEndedIterator<Item = Leaf<'a>> + Clone> {
+    let mut leaves = place::leaves(line);
+    let edge = if right {
+        f32::NEG_INFINITY
+    } else {
+        f32::INFINITY
+    };
+    let mut stops = Stops {
+        layout,
+        line,
+        right,
+        leaves: leaves.clone(),
+        next: 0,
+        leaf: None,
+        past: Place::new(edge, right),
+        bare: false,
+    };
+    let Some((focus, caret)) = focus else {
+        let count = if right {
+            usize::from(leaves.next().is_some())
+        } else {
+            leaves.count()
+        };
+        stops.next = if right { 0 } else { leaf_key(count) - 1 };
+        stops.bare = count == 0;
+        return stops;
+    };
+    let offset = focus.offset();
+    let there = |stop: &Stop| {
+        stop.located.offset() == offset
+            && caret.inline.left <= stop.place.x
+            && stop.place.x <= caret.inline.right
+    };
+    let mut found: Option<(i64, Leaf<'a>, Place)> = None;
+    let mut count = 0;
+    for (at, leaf) in leaves.clone().enumerate() {
+        work::step();
+        count = at + 1;
+        if found.is_some() || offset < leaf.start || leaf.end < offset {
+            continue;
         }
-    });
+        let at = leaf_key(at);
+        leaf_stops(layout, at, &leaf, |stop| {
+            if found.is_none() && there(&stop) {
+                found = Some((at, leaf, stop.place));
+            }
+        });
+    }
     let x = if right {
         caret.inline.right
     } else {
         caret.inline.left
     };
-    found.unwrap_or(Place::new(x, right))
+    stops.past = Place::new(x, right);
+    stops.next = if right { 0 } else { leaf_key(count) - 1 };
+    stops.bare = count == 0;
+    if stops.bare {
+        // The line's one stop is where the focus is, or no stop is.
+        let start = bare_stop(layout, &line);
+        if there(&start) {
+            stops.past = start.place;
+        }
+    } else if let Some((at, leaf, place)) = found {
+        // The walk goes on from the focus's leaf, past the leaves behind it.
+        let before = usize::try_from(at).unwrap_or_default();
+        if right {
+            let _ = leaves.nth(before);
+        } else {
+            let _ = leaves.nth_back(count - 1 - before);
+        }
+        stops.leaves = leaves;
+        stops.next = if right { at + 1 } else { at - 1 };
+        stops.leaf = Some((at, leaf));
+        stops.past = place;
+    }
+    stops
+}
+
+impl<'a, I: DoubleEndedIterator<Item = Leaf<'a>>> Stops<'a, I> {
+    /// Returns the stop of the leaf `leaf`, the `at`th left to right,
+    /// nearest past the last handed out.
+    fn nearest(&self, at: i64, leaf: &Leaf<'_>) -> Option<Stop> {
+        let (layout, past, right) = (self.layout, self.past, self.right);
+        let mut best: Option<Stop> = None;
+        leaf_stops(layout, at, leaf, |stop| {
+            let nearer = best.is_none_or(|best| best.place.is_past(&stop.place, right));
+            if nearer
+                && stop.place.is_past(&past, right)
+                && place::is_stop(layout, stop.located.cluster)
+            {
+                best = Some(stop);
+            }
+        });
+        best
+    }
+}
+
+impl<'a, I: DoubleEndedIterator<Item = Leaf<'a>>> Iterator for Stops<'a, I> {
+    type Item = Stop;
+
+    fn next(&mut self) -> Option<Stop> {
+        loop {
+            work::step();
+            if let Some((at, leaf)) = self.leaf
+                && let Some(stop) = self.nearest(at, &leaf)
+            {
+                self.past = stop.place;
+                return Some(stop);
+            }
+            let leaf = if self.right {
+                self.leaves.next()
+            } else {
+                self.leaves.next_back()
+            };
+            let Some(leaf) = leaf else {
+                // A line with no leaf has one stop, its start.
+                if !self.bare {
+                    return None;
+                }
+                self.bare = false;
+                let start = bare_stop(self.layout, &self.line);
+                let counts = start.place.is_past(&self.past, self.right)
+                    && place::is_stop(self.layout, start.located.cluster);
+                return counts.then_some(start);
+            };
+            // The leaves are drawn in order along the line, so every stop of
+            // one is past every stop of the one read before. A box's negative
+            // margin could overlap two; the tests check that none of theirs
+            // do.
+            #[cfg(test)]
+            debug_assert!(self.leaf.is_none_or(|(at, before)| {
+                let edge = |leaf: &Leaf<'_>, at: i64, far: bool| Place {
+                    x: if far == self.right {
+                        leaf.inline.right
+                    } else {
+                        leaf.inline.left
+                    },
+                    leaf: at,
+                    rank: 0,
+                };
+                !edge(&before, at, true).is_past(&edge(&leaf, self.next, false), self.right)
+            }));
+            self.leaf = Some((self.next, leaf));
+            self.next += if self.right { 1 } else { -1 };
+        }
+    }
+}
+
+/// Returns `at`, a leaf's index along its line, as a place's key.
+fn leaf_key(at: usize) -> i64 {
+    i64::try_from(at).unwrap_or(i64::MAX)
 }
 
 /// Calls `each` with every caret stop `line` draws, as a walk on the screen meets them.
@@ -605,95 +742,105 @@ fn focus_place(
 /// The stops are each boundary of each leaf, drawn in that leaf. A combined
 /// unit and an atomic inline have only their ends. A line with no leaf has
 /// one stop, its start.
+fn each_stop(layout: &Layout, line: &Line<'_>, mut each: impl FnMut(Stop)) {
+    let mut any = false;
+    for (at, leaf) in place::leaves(*line).enumerate() {
+        work::step();
+        any = true;
+        leaf_stops(layout, leaf_key(at), &leaf, &mut each);
+    }
+    if !any {
+        each(bare_stop(layout, line));
+    }
+}
+
+/// Calls `each` with every caret stop of `leaf`, the `at`th of its line left
+/// to right, in text order.
 ///
 /// A text run's clusters come with their stops. The edges of a combined
 /// unit and an atomic inline have their clusters found by search.
-fn each_stop(layout: &Layout, line: &Line<'_>, mut each: impl FnMut(Stop)) {
+fn leaf_stops(layout: &Layout, at: i64, leaf: &Leaf<'_>, mut each: impl FnMut(Stop)) {
     let clusters = &layout.analysis().clusters;
-    let mut any = false;
-    for (index, leaf) in place::leaves(*line).enumerate() {
-        work::step();
-        any = true;
-        let rtl = leaf.is_rtl();
-        let order = i64::try_from(index).unwrap_or(i64::MAX);
-        let inside = Inside {
-            start: leaf.start(),
-            end: leaf.end(),
-            rtl,
-        };
-        let mut stop = |rank: usize, located: ClusteredPosition, x: f32, edge: bool| {
-            let rank = i64::try_from(rank).unwrap_or(i64::MAX);
-            each(Stop {
-                located,
-                place: Place {
-                    x,
-                    leaf: order,
-                    rank: if rtl { -rank } else { rank },
-                },
-                edge,
-                rtl,
-                inside: (!edge).then_some(inside),
-            });
-        };
-        let located = |at: usize, cluster: Option<ClusterId>| {
-            ClusteredPosition::with_cluster(layout, leaf_position(&leaf, at), cluster)
-        };
-        let InlineExtents {
-            left: left_edge,
-            right: right_edge,
-        } = leaf.inline();
-        let (start_x, end_x) = if rtl {
-            (right_edge, left_edge)
-        } else {
-            (left_edge, right_edge)
-        };
-        // Combined text is set across the line, so a walk along it passes
-        // over the unit from one end to the other.
-        let combined = leaf.is_combined();
-        let mut places = leaf
-            .run()
-            .filter(|_| !combined)
-            .map(|run| run.places().peekable());
-        let first = places
-            .as_mut()
-            .and_then(|places| places.peek())
-            .map(|&(cluster, _, _)| cluster)
-            .filter(|&cluster| clusters.start(cluster).get() == leaf.start());
-        stop(0, located(leaf.start(), first), start_x, true);
-        match places {
-            Some(places) => {
-                for (rank, (cluster, from, to)) in places.enumerate() {
-                    work::step();
-                    let at = clusters.range(cluster).end.get();
-                    let x = if rtl { from } else { to }.to_px();
-                    let after = ClusteredPosition {
-                        position: leaf_position(&leaf, at),
-                        cluster: ClusterId::new(cluster.get() + 1),
-                    };
-                    stop(rank + 1, after, x, at == leaf.end());
-                }
-            }
-            None => stop(1, located(leaf.end(), None), end_x, true),
-        }
-    }
-    if !any {
-        // A line with nothing on it has one stop, its start.
-        let start = line.record().clusters().start;
-        let start = ClusteredPosition::from_cluster(clusters, start, Affinity::Downstream);
-        let near = Some(LineId::new(line.index()));
-        let x = place::caret(layout, place::snap(layout, start), near)
-            .map_or(0.0, |caret| caret.inline.left);
+    let rtl = leaf.is_rtl();
+    let inside = Inside {
+        start: leaf.start,
+        end: leaf.end,
+        rtl,
+    };
+    let mut stop = |rank: usize, located: ClusteredPosition, x: f32, edge: bool| {
+        let rank = i64::try_from(rank).unwrap_or(i64::MAX);
         each(Stop {
-            located: start,
+            located,
             place: Place {
                 x,
-                leaf: 0,
-                rank: 0,
+                leaf: at,
+                rank: if rtl { -rank } else { rank },
             },
-            edge: false,
-            rtl: line.level().is_rtl(),
-            inside: None,
+            edge,
+            rtl,
+            inside: (!edge).then_some(inside),
         });
+    };
+    let located = |offset: usize, cluster: Option<ClusterId>| {
+        ClusteredPosition::with_cluster(layout, leaf_position(leaf, offset), cluster)
+    };
+    let InlineExtents {
+        left: left_edge,
+        right: right_edge,
+    } = leaf.inline;
+    let (start_x, end_x) = if rtl {
+        (right_edge, left_edge)
+    } else {
+        (left_edge, right_edge)
+    };
+    // Combined text is set across the line, so a walk along it passes
+    // over the unit from one end to the other.
+    let combined = leaf.is_combined();
+    let mut places = leaf
+        .run()
+        .filter(|_| !combined)
+        .map(|run| run.places().peekable());
+    let first = places
+        .as_mut()
+        .and_then(|places| places.peek())
+        .map(|&(cluster, _, _)| cluster)
+        .filter(|&cluster| clusters.start(cluster).get() == leaf.start);
+    stop(0, located(leaf.start, first), start_x, true);
+    match places {
+        Some(places) => {
+            for (rank, (cluster, from, to)) in places.enumerate() {
+                work::step();
+                let offset = clusters.range(cluster).end.get();
+                let x = if rtl { from } else { to }.to_px();
+                let after = ClusteredPosition {
+                    position: leaf_position(leaf, offset),
+                    cluster: ClusterId::new(cluster.get() + 1),
+                };
+                stop(rank + 1, after, x, offset == leaf.end);
+            }
+        }
+        None => stop(1, located(leaf.end, None), end_x, true),
+    }
+}
+
+/// Returns the one stop of `line`, which has no leaf: its start.
+fn bare_stop(layout: &Layout, line: &Line<'_>) -> Stop {
+    let clusters = &layout.analysis().clusters;
+    let start = line.record().clusters().start;
+    let start = ClusteredPosition::from_cluster(clusters, start, Affinity::Downstream);
+    let near = Some(LineId::new(line.index()));
+    let x = place::caret(layout, place::snap(layout, start), near)
+        .map_or(0.0, |caret| caret.inline.left);
+    Stop {
+        located: start,
+        place: Place {
+            x,
+            leaf: 0,
+            rank: 0,
+        },
+        edge: false,
+        rtl: line.level().is_rtl(),
+        inside: None,
     }
 }
 
@@ -748,7 +895,7 @@ fn downstream(
 
 /// Returns offset `at` of `leaf` as a position drawn in it, upstream at its logical end.
 fn leaf_position(leaf: &Leaf<'_>, at: usize) -> Position {
-    if at == leaf.end() && leaf.start() < leaf.end() {
+    if at == leaf.end && leaf.start < leaf.end {
         Position::new(at, Affinity::Upstream)
     } else {
         Position::new(at, Affinity::Downstream)

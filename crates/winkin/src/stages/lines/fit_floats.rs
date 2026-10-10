@@ -1,8 +1,8 @@
-//! The float driver, as more of [`Breaker`]'s `impl`.
+//! Placing floats, as more of [`Breaker`]'s `impl`.
 //!
 //! The fit never calls the host: it is a pure function of a band.
-//! [`Breaker::line`] wraps it and places the floats the chosen line reaches,
-//! as Blink's breaker and `InlineLayoutAlgorithm` do between them.
+//! `Breaker::line` in `fit` wraps it and places the floats the chosen line
+//! reaches, as Blink's breaker and `InlineLayoutAlgorithm` do between them.
 //! - Floats anchored at a paragraph's start are placed at the line's top
 //!   before it is fitted, fit or not (`PositionLeadingFloats`).
 //! - A float anchored on the line is placed at its top where it fits beside
@@ -20,41 +20,17 @@
 //! host's floats, but asks for no checkpoint and places nothing. An initial
 //! letter alone is such content.
 
-use super::annotate::Carry;
-use super::fit::{Anchor, SETTLES, Trial};
+use super::fit::{LineTrial, MAX_MOVES_DOWN, moves_to};
 use super::{
-    Breaker, BreakerParagraph, Cursor, EdgeMark, Exclusions, ExclusionsCheckpoint, Fitted,
-    FloatRequest, LineBand, LineFlags, LineFloat, LineFloatId, Lines, PendingLine, PlacedFloat,
-    StartWindow,
+    Breaker, BreakerParagraph, Cursor, Exclusions, ExclusionsCheckpoint, Fitted, FloatRequest,
+    LineBand, LineFloat, LineFloatId, LineHead, LineStart, Lines, PlacedFloat,
 };
 use crate::build::FloatSide;
 use crate::data::Id;
 use crate::stages::analysis::{ClusterClass, ClusterId};
-use crate::stages::content::{BreakClearanceId, FloatId, ItemId};
+use crate::stages::content::{BreakClearanceId, FloatId, NodeKey};
 use crate::stages::measure::InitialLetter;
 use crate::unit::{InlineLayoutUnit, LayoutUnit};
-
-/// The most times one line moves down past the floats beside it, before it
-/// stays and overflows.
-///
-/// A host could report each band change a hair lower, forever. Each move
-/// is one fit, so this bounds a line's work. A real line moves once per
-/// float bottom it has no room beside, a handful on a page.
-pub(super) const MAX_MOVES_DOWN: usize = 256;
-
-/// Returns where a line at `top` moves when the floats leave it no room.
-///
-/// That is where the host says the bands next change, rounded up onto the
-/// grid. Returns `None` where the host's answer is missing, not finite, or
-/// not below `top`.
-fn moves_to(exclusions: &dyn Exclusions, top: LayoutUnit) -> Option<LayoutUnit> {
-    let px = exclusions.below(top.to_px())?;
-    if !px.is_finite() {
-        return None;
-    }
-    let next = LayoutUnit::from_px_ceil(px);
-    (next > top).then_some(next)
-}
 
 /// Returns whether the line fitted as `fitted` from `start` holds the float
 /// anchored at `at`.
@@ -69,7 +45,7 @@ fn holds(para: &BreakerParagraph, start: ClusterId, fitted: &Fitted, at: Cluster
 /// Where a trial started, which a rejected trial rewinds to: the host's
 /// checkpoint, the floats kept, and the first float not yet placed.
 #[derive(Copy, Clone, Debug)]
-struct Placing {
+pub(super) struct Placing {
     checkpoint: ExclusionsCheckpoint,
     kept: LineFloatId,
     next: FloatId,
@@ -78,7 +54,7 @@ struct Placing {
 impl Placing {
     /// Returns where placing stands now, `next` being the first float not
     /// yet placed.
-    fn new(exclusions: &dyn Exclusions, out: &Lines, next: FloatId) -> Self {
+    pub(super) fn new(exclusions: &dyn Exclusions, out: &Lines, next: FloatId) -> Self {
         Self {
             checkpoint: exclusions.checkpoint(),
             kept: out.floats.next_id(),
@@ -87,31 +63,50 @@ impl Placing {
     }
 
     /// Returns whether a float has been kept since.
-    fn placed_since(&self, out: &Lines) -> bool {
+    pub(super) fn placed_since(&self, out: &Lines) -> bool {
         out.floats.next_id() != self.kept
     }
 
     /// Takes back every float placed since, as Chrome's `RewindFloats`
     /// does for a line it tries again.
-    fn rewind(self, exclusions: &mut dyn Exclusions, out: &mut Lines, next: &mut FloatId) {
+    pub(super) fn rewind(
+        self,
+        exclusions: &mut dyn Exclusions,
+        out: &mut Lines,
+        next: &mut FloatId,
+    ) {
         exclusions.rewind(self.checkpoint);
         out.floats.truncate(self.kept);
         *next = self.next;
     }
 }
 
-/// A line being tried beside floats: its paragraph and start, its top, the
-/// height its band is asked at, the area, and whether it is the first line.
-#[derive(Copy, Clone)]
-struct LineTrial<'p> {
-    para: &'p BreakerParagraph,
-    start: ClusterId,
-    /// The first item at `start`, where the breaker's item cursor stands.
-    first_item: ItemId,
-    top: LayoutUnit,
-    reserve: LayoutUnit,
-    area: LineBand,
-    first: bool,
+/// A float as the breaker places it: which, where its anchor is, and what
+/// the host is asked to place.
+#[derive(Copy, Clone, Debug)]
+struct Anchor {
+    id: FloatId,
+    /// The boundary its anchor sits at.
+    at: ClusterId,
+    key: NodeKey,
+    side: FloatSide,
+    /// Its margin box along the line.
+    inline: LayoutUnit,
+    /// Its margin box across the block.
+    block: LayoutUnit,
+}
+
+impl Anchor {
+    /// Returns the request that places it from `block_start`.
+    fn request(&self, block_start: LayoutUnit) -> FloatRequest {
+        FloatRequest {
+            key: self.key,
+            side: self.side,
+            inline_size: self.inline.to_px(),
+            block_size: self.block.to_px(),
+            block_start: block_start.to_px(),
+        }
+    }
 }
 
 impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
@@ -184,140 +179,6 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
         }
     }
 
-    /// Returns the line starting at `start`, and the room it leaves the
-    /// next at its end.
-    ///
-    /// The line sits in `area` narrowed by the host's bands, at `cursor` or
-    /// below where the floats leave no room. Moves the cursor's items and
-    /// floats past the line's. Without `FLOATS`, it places no float and asks
-    /// for no checkpoint.
-    pub(super) fn line<const FLOATS: bool>(
-        &mut self,
-        out: &mut Lines,
-        para: &BreakerParagraph,
-        start: ClusterId,
-        area: LineBand,
-        cursor: &mut Cursor,
-    ) -> (PendingLine, Carry) {
-        let placed = out.floats.next_id();
-        let top = cursor.top - cursor.trimmed;
-        if FLOATS {
-            self.place_leading(out, start, top, &mut cursor.floats);
-        }
-        let mark = out.edges.mark();
-        // Fit where it starts, or below the floats where they narrow it
-        // until it overflows, taking back each try's floats. These are
-        // Blink's layout opportunities, one after another.
-        let mut top = top;
-        let mut moves = 0;
-        let trial = loop {
-            let from = FLOATS.then(|| Placing::new(self.exclusions, out, cursor.floats));
-            let line = LineTrial {
-                para,
-                start,
-                first_item: cursor.items,
-                top,
-                reserve: self.reserve(start),
-                area,
-                first: out.lines.is_empty(),
-            };
-            let trial = self.trial::<FLOATS>(out, mark, line, cursor);
-            let movable = trial.fitted.flags.contains(LineFlags::OVERFLOWS)
-                && self.wraps
-                && moves < MAX_MOVES_DOWN
-                && trial.band.width() < area.width()
-                && self.hold.narrowing() == LayoutUnit::ZERO;
-            if !movable {
-                break trial;
-            }
-            // Ask where the bands change below the line as they stood before
-            // it. Its own floats would only move it past themselves. Blink's
-            // opportunities also use the exclusion space before the line.
-            let placed = from.is_some_and(|from| from.placed_since(out));
-            if placed && let Some(from) = from {
-                from.rewind(self.exclusions, out, &mut cursor.floats);
-            }
-            match moves_to(self.exclusions, top) {
-                Some(next) => {
-                    top = next;
-                    moves += 1;
-                }
-                // Nowhere lower: the line stays and overflows. Where it placed
-                // floats, it is fitted again to place them again.
-                None if placed => moves = MAX_MOVES_DOWN,
-                None => break trial,
-            }
-            // Fit again, taking back what this try reshaped.
-            out.edges.rewind(mark);
-        };
-        // The line's first item, where the cursor stood, and the next's.
-        let first_item = cursor.items;
-        cursor.items = trial.height.next_item;
-        // Floats the line reached but did not place beside it go below it,
-        // now that its height is known (Blink's `PlaceFloatingObjects`).
-        if FLOATS {
-            let bottom = top + trial.height.extent.box_height();
-            self.place_after(out, para, start, &trial.fitted, bottom, &mut cursor.floats);
-        }
-        (
-            self.kept(out, para, (start, first_item), top, &trial, placed),
-            trial.height.carry,
-        )
-    }
-
-    /// Fits `line` in the band asked at its reserve height, and returns the
-    /// trial.
-    ///
-    /// Where `FLOATS`, places the line's floats beside it or leaves them to
-    /// go below. Where the line's own height meets a narrower band, it is
-    /// fitted again there, at most [`SETTLES`] times. Each refit takes back
-    /// its floats and the edge tables to `mark`.
-    fn trial<const FLOATS: bool>(
-        &mut self,
-        out: &mut Lines,
-        mark: EdgeMark,
-        mut line: LineTrial<'_>,
-        cursor: &mut Cursor,
-    ) -> Trial {
-        let LineTrial {
-            para,
-            start,
-            first_item,
-            top,
-            area,
-            first,
-            ..
-        } = line;
-        let mut settles = 0;
-        loop {
-            let from = FLOATS.then(|| Placing::new(self.exclusions, out, cursor.floats));
-            let mut band = area.meet(self.band(out, top, line.reserve));
-            let mut fitted = self.fit(out, para, (start, first_item), band, area, first);
-            if FLOATS {
-                self.place_on_line(out, mark, &line, &mut cursor.floats, &mut band, &mut fitted);
-            }
-            let height = self.extent(out, para, cursor.items, start, fitted.end);
-            let tall = height.extent.box_height();
-            if settles < SETTLES
-                && tall > line.reserve
-                && area.meet(self.band(out, top, tall)).width() < band.width()
-            {
-                if let Some(from) = from {
-                    from.rewind(self.exclusions, out, &mut cursor.floats);
-                }
-                out.edges.rewind(mark);
-                line.reserve = tall;
-                settles += 1;
-                continue;
-            }
-            return Trial {
-                band,
-                fitted,
-                height,
-            };
-        }
-    }
-
     /// Returns the content's float `id` as the breaker places it, or `None`
     /// past the last.
     fn anchor(&self, id: FloatId) -> Option<Anchor> {
@@ -364,19 +225,14 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
     /// Only a line opening a paragraph has any, since a float at a soft
     /// break belongs to the line before. They are placed once, before any
     /// trial, so moving the line down leaves them in place, as in Blink.
-    fn place_leading(
+    pub(super) fn place_leading(
         &mut self,
         out: &mut Lines,
         start: ClusterId,
         top: LayoutUnit,
         floats: &mut FloatId,
     ) {
-        while let Some(anchor) = self.anchor(*floats)
-            && anchor.at <= start
-        {
-            self.place(out, &anchor, top);
-            *floats = FloatId::new(floats.get() + 1);
-        }
+        self.place_reached(out, top, floats, |anchor| anchor.at <= start);
     }
 
     /// Places the floats anchored on the fitted line beside it where each
@@ -392,11 +248,12 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
     /// The first float that fails stops the placing. It and every later float
     /// go below the line ([`place_after`](Self::place_after)). A float the
     /// refitted line no longer reaches is taken back for the next line, as
-    /// Blink does.
-    fn place_on_line(
+    /// Blink does. Each refit takes the edge tables back to the line's
+    /// `head`.
+    pub(super) fn place_on_line(
         &mut self,
         out: &mut Lines,
-        mark: EdgeMark,
+        head: &mut LineHead,
         line: &LineTrial<'_>,
         floats: &mut FloatId,
         band: &mut LineBand,
@@ -405,7 +262,8 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
         while let Some(anchor) = self.anchor(*floats)
             && holds(line.para, line.start, fitted, anchor.at)
         {
-            let (reach, space) = self.anchor_reach(line, *band, fitted.window, anchor.at);
+            let (fixed, _) = self.line_start(line, *band);
+            let (reach, space) = self.anchor_reach(&fixed, anchor.at);
             let size = anchor.inline;
             let room = band.width() + LayoutUnit::EPSILON;
             if reach + size > room && reach - space + size > room {
@@ -419,9 +277,8 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
             }
             self.record(out, anchor.id, placed);
             *band = line.area.meet(self.band(out, line.top, line.reserve));
-            out.edges.rewind(mark);
-            let start = (line.start, line.first_item);
-            *fitted = self.fit(out, line.para, start, *band, line.area, line.first);
+            out.edges.rewind(head.after());
+            *fitted = self.fit(out, line, *band, head);
             if !holds(line.para, line.start, fitted, anchor.at) {
                 // The line keeps its break, which fits the narrower band and
                 // so fits the wider one left once the float is taken back.
@@ -435,7 +292,7 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
 
     /// Places the kept line's remaining floats below it, from its line box's
     /// `bottom`, as Blink's `PlaceFloatingObjects` does.
-    fn place_after(
+    pub(super) fn place_after(
         &mut self,
         out: &mut Lines,
         para: &BreakerParagraph,
@@ -444,12 +301,9 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
         bottom: LayoutUnit,
         floats: &mut FloatId,
     ) {
-        while let Some(anchor) = self.anchor(*floats)
-            && holds(para, start, fitted, anchor.at)
-        {
-            self.place(out, &anchor, bottom);
-            *floats = FloatId::new(floats.get() + 1);
-        }
+        self.place_reached(out, bottom, floats, |anchor| {
+            holds(para, start, fitted, anchor.at)
+        });
     }
 
     /// Places the floats no line reaches at `top`, where the next line would
@@ -464,8 +318,22 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
         top: LayoutUnit,
         floats: &mut FloatId,
     ) {
-        while let Some(anchor) = self.anchor(*floats) {
-            self.place(out, &anchor, top);
+        self.place_reached(out, top, floats, |_| true);
+    }
+
+    /// Places each float from `floats` on, from `block_start`, while
+    /// `reached` holds of its anchor, and moves `floats` past them.
+    fn place_reached(
+        &mut self,
+        out: &mut Lines,
+        block_start: LayoutUnit,
+        floats: &mut FloatId,
+        reached: impl Fn(&Anchor) -> bool,
+    ) {
+        while let Some(anchor) = self.anchor(*floats)
+            && reached(&anchor)
+        {
+            self.place(out, &anchor, block_start);
             *floats = FloatId::new(floats.get() + 1);
         }
     }
@@ -476,37 +344,22 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
     /// The reach includes the indent and start cost, as fitting measures it:
     /// Blink's `position_` when its breaker meets the float. Blink takes the
     /// space off where the float does not fit with it
-    /// (`TrailingCollapsibleSpaceWidth`). The start is measured with
-    /// `window` and nothing reshaped.
-    fn anchor_reach(
-        &self,
-        line: &LineTrial<'_>,
-        band: LineBand,
-        window: Option<StartWindow>,
-        at: ClusterId,
-    ) -> (LayoutUnit, LayoutUnit) {
+    /// (`TrailingCollapsibleSpaceWidth`). The start is measured with its
+    /// window and nothing reshaped.
+    fn anchor_reach(&self, line: &LineStart<'_>, at: ClusterId) -> (LayoutUnit, LayoutUnit) {
         let (para, start) = (line.para, line.start);
-        let fitting = self.held(
-            para,
-            (start, line.first_item),
-            band,
-            line.area,
-            line.first,
-            window,
-        );
         // The start's reshape moves what follows its window. A float ends a
         // shaping run, so its anchor never falls inside the window.
-        let moved = fitting
+        let moved = line
             .window
             .filter(|window| window.end <= at)
             .map_or(InlineLayoutUnit::ZERO, |window| window.delta);
         let mut reach = self.stages.measured.prefix.get(at) - para.origin + moved;
         if para.tabs {
-            reach += self.line_tabs(&fitting, at, at).0;
+            reach += self.line_tabs(line, at, at).0;
         }
-        let reach = (reach.ceil_to_grid() - fitting.fit_start).to_layout()
-            + fitting.start_cost
-            + fitting.indent;
+        let reach =
+            (reach.ceil_to_grid() - line.fit_start).to_layout() + line.start_cost + line.indent;
         let space = at
             .get()
             .checked_sub(1)
@@ -514,7 +367,7 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
             .filter(|&last| {
                 last >= start
                     && self.clusters.class(last) == Some(ClusterClass::Space)
-                    && self.spaces_collapse(&fitting, last..at)
+                    && self.spaces_collapse(last..at)
             })
             .map_or(LayoutUnit::ZERO, |last| {
                 self.stages.cluster_advance(last).to_layout()

@@ -1,13 +1,13 @@
 //! The scorer of `text-wrap-style: balance` and `pretty`, as Blink's
 //! `ScoreLineBreaker` after Minikin's `OptimalLineBreaker`.
 //!
-//! It chooses the ends of a window of a paragraph's lines. Each line scores
+//! It chooses the ends of a paragraph's scored lines. Each line scores
 //! the room it leaves squared, plus what its end costs.
 //!
-//! Every place a line may end, a [`BreakCandidate`], is measured once from
-//! the paragraph's prefix. A line between two candidates is then one
-//! subtraction. The best way to each candidate is the best way to an
-//! earlier one plus the line between. The window is a few lines: six for
+//! Every place a line may end, a [`BreakPoint`], is measured once from
+//! the paragraph's prefix. A line between two points is then one
+//! subtraction. The best way to each point is the best way to an
+//! earlier one plus the line between. The scored lines are few: six for
 //! `balance` and four for `pretty`, as in Chrome, and six for `Pretty::Even`
 //! (beyond Chrome). So the pass costs what Chrome's does.
 //!
@@ -29,10 +29,10 @@ use crate::unit::LayoutUnit;
 use crate::work;
 
 define_id! {
-    /// Names a [`BreakCandidate`] in the scorer's table.
+    /// Names a [`BreakPoint`] in the scorer's table.
     ///
-    /// The window's start is first and its end last.
-    struct BreakCandidateId(u32);
+    /// The scored lines' start is first and their end last.
+    struct BreakPointId(u32);
 }
 
 define_id! {
@@ -90,7 +90,7 @@ impl LineChoice {
     /// Chrome scores four, `kMaxLinesForOptimal`. `Pretty::Even` (beyond
     /// Chrome) scores six, so a short last line takes its words from more
     /// lines. `balance` scores a whole paragraph of up to [`BALANCE_LINES`].
-    pub(super) fn window(self) -> usize {
+    pub(super) fn scored(self) -> usize {
         match self {
             Self::Pretty(Pretty::Limited) => 4,
             Self::Greedy | Self::Balance | Self::Pretty(Pretty::Even) => BALANCE_LINES,
@@ -103,7 +103,7 @@ impl LineChoice {
 /// Positions are from the paragraph's start, as the fit measures a line. A
 /// line from `a` to `b` is `b.end − a.start` wide, edge costs included.
 #[derive(Copy, Clone, Debug)]
-pub(super) struct BreakCandidate {
+pub(super) struct BreakPoint {
     /// The boundary where one line ends, hanging content included, and the
     /// next starts.
     at: ClusterId,
@@ -120,8 +120,8 @@ pub(super) struct BreakCandidate {
     hyphenated: bool,
 }
 
-impl BreakCandidate {
-    /// Returns the candidate at `at`; a shown hyphen costs `hyphen`.
+impl BreakPoint {
+    /// Returns the point at `at`; a shown hyphen costs `hyphen`.
     pub(super) fn new(
         at: ClusterId,
         start: LayoutUnit,
@@ -139,14 +139,14 @@ impl BreakCandidate {
     }
 }
 
-/// The best way found to a candidate.
+/// The best way found to a point.
 ///
 /// `prev` is where the line ending here starts. `line` is which paragraph
 /// line starts here.
 #[derive(Copy, Clone, Debug)]
 struct BreakScore {
     score: f32,
-    prev: BreakCandidateId,
+    prev: BreakPointId,
     line: WrapLineId,
 }
 
@@ -202,23 +202,23 @@ impl ScoreRule {
     }
 }
 
-/// The scorer's working memory: the window's line rooms, its candidates and
-/// the best way to each.
+/// The scorer's working memory: the scored lines' rooms, their break
+/// points and the best way to each.
 ///
 /// The breaker keeps it as scratch. It is cleared and never freed, so a
 /// warm relayout allocates nothing.
 pub(super) struct Scoring {
-    /// The window's first line, among the paragraph's.
+    /// The first scored line, among the paragraph's.
     first: WrapLineId,
-    /// Each window line's room: its band less its indent, as its greedy
+    /// Each scored line's room: its band less its indent, as its greedy
     /// line had it.
     ///
     /// A line past them has the last's room.
     rooms: [LayoutUnit; BALANCE_LINES],
-    /// How many lines the window has.
+    /// How many lines are scored.
     lines: usize,
-    candidates: Table<BreakCandidateId, BreakCandidate>,
-    scores: Table<BreakCandidateId, BreakScore>,
+    points: Table<BreakPointId, BreakPoint>,
+    scores: Table<BreakPointId, BreakScore>,
 }
 
 impl Scoring {
@@ -228,23 +228,23 @@ impl Scoring {
             first: WrapLineId(0),
             rooms: [LayoutUnit::ZERO; BALANCE_LINES],
             lines: 0,
-            candidates: Table::new(),
+            points: Table::new(),
             scores: Table::new(),
         }
     }
 
-    /// Forgets the last window and begins one at the paragraph's line
-    /// `first`.
+    /// Forgets the last scored lines and begins scoring from the
+    /// paragraph's line `first`.
     pub(super) fn begin(&mut self, first: WrapLineId) {
         self.first = first;
         self.lines = 0;
-        self.candidates.clear();
+        self.points.clear();
         self.scores.clear();
     }
 
-    /// Takes the room of the window's next line.
+    /// Takes the room of the next scored line.
     ///
-    /// Returns `false` past the most lines a window has.
+    /// Returns `false` past the most lines the scorer weighs.
     pub(super) fn push_room(&mut self, room: LayoutUnit) -> bool {
         let Some(slot) = self.rooms.get_mut(self.lines) else {
             return false;
@@ -254,16 +254,17 @@ impl Scoring {
         true
     }
 
-    /// Takes the window's next candidate, from its start to its end.
+    /// Takes the next break point, from the scored lines' start to their
+    /// end.
     ///
     /// Returns `false` where the table is full.
-    pub(super) fn push(&mut self, candidate: BreakCandidate) -> bool {
-        self.candidates.push(candidate).is_some()
+    pub(super) fn push(&mut self, point: BreakPoint) -> bool {
+        self.points.push(point).is_some()
     }
 
     /// Returns the room of the paragraph's `line`, never negative.
     ///
-    /// A line past the window has the last line's room, as Chrome's
+    /// A line past the scored ones has the last one's room, as Chrome's
     /// `AvailableWidth` reads its `LineWidths`.
     fn room(&self, line: WrapLineId) -> LayoutUnit {
         let at = line.get().saturating_sub(self.first.get());
@@ -276,43 +277,38 @@ impl Scoring {
             .max(LayoutUnit::ZERO)
     }
 
-    /// Returns the best ends of the window under `rule`, as Blink's
+    /// Returns the best ends of the scored lines under `rule`, as Blink's
     /// `Optimize`.
     ///
-    /// Returns `None` where the window has fewer than three opportunities.
+    /// Returns `None` where the scored lines have fewer than three
+    /// opportunities.
     /// Also returns `None` where the best has another line count than the
     /// greedy fit, which Chrome falls back to the greedy fit from.
     pub(super) fn best_ends(&mut self, rule: &ScoreRule) -> Option<PlannedEnds> {
-        // The window's start and end, and at least three opportunities, as
+        // The scored lines' start and end, and at least three opportunities, as
         // Blink's `kMinCandidates`.
-        let count = self.candidates.len();
+        let count = self.points.len();
         if count < 5 {
             return None;
         }
         // A line ending at the last opportunity leaves the last word alone
         // and pays for it. Where that is a hyphen inside the last word, the
         // ones before it back to the word's start pay too.
-        for candidate in self
-            .candidates
-            .as_mut_slice()
-            .iter_mut()
-            .take(count - 1)
-            .rev()
-        {
-            candidate.penalty += ORPHAN;
-            if !candidate.hyphenated {
+        for point in self.points.as_mut_slice().iter_mut().take(count - 1).rev() {
+            point.penalty += ORPHAN;
+            if !point.hyphenated {
                 break;
             }
         }
         self.scores.clear();
         let _ = self.scores.push(BreakScore {
             score: 0.0,
-            prev: BreakCandidateId::new(0),
+            prev: BreakPointId::new(0),
             line: self.first,
         });
         let short = self.short_penalty(rule);
-        let mut active = BreakCandidateId::new(0);
-        for end in (BreakCandidateId::new(1)..self.candidates.next_id()).ids() {
+        let mut active = BreakPointId::new(0);
+        for end in (BreakPointId::new(1)..self.points.next_id()).ids() {
             let score = self.best_to(rule, end, &mut active, short);
             self.scores.push(score)?;
         }
@@ -322,7 +318,7 @@ impl Scoring {
     /// Returns what a short last line costs under `Pretty::Even`, and zero
     /// under the other rules.
     ///
-    /// It exceeds all the slack the window's lines could leave squared. So a
+    /// It exceeds all the slack the scored lines could leave squared. So a
     /// choice with a long enough last line always wins where one exists.
     fn short_penalty(&self, rule: &ScoreRule) -> f32 {
         if !rule.short_last {
@@ -339,7 +335,7 @@ impl Scoring {
         f32::from(count) * widest * widest
     }
 
-    /// Returns the best way to a line ending at candidate `end`, as the
+    /// Returns the best way to a line ending at point `end`, as the
     /// inner loop of Blink's `ComputeScores`.
     ///
     /// It tries starts from `active`, the first whose line here is not
@@ -348,32 +344,30 @@ impl Scoring {
     fn best_to(
         &self,
         rule: &ScoreRule,
-        end: BreakCandidateId,
-        active: &mut BreakCandidateId,
+        end: BreakPointId,
+        active: &mut BreakPointId,
         short: f32,
     ) -> BreakScore {
         let fallback = BreakScore {
             score: f32::MAX,
-            prev: BreakCandidateId::new(0),
+            prev: BreakPointId::new(0),
             line: WrapLineId::new(0),
         };
-        let (Some(end_candidate), Some(from)) =
-            (self.candidates.get(end), self.scores.get(*active))
-        else {
+        let (Some(end_point), Some(from)) = (self.points.get(end), self.scores.get(*active)) else {
             return fallback;
         };
-        let last = end.get() + 1 == self.candidates.len();
+        let last = end.get() + 1 == self.points.len();
         let mut best = f32::MAX;
-        let mut best_prev = BreakCandidateId::new(0);
+        let mut best_prev = BreakPointId::new(0);
         let mut line = from.line;
         let mut room = self.room(line);
         let mut available = room + LayoutUnit::EPSILON;
-        let mut edge = end_candidate.end - available;
+        let mut edge = end_point.end - available;
         let mut hope = 0.0;
         for start in (*active..end).ids() {
             work::step();
-            let (Some(start_score), Some(start_candidate)) =
-                (self.scores.get(start), self.candidates.get(start))
+            let (Some(start_score), Some(start_point)) =
+                (self.scores.get(start), self.points.get(start))
             else {
                 break;
             };
@@ -383,23 +377,23 @@ impl Scoring {
                 if next != available {
                     room = self.room(line);
                     available = next;
-                    edge = end_candidate.end - available;
+                    edge = end_point.end - available;
                     hope = 0.0;
                 }
             }
             if start_score.score + hope >= best {
                 continue;
             }
-            let delta = (start_candidate.start - edge).to_px();
+            let delta = (start_point.start - edge).to_px();
             let mut width = 0.0;
             let mut extra = 0.0;
             if (last || !rule.justified) && delta < 0.0 {
                 width = OVERFULL;
             } else if last && !rule.balanced {
-                extra = LAST_LINE * start_candidate.penalty;
+                extra = LAST_LINE * start_point.penalty;
                 // Under `Pretty::Even`, a last line under a fifth of its
                 // room pays extra.
-                if short > 0.0 && end_candidate.end - start_candidate.start < room.divided(5) {
+                if short > 0.0 && end_point.end - start_point.start < room.divided(5) {
                     extra += short;
                 }
             } else if delta < 0.0 {
@@ -408,7 +402,7 @@ impl Scoring {
                 width = delta * delta;
             }
             if delta < 0.0 {
-                *active = BreakCandidateId::new(start.get() + 1);
+                *active = BreakPointId::new(start.get() + 1);
             } else {
                 hope = width;
             }
@@ -423,16 +417,17 @@ impl Scoring {
             .get(best_prev)
             .map_or(fallback.line, |prev| WrapLineId::new(prev.line.get() + 1));
         BreakScore {
-            score: best + end_candidate.penalty + rule.line,
+            score: best + end_point.penalty + rule.line,
             prev: best_prev,
             line,
         }
     }
 
-    /// Follows the best way back from the window's end into a plan, as
+    /// Follows the best way back from the scored lines' end into a plan, as
     /// Blink's `ComputeBreakPoints`.
     ///
-    /// Returns `None` where the plan has another line count than the window.
+    /// Returns `None` where the plan has another line count than the scored
+    /// lines.
     fn trace(&self) -> Option<PlannedEnds> {
         let last = self.scores.last_id()?;
         let made = self
@@ -447,11 +442,10 @@ impl Scoring {
         let mut at = last;
         while at.get() > 0 {
             work::step();
-            let (Some(score), Some(candidate)) = (self.scores.get(at), self.candidates.get(at))
-            else {
+            let (Some(score), Some(point)) = (self.scores.get(at), self.points.get(at)) else {
                 break;
             };
-            if !plan.push(candidate.at) || score.prev >= at {
+            if !plan.push(point.at) || score.prev >= at {
                 break;
             }
             at = score.prev;
@@ -465,26 +459,26 @@ impl Scoring {
 }
 
 heap_bytes! {
-    Scoring { candidates, scores; first, rooms, lines }
+    Scoring { points, scores; first, rooms, lines }
 }
 
-/// The line ends the scorer chose for a window of a paragraph.
+/// The line ends the scorer chose for a paragraph's scored lines.
 ///
-/// Lines outside the window are fitted as the greedy fit fitted them. The
+/// Lines it did not score are fitted as the greedy fit fitted them. The
 /// few ends live on the stack.
 #[derive(Copy, Clone, Debug)]
 pub(super) struct PlannedEnds {
-    /// The window's first line, among the paragraph's.
+    /// The first scored line, among the paragraph's.
     first: WrapLineId,
-    /// Each window line's end, from its first.
+    /// Each scored line's end, from the first.
     ends: [ClusterId; BALANCE_LINES],
     /// How many of `ends` it has.
     len: usize,
 }
 
 impl PlannedEnds {
-    /// Returns a plan with no ends, for a window from the paragraph's line
-    /// `first`.
+    /// Returns a plan with no ends, for lines scored from the paragraph's
+    /// line `first`.
     fn new(first: WrapLineId) -> Self {
         Self {
             first,
@@ -495,7 +489,7 @@ impl PlannedEnds {
 
     /// Takes the next line's end.
     ///
-    /// Returns `false` past the most lines a window has.
+    /// Returns `false` past the most lines the scorer weighs.
     fn push(&mut self, end: ClusterId) -> bool {
         let Some(slot) = self.ends.get_mut(self.len) else {
             return false;
@@ -505,14 +499,14 @@ impl PlannedEnds {
         true
     }
 
-    /// Returns where the plan ends the paragraph's `line`, if it is in the
-    /// window.
+    /// Returns where the plan ends the paragraph's `line`, if it is
+    /// scored.
     pub(super) fn get(&self, line: WrapLineId) -> Option<ClusterId> {
         let at = line.get().checked_sub(self.first.get())?;
         self.ends.get(..self.len)?.get(at).copied()
     }
 
-    /// Returns each window line with its end, in order.
+    /// Returns each scored line with its end, in order.
     pub(super) fn iter(&self) -> impl Iterator<Item = (WrapLineId, ClusterId)> + '_ {
         let first = self.first.get();
         self.ends

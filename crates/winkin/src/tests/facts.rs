@@ -243,7 +243,7 @@ fn every_record_is_its_projection_of_the_nodes_style() {
     let mut fixture = Fixture::new(
         &[latin_1(), han()],
         han_fallback("Test Han"),
-        StageCheck::Built(|_, layout| check(layout.content())),
+        StageCheck::Built(|layout| check(layout.content())),
     );
     let roots = roots();
     let mut layout = Layout::new();
@@ -304,6 +304,6 @@ fn text_facts_are_shared_where_only_a_box_differs() {
     assert_eq!(content.facts.box_count(), 2, "the initial box's, the box's");
     let flags = content.flags;
     assert!(flags.contains(ContentFlags::FIRST_LINE_RESTYLE));
-    assert!(!flags.contains(ContentFlags::FIRST_LINE_RESHAPES));
+    assert!(!flags.contains(ContentFlags::FIRST_LINE_SHAPING));
     check(content);
 }

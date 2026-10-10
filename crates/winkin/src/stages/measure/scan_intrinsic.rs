@@ -4,9 +4,10 @@
 //! break opportunities, which Chrome's breaker in min-content mode sets as a
 //! line of its own. Max-content is the widest paragraph.
 
+use super::IntrinsicWidths;
+use super::scan::LinePay;
 use super::scan_ends::AnchoredFloats;
 use super::tabs::{TabReach, TabStops, tab_advance_reached};
-use super::{EdgeAmounts, IntrinsicWidths};
 use crate::stages::analysis::ClusterAttrs;
 use crate::stages::content::{Content, TextFlags};
 use crate::unit::{InlineLayoutUnit, LayoutUnit};
@@ -121,43 +122,70 @@ pub(super) struct IntrinsicScan {
     first_paragraph: bool,
     /// The current min-content line is its paragraph's first.
     first_min_line: bool,
-    /// Where the current paragraph starts.
-    origin: InlineLayoutUnit,
-    /// What the current paragraph pays at its start.
-    origin_cost: InlineLayoutUnit,
-    /// Where the current min-content line starts.
-    start: InlineLayoutUnit,
-    /// What the current min-content line pays at its start.
-    start_cost: InlineLayoutUnit,
-    /// What the clusters hanging at the min-content line's end add so far,
-    /// tabs as that line sets them.
-    tail: InlineLayoutUnit,
-    /// What the clusters hanging at the paragraph's end add so far, tabs as
-    /// the paragraph's line sets them.
-    paragraph_tail: InlineLayoutUnit,
-    /// The last white space in the tail hangs only where it overflows, so
-    /// the paragraph's max-content line counts the tail.
+    /// The current paragraph, as its max-content line. Fitting reads every
+    /// width from its start.
+    paragraph: OpenLine,
+    /// The current min-content line.
+    min_line: OpenLine,
+    /// The last white space in the paragraph's tail hangs only where it
+    /// overflows, so the paragraph's max-content line counts the tail.
     tail_conditional: bool,
-    /// How far the current paragraph's tabs reach on its line so far.
-    tabs: InlineLayoutUnit,
-    /// How far the current min-content line's tabs reach on it so far.
-    min_line_tabs: InlineLayoutUnit,
     /// The margin boxes of the floats anchored in the current paragraph,
     /// which its max-content line sets beside it.
     floats: InlineLayoutUnit,
     /// The last cluster offers an opportunity, so the min-content line ends
     /// at the next boundary, after its closing edges.
     pending: bool,
-    /// The block's first min-content line's width. The first line of
-    /// min-content holds it.
-    first_min: InlineLayoutUnit,
-    /// The widest other min-content line, or float.
-    min: InlineLayoutUnit,
-    /// The block's first paragraph's width. The first line of max-content
-    /// holds it.
-    first_max: InlineLayoutUnit,
-    /// The widest other paragraph.
-    max: InlineLayoutUnit,
+    /// The widest min-content lines, and floats among the others.
+    min: Widest,
+    /// The widest paragraphs.
+    max: Widest,
+}
+
+/// A line the intrinsic sizes are adding up: a paragraph's max-content line,
+/// or a min-content line.
+#[derive(Copy, Clone, Debug, Default)]
+struct OpenLine {
+    /// Where it starts.
+    start: InlineLayoutUnit,
+    /// What it pays at its start.
+    cost: InlineLayoutUnit,
+    /// What the clusters hanging at its end add so far, tabs as this line
+    /// sets them.
+    tail: InlineLayoutUnit,
+    /// How far its tabs reach on it so far.
+    tabs: InlineLayoutUnit,
+}
+
+impl OpenLine {
+    /// Returns a line starting at `start` that pays `cost` there.
+    fn new(start: InlineLayoutUnit, cost: InlineLayoutUnit) -> Self {
+        Self {
+            start,
+            cost,
+            ..Self::default()
+        }
+    }
+}
+
+/// The widest lines of one intrinsic size: the block's first line, which
+/// the first line's variant may measure, and the widest other.
+#[derive(Copy, Clone, Debug, Default)]
+struct Widest {
+    first: InlineLayoutUnit,
+    other: InlineLayoutUnit,
+}
+
+impl Widest {
+    /// Takes a line `width` wide, the block's first where `first` says.
+    fn take(&mut self, first: bool, width: InlineLayoutUnit) {
+        let widest = if first {
+            &mut self.first
+        } else {
+            &mut self.other
+        };
+        *widest = (*widest).max(width);
+    }
 }
 
 impl IntrinsicScan {
@@ -189,39 +217,33 @@ impl IntrinsicScan {
 
     /// Returns where fitting reads `at` in the current paragraph.
     fn fit(&self, at: InlineLayoutUnit) -> InlineLayoutUnit {
-        (at - self.origin).ceil_to_grid()
+        (at - self.paragraph.start).ceil_to_grid()
     }
 
     /// Starts the text. Its first min-content line and paragraph pay `cost`
     /// at their start.
-    pub(super) fn start_text(&mut self, cost: EdgeAmounts) {
-        self.origin_cost = cost.start;
-        self.start_cost = cost.start;
+    pub(super) fn start_text(&mut self, cost: LinePay) {
+        self.paragraph.cost = cost.edges.start;
+        self.min_line.cost = cost.edges.start;
     }
 
     /// Ends the current min-content line at `at`, paying `end` there.
     fn end_min_line(&mut self, at: InlineLayoutUnit, end: InlineLayoutUnit) {
-        let width = self.fit(at + self.min_line_tabs - self.tail) - self.fit(self.start)
-            + self.start_cost
+        let line = self.min_line;
+        let width = self.fit(at + line.tabs - line.tail) - self.fit(line.start)
+            + line.cost
             + end
             + self.min_line_indent();
-        if self.first_paragraph && self.first_min_line {
-            self.first_min = self.first_min.max(width);
-        } else {
-            self.min = self.min.max(width);
-        }
+        (self.min).take(self.first_paragraph && self.first_min_line, width);
         self.first_min_line = false;
     }
 
     /// Records a boundary. Its leading closing edges bring the sum to `at`,
     /// and a line starting or ending there pays `cost`.
-    pub(super) fn boundary(&mut self, at: InlineLayoutUnit, cost: EdgeAmounts) {
+    pub(super) fn boundary(&mut self, at: InlineLayoutUnit, cost: LinePay) {
         if self.pending {
-            self.end_min_line(at, cost.end - cost.min_end_hang);
-            self.start = at;
-            self.start_cost = cost.start;
-            self.tail = InlineLayoutUnit::ZERO;
-            self.min_line_tabs = InlineLayoutUnit::ZERO;
+            self.end_min_line(at, cost.edges.end - cost.min_end_hang);
+            self.min_line = OpenLine::new(at, cost.edges.start);
             self.pending = false;
         }
     }
@@ -239,12 +261,11 @@ impl IntrinsicScan {
         widest: LayoutUnit,
     ) {
         let first_end = at - InlineLayoutUnit::from_layout(whole - first);
-        self.tail = InlineLayoutUnit::ZERO;
+        self.min_line.tail = InlineLayoutUnit::ZERO;
         self.end_min_line(first_end, InlineLayoutUnit::ZERO);
-        self.min = self.min.max(InlineLayoutUnit::from_layout(widest));
-        self.start = at - InlineLayoutUnit::from_layout(last);
-        self.start_cost = InlineLayoutUnit::ZERO;
-        self.min_line_tabs = InlineLayoutUnit::ZERO;
+        self.min.other = self.min.other.max(InlineLayoutUnit::from_layout(widest));
+        let start = at - InlineLayoutUnit::from_layout(last);
+        self.min_line = OpenLine::new(start, InlineLayoutUnit::ZERO);
     }
 
     /// Returns how far a tab reaches on the paragraph's line and on the
@@ -259,14 +280,14 @@ impl IntrinsicScan {
         stops: TabStops,
         reach: Option<TabReach>,
     ) -> Tab {
-        let reach = |from: InlineLayoutUnit, before: InlineLayoutUnit| {
-            let position = pen - from + before;
+        let reach = |line: OpenLine, indent: InlineLayoutUnit| {
+            let position = pen - (line.start - indent) + line.tabs;
             let width = tab_advance_reached(LayoutUnit::ZERO, position, stops, reach);
             InlineLayoutUnit::from_layout(width)
         };
         Tab {
-            paragraph_reach: reach(self.origin - self.paragraph_indent(), self.tabs),
-            min_line_reach: reach(self.start - self.min_line_indent(), self.min_line_tabs),
+            paragraph_reach: reach(self.paragraph, self.paragraph_indent()),
+            min_line_reach: reach(self.min_line, self.min_line_indent()),
         }
     }
 
@@ -282,19 +303,19 @@ impl IntrinsicScan {
         text: TextFlags,
     ) {
         let has = |bit| attrs.is_some_and(|attrs| attrs.has(bit));
-        self.tabs += tab.paragraph_reach;
-        self.min_line_tabs += tab.min_line_reach;
+        self.paragraph.tabs += tab.paragraph_reach;
+        self.min_line.tabs += tab.min_line_reach;
         if has(ClusterAttrs::HANGS) {
-            self.tail += own + tab.min_line_reach;
-            self.paragraph_tail += own + tab.paragraph_reach;
+            self.min_line.tail += own + tab.min_line_reach;
+            self.paragraph.tail += own + tab.paragraph_reach;
             // A separator or a generated opportunity takes no room, so it
             // decides nothing.
             if attrs.is_some_and(|attrs| attrs.class().is_breaking_space()) {
                 self.tail_conditional = text.contains(TextFlags::HANGS_CONDITIONALLY);
             }
         } else {
-            self.tail = InlineLayoutUnit::ZERO;
-            self.paragraph_tail = InlineLayoutUnit::ZERO;
+            self.min_line.tail = InlineLayoutUnit::ZERO;
+            self.paragraph.tail = InlineLayoutUnit::ZERO;
             self.tail_conditional = false;
         }
         self.pending = has(ClusterAttrs::BREAK_AFTER)
@@ -311,40 +332,31 @@ impl IntrinsicScan {
     /// of a paragraph sits beside it.
     pub(super) fn floats(&mut self, anchored: AnchoredFloats) {
         self.floats += anchored.sum;
-        self.min = self.min.max(anchored.widest);
+        self.min.other = self.min.other.max(anchored.widest);
     }
 
     /// Ends the paragraph at `at`, after its closing edges, and starts the
     /// next there. A line either side pays `cost`.
-    pub(super) fn end_paragraph(&mut self, at: InlineLayoutUnit, cost: EdgeAmounts) {
-        self.end_min_line(at, cost.end - cost.min_end_hang);
+    pub(super) fn end_paragraph(&mut self, at: InlineLayoutUnit, cost: LinePay) {
+        self.end_min_line(at, cost.edges.end - cost.min_end_hang);
+        let line = self.paragraph;
         let hung = if self.tail_conditional {
             InlineLayoutUnit::ZERO
         } else {
-            self.paragraph_tail
+            line.tail
         };
-        let width = self.fit(at + self.tabs - hung)
-            + self.origin_cost
-            + cost.end
+        let width = self.fit(at + line.tabs - hung)
+            + line.cost
+            + cost.edges.end
             + self.paragraph_indent()
             + self.floats;
-        if self.first_paragraph {
-            self.first_max = self.first_max.max(width);
-        } else {
-            self.max = self.max.max(width);
-        }
+        self.max.take(self.first_paragraph, width);
         self.floats = InlineLayoutUnit::ZERO;
         self.first_paragraph = false;
         self.first_min_line = true;
-        self.origin = at;
-        self.origin_cost = cost.start;
-        self.start = at;
-        self.start_cost = cost.start;
-        self.tail = InlineLayoutUnit::ZERO;
-        self.paragraph_tail = InlineLayoutUnit::ZERO;
+        self.paragraph = OpenLine::new(at, cost.edges.start);
+        self.min_line = OpenLine::new(at, cost.edges.start);
         self.tail_conditional = false;
-        self.tabs = InlineLayoutUnit::ZERO;
-        self.min_line_tabs = InlineLayoutUnit::ZERO;
         self.pending = false;
     }
 
@@ -359,14 +371,12 @@ impl IntrinsicScan {
     /// paragraph.
     pub(super) fn finish(&self, first: Option<&IntrinsicScan>) -> IntrinsicWidths {
         let first = first.unwrap_or(self);
-        let min = first
-            .first_min
-            .max(self.min)
+        let min = (first.min.first.max(self.min.other))
             .to_layout()
             .max(LayoutUnit::ZERO);
         IntrinsicWidths {
             min,
-            max: first.first_max.max(self.max).to_layout().max(min),
+            max: first.max.first.max(self.max.other).to_layout().max(min),
         }
     }
 }

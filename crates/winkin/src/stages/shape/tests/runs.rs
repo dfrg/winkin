@@ -12,7 +12,7 @@ fn finding_runs_at_boundaries_matches_scanning_every_cluster() {
     let mut fixture = Fixture::new(
         &[latin_hebrew(), arabic(), han()],
         han_fallback("Test Han"),
-        StageCheck::Built(|_, _| {}),
+        StageCheck::Built(|_| {}),
     );
     for collapse in [WhiteSpaceCollapse::Collapse, WhiteSpaceCollapse::Preserve] {
         for text in [
@@ -150,7 +150,7 @@ fn clusters_not_shaped_are_runs_of_their_own() {
     b.line_break(NodeKey(5));
     b.text(NodeKey(6), "h");
     assert!(b.finish(&mut fixture.cx).is_complete());
-    check(&mut fixture.cx, &layout);
+    check(&layout);
     let starts: Vec<usize> = layout
         .shaped()
         .text(FirstLineVariant::Standard)
@@ -223,7 +223,7 @@ fn a_kern_survives_a_default_ignorable_the_caller_wrote() {
     b.break_opportunity();
     b.text(NodeKey(1), "V");
     b.finish(&mut fixture.cx);
-    check(&mut fixture.cx, &layout);
+    check(&layout);
     assert_eq!(fixture.advances(&layout)[0], apart, "a <wbr> parts them");
 }
 

@@ -74,7 +74,13 @@ fn the_ragged_article_relays_out_and_reads_back() {
             for item in fragments.line_items(id) {
                 sum = sum.wrapping_add(item.inline.raw() as u64);
                 if item.kind() == FragmentItemKind::Text {
-                    for glyph in GlyphWalk::new(&input, id, line, item) {
+                    for glyph in GlyphWalk::new(
+                        &input,
+                        &layout.stages().variant(line.variant()),
+                        id,
+                        line,
+                        item,
+                    ) {
                         sum = sum.wrapping_add(u64::from(glyph.id) ^ glyph.x.raw() as u64);
                         glyph_count += 1;
                     }
@@ -92,7 +98,13 @@ fn the_ragged_article_relays_out_and_reads_back() {
         let fragments = layout.fragments();
         for (id, line) in layout.line_records().lines.iter() {
             for item in fragments.line_items(id) {
-                let glyphs = GlyphWalk::new(&input, id, line, item);
+                let glyphs = GlyphWalk::new(
+                    &input,
+                    &layout.stages().variant(line.variant()),
+                    id,
+                    line,
+                    item,
+                );
                 sum = sum.wrapping_add(glyphs.size_hint().0 as u64);
             }
         }
@@ -446,7 +458,13 @@ fn the_justified_article_relays_out_and_reads_back() {
             for (id, line) in layout.line_records().lines.iter() {
                 for item in fragments.line_items(id) {
                     if item.kind() == FragmentItemKind::Text {
-                        for glyph in GlyphWalk::new(&input, id, line, item) {
+                        for glyph in GlyphWalk::new(
+                            &input,
+                            &layout.stages().variant(line.variant()),
+                            id,
+                            line,
+                            item,
+                        ) {
                             sum = sum.wrapping_add(u64::from(glyph.id) ^ glyph.x.raw() as u64);
                         }
                     }

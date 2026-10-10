@@ -6,17 +6,16 @@
 //! writes the items of a hyphen, of a piece the cut divides, and of the
 //! ellipsis.
 
+use super::justify::Justified;
 use super::place::{LineCut, LineOffset, LinePieces, PieceSplit, VisualId};
-use super::{
-    FragmentItem, FragmentItemFlags, FragmentItemKind, Fragments, Justified, Piece, Placer,
-};
+use super::{FragmentItem, FragmentItemFlags, FragmentItemKind, Fragments, Piece, Placer};
 use crate::config::EllipsisSpace;
 use crate::data::Id;
 use crate::data::IdRange;
 use crate::stages::analysis::{BidiLevel, ClusterId};
 use crate::stages::content::NodeId;
 use crate::stages::lines::{LineBand, LineView};
-use crate::stages::measure::GeneratedPieces;
+use crate::stages::measure::GeneratedItems;
 use crate::unit::{InlineLayoutUnit, LayoutUnit};
 use crate::work;
 
@@ -52,7 +51,7 @@ struct GeneratedAt {
 pub(super) struct LineEllipsis {
     inline: InlineLayoutUnit,
     at: ClusterId,
-    text: GeneratedPieces,
+    text: GeneratedItems,
 }
 
 impl LineEllipsis {
@@ -75,7 +74,7 @@ impl<'a> Placer<'a> {
         flags: FragmentItemFlags,
         baseline: LayoutUnit,
     ) {
-        let Some(text) = self.hyphen else {
+        let Some(text) = self.line_state.hyphen else {
             return;
         };
         let at = GeneratedAt {
@@ -86,12 +85,12 @@ impl<'a> Placer<'a> {
             baseline: baseline - piece.shift,
             flags,
         };
-        self.emit_pieces(out, text, at);
+        self.emit_generated(out, text, at);
     }
 
     /// Writes one item per font of generated `text`, left to right from
     /// where `at` puts the first.
-    fn emit_pieces(&self, out: &mut Fragments, text: GeneratedPieces, at: GeneratedAt) {
+    fn emit_generated(&self, out: &mut Fragments, text: GeneratedItems, at: GeneratedAt) {
         let generated = self.input.stages.measured.generated();
         let mut inline = at.inline;
         for id in text.ids() {
@@ -110,10 +109,8 @@ impl<'a> Placer<'a> {
                 at.baseline,
                 at.flags,
             );
-            if out.items.push(item).is_none() {
-                debug_assert!(false, "no more items than a FragmentItemId names");
-                return;
-            }
+            out.items
+                .push_bounded(item, "no more items than a FragmentItemId names");
             inline += advance;
         }
     }
@@ -134,7 +131,7 @@ impl<'a> Placer<'a> {
         baseline: LayoutUnit,
     ) {
         let hidden = flags.union(FragmentItemFlags::HIDDEN);
-        let keeps_first = piece.keeps_first(self.level);
+        let keeps_first = piece.keeps_first(self.line_state.level);
         let rest = piece.advance - split.kept;
         let (head, tail) = (piece.start..split.at, split.at..piece.end);
         let (kept, dropped) = if keeps_first {
@@ -157,10 +154,10 @@ impl<'a> Placer<'a> {
                 advance,
                 ..*piece
             };
-            if out.items.push(part.item(kind, flags, baseline)).is_none() {
-                debug_assert!(false, "no more items than a FragmentItemId names");
-                return;
-            }
+            out.items.push_bounded(
+                part.fragment_item(kind, flags, baseline),
+                "no more items than a FragmentItemId names",
+            );
             inline += advance;
         }
     }
@@ -179,13 +176,13 @@ impl<'a> Placer<'a> {
     ) {
         let at = GeneratedAt {
             node: NodeId::BLOCK,
-            level: self.level,
+            level: self.line_state.level,
             at: ellipsis.at,
             inline: ellipsis.inline,
             baseline,
             flags: FragmentItemFlags::NONE,
         };
-        self.emit_pieces(out, ellipsis.text, at);
+        self.emit_generated(out, ellipsis.text, at);
     }
 
     /// Cuts a `line` flagged for an ellipsis, as Chrome's
@@ -229,7 +226,7 @@ impl<'a> Placer<'a> {
         let facts = self.stages.text_facts(NodeId::BLOCK);
         // The ellipsis is shaped in the line's direction, as Chrome's
         // `LineTruncator` shapes it.
-        let rtl = self.level.is_rtl();
+        let rtl = self.line_state.level.is_rtl();
         let text = generated.ellipsis(facts, rtl)?;
         let width = InlineLayoutUnit::from_layout(generated.snapped(text));
         // The line's end edge from the line box's left: the band's right
@@ -285,7 +282,7 @@ impl<'a> Placer<'a> {
                 let room = room - width;
                 // Text goes cluster by cluster where it may end with white
                 // space the config hides.
-                let spaces = self.ellipsis_space == EllipsisSpace::Hidden && piece.is_text();
+                let spaces = self.gates.ellipsis_space == EllipsisSpace::Hidden && piece.is_text();
                 if room >= piece.advance && !spaces {
                     kept = Some(PieceCut::Whole);
                 } else if room > InlineLayoutUnit::ZERO || is_first {
@@ -309,7 +306,7 @@ impl<'a> Placer<'a> {
                         kept,
                     }),
                 ),
-                PieceCut::Whole if piece.keeps_first(self.level) => {
+                PieceCut::Whole if piece.keeps_first(self.line_state.level) => {
                     (piece.advance, piece.end, None)
                 }
                 PieceCut::Whole => (piece.advance, piece.start, None),
@@ -360,7 +357,7 @@ impl<'a> Placer<'a> {
         if !piece.is_text() || total == 0 {
             return (first || room >= piece.advance).then_some(PieceCut::Whole);
         }
-        let keeps_first = piece.keeps_first(self.level);
+        let keeps_first = piece.keeps_first(self.line_state.level);
         let shapes = self.lines.edges.line_edges(line);
         let edges = &self.lines.edges;
         // The items at the boundaries the cut walks, where boxes have edges.
@@ -399,7 +396,7 @@ impl<'a> Placer<'a> {
         }
         // White space the kept clusters end with goes with the hidden tail,
         // where the config says. Chrome keeps it.
-        if self.ellipsis_space == EllipsisSpace::Hidden {
+        if self.gates.ellipsis_space == EllipsisSpace::Hidden {
             while fits > 0 && self.clusters.is_breaking_space(nth(fits - 1)) {
                 work::step();
                 fits -= 1;

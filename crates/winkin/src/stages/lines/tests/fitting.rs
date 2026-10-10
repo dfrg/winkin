@@ -156,7 +156,7 @@ fn the_search_agrees_with_a_straightforward_breaker() {
             }
         }
     });
-    let advances = layout.shaped_advances(&mut fixture.cx);
+    let advances = layout.shaped_advances();
     let analysis = layout.analysis();
     // The paragraphs with tabs are walked, and the rest are searched.
     let walked = analysis
@@ -171,7 +171,7 @@ fn the_search_agrees_with_a_straightforward_breaker() {
         .content()
         .nodes
         .text_facts(NodeId::BLOCK, FirstLineVariant::Standard);
-    let primary = layout.primary(block).expect("a font");
+    let primary = primary(&layout, block).expect("a font");
     let space = InlineLayoutUnit::from_text(primary.metrics.space);
     assert!(space > InlineLayoutUnit::ZERO);
     let mut seed = 0x2545_F491_4F6C_DD1Du64;

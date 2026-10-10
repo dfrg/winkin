@@ -217,7 +217,7 @@ fn a_space_is_its_primary_fonts_advance() {
             .content()
             .nodes
             .text_facts(NodeId::BLOCK, FirstLineVariant::Standard);
-        let primary = layout.primary(block);
+        let primary = primary(layout, block);
         primary.map_or(TextUnit::from_px(0.0), |used| used.metrics.space)
     };
     let mut fixture = fixture();

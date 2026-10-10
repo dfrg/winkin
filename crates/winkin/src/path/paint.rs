@@ -31,9 +31,9 @@
 use core::fmt;
 
 use super::{PagePoint, PastEnds, PathPoint, TextPath};
-use crate::layout::{LineItems, RunClusters, RunGlyphs};
-use crate::paint::{Decoration, EmphasisMark, Paint};
-use crate::{Atomic, Glyph, InlineExtents, Item, Line, RunOrientation, TextRun};
+use crate::layout::{RunClusters, RunGlyphs};
+use crate::paint::{Decoration, DecorationRuns, EmphasisMark, Paint};
+use crate::{Atomic, Glyph, InlineExtents, Line, RunOrientation, TextRun};
 
 /// A page position, rotation and horizontal scale for drawing on a path.
 #[derive(Copy, Clone, PartialEq, Debug)]
@@ -516,7 +516,7 @@ impl<'a, P: TextPath + ?Sized> PathDecoration<'a, P> {
         PathPieces {
             decoration: self.decoration,
             on: self.on,
-            items: LineItems::new(&self.line, false),
+            runs: self.decoration.runs(self.line),
             clusters: None,
             combined: None,
         }
@@ -536,8 +536,8 @@ impl<P: ?Sized> fmt::Debug for PathDecoration<'_, P> {
 struct PathPieces<'a, P: ?Sized> {
     decoration: Decoration,
     on: OnPath<'a, P>,
-    /// The line's items, among which the bar's text is.
-    items: LineItems<'a>,
+    /// The text runs the bar was found over.
+    runs: DecorationRuns<'a>,
     /// The clusters of the run being cut, and the extent of combined text,
     /// one piece whatever it holds.
     clusters: Option<RunClusters<'a>>,
@@ -565,9 +565,7 @@ impl<P: TextPath + ?Sized> PathPieces<'_, P> {
                     None => self.clusters = None,
                 }
             }
-            let Item::Text(run) = self.items.next()? else {
-                continue;
-            };
+            let run = self.runs.next()?;
             let extent = run.inline();
             if extent.right <= bar.left || extent.left >= bar.right {
                 continue;

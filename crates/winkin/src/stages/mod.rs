@@ -110,6 +110,12 @@ impl<'a> LineStages<'a> {
         self.variant
     }
 
+    /// The measurements the variant reads.
+    #[inline]
+    pub(crate) fn measured(&self) -> &'a MeasuredText {
+        self.measured
+    }
+
     /// `node`'s text facts in the variant.
     #[inline]
     pub(crate) fn text_facts(&self, node: NodeId) -> TextFactsId {

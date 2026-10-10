@@ -4,8 +4,11 @@
 //! In: [`FontInput`], the content and its analysis. Out: [`Fonts`].
 //! Start at: [`select_fonts`], then `select::select_runs`.
 //!
-//! - `select` chooses a font for each cluster and writes the font runs. Its
-//!   child `generated` chooses the fonts of a hyphen and an ellipsis.
+//! - `select` chooses a font for each cluster and writes the font runs.
+//!   `select_pick` tries a candidate list on a grapheme, `select_choice`
+//!   makes a candidate's used fonts, `select_kept` keeps a candidate across
+//!   clusters without asking the list, and `select_generated` chooses the
+//!   fonts of a hyphen and an ellipsis.
 //! - `used` interns the used fonts and works out the size each is used at.
 //! - `coverage` says whether a font covers a cluster, and which
 //!   presentation a cluster asks for.
@@ -28,7 +31,10 @@ mod metrics;
 mod positions;
 mod resolution;
 mod select;
+mod select_choice;
 mod select_generated;
+mod select_kept;
+mod select_pick;
 #[cfg(test)]
 mod tests;
 mod used;
@@ -38,7 +44,6 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt;
 use core::ops::Range;
-use core::ptr;
 
 use fontwich::{FaceId, Family, FontBytes, FontKey};
 use hashbrown::HashTable;
@@ -47,12 +52,12 @@ use read_fonts::model::Font;
 
 use crate::config::{LineMetricsSource, PlatformFontVariations, PositionSynthesis};
 use crate::data::{
-    Id, IdRange, Run, Runs, Table, define_id, heap_bytes, index_to_u32, sort_by_key, u32_to_index,
+    Id, Run, Runs, Table, define_id, heap_bytes, index_to_u32, sort_by_key, u32_to_index,
 };
-use crate::stages::analysis::{Analysis, ClusterAttrs, ClusterClass, ClusterId, ParagraphFlags};
+use crate::stages::analysis::{Analysis, ClusterId};
 use crate::stages::content::{
-    Content, FamilyListId, FontRequest, FontRequestId, HyphenStringId, HyphenStrings, ItemKind,
-    NodeId, TextFactsId,
+    Content, FamilyListId, FontRequest, FontRequestId, HyphenStringId, HyphenStrings, NodeId,
+    TextFactsId,
 };
 use crate::style::FirstLine;
 use crate::style::FirstLineState;
@@ -68,7 +73,7 @@ use instance::{
 };
 use lists::NamedListId;
 use metrics::UnscaledMetrics;
-use select::RunScratch;
+use select::{RunScratch, Selecting};
 
 pub(crate) use context::FontContext;
 // Private to font selection: no layout holds one of the context's
@@ -107,7 +112,7 @@ pub(crate) struct FontScratch {
     lists: Table<FamilyListId, NamedListId>,
     /// The layout's used fonts by what they are: the instance each was made
     /// from, which only this build keeps, and its size and synthesis.
-    used: HashTable<(u64, Option<InstanceId>, UsedFontId)>,
+    used_index: HashTable<(u64, Option<InstanceId>, UsedFontId)>,
     /// The text facts of the text holding a soft hyphen a line may break
     /// after, each once, in order: those whose hyphen a font is chosen for.
     hyphenated: Vec<TextFactsId>,
@@ -120,7 +125,7 @@ impl FontScratch {
     pub(crate) const fn new() -> Self {
         Self {
             lists: Table::new(),
-            used: HashTable::new(),
+            used_index: HashTable::new(),
             hyphenated: Vec::new(),
             runs: RunScratch::new(),
         }
@@ -129,14 +134,14 @@ impl FontScratch {
     /// Forgets everything, keeping the capacity.
     fn clear(&mut self) {
         self.lists.clear();
-        self.used.clear();
+        self.used_index.clear();
         self.hyphenated.clear();
         self.runs.clear();
     }
 }
 
 heap_bytes! {
-    FontScratch { lists, used, hyphenated, runs }
+    FontScratch { lists, used_index, hyphenated, runs }
 }
 
 /// Selects fonts for the content of `input` into `out`.
@@ -169,7 +174,7 @@ pub(crate) fn select_fonts(
     let ellipsis_texts = ellipsis_texts(content);
     let FontScratch {
         lists,
-        used: index,
+        used_index,
         hyphenated,
         runs: run_scratch,
     } = scratch;
@@ -181,33 +186,25 @@ pub(crate) fn select_fonts(
         wanted,
         ..
     } = out;
-    let mut interner = UsedFontInterner {
-        used,
-        index,
-        source: line_metrics,
-        baseline: LineBaseline::from_content(content),
-        replaced: 0,
-    };
-    resolve_requests(
-        input,
-        default_language,
-        lists,
+    let mut selecting = Selecting {
         cx,
-        &mut interner,
-        resolutions,
-    );
-    // The choices the text's walk asks for over the first line's reach, by
-    // which the first line's runs are mapped where they can be.
-    let first_line = analysis
-        .first_line_reach(content)
-        .filter(|_| content.first_line_reshapes());
-    if let Some(reach) = &first_line {
-        select::log_choices_until(run_scratch, reach.end);
-    }
+        scratch: run_scratch,
+        used: UsedFontInterner {
+            used,
+            index: used_index,
+            source: line_metrics,
+            baseline: LineBaseline::from_content(content),
+            replaced: 0,
+        },
+        wanted,
+    };
+    let sel = &mut selecting;
+    resolve_requests(input, default_language, lists, sel, resolutions);
     let source = content.text(FirstLineVariant::Standard).cursor();
     let text_in = select::Input {
         stage: input,
         variant: FirstLineVariant::Standard,
+        default_language,
         lists,
         resolutions,
         source: &source,
@@ -215,38 +212,21 @@ pub(crate) fn select_fonts(
     select::select_runs(
         &text_in,
         ClusterId::new(0)..analysis.clusters.end_id(),
-        cx,
-        run_scratch,
-        &mut interner,
+        sel,
         runs.text_mut(),
-        wanted,
     );
-    if let Some(reach) = first_line {
-        select_first_line(
-            &text_in,
-            reach,
-            cx,
-            run_scratch,
-            &mut interner,
-            runs,
-            wanted,
-        );
+    if let Some(reach) = analysis
+        .first_line_reach(content)
+        .filter(|_| content.first_line_reshapes())
+    {
+        select_first_line(&text_in, reach, sel, runs.first_line_mut());
     }
     // The generated texts' table is made the first time a build has some.
     if !hyphenated.is_empty() || ellipsis_texts.is_some() {
         let generated = generated.get_or_insert_with(Box::default);
-        select_generated_texts(
-            &text_in,
-            hyphenated,
-            ellipsis_texts,
-            cx,
-            run_scratch,
-            &mut interner,
-            wanted,
-            generated,
-        );
+        select_generated_texts(&text_in, hyphenated, ellipsis_texts, sel, generated);
     }
-    interner.replaced
+    selecting.used.replaced
 }
 
 /// Names each family list the content holds, as the context knows it, into
@@ -287,10 +267,12 @@ fn resolve_requests(
     input: &FontInput<'_>,
     default_language: DefaultLanguage,
     lists: &Table<FamilyListId, NamedListId>,
-    cx: &mut FontContext,
-    interner: &mut UsedFontInterner<'_>,
+    sel: &mut Selecting<'_>,
     resolutions: &mut Table<FontRequestId, FontResolution>,
 ) {
+    let Selecting {
+        cx, used: interner, ..
+    } = sel;
     let content = input.content;
     let facts = &content.facts;
     let table = &content.lists;
@@ -403,34 +385,34 @@ fn size_primary(
         overrides,
         matching_only,
     };
-    // `font-size-adjust` measures the primary font at the computed size, and
-    // sets the size every font of the request is used at, the primary's own
-    // among them (Blink's `FontBuilder::UpdateAdjustedSize`): one used size a
-    // request, not one a font.
-    if matches!(request.font.size_adjust, FontSizeAdjust::Hold { .. })
+    let adjusts = matches!(request.font.size_adjust, FontSizeAdjust::Hold { .. });
+    let letter_grid = grid.filter(|_| request.initial_letter.is_set());
+    // Both sizings measure the primary at the computed size.
+    if (adjusts || letter_grid.is_some())
         && let Some(measured) =
             caches
                 .instances
                 .find_or_make(family, font, &instance_request(computed))
         && let Some(at) = caches.instances.get(measured)
-        && let Some(size) =
-            adjusted_size(request, computed, at.unscaled(), &overrides, line_metrics)
     {
-        resolution.adjust_to(size);
-    }
-    // An initial letter is set at the size that spans the lines it is sized
-    // to, whatever its own says (Chrome's `ComputeInitialLetterFont`). Only
-    // the block's initial letter's request sets one.
-    if request.initial_letter.is_set()
-        && let Some(grid) = grid
-        && let Some(measured) =
-            caches
-                .instances
-                .find_or_make(family, font, &instance_request(computed))
-        && let Some(at) = caches.instances.get(measured)
-        && let Some(size) = grid.letter_size(request, computed, at.unscaled(), line_metrics)
-    {
-        resolution.adjust_to(size);
+        let unscaled = at.unscaled();
+        // `font-size-adjust` sets the size every font of the request is used
+        // at, the primary's own among them (Blink's
+        // `FontBuilder::UpdateAdjustedSize`): one used size a request, not
+        // one a font.
+        if adjusts
+            && let Some(size) = adjusted_size(request, computed, unscaled, &overrides, line_metrics)
+        {
+            resolution.adjust_to(size);
+        }
+        // An initial letter is set at the size that spans the lines it is
+        // sized to, whatever its own says (Chrome's `ComputeInitialLetterFont`).
+        // Only the block's initial letter's request sets one.
+        if let Some(grid) = letter_grid
+            && let Some(size) = grid.letter_size(request, computed, unscaled, line_metrics)
+        {
+            resolution.adjust_to(size);
+        }
     }
     let px = resolution.font_px(overrides);
     let made = caches
@@ -472,51 +454,25 @@ fn initial_letter_grid(
 /// a font or a transform.
 ///
 /// This is the text's loop over the first paragraph, in the facts
-/// `::first-line` gives each node. The runs are mapped from the text's where
-/// the first line differs only in size and spacing and reads the text's own
-/// characters (see `select::map_runs`), and selected otherwise. The
+/// `::first-line` gives each node and the first line's characters. The
 /// first-line requests' primary fonts are already resolved with the rest.
 fn select_first_line(
     text_in: &select::Input<'_>,
     reach: Range<ClusterId>,
-    cx: &mut FontContext,
-    run_scratch: &mut RunScratch,
-    interner: &mut UsedFontInterner<'_>,
-    runs: &mut FirstLine<FontRuns>,
-    wanted: &mut Vec<FaceId>,
+    sel: &mut Selecting<'_>,
+    runs: &mut FontRuns,
 ) {
-    let content = text_in.stage.content;
-    let source = content.text(FirstLineVariant::FirstLine).cursor();
-    let own_text = ptr::eq(source.text(), content.text.as_str());
+    let source = text_in
+        .stage
+        .content
+        .text(FirstLineVariant::FirstLine)
+        .cursor();
     let first_line = select::Input {
         variant: FirstLineVariant::FirstLine,
         source: &source,
         ..*text_in
     };
-    let (text_runs, first_line_runs) = runs.both_mut();
-    let mapped = own_text
-        && select::shortcuts()
-        && select::map_runs(
-            &first_line,
-            text_runs,
-            reach.clone(),
-            cx,
-            run_scratch,
-            interner,
-            first_line_runs,
-        );
-    if !mapped {
-        first_line_runs.clear();
-        select::select_runs(
-            &first_line,
-            reach,
-            cx,
-            run_scratch,
-            interner,
-            first_line_runs,
-            wanted,
-        );
-    }
+    select::select_runs(&first_line, reach, sel, runs);
 }
 
 /// Selects the string and fonts of each generated text into `out`, in facts
@@ -526,15 +482,11 @@ fn select_first_line(
 /// holding a soft hyphen a line may break after. An ellipsis is set for the
 /// block's standard and first-line facts in `ellipsis`, where a line may be
 /// cut.
-#[allow(clippy::too_many_arguments)]
 fn select_generated_texts(
     text_in: &select::Input<'_>,
     hyphenated: &[TextFactsId],
     ellipsis: Option<(TextFactsId, TextFactsId)>,
-    cx: &mut FontContext,
-    run_scratch: &mut RunScratch,
-    interner: &mut UsedFontInterner<'_>,
-    wanted: &mut Vec<FaceId>,
+    sel: &mut Selecting<'_>,
     out: &mut GeneratedFonts,
 ) {
     let mut hyphenated = hyphenated.iter().copied().peekable();
@@ -547,16 +499,7 @@ fn select_generated_texts(
                 hyphen.then_some(Generated::Hyphen),
                 cut.then_some(Generated::Ellipsis),
             ];
-            select_generated::select_generated(
-                text_in,
-                id,
-                kinds.into_iter().flatten(),
-                cx,
-                run_scratch,
-                interner,
-                wanted,
-                out,
-            );
+            select_generated::select_generated(text_in, id, kinds.into_iter().flatten(), sel, out);
         }
     }
 }
@@ -567,43 +510,18 @@ fn select_generated_texts(
 /// These are the facts a hyphen is set in. The first-line facts are added
 /// too where a soft hyphen falls in the first line's reach, so its hyphen
 /// takes the first-line style as in Chrome. Measured in Chrome 153, a hyphen
-/// on a 40px `::first-line` is 40px wide. Items without a soft hyphen are
-/// skipped.
+/// on a 40px `::first-line` is 40px wide. The analysis lists the nodes
+/// holding one, each with its first, which falls in the reach where any
+/// does, since the reach starts at the text's start.
 fn hyphenated_texts(content: &Content, analysis: &Analysis, out: &mut Vec<TextFactsId>) {
     out.clear();
-    if !analysis.flags.contains(ParagraphFlags::HAS_SOFT_HYPHEN) {
-        return;
-    }
     let reach = analysis.first_line_reach(content);
-    let (clusters, item_clusters) = (&analysis.clusters, &analysis.item_clusters);
     let nodes = &content.nodes;
-    for (item, entry) in content.items.iter() {
+    for &(node, cluster) in analysis.hyphen_nodes() {
         work::step();
-        if entry.kind != ItemKind::Text {
-            continue;
-        }
-        let range = item_clusters.range(item);
-        let text = content
-            .text
-            .get(clusters.start(range.start).get()..clusters.start(range.end).get())
-            .unwrap_or_default();
-        if !text.contains('\u{AD}') {
-            continue;
-        }
-        let (mut own, mut first) = (false, false);
-        for cluster in range.ids() {
-            work::step();
-            let breaks = clusters.attrs(cluster).is_some_and(|attrs| {
-                attrs.class() == ClusterClass::SoftHyphen && attrs.has(ClusterAttrs::BREAK_AFTER)
-            });
-            own |= breaks;
-            first |= breaks && reach.as_ref().is_some_and(|reach| reach.contains(&cluster));
-        }
-        if own {
-            out.push(nodes.text_facts(entry.node, FirstLineVariant::Standard));
-        }
-        if first {
-            out.push(nodes.text_facts(entry.node, FirstLineVariant::FirstLine));
+        out.push(nodes.text_facts(node, FirstLineVariant::Standard));
+        if reach.as_ref().is_some_and(|reach| reach.contains(&cluster)) {
+            out.push(nodes.text_facts(node, FirstLineVariant::FirstLine));
         }
     }
     sort_by_key(out, |&text| text);

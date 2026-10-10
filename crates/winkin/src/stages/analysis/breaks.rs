@@ -115,7 +115,7 @@ impl LineKey {
     /// - Otherwise its ASCII rules (`ascii::breaks`), under every strictness
     ///   and `keep-all`. Blink asks its iterator only where they do not
     ///   decide.
-    pub(super) fn ascii_answer(
+    fn ascii_answer(
         self,
         before_before: impl FnOnce() -> Option<char>,
         before: char,
@@ -126,6 +126,22 @@ impl LineKey {
             (_, WordBreak::BreakAll) => super::ascii::breaks_all(before_before, before, after),
             _ => super::ascii::breaks(before_before, before, after),
         }
+    }
+
+    /// Returns whether a line may break between `before` and `after`:
+    /// Chrome's ASCII rules where they decide it under the key
+    /// ([`ascii_answer`](Self::ascii_answer)), and `fallback` where they do
+    /// not.
+    #[inline]
+    pub(super) fn ascii_or(
+        self,
+        before_before: impl FnOnce() -> Option<char>,
+        before: char,
+        after: char,
+        fallback: impl FnOnce() -> bool,
+    ) -> bool {
+        self.ascii_answer(before_before, before, after)
+            .unwrap_or_else(fallback)
     }
 
     /// Whether text breaking under the key is `line-break: normal`, under

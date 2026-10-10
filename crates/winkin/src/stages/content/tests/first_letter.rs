@@ -7,7 +7,11 @@
 use alloc::string::{String, ToString};
 
 use super::*;
-use crate::style::{InitialLetter, InitialLetterAlign, VerticalAlign};
+use crate::config::Config;
+use crate::stages::lines::{Area, NoExclusions};
+use crate::style::{InitialLetter, InitialLetterAlign, LineGroup, LineHeight, VerticalAlign};
+use crate::tests::{AHEM_FAMILY, ahem_fallback, collection, sized};
+use crate::{Context, Item as LineItem};
 
 /// The first-letter box's key in these tests.
 const LETTER: NodeKey = NodeKey(99);
@@ -450,4 +454,94 @@ fn a_first_letter_is_the_initial_letter_where_it_opens_the_block() {
         let first = initial_letter_on_first_line(&layout, NodeId::new(at));
         assert_eq!(first, taken, "{text_:?}");
     }
+}
+
+/// The first letter's box and the first line as they are set: the box's
+/// ends along the line and across it, where the text keyed 1 after it
+/// starts, and the first line's height.
+type LetterSet = (Option<((f32, f32), (f32, f32))>, Option<f32>, Option<f32>);
+
+/// Returns how the first letter and the first line are set, built in Ahem
+/// at 10 px and broken at 100 px.
+fn letter_set(
+    root: &ComputedStyle<'_>,
+    letter: &ComputedStyle<'_>,
+    calls: impl FnOnce(&mut LayoutBuilder<'_>),
+) -> LetterSet {
+    let mut cx = Context::new(collection(&[], ahem_fallback()));
+    cx.set_config(Config::chrome_windows());
+    let mut layout = Layout::new();
+    let block = ComputedBlockStyle::new(root);
+    let mut b = layout.builder(key(0), &block, BuildOptions::default());
+    b.set_first_letter(LETTER, letter, None);
+    calls(&mut b);
+    assert!(b.finish(&mut cx).is_complete());
+    layout.break_lines(&mut cx, Area::new(100.0), &mut NoExclusions);
+    let piece = layout.box_fragments(LETTER).next().map(|piece| {
+        let (inline, block) = (piece.inline(), piece.block());
+        ((inline.left, inline.right), (block.over, block.under))
+    });
+    let after = layout.line(0).and_then(|line| {
+        line.items()
+            .filter_map(|item| match item {
+                LineItem::Text(run) if run.key() == key(1) => Some(run.inline().left),
+                _ => None,
+            })
+            .next()
+    });
+    let height = layout.line(0).map(|line| line.metrics().height());
+    (piece, after, height)
+}
+
+/// A `::first-letter` that sets `initial-letter` is the block's initial
+/// letter after an empty box, as at the block's start, and its
+/// `vertical-align` does not apply. After kept white space in a box of its
+/// own it is no initial letter, and its `vertical-align` applies.
+///
+/// Chrome 153 on Windows sets the letter after an empty box as at the
+/// block's start, in Ahem at 10 px on 10 px lines: the box 37 px wide
+/// (DirectWrite's hinted ink; 35 unhinted) and the text after it at 36
+/// (35). Chrome also makes the letter after a kept space an initial letter,
+/// its box from 10 to 47, which the lines here do not set.
+#[test]
+fn a_first_letter_after_an_empty_box_is_the_initial_letter() {
+    let root = ComputedStyle {
+        line: LineGroup {
+            height: LineHeight::Px(10.0),
+            ..LineGroup::INITIAL
+        },
+        ..sized(&AHEM_FAMILY, 10.0)
+    };
+    let mut letter = root;
+    letter.line.initial_letter = InitialLetter {
+        size: 3.0,
+        sink: 3,
+        ..InitialLetter::NONE
+    };
+    letter.line.vertical_align = VerticalAlign::Px(10.0);
+    let text_ = "X XX XX XX XX XX XX XX XX";
+    let start = letter_set(&root, &letter, |b| b.text(key(1), text_));
+    assert_eq!(
+        start,
+        (Some(((0.0, 35.0), (0.0, 35.0))), Some(35.0), Some(10.0))
+    );
+    let after_box = letter_set(&root, &letter, |b| {
+        b.open_box(key(2), &root, None);
+        b.close_box();
+        b.text(key(1), text_);
+    });
+    assert_eq!(after_box, start);
+    let mut pre = root;
+    pre.text.white_space_collapse = WhiteSpaceCollapse::Preserve;
+    let after_space = letter_set(&pre, &letter, |b| {
+        b.open_box(key(2), &pre, None);
+        b.text(key(3), " ");
+        b.close_box();
+        b.text(key(1), text_);
+    });
+    // The letter's own 10 px, raised 10 px, which makes the line 20 tall.
+    assert_eq!(
+        after_space,
+        (Some(((10.0, 20.0), (0.0, 10.0))), Some(20.0), Some(20.0))
+    );
 }

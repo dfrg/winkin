@@ -2,10 +2,16 @@
 //! - the pen that draws a cluster after the edges at its boundary;
 //! - each box's start and end costs, and a cloned box's at every line;
 //! - atomic inlines as their margin boxes;
-//! - edges and atomic sizes truncated onto the grid.
+//! - edges and atomic sizes truncated onto the grid;
+//! - generated texts kept as shaped when the boxes are measured again.
+
+use core::cell::Cell;
 
 use super::*;
-use crate::style::FirstLineVariant;
+use crate::FontInstance;
+use crate::font::{FontMetricsProvider, GlyphAdvanceBatch};
+use crate::stages::shape::SidecarGlyph;
+use crate::style::{FirstLineVariant, TextOverflow};
 
 /// The prefix at a boundary is taken after its edges up to the last closing
 /// one and before the rest, and the pen that draws the cluster after it
@@ -534,4 +540,83 @@ fn edges_and_atomic_sizes_are_truncated_onto_the_grid() {
                 .get(id)
         });
     assert_eq!(atomic, Some(Extent::new(lu(40.0), LayoutUnit::ZERO)));
+}
+
+/// Measuring again with a new atomic inline size keeps the hyphens and
+/// ellipses as shaped: no glyph is measured again, and they equal a fresh
+/// build's.
+#[test]
+fn a_remeasure_keeps_the_generated_texts_without_shaping_them() {
+    /// A provider that counts the advances asked of it and leaves them to
+    /// the font tables.
+    #[derive(Default)]
+    struct Counting {
+        asked: Cell<usize>,
+    }
+
+    impl FontMetricsProvider for Counting {
+        fn h_advance_batched<'a>(
+            &self,
+            _font: FontInstance<'_>,
+            batch: GlyphAdvanceBatch<'a>,
+        ) -> Result<(), GlyphAdvanceBatch<'a>> {
+            self.asked.set(self.asked.get() + 1);
+            Err(batch)
+        }
+
+        fn h_advance(&self, _font: FontInstance<'_>, _glyph: u32) -> Option<i32> {
+            self.asked.set(self.asked.get() + 1);
+            None
+        }
+    }
+
+    let mut fixture = fixture();
+    let latin = families_style(&LATIN);
+    let block = ComputedBlockStyle {
+        text_overflow: TextOverflow::Ellipsis,
+        ..ComputedBlockStyle::new(&latin)
+    };
+    let size = |inline| BoxSize {
+        inline,
+        block: 10.0,
+        baseline: None,
+    };
+    let provider = Counting::default();
+    let build = |fixture: &mut Fixture, layout: &mut Layout, inline| {
+        let mut b = layout.builder(NodeKey(0), &block, BuildOptions::default());
+        b.text(NodeKey(1), "co\u{AD}op ");
+        b.atomic(NodeKey(2), &latin, None, size(inline));
+        b.text(NodeKey(3), " re\u{AD}do");
+        b.finish_with_metrics(&mut fixture.cx, &provider);
+    };
+    let generated = |layout: &Layout| -> Vec<(ShapedGenerated, Vec<SidecarGlyph>)> {
+        let generated = layout.measured().generated();
+        (generated.iter())
+            .map(|text| (text.clone(), generated.glyphs(text).to_vec()))
+            .collect()
+    };
+    let mut layout = Layout::new();
+    build(&mut fixture, &mut layout, 20.0);
+    let built = generated(&layout);
+    assert!(
+        built.iter().any(|(text, _)| text.kind == Generated::Hyphen)
+            && built
+                .iter()
+                .any(|(text, _)| text.kind == Generated::Ellipsis)
+    );
+    assert!(provider.asked.get() > 0, "the build measures glyphs");
+    provider.asked.set(0);
+    assert!(layout.measure_with_metrics(
+        &mut fixture.cx,
+        0.0,
+        [(NodeKey(2), size(40.0))],
+        &provider
+    ));
+    assert_eq!(provider.asked.get(), 0, "no glyph is measured again");
+    assert_eq!(generated(&layout), built);
+    let mut fresh = Layout::new();
+    build(&mut fixture, &mut fresh, 40.0);
+    assert_eq!(generated(&layout), generated(&fresh));
+    assert_eq!(positions(&layout), positions(&fresh));
+    assert_eq!(layout.intrinsic_sizes(), fresh.intrinsic_sizes());
 }

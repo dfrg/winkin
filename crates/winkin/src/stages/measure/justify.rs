@@ -174,6 +174,8 @@ pub(crate) struct JustifyOpportunities<'a> {
     /// The line's last cluster that its neighbours see, whose opportunity
     /// after is dropped. `end` where there is none.
     last: ClusterId,
+    /// The ruby column whose base the opportunities are of, where they are
+    /// of one: its child columns count as one character each.
     scope: Option<RubyColumnId>,
     /// Each cluster's own `text-justify`, where some style sets one other
     /// than `auto`; `justify` answers for every cluster otherwise.
@@ -196,6 +198,13 @@ pub(crate) struct JustifyOpportunities<'a> {
     columns: Option<RefCell<ColumnScope<'a>>>,
 }
 
+/// The ruby columns an opportunity walk reads, and the column whose base it
+/// walks, where it walks one.
+struct RubyScope<'a> {
+    columns: ColumnScope<'a>,
+    base: Option<RubyColumnId>,
+}
+
 /// The `text-justify` of each of a line's clusters, where they may differ.
 ///
 /// The item cursor moves from the last cluster read, as `near` does, so a
@@ -214,11 +223,7 @@ impl ClusterJustify {
         let items = &analysis.item_clusters;
         // The first item at the cluster's start may be a box's edge: the
         // cluster's own item is the first after it that holds clusters.
-        let mut item = items.walk_to(self.item.get(), cluster);
-        while items.range(item).end <= cluster && item.get() + 1 < content.items.len() {
-            work::step();
-            item = ItemId::new(item.get() + 1);
-        }
+        let item = items.walk_to_cluster(self.item.get(), cluster);
         self.item.set(item);
         content.items.get(item).map_or(TextJustify::Auto, |row| {
             let text = content.nodes.text_facts(row.node, self.variant);
@@ -259,7 +264,9 @@ impl<'a> JustifyOpportunities<'a> {
     ///
     /// The base sees its direct child columns as indivisible characters, and
     /// never counts their annotation clusters as opportunities. The columns
-    /// are walked to from `near`, any column near `clusters`' start.
+    /// are walked to from `near`, any column near `clusters`' start. Where
+    /// the base was spread before, the line-wide facts `summary` counted
+    /// then save a walk over it.
     pub(crate) fn from_base(
         content: &'a Content,
         analysis: &'a Analysis,
@@ -267,51 +274,21 @@ impl<'a> JustifyOpportunities<'a> {
         justify: TextJustify,
         rubies: &'a RubyColumns,
         (column, near): (RubyColumnId, RubyColumnId),
+        summary: Option<JustifySummary>,
     ) -> Option<Self> {
-        let scope = ColumnScope::from_column(rubies, near, clusters.start);
-        let mut found = Self::from_clusters(
-            content,
-            analysis,
-            clusters.clone(),
-            justify,
-            Some(scope),
-            None,
-            None,
-        )?;
-        found.scope = Some(column);
-        found.last = clusters.end;
-        for at in clusters.ids().rev() {
-            if found.kind(at) != Kind::Invisible {
-                found.last = at;
-                break;
-            }
-        }
-        Some(found)
-    }
-
-    /// Restores a base walk using the summary counted when it opened, its
-    /// columns walked to from `near`.
-    pub(crate) fn from_base_summary(
-        content: &'a Content,
-        analysis: &'a Analysis,
-        clusters: Range<ClusterId>,
-        justify: TextJustify,
-        rubies: &'a RubyColumns,
-        (column, near): (RubyColumnId, RubyColumnId),
-        summary: JustifySummary,
-    ) -> Option<Self> {
-        let scope = ColumnScope::from_column(rubies, near, clusters.start);
-        let mut found = Self::from_clusters(
+        let scope = RubyScope {
+            columns: ColumnScope::from_column(rubies, near, clusters.start),
+            base: Some(column),
+        };
+        Self::from_clusters(
             content,
             analysis,
             clusters,
             justify,
             Some(scope),
-            Some(summary),
+            summary,
             None,
-        )?;
-        found.scope = Some(column);
-        Some(found)
+        )
     }
 
     /// Returns the opportunities of a line set in `stages`' variant, each
@@ -334,7 +311,7 @@ impl<'a> JustifyOpportunities<'a> {
             .nodes
             .text_facts(NodeId::BLOCK, FirstLineVariant::Standard);
         let ruby = content.flags.contains(ContentFlags::RUBY) && !rubies.is_empty();
-        let scope = ruby.then(|| ColumnScope::new(rubies, clusters.start));
+        let columns = ruby.then(|| ColumnScope::new(rubies, clusters.start));
         let per_cluster =
             content
                 .flags
@@ -354,6 +331,10 @@ impl<'a> JustifyOpportunities<'a> {
             Some(_) => TextJustify::Auto,
             None => content.facts.text(block).justify,
         };
+        let scope = columns.map(|columns| RubyScope {
+            columns,
+            base: None,
+        });
         Self::from_clusters(
             content,
             analysis,
@@ -368,12 +349,16 @@ impl<'a> JustifyOpportunities<'a> {
     /// Returns the opportunities of `clusters`, reading the ruby columns
     /// through `scope`, which starts at their first, where given, and each
     /// cluster's `text-justify` through `per_cluster`, where given.
+    ///
+    /// Where `summary` holds the line-wide facts, they are taken as they
+    /// are. Otherwise the clusters' bytes are counted, and the last cluster
+    /// its neighbours see is found, in the scope's base where it has one.
     fn from_clusters(
         content: &'a Content,
         analysis: &'a Analysis,
         clusters: Range<ClusterId>,
         justify: TextJustify,
-        scope: Option<ColumnScope<'a>>,
+        scope: Option<RubyScope<'a>>,
         summary: Option<JustifySummary>,
         per_cluster: Option<ClusterJustify>,
     ) -> Option<Self> {
@@ -385,7 +370,11 @@ impl<'a> JustifyOpportunities<'a> {
         let text = &content.text;
         let bytes = clusters.start(start).get()..clusters.start(end).get();
         let (ascii, spaces) = summary.map_or_else(
-            || text.as_bytes().get(bytes).map_or((false, 0), scan),
+            || {
+                text.as_bytes()
+                    .get(bytes)
+                    .map_or((false, 0), count_ascii_spaces)
+            },
             |summary| (summary.ascii, summary.spaces),
         );
         let combined = analysis.flags.contains(ParagraphFlags::HAS_COMBINED);
@@ -407,13 +396,13 @@ impl<'a> JustifyOpportunities<'a> {
             spaces,
             simple: false,
             last: end,
-            scope: None,
+            scope: scope.as_ref().and_then(|scope| scope.base),
             per_cluster,
             characters,
             scripts,
             combined,
             near: Cell::new(near),
-            columns: scope.map(RefCell::new),
+            columns: scope.map(|scope| RefCell::new(scope.columns)),
         };
         // A class decides only where no ruby column or combined unit says
         // otherwise.
@@ -490,7 +479,7 @@ impl<'a> JustifyOpportunities<'a> {
             let spaces = if from == self.start && to == self.end {
                 self.spaces
             } else {
-                let (_, spaces) = scan(self.bytes(from..to));
+                let (_, spaces) = count_ascii_spaces(self.bytes(from..to));
                 spaces
             };
             debug_assert_eq!(
@@ -571,7 +560,7 @@ impl<'a> JustifyOpportunities<'a> {
         let kind = self.kind(cluster);
         // Only an ideograph looks back for the room before it, and under
         // `inter-character` any character, for an atomic inline.
-        let previous = if matches!(kind, Kind::Cjk | Kind::UnitStart) || self.looks_back() {
+        let previous = if matches!(kind, Kind::Cjk | Kind::UnitStart) || self.characters {
             self.before(cluster).map(|at| self.kind(at))
         } else {
             None
@@ -612,12 +601,6 @@ impl<'a> JustifyOpportunities<'a> {
         }
     }
 
-    /// Returns whether a cluster other than an ideograph may take room
-    /// before it: where `inter-character` may apply.
-    fn looks_back(&self) -> bool {
-        self.characters
-    }
-
     /// Returns the cluster before `cluster` on the line that its neighbours
     /// see, past the zero-width spaces.
     fn before(&self, cluster: ClusterId) -> Option<ClusterId> {
@@ -642,17 +625,10 @@ impl<'a> JustifyOpportunities<'a> {
     /// Returns the script run of `runs` holding `cluster`, and moves the
     /// script-run cursor to it.
     fn script_run(&self, runs: &ScriptRuns, cluster: ClusterId) -> Option<ScriptRunId> {
-        let mut id = self.near.get();
-        while id.get() > 0 && runs.get(id).is_some_and(|run| run.start > cluster) {
-            work::step();
-            id = ScriptRunId::new(id.get() - 1);
-        }
-        while runs.next_start(id).is_some_and(|next| next <= cluster) {
-            work::step();
-            id = ScriptRunId::new(id.get() + 1);
-        }
+        let end = self.analysis.clusters.end_id();
+        let id = runs.cursor_from(self.near.get(), cluster, end)?.id();
         self.near.set(id);
-        runs.get(id).filter(|run| run.start <= cluster).map(|_| id)
+        Some(id)
     }
 
     /// Returns how `cluster` takes part where it is in a combined unit of
@@ -759,7 +735,7 @@ const CURSIVE: [Script; 7] = [
 /// has its high bit set. Its spaces are the bytes that become zero once the
 /// word is xored with eight spaces, and the same for tabs. Each zero byte is
 /// marked by its high bit, and the marks are counted.
-fn scan(bytes: &[u8]) -> (bool, usize) {
+fn count_ascii_spaces(bytes: &[u8]) -> (bool, usize) {
     const LOW: u64 = 0x7F7F_7F7F_7F7F_7F7F;
     const HIGH: u64 = 0x8080_8080_8080_8080;
     const SPACES: u64 = 0x2020_2020_2020_2020;
@@ -970,7 +946,7 @@ fn is_cjk_ideograph_or_symbol(ch: char) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::scan;
+    use super::count_ascii_spaces;
 
     /// The eight-bytes-a-step test and count match a byte-at-a-time one, for
     /// every byte in every place of a word and past it, beside a space and a
@@ -987,7 +963,11 @@ mod tests {
                 for len in [0, 7, 8, 9, 16, 19] {
                     let part = &bytes[..len];
                     let each = part.iter().filter(|&&b| b == b' ' || b == b'\t').count();
-                    assert_eq!(scan(part), (part.is_ascii(), each), "{part:?}");
+                    assert_eq!(
+                        count_ascii_spaces(part),
+                        (part.is_ascii(), each),
+                        "{part:?}"
+                    );
                 }
             }
         }

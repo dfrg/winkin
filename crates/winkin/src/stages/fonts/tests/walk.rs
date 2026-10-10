@@ -44,7 +44,7 @@ fn selection(fixture: &Fixture, layout: &Layout) -> Vec<String> {
         ));
     }
     for text in layout.content().facts.text_ids() {
-        let primary = layout.primary_id(text);
+        let primary = primary_id(layout, text);
         said.push(format!("primary {text:?} {primary:?}"));
     }
     for generated in fonts.generated().iter() {
@@ -325,9 +325,9 @@ fn choosing_for_many_clusters_at_once_matches_asking_every_cluster() {
         for pass in ["cold", "warm"] {
             let [by_shortcut, by_cluster] = &mut layouts;
             shortcut.build(by_shortcut, &block, calls);
-            select::PER_CLUSTER.with(|per_cluster| per_cluster.set(true));
+            select_kept::PER_CLUSTER.with(|per_cluster| per_cluster.set(true));
             asked.build(by_cluster, &block, calls);
-            select::PER_CLUSTER.with(|per_cluster| per_cluster.set(false));
+            select_kept::PER_CLUSTER.with(|per_cluster| per_cluster.set(false));
             assert_eq!(
                 selection(&shortcut, by_shortcut),
                 selection(&asked, by_cluster),

@@ -48,18 +48,20 @@
 
 use core::ops::Range;
 
-use super::place::{LineBoxId, LineBoxes, LinePieces, LineRubies};
+use super::boxes::{LineBoxId, LineBoxes};
+use super::place::LinePieces;
+use super::ruby::LineRubies;
 use super::{FragmentItemFlags, Piece, PieceKind, Placer};
 use crate::data::Id;
 use crate::data::IdRange;
 use crate::stages::analysis::{
-    BidiLevel, ClusterClass, ClusterId, ParagraphFlags, Paragraphs, RunOrientation,
+    BidiLevel, ClusterClass, ClusterId, ControlLevel, ParagraphFlags, Paragraphs, RunOrientation,
 };
 use crate::stages::content::{Item, ItemFlags, ItemId, ItemKind, NodeId};
 use crate::stages::lines::{EdgeShape, LineBand, LineFlags, LineView};
 use crate::stages::measure;
 use crate::stages::measure::{BoundarySplit, PrefixAdvances, tab_advance_reached};
-use crate::stages::shape::ShapedRun;
+use crate::stages::shape::{ShapedRun, ShapedRunId};
 use crate::style::VerticalAlign;
 use crate::unit::{InlineLayoutUnit, LayoutUnit};
 use crate::work;
@@ -116,11 +118,11 @@ impl<'a> Placer<'a> {
     ) {
         let range = line.clusters();
         let end = range.end;
-        let level = self.level;
+        let level = self.line_state.level;
         // At the text's end, every item is the last line's when the last
         // paragraph holds clusters. Otherwise what follows the leading
         // closes belongs to the next line, or to none.
-        let everything_at_end = end == self.count && self.ends_on_a_line;
+        let everything_at_end = end == self.count && self.gates.ends_on_a_line;
         // The boundary being walked, where a break there falls among its
         // items, and the room of the items after the break. The pen for the
         // following text stands past that room.
@@ -131,7 +133,7 @@ impl<'a> Placer<'a> {
         let mut next_line = ItemId::new(0);
         // Where the line's trailing preserved white space starts. It takes
         // the paragraph's level (L1), which matters only with mixed levels.
-        let trailing = if self.has_mixed_levels {
+        let trailing = if self.gates.has_mixed_levels {
             self.trailing_space(line)
         } else {
             end
@@ -143,13 +145,14 @@ impl<'a> Placer<'a> {
                 start: first,
                 end: next,
             } = self.item_clusters.range(self.item);
+            // The room of the items before this one at its first boundary.
+            let rest_here = if at == Some(first) {
+                rest
+            } else {
+                InlineLayoutUnit::ZERO
+            };
             // A ruby column ending before this item, or starting with it.
             if !self.rubies.is_empty() {
-                let rest_here = if at == Some(first) {
-                    rest
-                } else {
-                    InlineLayoutUnit::ZERO
-                };
                 self.update_columns(pieces, boxes, rubies, line, first, rest_here);
             }
             if first < next {
@@ -160,11 +163,6 @@ impl<'a> Placer<'a> {
                 }
                 let x = first.max(range.start);
                 let y = next.min(end);
-                let rest_here = if at == Some(first) {
-                    rest
-                } else {
-                    InlineLayoutUnit::ZERO
-                };
                 if x < y && !item.flags.contains(ItemFlags::ANNOTATION) {
                     let id = self.item;
                     match item.kind {
@@ -241,13 +239,13 @@ impl<'a> Placer<'a> {
             if matches!(item.kind, ItemKind::Open | ItemKind::Close) && !annotation {
                 if opener {
                     self.open_boxes = self.open_boxes.saturating_add(1);
-                    self.boxed = true;
+                    self.line_state.boxed = true;
                 } else {
                     self.open_boxes = self.open_boxes.saturating_sub(1);
                 }
             }
             if opener || closer {
-                let room = if self.has_box_edges {
+                let room = if self.gates.has_box_edges {
                     let letter = self.stages.measured.initial_letter();
                     measure::edge_room(self.stages.content, letter, item, opener)
                 } else {
@@ -292,15 +290,8 @@ impl<'a> Placer<'a> {
         at: ClusterId,
         at_break: bool,
     ) {
-        let mut level = self.level;
-        while let Some((control, rest)) = self.controls.split_first()
-            && control.item <= self.item
-        {
-            self.controls = rest;
-            if control.item == self.item {
-                level = control.level;
-            }
-        }
+        let level =
+            (self.item_controls().last()).map_or(self.line_state.level, |control| control.level);
         let piece = Piece::new(
             PieceKind::Absolute,
             item.node,
@@ -329,22 +320,36 @@ impl<'a> Placer<'a> {
     ///
     /// The piece belongs to the box around the item's box.
     fn control(&mut self, pieces: &mut LinePieces, boxes: &LineBoxes, item: &Item, at: ClusterId) {
-        while let Some((control, rest)) = self.controls.split_first()
-            && control.item <= self.item
-        {
-            self.controls = rest;
-            if control.item == self.item {
-                pieces.push(Piece::new(
-                    PieceKind::Control,
-                    item.node,
-                    control.level,
-                    at..at,
-                    InlineLayoutUnit::ZERO,
-                    boxes.innermost(),
-                    LayoutUnit::ZERO,
-                ));
-            }
+        for control in self.item_controls() {
+            pieces.push(Piece::new(
+                PieceKind::Control,
+                item.node,
+                control.level,
+                at..at,
+                InlineLayoutUnit::ZERO,
+                boxes.innermost(),
+                LayoutUnit::ZERO,
+            ));
         }
+    }
+
+    /// Returns the levels of the current item's bidi controls, moving past
+    /// them and every earlier item's.
+    ///
+    /// The controls are in item order, so each is passed once.
+    fn item_controls(&mut self) -> &'a [ControlLevel] {
+        let item = self.item;
+        let passed = (self.controls.iter())
+            .take_while(|control| control.item < item)
+            .count();
+        let from = self.controls.get(passed..).unwrap_or_default();
+        let here = from
+            .iter()
+            .take_while(|control| control.item == item)
+            .count();
+        let (controls, rest) = from.split_at_checked(here).unwrap_or((from, &[]));
+        self.controls = rest;
+        controls
     }
 
     /// Returns where `line`'s trailing preserved white space starts within
@@ -442,10 +447,10 @@ impl<'a> Placer<'a> {
     /// It is zero unless the text's piece ends at `at` (`y`). At the text's
     /// end, when the last paragraph holds clusters, every item there counts.
     fn closes_after(&self, id: ItemId, at: ClusterId, y: ClusterId) -> InlineLayoutUnit {
-        if !self.has_box_edges || y != at {
+        if !self.gates.has_box_edges || y != at {
             return InlineLayoutUnit::ZERO;
         }
-        let everything = at == self.count && self.ends_on_a_line;
+        let everything = at == self.count && self.gates.ends_on_a_line;
         let letter = self.stages.measured.initial_letter();
         let mut split = BoundarySplit::new(self.stages.analysis, at);
         let (mut before, mut after) = (InlineLayoutUnit::ZERO, InlineLayoutUnit::ZERO);
@@ -512,11 +517,18 @@ impl<'a> Placer<'a> {
     /// and some paragraph has mixed levels. `at` is inside the line, so the
     /// seam is in the line's paragraph.
     fn seam_before(&self, at: ClusterId) -> Option<InlineLayoutUnit> {
-        if !self.has_mixed_levels {
+        if !self.gates.has_mixed_levels {
             return None;
         }
-        let paragraph = self.stages.analysis.paragraphs.get(self.paragraph)?;
-        let room = self.autospace.room_before(&self.stages, paragraph, at);
+        let paragraph = self
+            .stages
+            .analysis
+            .paragraphs
+            .get(self.line_state.paragraph)?;
+        let room = self
+            .gates
+            .autospace
+            .room_before(&self.stages, paragraph, at);
         let room = InlineLayoutUnit::from_text(room);
         (room != InlineLayoutUnit::ZERO).then_some(room)
     }
@@ -552,7 +564,7 @@ impl<'a> Placer<'a> {
     /// A shaping run never crosses a script run, which has one level. Returns
     /// `paragraph` without mixed levels, or past the runs.
     pub(super) fn run_level(&self, run: Option<&ShapedRun>, paragraph: BidiLevel) -> BidiLevel {
-        if !self.has_mixed_levels {
+        if !self.gates.has_mixed_levels {
             return paragraph;
         }
         run.and_then(|run| self.stages.analysis.runs.get(run.script_run))
@@ -562,7 +574,7 @@ impl<'a> Placer<'a> {
     /// Returns how the glyphs of shaping run `run` stand: its script run's
     /// orientation, or horizontal unless some text stands upright.
     pub(super) fn orientation(&self, run: Option<&ShapedRun>) -> RunOrientation {
-        if !self.has_upright {
+        if !self.gates.has_upright {
             return RunOrientation::Horizontal;
         }
         run.and_then(|run| self.stages.analysis.runs.get(run.script_run))
@@ -610,21 +622,56 @@ impl<'a> Placer<'a> {
     ) {
         let (x, y) = (clusters.start, clusters.end);
         let content_end = line.content_end;
-        let paragraph = self.level;
+        let paragraph = self.line_state.level;
         let node = item.node;
         let owner = boxes.innermost();
         // Text sits on its box's baseline. So does its hanging part, set
         // where its box is.
         let shift = boxes.innermost_shifts().0;
+        let facts = self.stages.content.facts.text(self.stages.text_facts(node));
+        // Every piece of the text carries its emphasis flag.
+        let marks = FragmentItemFlags::from_text(facts);
         let closes = self.closes_after(id, bounds.end, y);
         let piece_advance = |placer: &Self, u: ClusterId, v: ClusterId| -> InlineLayoutUnit {
             placer.advance(shapes, bounds.clone(), u, v, rest, closes)
         };
-        // The pen for a tab, from the prefix sums. For the item's first
-        // cluster it stands past the room of the items before.
-        let tab_pen = |tab: ClusterId| {
-            let pen = self.stages.measured.prefix.get(tab);
-            if tab == bounds.start { pen + rest } else { pen }
+        // The piece of one cluster no glyph draws, at `level`, flagged
+        // `flags`, in shaping run `run`. A tab is flagged `TAB` too, and is
+        // as wide as the distance to its stop from its pen. The pen comes
+        // from the prefix sums, past the room of the items before for the
+        // item's first cluster.
+        let cluster_piece = |placer: &mut Self,
+                             cluster: ClusterId,
+                             level: BidiLevel,
+                             flags: FragmentItemFlags,
+                             run: Option<ShapedRunId>| {
+            let next = ClusterId::new(cluster.get() + 1);
+            let mut advance = piece_advance(placer, cluster, next);
+            let mut flags = flags.union(marks);
+            if placer.is(cluster, ClusterClass::Tab) {
+                let pen = placer.stages.measured.prefix.get(cluster);
+                let pen = if cluster == bounds.start {
+                    pen + rest
+                } else {
+                    pen
+                };
+                advance += placer.tab_width(cluster, pen, node, shapes);
+                flags.insert(FragmentItemFlags::TAB);
+            }
+            Piece {
+                flags,
+                run,
+                item: Some(id),
+                ..Piece::new(
+                    PieceKind::Text,
+                    node,
+                    level,
+                    cluster..next,
+                    advance,
+                    owner,
+                    shift,
+                )
+            }
         };
         // The level of the last text placed, which a hyphen after it takes.
         let mut level = paragraph;
@@ -684,6 +731,7 @@ impl<'a> Placer<'a> {
                     run: run_id,
                     item: Some(id),
                     orientation: self.orientation(run),
+                    flags: marks,
                     ..Piece::new(
                         PieceKind::Text,
                         node,
@@ -696,7 +744,7 @@ impl<'a> Placer<'a> {
                 };
                 // Text inside a spread ruby base takes its share of room.
                 // Text elsewhere takes none.
-                if self.spread.is_some() {
+                if self.line_state.spread.is_some() {
                     self.spread_text(pieces, piece, &piece_advance);
                 } else {
                     pieces.push_or_join(piece);
@@ -706,29 +754,13 @@ impl<'a> Placer<'a> {
                 // as wide as the distance to its stop. The rest take no room
                 // and join the text around them.
                 for cluster in (u..to).ids() {
-                    let next = ClusterId::new(cluster.get() + 1);
-                    let mut advance = piece_advance(self, cluster, next);
-                    let flags = if self.is(cluster, ClusterClass::Tab) {
-                        advance += self.tab_width(cluster, tab_pen(cluster), node, shapes);
-                        FragmentItemFlags::TAB
-                    } else {
-                        FragmentItemFlags::NONE
-                    };
-                    let room = self.spread.as_ref().map(|spread| spread.room(cluster));
-                    let piece = Piece {
-                        flags,
-                        run: run_id,
-                        item: Some(id),
-                        ..Piece::new(
-                            PieceKind::Text,
-                            node,
-                            level,
-                            cluster..next,
-                            advance,
-                            owner,
-                            shift,
-                        )
-                    };
+                    let piece =
+                        cluster_piece(self, cluster, level, FragmentItemFlags::NONE, run_id);
+                    let room = self
+                        .line_state
+                        .spread
+                        .as_ref()
+                        .map(|spread| spread.room(cluster));
                     pieces.push_with_room(piece, room.unwrap_or_default());
                 }
             }
@@ -748,7 +780,6 @@ impl<'a> Placer<'a> {
         //   space hangs with it;
         // - a separator, or a break opportunity the builder made, draws
         //   nothing.
-        let facts = self.stages.content.facts.text(self.stages.text_facts(node));
         let collapsible = facts.collapse.collapses_spaces();
         for cluster in (content.max(x)..y).ids() {
             if self.is(cluster, ClusterClass::Separator)
@@ -757,29 +788,9 @@ impl<'a> Placer<'a> {
             {
                 continue;
             }
-            let next = ClusterId::new(cluster.get() + 1);
-            let mut advance = piece_advance(self, cluster, next);
-            let flags = if self.is(cluster, ClusterClass::Tab) {
-                advance += self.tab_width(cluster, tab_pen(cluster), node, shapes);
-                FragmentItemFlags::TAB.union(FragmentItemFlags::HANGS)
-            } else {
-                FragmentItemFlags::HANGS
-            };
             let run = self.advance_run(cluster).map(|_| self.run.id());
-            pieces.push_or_join(Piece {
-                flags,
-                run,
-                item: Some(id),
-                ..Piece::new(
-                    PieceKind::Text,
-                    node,
-                    paragraph,
-                    cluster..next,
-                    advance,
-                    owner,
-                    shift,
-                )
-            });
+            let piece = cluster_piece(self, cluster, paragraph, FragmentItemFlags::HANGS, run);
+            pieces.push_or_join(piece);
         }
     }
 
@@ -807,9 +818,9 @@ impl<'a> Placer<'a> {
         }
         let facts = self.stages.text_facts(node);
         let generated = self.input.stages.measured.generated();
-        self.hyphen = generated.hyphen(facts);
-        if let Some(hyphen) = self.hyphen {
-            pieces.push(Piece::new(
+        self.line_state.hyphen = generated.hyphen(facts);
+        if let Some(hyphen) = self.line_state.hyphen {
+            pieces.push_hyphen(Piece::new(
                 PieceKind::Hyphen,
                 node,
                 level,
@@ -834,7 +845,7 @@ impl<'a> Placer<'a> {
         node: NodeId,
         shapes: &[EdgeShape],
     ) -> InlineLayoutUnit {
-        if !self.tab_line.any {
+        if !self.line_state.tab_line.any {
             return InlineLayoutUnit::ZERO;
         }
         let measured = self.input.stages.measured;
@@ -848,12 +859,12 @@ impl<'a> Placer<'a> {
             .fold(InlineLayoutUnit::ZERO, |sum, shape| {
                 sum + self.shape_delta(shape)
             });
-        let line = self.tab_line;
+        let line = self.line_state.tab_line;
         let position = pen - line.start + moved + line.before;
         let reach = self.stages.measured.ruby_columns().tab_reach(tab);
         let width =
             InlineLayoutUnit::from_layout(tab_advance_reached(line.origin, position, stops, reach));
-        self.tab_line.before += width;
+        self.line_state.tab_line.before += width;
         width
     }
 
@@ -872,8 +883,8 @@ impl<'a> Placer<'a> {
     /// Whether the box `node` keeps a fragment, moving the kept-box cursor
     /// to it. Boxes open in node order.
     fn keeps(&mut self, node: NodeId) -> bool {
-        self.kept = self.boxes.walk_to(self.kept, node);
-        self.boxes.node(self.kept) == Some(node)
+        self.next_kept = self.kept_boxes.walk_to(self.next_kept, node);
+        self.kept_boxes.node(self.next_kept) == Some(node)
     }
 
     /// Returns how far `node`'s baseline is raised from `line`'s, and the
@@ -941,21 +952,24 @@ impl<'a> Placer<'a> {
         room: InlineLayoutUnit,
     ) {
         let node = item.node;
-        let kept_ruby = matches!(item.kind, ItemKind::RubyOpen | ItemKind::RubyClose)
-            && self.boxes.get(node).is_some();
-        if kept_ruby || matches!(item.kind, ItemKind::Open | ItemKind::Close) {
-            if opens {
-                if self.keeps(node) {
-                    let shifts = self.shift(line, node, boxes.innermost_shifts());
-                    boxes.open_box(pieces, (node, Some(self.kept)), at, true, shifts);
-                }
-            } else if let Some(index) = boxes.innermost()
-                && let Some(open) = boxes.boxes.get_mut(index)
-                && open.node == node
-            {
-                open.closes = true;
-                boxes.stack.pop();
-            }
+        let ruby = matches!(item.kind, ItemKind::RubyOpen | ItemKind::RubyClose);
+        // A kept box opens where the kept-box cursor finds it, and closes as
+        // the innermost box open: a ruby container's as any other's.
+        if opens && self.keeps(node) {
+            let shifts = self.shift(line, node, boxes.innermost_shifts());
+            boxes.open_box(pieces, (node, Some(self.next_kept)), at, true, shifts);
+            return;
+        }
+        if !opens
+            && let Some(index) = boxes.innermost()
+            && let Some(open) = boxes.line_boxes.get_mut(index)
+            && open.node == node
+        {
+            open.closes = true;
+            boxes.stack.pop();
+            return;
+        }
+        if !ruby {
             return;
         }
         if room == InlineLayoutUnit::ZERO {

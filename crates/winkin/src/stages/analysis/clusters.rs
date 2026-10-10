@@ -360,15 +360,6 @@ impl Clusters {
             .is_some_and(|end| end.is_continuation())
     }
 
-    /// Whether a character of `cluster` after its first is a variation
-    /// selector ([`ClusterEnd::is_variation_selector`]); not past the last.
-    #[inline]
-    pub(crate) fn is_variation_selector(&self, cluster: ClusterId) -> bool {
-        self.ends
-            .get(cluster)
-            .is_some_and(|end| end.is_variation_selector())
-    }
-
     /// Whether `cluster` goes on with the grapheme the cluster before it
     /// started, `text` being the layout's.
     ///
@@ -413,6 +404,27 @@ impl Clusters {
     pub(crate) fn at(&self, pos: TextOffset) -> ClusterId {
         work::seek();
         ClusterId::new(self.ends.as_slice().partition_point(|end| end.end() <= pos))
+    }
+
+    /// Returns the cluster holding byte `at`, as [`at`](Self::at) finds it,
+    /// walked to from `near` a cluster at a time.
+    ///
+    /// It costs a step per cluster between `near` and the byte, and no
+    /// search, so `near` is a cluster the caller holds close by.
+    pub(crate) fn walk_to(&self, near: ClusterId, at: TextOffset) -> ClusterId {
+        let end = self.end_id();
+        let mut cluster = near.min(end);
+        // Back to the cluster starting at or before `at`.
+        while cluster.get() > 0 && self.start(cluster) > at {
+            work::step();
+            cluster = ClusterId::new(cluster.get() - 1);
+        }
+        // On to the first ending past it.
+        while cluster < end && self.range(cluster).end <= at {
+            work::step();
+            cluster = ClusterId::new(cluster.get() + 1);
+        }
+        cluster
     }
 
     /// The text `cluster` covers, or an empty range past the last.

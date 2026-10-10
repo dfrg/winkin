@@ -82,3 +82,124 @@ fn sizing_sizes_as_breaking_does() {
         );
     }
 }
+
+/// Sizes handed out once, by an iterator that cannot be cloned.
+struct OnePass(vec::IntoIter<(NodeKey, BoxSize)>);
+
+impl Iterator for OnePass {
+    type Item = (NodeKey, BoxSize);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next()
+    }
+}
+
+/// Builds text with an atomic inline after each word group, keyed in turn
+/// by `keys` and each sized by `size` of its key.
+fn atomics(
+    cx: &mut Context,
+    layout: &mut Layout,
+    root: &ComputedStyle<'_>,
+    keys: &[u64],
+    size: impl Fn(u64) -> BoxSize,
+) {
+    build(cx, layout, &ComputedBlockStyle::new(root), |b| {
+        for (n, &key) in (100..).zip(keys) {
+            b.text(NodeKey(n), "XX X ");
+            b.atomic(NodeKey(key), root, None, size(key));
+        }
+    });
+}
+
+/// A line's width, ascent and descent.
+type LineSize = (f32, f32, f32);
+
+/// Breaks `layout` at `width`, and returns each line's size and each atomic
+/// inline's key, line-left and extents across the line.
+fn atomic_places(
+    cx: &mut Context,
+    layout: &mut Layout,
+    width: f32,
+) -> (Vec<LineSize>, Vec<(NodeKey, f32, CrossExtents)>) {
+    layout.break_lines(cx, Area::new(width), &mut NoExclusions);
+    let lines = layout
+        .lines()
+        .map(|line| {
+            let metrics = line.metrics();
+            (metrics.width, metrics.ascent, metrics.descent)
+        })
+        .collect();
+    let places = layout
+        .lines()
+        .flat_map(|line| line.all_items())
+        .filter_map(|item| match item {
+            Item::Atomic(atomic) => Some((atomic.key(), atomic.inline().left, atomic.block())),
+            _ => None,
+        })
+        .collect();
+    (lines, places)
+}
+
+/// The size an atomic inline keyed `key` is built with.
+fn small(key: u64) -> BoxSize {
+    BoxSize {
+        inline: 10.0 + key as f32,
+        block: 6.0,
+        baseline: None,
+    }
+}
+
+/// The size an atomic inline keyed `key` is measured with.
+fn large(key: u64) -> BoxSize {
+    BoxSize {
+        inline: 14.0 + key as f32,
+        block: 9.0 + key as f32,
+        baseline: Some(5.0),
+    }
+}
+
+/// Measuring with sizes an iterator hands out once, which cannot be cloned,
+/// sets what a layout built with the sizes has.
+#[test]
+fn measuring_sizes_handed_out_once_equals_a_fresh_layout() {
+    let root = sized(&AHEM_FAMILY, 10.0);
+    let mut cx = context();
+    let keys = [1, 2, 3, 4];
+    let mut layout = Layout::new();
+    atomics(&mut cx, &mut layout, &root, &keys, small);
+    let sizes: Vec<_> = keys.iter().map(|&key| (NodeKey(key), large(key))).collect();
+    assert!(layout.measure(&mut cx, 0.0, OnePass(sizes.into_iter())));
+    let mut fresh = Layout::new();
+    atomics(&mut cx, &mut fresh, &root, &keys, large);
+    for width in [40.0, 400.0] {
+        assert_eq!(
+            atomic_places(&mut cx, &mut layout, width),
+            atomic_places(&mut cx, &mut fresh, width),
+            "at {width}"
+        );
+    }
+}
+
+/// Measuring with sizes handed out once sets every atomic inline of a key
+/// that several share, and those keyed otherwise their own sizes.
+#[test]
+fn measuring_shared_keys_handed_out_once_equals_a_fresh_layout() {
+    let root = sized(&AHEM_FAMILY, 10.0);
+    let mut cx = context();
+    let keys = [5, 6, 5, 7, 5];
+    let mut layout = Layout::new();
+    atomics(&mut cx, &mut layout, &root, &keys, small);
+    let sizes = vec![(NodeKey(6), large(6)), (NodeKey(5), large(5))];
+    assert!(layout.measure(&mut cx, 0.0, OnePass(sizes.into_iter())));
+    // Key 7 is left out, so it keeps the size it was built with.
+    let mut fresh = Layout::new();
+    let size = |key| if key == 7 { small(key) } else { large(key) };
+    atomics(&mut cx, &mut fresh, &root, &keys, size);
+    for width in [40.0, 400.0] {
+        assert_eq!(
+            atomic_places(&mut cx, &mut layout, width),
+            atomic_places(&mut cx, &mut fresh, width),
+            "at {width}"
+        );
+    }
+}

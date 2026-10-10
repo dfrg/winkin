@@ -22,8 +22,7 @@
 //! opportunities, counted by the same rule line layout used. The last
 //! opportunity also takes the leftover. A cluster with an opportunity before
 //! it moves its glyphs by that room, as Chrome offsets an ideograph after a
-//! letter. The line's record is found by search; nothing is stored per
-//! cluster.
+//! letter. The line's item names its record; nothing is stored per cluster.
 //!
 //! **No item searches for its run or items.** Its record names its shaping
 //! run and its content item, and its line names its paragraph.
@@ -39,7 +38,8 @@
 //! give it nothing. Its clusters step by their glyphs' own advances, which
 //! shaping keeps for it, plus spacing, with a running sum.
 
-use super::{FragmentItem, FragmentItemFlags, Fragments, Justified, JustifiedLine};
+use super::justify::{Justified, JustifiedLine};
+use super::{FragmentItem, FragmentItemFlags, Fragments};
 use crate::data::{Id, Table};
 use crate::stages::analysis::{Analysis, ClusterId};
 use crate::stages::content::{ContentFlags, ItemId, ShapingFactsId, VariantText};
@@ -174,13 +174,13 @@ struct Pending<'a> {
 /// The caller finds the small row first, so an unjustified run builds
 /// nothing.
 fn line_justification<'a>(
-    input: &ReadInput<'a>,
+    stages: &LineStages<'a>,
     row: JustifiedLine,
     line: &LineRecord,
 ) -> Option<Justified<'a>> {
     let justification = row.justification;
     let opportunities = JustifyOpportunities::from_line(
-        &input.stages.variant(line.variant()),
+        stages,
         line.clusters().start..row.content_end,
         Some(justification.summary),
     )?;
@@ -219,18 +219,18 @@ struct Steps<'a> {
 }
 
 impl<'a> Steps<'a> {
-    /// Makes the steps of text `item` on line `id`, whose clusters have
-    /// `words` glyph words.
+    /// Makes the steps of text `item` on line `id`, read in `stages`, the
+    /// line's variant, whose clusters have `words` glyph words.
     ///
     /// Where the tables don't agree, the steps are empty and nothing draws.
     fn new(
         input: &ReadInput<'a>,
+        stages: &LineStages<'a>,
         id: LineId,
         line: &LineRecord,
         item: &FragmentItem,
         words: usize,
     ) -> Self {
-        let stages = input.stages.variant(line.variant());
         let prefix = &stages.measured.prefix;
         let clusters = item.text_clusters();
         let (start, end) = (clusters.start.get(), clusters.end.get());
@@ -267,7 +267,7 @@ impl<'a> Steps<'a> {
                 pen_end: InlineLayoutUnit::ZERO,
                 justify: None,
                 annotation: Some(AnnotationText::new(
-                    &stages,
+                    stages,
                     input.stages.measured.word_spacing_rule,
                     stages
                         .content
@@ -329,9 +329,9 @@ impl<'a> Steps<'a> {
             },
         };
         if len > 0
-            && let Some(row) = input.fragments.justification(id)
+            && let Some(row) = input.fragments.line_justification(id)
         {
-            steps.justify = line_justification(input, row, line);
+            steps.justify = line_justification(stages, row, line);
         }
         steps
     }
@@ -451,13 +451,14 @@ pub(crate) struct ClusterWalk<'a> {
 }
 
 impl<'a> ClusterWalk<'a> {
-    /// Walks the clusters of `item` on line `id`; none for an item that is
-    /// not text.
+    /// Walks the clusters of `item` on line `id`, read in `stages`, the
+    /// line's variant; none for an item that is not text.
     ///
     /// Right to left, the walk starts at the item's right, its stored
     /// advance past its left.
     pub(crate) fn new(
         input: &ReadInput<'a>,
+        stages: &LineStages<'a>,
         id: LineId,
         line: &LineRecord,
         item: &FragmentItem,
@@ -467,7 +468,7 @@ impl<'a> ClusterWalk<'a> {
         let rtl = item.level.is_rtl();
         // The steps are built in place, so nothing is copied.
         Self {
-            steps: Steps::new(input, id, line, item, words),
+            steps: Steps::new(input, stages, id, line, item, words),
             rtl,
             done: 0,
             x: if rtl {
@@ -562,16 +563,16 @@ pub(crate) struct GlyphWalk<'a> {
 }
 
 impl<'a> GlyphWalk<'a> {
-    /// Walks the glyphs of `item` on line `id`; none for an item that is not
-    /// text.
+    /// Walks the glyphs of `item` on line `id`, read in `stages`, the line's
+    /// variant; none for an item that is not text.
     pub(crate) fn new(
         input: &ReadInput<'a>,
+        stages: &LineStages<'a>,
         id: LineId,
         line: &LineRecord,
         item: &FragmentItem,
     ) -> Self {
-        // The block's first line reads its own shaping, where it has one.
-        let shaped = input.stages.shaped.text(line.variant());
+        let shaped = stages.shaped;
         let lines = input.lines;
         let clusters = item.text_clusters();
         let words = shaped.glyphs.words(clusters);
@@ -582,7 +583,7 @@ impl<'a> GlyphWalk<'a> {
             sidecar: &shaped.glyphs.sidecar,
             edge_words: &lines.edges.words,
             edge_glyphs: &lines.edges.glyphs,
-            steps: Steps::new(input, id, line, item, words.len()),
+            steps: Steps::new(input, stages, id, line, item, words.len()),
             rtl: item.level.is_rtl(),
             origin: item.inline,
             base: InlineLayoutUnit::ZERO,

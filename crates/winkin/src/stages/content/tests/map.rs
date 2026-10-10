@@ -179,6 +179,36 @@ fn a_space_owed_across_an_edge_is_its_own_nodes() {
     assert_eq!(content_offset(&layout, 3, 1, Before), Some(4));
 }
 
+/// A transformed piece written near the text's limit, a character at a time,
+/// records the units the same piece records written whole far from it.
+#[test]
+fn a_transformed_piece_near_the_text_limit_maps_as_one_far_from_it() {
+    let upper = cased(TextCase::Uppercase, "de");
+    let options = BuildOptions {
+        map_source: true,
+        ..BuildOptions::default()
+    };
+    let built = |limits: ContentLimits| {
+        let mut layout = Layout::new();
+        let block = ComputedBlockStyle::new(&upper);
+        let mut b = layout.builder_within(key(0), &block, options, limits);
+        b.text(key(1), "a\u{DF}b");
+        b.finish(&mut no_fonts());
+        layout
+    };
+    // Four bytes, which a transform may grow to twelve: a limit of eleven
+    // writes them a character at a time, and all of them fit.
+    let near = built(ContentLimits::MAX.with_text(11));
+    let far = built(ContentLimits::MAX);
+    assert_eq!(text(&near), "ASSB");
+    assert_eq!(text(&far), "ASSB");
+    assert_eq!(
+        units(&far),
+        [(I, 0..1, 0..1), (V, 1..3, 1..3), (I, 3..4, 3..4)]
+    );
+    assert_eq!(units(&near), units(&far));
+}
+
 /// A transform that keeps each character's length maps one to one. One that
 /// does not is one caret stop: an offset inside it maps to an end.
 #[test]

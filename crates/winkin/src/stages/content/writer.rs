@@ -3,14 +3,19 @@
 //!
 //! In: the builder's calls, one at a time, with their styles, text and
 //! sizes. Out: a finished [`Content`] and a [`BuildReport`].
-//! Start at: [`ContentWriter::new`], then the calls in `writer_calls`.
+//! Start at: [`ContentWriter::new`], then the calls in `writer_calls` and
+//! the text ladder in `writer_text`.
 //!
-//! - `writer_calls`: the builder's calls, from `text` and `open` to `finish`.
+//! - `writer_calls`: the builder's calls but text, from `open` to `finish`.
 //! - `writer_first_letter`: the `::first-letter` box and where its letter ends.
-//! - `writer_text`: text and white space, collapsed, transformed and written.
+//! - `writer_text`: the text ladder: text and white space, collapsed,
+//!   transformed and written.
 //! - `writer_nodes`: the container stack, nodes, items and the limit checks.
 //! - `writer_lower`: lowers each node's styles into facts.
 //! - `writer_check`: the debug build's checks of the content's invariants.
+//!
+//! This file holds the writer and the records its files share; each of
+//! those files adds to `ContentWriter`'s `impl`.
 //!
 //! The writer keeps every invariant of the content: nodes in pre-order with
 //! their item ranges, items tiling the text, the limits and the flags. It
@@ -32,17 +37,21 @@
 //! never their ids. Only zero width spaces can be written while a run is
 //! pending, so this moves a few bytes and a few items at most.
 
-use super::{ContentWriter, FirstLetter, InitialLetterUse, MathText, Mirror, Open};
 use alloc::boxed::Box;
 use alloc::string::String;
 
 use super::collapse::Collapser;
-use super::memo::StyleMemo;
+use super::map::MapUnitId;
+use super::memo::{StyleKey, StyleMemo};
 use super::transform::Transforms;
-use super::{BlockFacts, Content, ItemId, NodeId, NodeKey, NodeKind};
+use super::{
+    BlockFacts, BoxFactsId, Content, ItemId, ItemKind, NodeId, NodeKey, NodeKind, TextFactsId,
+};
 use crate::build::{BuildOptions, BuildReport};
 use crate::data::{HashIndex, Id, Table, TextOffset, define_id, heap_bytes};
-use crate::style::ComputedBlockStyle;
+use crate::style::{
+    ComputedBlockStyle, ComputedStyle, InitialLetter, VerticalAlign, WhiteSpaceTrim,
+};
 
 /// The most the content may hold: the ids' own limits and the text's,
 /// unless a test asks for less.
@@ -132,6 +141,359 @@ define_id! {
     pub(super) struct OpenId(u32);
 }
 
+/// U+FFFC OBJECT REPLACEMENT CHARACTER, which stands for an atomic inline.
+pub(super) const OBJECT: &str = "\u{FFFC}";
+
+/// What `initial-letter` comes to on a node as the writer lowers its style.
+///
+/// The block has at most one initial letter: an inline box at its start
+/// (CSS Inline 3, section 7.3.1). Everywhere else the property's used value
+/// is `normal`. So a style that sets it belongs to the initial letter, and
+/// the font and measure stages size it by its facts alone.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub(super) enum InitialLetterUse {
+    /// The style sets none.
+    Unset,
+    /// The box may be the block's initial letter. The property is kept,
+    /// and `vertical-align` is set to `baseline`, since it does not apply
+    /// to an initial letter (CSS Inline 3, section 7.5.1).
+    Kept,
+    /// Its used value, `normal`.
+    Normal,
+}
+
+impl InitialLetterUse {
+    /// Returns `style` with `initial-letter` as used.
+    pub(super) fn apply<'a>(self, style: &ComputedStyle<'a>) -> ComputedStyle<'a> {
+        let mut used = *style;
+        match self {
+            Self::Unset => {}
+            Self::Kept => used.line.vertical_align = VerticalAlign::Baseline,
+            Self::Normal => used.line.initial_letter = InitialLetter::NONE,
+        }
+        used
+    }
+
+    /// Sets `initial-letter` as used in `style`, a keyed style.
+    pub(super) fn apply_key(self, style: &mut StyleKey) {
+        match self {
+            Self::Unset => {}
+            Self::Kept => style.line.vertical_align = VerticalAlign::Baseline,
+            Self::Normal => style.line.initial_letter = InitialLetter::NONE,
+        }
+    }
+}
+
+/// The facts a node's style lowered into, in one variant (see `facts`).
+/// The writer gives these to a node it makes.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub(super) struct NodeFacts {
+    pub(super) text: TextFactsId,
+    pub(super) box_: BoxFactsId,
+}
+
+/// What the writer made of a node's styles.
+///
+/// It holds the node's facts in both variants (the first line's where the
+/// block has `::first-line`), and what the writer reads of its styles for
+/// the text it holds.
+#[derive(Copy, Clone, Debug)]
+pub(super) struct LoweredNode {
+    pub(super) own: NodeFacts,
+    pub(super) first_line: Option<NodeFacts>,
+    /// Its first-line style differs from its own.
+    pub(super) restyles: bool,
+    /// How the text written in it is transformed.
+    pub(super) transforms: Transforms,
+}
+
+/// Where the writer is in keeping the first line's text.
+///
+/// That text is the first paragraph as the block's first line draws it,
+/// kept where a first-line transform differs from a node's own (see
+/// `first_line`).
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub(super) enum Mirror {
+    /// The block has `::first-line`, and no text in the first paragraph has
+    /// had a first-line transform of its own yet: nothing is kept.
+    Waiting,
+    /// Every write to the first paragraph is made to the first line's text
+    /// too.
+    Writing,
+    /// The first paragraph has ended, past which no first line reaches, or
+    /// the block has no `::first-line`.
+    Done,
+}
+
+/// Where the writer is with `::first-letter`.
+///
+/// Its armed styles wait here whole, a few hundred bytes. There is one
+/// writer, held by its builder, and boxing them would allocate in every
+/// build that asks for a first letter.
+#[allow(clippy::large_enum_variant)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub(super) enum FirstLetter {
+    /// None asked for yet, and the block holds nothing it would have to come
+    /// before.
+    Unarmed,
+    /// Asked for. Its key and keyed styles wait for the first text that
+    /// holds a letter, which splits the box off. The styles are lowered
+    /// then, once its parent and whether it is the initial letter are
+    /// known.
+    Armed {
+        key: NodeKey,
+        style: StyleKey,
+        first_line: Option<StyleKey>,
+    },
+    /// Its box holds the punctuation a text ended with, and is closed. The
+    /// letter is looked for in what follows; where none comes, the box is
+    /// made plain.
+    Punctuation { node: NodeId },
+    /// Found, found not to be, or no longer to be looked for: the block
+    /// holds something a first letter would have had to come before.
+    Done,
+}
+
+impl FirstLetter {
+    /// Returns whether the letter is armed with `math-auto` in its own style
+    /// or its first-line style. The writer then measures text nodes for it.
+    pub(super) fn is_math_auto(&self) -> bool {
+        match self {
+            FirstLetter::Armed {
+                style, first_line, ..
+            } => {
+                style.text.transform.is_math_auto()
+                    || first_line.is_some_and(|s| s.text.transform.is_math_auto())
+            }
+            _ => false,
+        }
+    }
+}
+
+/// What the writer knows of the source text node `math-auto` measures.
+///
+/// `math-auto` maps a text node only where the node is one character. The
+/// writer learns that only when the node ends, so a lone character waits.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub(super) enum MathText {
+    /// No text node is being measured.
+    None,
+    /// A text node of one character so far, held unwritten until the node
+    /// continues or ends.
+    Held(NodeKey, char),
+    /// A text node known to be longer than one character: its text is
+    /// written as it comes.
+    Long(NodeKey),
+}
+
+/// A container a caller opened and has not closed.
+///
+/// Each entry also says where calls that look past it go, so no call
+/// searches the stack however deep the caller nests. It names the innermost
+/// container at or below it that has a node, which owns what is written
+/// inside. A ruby container or an annotation also names the next one out.
+#[derive(Copy, Clone, Debug)]
+pub(super) struct Open {
+    /// Its node, or `None` where it was dropped at a limit. A dropped one
+    /// stays on the stack only so that it, not the box outside, takes its
+    /// close.
+    pub(super) node: Option<NodeId>,
+    pub(super) kind: ContainerKind,
+    /// Its opening item.
+    pub(super) item: ItemId,
+    /// Its `white-space-trim`.
+    pub(super) trim: WhiteSpaceTrim,
+    /// Its node, or, where it was dropped, the node of the container it is
+    /// in. Outside every other container this is the block.
+    pub(super) container: NodeId,
+    /// How the text written in it is transformed: as its styles say, or,
+    /// where it was dropped, as its container's.
+    pub(super) transforms: Transforms,
+    /// For a ruby container, an annotation or a ruby container opened
+    /// inside another, where on the stack the next of those out is, if any.
+    pub(super) outer: Option<OpenId>,
+    /// It is an anonymous ruby container around an annotation written
+    /// outside every other, which closes with it.
+    pub(super) anonymous: bool,
+    /// For a ruby container, the closing item of its last annotation so
+    /// far, which the next annotation flags.
+    pub(super) annotation_close: Option<ItemId>,
+}
+
+/// What a container on the stack is.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub(crate) enum ContainerKind {
+    /// An inline box.
+    Box,
+    /// A ruby container.
+    Ruby,
+    /// A ruby annotation.
+    Annotation,
+    /// A container normalized to a box inside an annotation or past the
+    /// nesting limit. Its annotations become levels of the enclosing column.
+    FlattenedRuby,
+}
+
+impl ContainerKind {
+    /// The kind of node it is written as.
+    pub(super) fn node_kind(self) -> NodeKind {
+        match self {
+            Self::Box | Self::FlattenedRuby => NodeKind::Box,
+            Self::Ruby => NodeKind::Ruby,
+            Self::Annotation => NodeKind::Annotation,
+        }
+    }
+
+    /// The kind of item that opens it.
+    pub(super) fn open_item_kind(self) -> ItemKind {
+        match self {
+            Self::Box | Self::FlattenedRuby => ItemKind::Open,
+            Self::Ruby => ItemKind::RubyOpen,
+            Self::Annotation => ItemKind::AnnotationOpen,
+        }
+    }
+
+    /// The kind of item that closes it.
+    pub(super) fn close_item_kind(self) -> ItemKind {
+        match self {
+            Self::Box | Self::FlattenedRuby => ItemKind::Close,
+            Self::Ruby => ItemKind::RubyClose,
+            Self::Annotation => ItemKind::AnnotationClose,
+        }
+    }
+
+    /// Whether it is linked into the chain of ruby containers and
+    /// annotations the ruby calls follow.
+    pub(super) fn is_ruby(self) -> bool {
+        matches!(self, Self::Ruby | Self::Annotation | Self::FlattenedRuby)
+    }
+}
+
+/// Writes the content, and is the only thing that does.
+///
+/// Its state comes in groups, each kept mostly by one of the writer's
+/// files: the text node being written (`writer_text`), the ruby
+/// containers open (`writer_calls`), `::first-letter` and the initial
+/// letter (`writer_first_letter`), the block's trims and the first line's
+/// text (`writer_text`), and the room left (`writer_nodes`).
+pub(crate) struct ContentWriter<'a> {
+    pub(super) content: &'a mut Content,
+    /// The containers open, innermost last. The block is not on it.
+    pub(super) stack: &'a mut Table<OpenId, Open>,
+    /// Where capitalize joins the character before a text to it.
+    pub(super) words: &'a mut String,
+    /// The text facts each style given this build was lowered into, where
+    /// a build has made it.
+    pub(super) memo: &'a mut Option<Box<StyleMemo>>,
+    /// The atomic inlines written so far by the hash of their keys, until
+    /// two share one, where a build has made it.
+    pub(super) atomic_keys: &'a mut Option<Box<HashIndex>>,
+    /// How the text written in the block, outside every container, is
+    /// transformed.
+    pub(super) block_transforms: Transforms,
+    pub(super) collapser: Collapser,
+    pub(super) text_node: TextNode,
+    pub(super) ruby: RubyNesting,
+    pub(super) letters: Letters,
+    pub(super) trim: Trim,
+    pub(super) first_line: FirstLine,
+    pub(super) room: Room,
+}
+
+/// The text node the writer is writing, and what it knows of the text
+/// written before.
+pub(super) struct TextNode {
+    /// The text node `text` continues while its key is the same, until
+    /// anything else is written.
+    pub(super) node: Option<NodeId>,
+    /// That node's item text is appended to, once it has one.
+    pub(super) item: Option<ItemId>,
+    /// How far the writer has got in the text the caller gave the text
+    /// node: every byte so far, kept or collapsed. The offset map counts in
+    /// these bytes.
+    pub(super) source: u32,
+    /// The offset map's unit for the white space run pending, which takes
+    /// the space the run owes if it is written.
+    pub(super) run_unit: Option<MapUnitId>,
+    /// Where the text node the `::first-letter` box cut its letter from
+    /// goes on: its key, and the offset in its text after the letter. It is
+    /// kept while the next node the writer makes may be that node's rest.
+    pub(super) continues: Option<(NodeKey, u32)>,
+    /// The source text node `math-auto` measures, and its character while
+    /// it may yet be the only one.
+    pub(super) math: MathText,
+    /// The last character of the text written before, or U+0020 where
+    /// something else came between.
+    ///
+    /// Capitalize reads this one character of what came before, as Chrome
+    /// reads a text's `PreviousCharacter`. A `<br>` leaves its `\n`, a
+    /// `<wbr>` its U+200B, and an atomic inline or a float a space, as in
+    /// Chrome.
+    pub(super) last_char: char,
+}
+
+/// The ruby containers and annotations open.
+pub(super) struct RubyNesting {
+    /// Where on the stack the innermost ruby container, annotation or
+    /// nested ruby container is, each linking to the next one out.
+    pub(super) innermost: Option<OpenId>,
+    /// How many annotations are open, so their items are flagged.
+    pub(super) annotations: usize,
+    /// How many normalized ruby containers, written as boxes, still owe
+    /// the `end_ruby` that closes each. One that an annotation of its
+    /// column has already closed still takes its `end_ruby`, which then
+    /// closes nothing.
+    pub(super) flattened: usize,
+    /// Real ruby containers open; bounded before writing a new one.
+    pub(super) depth: usize,
+}
+
+/// Where the writer is with `::first-letter` and the initial letter.
+pub(super) struct Letters {
+    /// Where `::first-letter` is.
+    pub(super) first_letter: FirstLetter,
+    /// Nothing but boxes' opening edges and float anchors has been written.
+    /// A box opening now is a first child all the way up, where
+    /// `initial-letter` may apply.
+    pub(super) at_start: bool,
+    /// A box has taken `initial-letter`. The block has its initial letter,
+    /// and no box after it or inside it is another.
+    pub(super) initial_letter: bool,
+}
+
+/// The block's trims of its kept white space.
+pub(super) struct Trim {
+    /// Where the block's leading trim would cut: just after the last
+    /// segment break. It is set while the block trims its kept white space
+    /// (`white-space-trim: discard-inner`) and only white space has been
+    /// written.
+    pub(super) lead: Option<TextOffset>,
+    /// Whether the block trims its kept white space at both ends. The
+    /// trims cut at kept segment breaks, so the offset map starts a unit at
+    /// each, and no unit runs across a cut.
+    pub(super) ends: bool,
+}
+
+/// The block's `::first-line`, and the first line's text the writer keeps.
+pub(super) struct FirstLine {
+    /// Whether the block has `::first-line`, and every node a first-line
+    /// style.
+    pub(super) styled: bool,
+    /// Whether the first line's text is being kept.
+    pub(super) mirror: Mirror,
+}
+
+/// The room left in the content, and what did not fit.
+pub(super) struct Room {
+    pub(super) limits: ContentLimits,
+    /// Close items owed to the containers open, which every other item
+    /// leaves room for.
+    pub(super) reserved: usize,
+    /// Whether the text reached its limit: nothing more is written.
+    pub(super) full: bool,
+    pub(super) report: BuildReport,
+}
+
 impl<'a> ContentWriter<'a> {
     /// Clears `content` and starts it with the block's node, keyed `key`.
     ///
@@ -181,36 +543,48 @@ impl<'a> ContentWriter<'a> {
             atomic_keys,
             block_transforms: Transforms::NONE,
             collapser: Collapser::new(),
-            last_char: ' ',
-            text_node: None,
-            math: MathText::None,
-            open_item: None,
-            source: 0,
-            run_unit: None,
-            continues: None,
-            annotations: 0,
-            ruby: None,
-            flattened_rubies: 0,
-            ruby_depth: 0,
-            reserved: 0,
-            first_line: first_line.is_some(),
-            mirror: if first_line.is_some() {
-                Mirror::Waiting
-            } else {
-                Mirror::Done
+            text_node: TextNode {
+                node: None,
+                item: None,
+                source: 0,
+                run_unit: None,
+                continues: None,
+                math: MathText::None,
+                last_char: ' ',
             },
-            first_letter: FirstLetter::Unarmed,
-            at_start: true,
-            initial_letter: false,
-            lead_trim: None,
-            block_trims: false,
-            full: false,
-            limits: ContentLimits {
-                nodes: limits.nodes.min(NodeId::MAX),
-                items: limits.items.min(ItemId::MAX),
-                text: limits.text.min(TextOffset::MAX),
+            ruby: RubyNesting {
+                innermost: None,
+                annotations: 0,
+                flattened: 0,
+                depth: 0,
             },
-            report: BuildReport::default(),
+            letters: Letters {
+                first_letter: FirstLetter::Unarmed,
+                at_start: true,
+                initial_letter: false,
+            },
+            trim: Trim {
+                lead: None,
+                ends: false,
+            },
+            first_line: FirstLine {
+                styled: first_line.is_some(),
+                mirror: if first_line.is_some() {
+                    Mirror::Waiting
+                } else {
+                    Mirror::Done
+                },
+            },
+            room: Room {
+                limits: ContentLimits {
+                    nodes: limits.nodes.min(NodeId::MAX),
+                    items: limits.items.min(ItemId::MAX),
+                    text: limits.text.min(TextOffset::MAX),
+                },
+                reserved: 0,
+                full: false,
+                report: BuildReport::default(),
+            },
         };
         // The fact tables are empty, so the block's facts are their first.
         // An initial letter is an inline box, so the block is never one,
@@ -225,8 +599,8 @@ impl<'a> ContentWriter<'a> {
             debug_assert!(false, "the block's node always fits");
         }
         if root.text.white_space_trim.discard_inner {
-            writer.lead_trim = Some(TextOffset::new(0));
-            writer.block_trims = true;
+            writer.trim.lead = Some(TextOffset::new(0));
+            writer.trim.ends = true;
         }
         writer
     }

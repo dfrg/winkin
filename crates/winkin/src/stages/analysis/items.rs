@@ -177,6 +177,21 @@ impl ItemClusters {
         }
         item
     }
+
+    /// Returns the item holding `cluster`, walked to from `from` an item at a
+    /// time: the item [`walk_to`](Self::walk_to) finds, stepped past those
+    /// at the cluster's start that hold none.
+    ///
+    /// Past the last item's clusters, it is the last item.
+    pub(crate) fn walk_to_cluster(&self, from: ItemId, cluster: ClusterId) -> ItemId {
+        let last = self.firsts.len().saturating_sub(1);
+        let mut item = self.walk_to(from, cluster);
+        while self.range(item).end <= cluster && item.get() < last {
+            work::step();
+            item = ItemId::new(item.get() + 1);
+        }
+        item
+    }
 }
 
 heap_bytes! {

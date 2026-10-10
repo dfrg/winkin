@@ -3,7 +3,8 @@
 //!   `space-first` and `trim-start`;
 //! - a closing mark that fits only trimmed ends the line trimmed;
 //! - a pair a break parts gives its blank back;
-//! - each line edge is reshaped once;
+//! - each line edge is reshaped once, and a line's start once however often
+//!   the line is fitted;
 //! - `text-autospace` room is given back where a line ends at a seam, as
 //!   Chrome's `UnapplyAutoSpacing` does.
 //!
@@ -138,6 +139,81 @@ fn a_pair_a_break_parts_keeps_its_closing_trim_and_gives_its_blank_back() {
     assert_eq!(widths(&layout), [(0..4, 80.0), (4..8, 80.0), (8..9, 20.0)]);
 }
 
+/// A host whose area narrows to `shelf.1` from `shelf.0` down, and which
+/// places each float at the left edge, as high as asked.
+struct Shelf {
+    width: f32,
+    shelf: (f32, f32),
+    /// Each float placed: its right edge, top and bottom.
+    floats: Vec<(f32, f32, f32)>,
+}
+
+impl Exclusions for Shelf {
+    fn band(&self, _line: usize, block: BlockExtents) -> InlineExtents {
+        let (top, edge) = self.shelf;
+        let right = if block.end > top { edge } else { self.width };
+        let left = self
+            .floats
+            .iter()
+            .filter(|&&(_, top, bottom)| top < block.end && block.start < bottom)
+            .fold(0.0, |left: f32, &(right, ..)| left.max(right));
+        InlineExtents { left, right }
+    }
+
+    fn below(&self, top: f32) -> Option<f32> {
+        let bottoms = self.floats.iter().map(|&(.., bottom)| bottom);
+        bottoms.filter(|&bottom| bottom > top).reduce(f32::min)
+    }
+
+    fn place(&mut self, float: FloatRequest) -> PlacedFloat {
+        let (top, bottom) = (float.block_start, float.block_start + float.block_size);
+        self.floats.push((float.inline_size, top, bottom));
+        PlacedFloat {
+            inline: InlineExtents {
+                left: 0.0,
+                right: float.inline_size,
+            },
+            block: BlockExtents {
+                start: top,
+                end: bottom,
+            },
+        }
+    }
+
+    fn checkpoint(&self) -> ExclusionsCheckpoint {
+        ExclusionsCheckpoint(self.floats.len() as u64)
+    }
+
+    fn rewind(&mut self, to: ExclusionsCheckpoint) {
+        self.floats
+            .truncate(usize::try_from(to.0).unwrap_or(usize::MAX));
+    }
+}
+
+/// Returns how many lines of `layout` start at a cluster the font shaped
+/// across, and asserts no such start's reshape is repeated, `at` naming the
+/// layout.
+fn starts_reshaped_once(layout: &Layout, at: &str) -> usize {
+    let records = layout.line_records();
+    let glyphs = &layout.shaped().text(FirstLineVariant::Standard).glyphs;
+    let starts: Vec<ClusterId> = records
+        .lines
+        .iter()
+        .map(|(_, line)| line.clusters().start)
+        .filter(|&start| start.get() > 0 && glyphs.word(start).is_unsafe_to_break())
+        .collect();
+    let reshaped = &records.reshaped;
+    for (index, one) in reshaped.iter().enumerate() {
+        if starts.contains(&one.0.start) {
+            assert!(
+                !reshaped[..index].contains(one),
+                "{one:?} reshaped twice {at}: {reshaped:?}"
+            );
+        }
+    }
+    starts.len()
+}
+
 /// A line reshapes each of its edges once.
 ///
 /// Its start window is reshaped once, however many candidate ends it
@@ -145,6 +221,9 @@ fn a_pair_a_break_parts_keeps_its_closing_trim_and_gives_its_blank_back() {
 /// tables, and each end is measured once. Here every line after the first
 /// starts at an opening mark kerned against the one before, so each is
 /// reshaped at its start.
+///
+/// A line fitted again keeps its start's piece: beside a float it places,
+/// and in the narrower band its own height meets.
 #[test]
 fn a_line_reshapes_each_edge_once() {
     let mut fixture = cjk();
@@ -179,6 +258,42 @@ fn a_line_reshapes_each_edge_once() {
         }
     }
     assert!(starts >= 10, "{starts} line starts reshaped");
+
+    // Each unit holds a float, 10 wide, and a letter twice as tall as the
+    // text, so a line refits beside its float and settles past the shelf.
+    let mut large = style;
+    large.font.size = 40.0;
+    fixture.build(&mut layout, &ComputedBlockStyle::new(&style), |b| {
+        for unit in 0..8 {
+            let key = 10 * unit;
+            b.text(NodeKey(key + 1), "漢字漢」「漢");
+            b.float(
+                NodeKey(key + 2),
+                &style,
+                FloatSide::Left,
+                float_size(10.0, 15.0),
+            );
+            b.text(NodeKey(key + 3), "字漢字、「漢");
+            b.open_box(NodeKey(key + 4), &large, None);
+            b.text(NodeKey(key + 5), "字");
+            b.close_box();
+            b.text(NodeKey(key + 6), "」");
+        }
+    });
+    let mut starts = 0;
+    for width in [90.0, 100.0, 130.0, 170.0] {
+        for shelf in [30.0, 70.0, 110.0] {
+            let mut host = Shelf {
+                width,
+                shelf: (shelf, width - 20.0),
+                floats: Vec::new(),
+            };
+            fixture.lay_out_with(&mut layout, Area::new(width), &mut host);
+            assert!(!host.floats.is_empty(), "floats placed at {width}");
+            starts += starts_reshaped_once(&layout, &format!("at {width}, {shelf}"));
+        }
+    }
+    assert!(starts >= 10, "{starts} line starts reshaped beside floats");
 }
 
 /// A line ending at an autospace seam gives the seam's room back.

@@ -2,7 +2,8 @@
 
 use core::cell::Cell;
 
-use super::{ContentWriter, ItemId, ItemKind, OBJECT};
+use super::writer::{ContentWriter, OBJECT};
+use super::{ItemId, ItemKind};
 use crate::data::{Id, TextOffset};
 
 impl ContentWriter<'_> {
@@ -66,11 +67,10 @@ impl ContentWriter<'_> {
                 "{id:?} is outside its node's items"
             );
         }
-        if let Some(extras) = &content.extras {
-            extras
-                .map
-                .debug_check(content.text.len(), content.nodes.len());
-        }
+        content
+            .extras()
+            .map
+            .debug_check(content.text.len(), content.nodes.len());
         // The first line's text maps each of the text's character
         // boundaries it reaches to one of its own, in order.
         if let Some(source) = content.first_line_source() {

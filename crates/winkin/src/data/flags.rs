@@ -2,7 +2,7 @@
 
 /// Defines a set of flags over an unsigned integer: its flags, each a
 /// constant of one bit or more, and what every set of flags is asked, which
-/// [`NONE`] and three methods answer.
+/// [`NONE`] and four methods answer.
 ///
 /// ```ignore
 /// define_flags! {
@@ -61,6 +61,18 @@ macro_rules! define_flags {
             #[inline]
             pub(crate) fn insert(&mut self, other: Self) {
                 self.0 |= other.0;
+            }
+
+            /// Sets the flags in `other` where `on`, and clears them
+            /// otherwise.
+            #[allow(dead_code)]
+            #[inline]
+            pub(crate) fn set(&mut self, other: Self, on: bool) {
+                if on {
+                    self.0 |= other.0;
+                } else {
+                    self.0 &= !other.0;
+                }
             }
         }
     };
