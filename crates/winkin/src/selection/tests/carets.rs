@@ -213,7 +213,7 @@ fn a_divided_grapheme_is_one_stop_but_at_an_edge() {
     );
     let padded = styled(|style| {
         style.edges = EdgesGroup {
-            padding: Sides::all(4.0),
+            padding: Sides::from_px(4.0),
             ..EdgesGroup::INITIAL
         }
     });

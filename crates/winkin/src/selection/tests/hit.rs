@@ -143,11 +143,12 @@ fn a_point_past_the_lines_hits_the_nearest() {
 fn a_point_in_a_boxs_padding_hits_the_text_beside_it() {
     let padded = styled(|style| {
         style.edges = EdgesGroup {
-            padding: Sides {
+            padding: Sides::<f32> {
                 left: 10.0,
                 right: 10.0,
                 ..Sides::ZERO
-            },
+            }
+            .into(),
             ..EdgesGroup::INITIAL
         }
     });

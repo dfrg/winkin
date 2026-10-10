@@ -52,15 +52,12 @@ mod tests;
 #[cfg(test)]
 use alloc::vec::Vec;
 use core::fmt;
-use core::iter;
 use core::ops::Range;
 
 use fontwich::FaceId;
 
 use crate::build::{BoxSize, BuildOptions, BuildReport, LayoutBuilder};
 use crate::config::PastLines;
-#[cfg(test)]
-use crate::config::PunctuationTrim;
 use crate::context::Context;
 use crate::data::{HeapBytes, Id};
 use crate::font::FontMetricsProvider;
@@ -72,15 +69,15 @@ use crate::stages::Stages;
 use crate::stages::analysis::{self, Analysis, AnalysisInput};
 #[cfg(test)]
 use crate::stages::content::TextFactsId;
-use crate::stages::content::{AtomicId, Content, NodeKey};
+use crate::stages::content::{AtomicId, Content, FloatId, NodeKey, SizeChange};
 use crate::stages::content::{ContentLimits, ContentScratch, ContentWriter};
 use crate::stages::fonts::{self, FontInput, Fonts};
 use crate::stages::fragments::{self, Fragments, PlaceInput, ReadInput};
 use crate::stages::lines::{self, Area, BreakInput, Exclusions, LineFloatId, LineId, TextBoxTrims};
 use crate::stages::measure::{self, IntrinsicSizes, MeasureInput, Measured};
-#[cfg(test)]
-use crate::stages::shape::Advances;
 use crate::stages::shape::{self, ShapeInput, ShapeSession, Shaped};
+#[cfg(test)]
+use crate::style::FirstLineVariant;
 use crate::style::{ComputedBlockStyle, Direction};
 use crate::unit::LayoutUnit;
 
@@ -198,10 +195,6 @@ impl PreparedStages {
         };
         let (caches, scratch) = cx.selecting_fonts();
         report.replaced_fonts = fonts::select_fonts(&input, caches, scratch, &mut self.fonts);
-        // The buffers the last build's prefixes were kept in, the text's
-        // and the first line's, for shaping to fill and measuring to take
-        // back: one allocation each going round.
-        let mut advances = self.measured.recycle();
         let input = ShapeInput {
             content,
             analysis: &self.analysis,
@@ -212,8 +205,22 @@ impl PreparedStages {
             &input,
             &mut ShapeSession::new(cx.shaping(), provider),
             &mut self.shaped,
-            &mut advances,
         );
+        self.measure(content, cx, provider);
+    }
+
+    /// Runs measurement again from the shaped advances, with the boxes'
+    /// sizes and edges as `content` holds them now.
+    pub(crate) fn measure(
+        &mut self,
+        content: &Content,
+        cx: &mut Context,
+        provider: Option<&dyn FontMetricsProvider>,
+    ) {
+        let config = *cx.config();
+        // The buffers the last prefix sums were kept in, the text's and the
+        // first line's, holding a copy of the advances to sum.
+        let advances = self.shaped.advances_into(self.measured.recycle());
         let input = MeasureInput {
             content,
             analysis: &self.analysis,
@@ -275,82 +282,130 @@ impl Layout {
         self.builder_within(key, block, options, ContentLimits::MAX)
     }
 
-    /// Sets the block sizes and baselines of atomic inlines, keeping the
-    /// prepared content.
+    /// Measures the content again with new box geometry, keeping its
+    /// analysis, fonts and shaping, and returns whether anything changed.
     ///
-    /// Each pair in `sizes` gives every atomic inline with its key the border
-    /// box and baseline of its size, as [`LayoutBuilder::atomic`] takes them.
-    /// Keys need not be unique. Only the extents across the line of the
-    /// inlines whose size changes are measured again: analysis, fonts,
-    /// shaping and the intrinsic sizes are kept. A warm call does not
-    /// allocate.
+    /// `basis` is the width, in pixels, that percentage margins and padding
+    /// are taken of: the containing block's inline size, as
+    /// [`BuildOptions::percentage_basis`] gives it at build time. Each pair in
+    /// `sizes` gives every atomic inline and float with its key the border
+    /// box, and an atomic inline the baseline, of its size, as
+    /// [`LayoutBuilder::atomic`] and [`LayoutBuilder::float`] take them. Keys
+    /// need not be unique, and a key no box has is skipped. Boxes left out
+    /// keep their sizes.
+    ///
+    /// The result equals building the content again with the new geometry.
+    /// Where nothing changes, it returns `false` and keeps the lines. Where
+    /// only atomic inlines' block sizes and baselines change, only their
+    /// extents are measured again; otherwise measurement runs again from the
+    /// shaped advances. Either way the lines are cleared: lines, box
+    /// fragments, static positions, hit tests and paints see no lines until
+    /// the next [`break_lines`](Self::break_lines).
     ///
     /// Where no two atomic inlines share a key, pairs in document order take
     /// time linear in the number of atomic inlines. Pairs in any other order
-    /// give the same result.
+    /// give the same result. A warm call does not allocate.
     ///
-    /// Where a size changes, the lines are cleared: lines, box fragments,
-    /// static positions, hit tests and paints see no lines until the next
-    /// [`break_lines`](Self::break_lines). The result then equals building
-    /// the content again with the new sizes.
+    /// A `basis` that is no length counts as zero.
     ///
-    /// Returns `false`, changing nothing, where any pair needs the content
-    /// built again: no atomic inline has its key, its `size.inline` differs
-    /// from the inline size an atomic inline with that key was built with,
-    /// or the content has ruby or an initial letter. `sizes` is cloned so
-    /// that every pair is checked before any is set.
-    pub fn set_atomic_sizes<I>(&mut self, sizes: I) -> bool
+    /// [`BuildOptions::percentage_basis`]: crate::BuildOptions::percentage_basis
+    pub fn measure<I>(&mut self, cx: &mut Context, basis: f32, sizes: I) -> bool
     where
         I: IntoIterator<Item = (NodeKey, BoxSize)>,
         I::IntoIter: Clone,
     {
+        self.measure_with_provider(cx, basis, sizes, None)
+    }
+
+    /// Measures the content again with new box geometry and the host's
+    /// glyph metrics.
+    ///
+    /// Behaves like [`measure`](Self::measure). Use the provider and strike
+    /// settings the layout was built with.
+    pub fn measure_with_metrics<I>(
+        &mut self,
+        cx: &mut Context,
+        basis: f32,
+        sizes: I,
+        provider: &dyn FontMetricsProvider,
+    ) -> bool
+    where
+        I: IntoIterator<Item = (NodeKey, BoxSize)>,
+        I::IntoIter: Clone,
+    {
+        self.measure_with_provider(cx, basis, sizes, Some(provider))
+    }
+
+    fn measure_with_provider<I>(
+        &mut self,
+        cx: &mut Context,
+        basis: f32,
+        sizes: I,
+        provider: Option<&dyn FontMetricsProvider>,
+    ) -> bool
+    where
+        I: IntoIterator<Item = (NodeKey, BoxSize)>,
+        I::IntoIter: Clone,
+    {
+        let basis = if basis.is_finite() { basis } else { 0.0 };
         let sizes = sizes.into_iter();
-        let content = &self.content;
+        // Whether measurement runs again whole, and whether some atomic
+        // inline's extent alone changed.
+        let mut again = self.content.set_basis(basis);
+        let mut across = false;
+        let in_place = self.content.can_resize_atomics();
         let mut cursor = AtomicId::new(0);
         for (key, size) in sizes.clone() {
-            if !content.can_resize_atomics() {
-                return false;
-            }
-            let inline = size.sanitized().inline;
-            let mut search = content.keyed_atomics(key, cursor);
-            let mut found = false;
-            while let Some(atomic) = search.next_match(content) {
-                if !content
-                    .atomic_size(atomic)
-                    .is_some_and(|built| built.inline == inline)
-                {
-                    return false;
-                }
-                found = true;
-            }
-            if !found {
-                return false;
-            }
-            cursor = search.cursor();
-        }
-        let mut changed = false;
-        let mut cursor = AtomicId::new(0);
-        for (key, size) in sizes {
             let size = size.sanitized();
             let mut search = self.content.keyed_atomics(key, cursor);
+            let mut found = false;
             while let Some(atomic) = search.next_match(&self.content) {
-                if self.content.set_atomic_size(atomic, size) {
-                    self.stages.measured.remeasure_atomic(&self.content, atomic);
-                    changed = true;
+                found = true;
+                match self.content.set_atomic_size(atomic, size) {
+                    SizeChange::None => {}
+                    SizeChange::Across if in_place => across = true,
+                    SizeChange::Across | SizeChange::Along => again = true,
                 }
             }
             cursor = search.cursor();
+            if !found {
+                again |= self.set_float_sizes(key, size);
+            }
         }
-        if changed {
-            self.clear_lines();
+        if again {
+            self.stages.measure(&self.content, cx, provider);
+        } else if across {
+            let mut cursor = AtomicId::new(0);
+            for (key, _) in sizes {
+                let mut search = self.content.keyed_atomics(key, cursor);
+                while let Some(atomic) = search.next_match(&self.content) {
+                    self.stages.measured.remeasure_atomic(&self.content, atomic);
+                }
+                cursor = search.cursor();
+            }
+        } else {
+            return false;
         }
+        self.clear_lines();
         true
     }
 
-    /// Sets the block size and baseline of each atomic inline keyed `key`,
-    /// as [`set_atomic_sizes`](Self::set_atomic_sizes) does for one pair.
-    pub fn set_atomic_size(&mut self, key: NodeKey, size: BoxSize) -> bool {
-        self.set_atomic_sizes(iter::once((key, size)))
+    /// Gives every float keyed `key` the border box of `size`, a sanitized
+    /// size, and returns whether any size changed.
+    fn set_float_sizes(&mut self, key: NodeKey, size: BoxSize) -> bool {
+        let mut changed = false;
+        let floats = self.content.floats().len();
+        for float in (0..floats).map(FloatId::new) {
+            let keyed = self
+                .content
+                .floats()
+                .get(float)
+                .is_some_and(|row| self.content.float_key(row) == key);
+            if keyed {
+                changed |= self.content.set_float_size(float, size);
+            }
+        }
+        changed
     }
 
     /// Breaks and positions the content in `area`.
@@ -789,31 +844,13 @@ impl Layout {
     }
 
     /// Returns each cluster's advance as shaping hands it on, for tests.
-    ///
-    /// Measurement has turned the layout's own advances into prefix sums, so
-    /// this shapes the text again, with `cx`, into tables of its own.
     #[cfg(test)]
-    pub(crate) fn shaped_advances(&self, cx: &mut Context) -> Vec<InlineLayoutUnit> {
-        let (content, stages) = (&self.content, &self.stages);
-        let mut advances = Advances::new(Vec::new(), Vec::new());
-        shape::shape_runs(
-            &ShapeInput {
-                content,
-                analysis: &stages.analysis,
-                fonts: &stages.fonts,
-                punctuation_trim: PunctuationTrim::from_halving(
-                    stages
-                        .shaped
-                        .flags
-                        .contains(shape::ShapedFlags::HALVES_PUNCTUATION),
-                ),
-            },
-            &mut ShapeSession::new(cx.shaping(), None),
-            &mut Shaped::new(),
-            &mut advances,
-        );
-        let (text, _) = advances.into_parts();
-        text
+    pub(crate) fn shaped_advances(&self, _cx: &mut Context) -> Vec<InlineLayoutUnit> {
+        self.stages
+            .shaped
+            .text(FirstLineVariant::Standard)
+            .advances
+            .clone()
     }
 }
 

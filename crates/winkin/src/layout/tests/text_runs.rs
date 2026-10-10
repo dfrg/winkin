@@ -202,8 +202,8 @@ fn clusters_and_glyphs_add_up_to_their_run() {
     let narrow = sized(&NARROW, 16.0);
     let padded = ComputedStyle {
         edges: EdgesGroup {
-            padding: Sides::all(3.3),
-            margin: Sides::all(1.7),
+            padding: Sides::from_px(3.3),
+            margin: Sides::from_px(1.7),
             ..EdgesGroup::INITIAL
         },
         ..narrow

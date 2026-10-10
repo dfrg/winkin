@@ -265,11 +265,12 @@ fn a_box_wears_its_edges_on_their_own_sides() {
     let padded = ComputedStyle {
         paints: true,
         edges: EdgesGroup {
-            padding: Sides {
+            padding: Sides::<f32> {
                 left: 10.0,
                 right: 3.0,
                 ..Sides::ZERO
-            },
+            }
+            .into(),
             ..EdgesGroup::INITIAL
         },
         ..reading(&root, Direction::Rtl, UnicodeBidi::Normal)

@@ -74,11 +74,12 @@ fn document(layout: &mut Layout, cx: &mut Context, repeat: usize) {
             ..root.line
         },
         edges: EdgesGroup {
-            padding: Sides {
+            padding: Sides::<f32> {
                 top: 1.0,
                 left: 2.0,
                 ..Sides::ZERO
-            },
+            }
+            .into(),
             ..EdgesGroup::INITIAL
         },
         ..root
@@ -211,18 +212,29 @@ fn atomic_keys(repeat: usize) -> Vec<(NodeKey, f32)> {
     keys
 }
 
-/// Sets every atomic inline in `keys` in one call: those 12 wide to block
-/// size `block`, those 20 wide to half as much.
-fn resize(layout: &mut Layout, keys: &[(NodeKey, f32)], block: f32) -> bool {
-    layout.set_atomic_sizes(keys.iter().map(|&(key, inline)| {
-        let block = if inline == 12.0 { block } else { block / 2.0 };
-        let size = BoxSize {
-            inline,
-            block,
-            baseline: Some(block / 3.0),
-        };
-        (key, size)
-    }))
+/// Measures every atomic inline in `keys` in one call: those 12 wide to
+/// block size `block`, those 20 wide to half as much, each `wider` pixels
+/// wider.
+fn resize(
+    layout: &mut Layout,
+    cx: &mut Context,
+    keys: &[(NodeKey, f32)],
+    block: f32,
+    wider: f32,
+) -> bool {
+    layout.measure(
+        cx,
+        0.0,
+        keys.iter().map(|&(key, inline)| {
+            let block = if inline == 12.0 { block } else { block / 2.0 };
+            let size = BoxSize {
+                inline: inline + wider,
+                block,
+                baseline: Some(block / 3.0),
+            };
+            (key, size)
+        }),
+    )
 }
 
 /// Setting atomic inlines' sizes in a warm layout allocates nothing, and nor
@@ -239,13 +251,13 @@ fn setting_atomic_sizes_allocates_nothing_warm() {
         read(&layout);
     }
     assert!(
-        resize(&mut layout, &keys, 25.0),
+        resize(&mut layout, &mut cx, &keys, 25.0, 0.0),
         "every atomic inline is set"
     );
     assert_eq!(layout.lines().len(), 0, "a new size clears the lines");
     let warm = count_allocations(|| {
-        for block in [9.0, 41.5, 0.0] {
-            assert!(resize(&mut layout, &keys, block));
+        for (block, wider) in [(9.0, 0.0), (41.5, 0.0), (0.0, 3.0), (12.0, 0.0)] {
+            assert!(resize(&mut layout, &mut cx, &keys, block, wider));
             for &width in &widths {
                 layout.break_lines(&mut cx, Area::new(width), &mut NoExclusions);
                 read(&layout);

@@ -138,11 +138,12 @@ fn a_culled_box_decorates_as_one_kept_would() {
     let root = sized(&AHEM_FAMILY, 20.0);
     let padded = ComputedStyle {
         edges: EdgesGroup {
-            padding: Sides {
+            padding: Sides::<f32> {
                 left: 10.0,
                 right: 10.0,
                 ..Sides::ZERO
-            },
+            }
+            .into(),
             ..EdgesGroup::INITIAL
         },
         ..root
@@ -265,11 +266,12 @@ fn a_decoration_is_cut_by_what_takes_room() {
     };
     let padded = ComputedStyle {
         edges: EdgesGroup {
-            padding: Sides {
+            padding: Sides::<f32> {
                 left: 20.0,
                 right: 20.0,
                 ..Sides::ZERO
-            },
+            }
+            .into(),
             ..EdgesGroup::INITIAL
         },
         ..root

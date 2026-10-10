@@ -33,6 +33,7 @@
 //! document with more distinct facts gives the rest a stand-in and reports
 //! it in [`BuildReport::replaced_styles`](crate::BuildReport).
 
+use alloc::boxed::Box;
 use core::hash::{Hash, Hasher};
 use core::mem;
 
@@ -42,12 +43,12 @@ use super::{ContentFlags, NodeId, NodeKind};
 use crate::data::{Id, Table, define_flags, define_id, heap_bytes};
 use crate::style::{
     BaseDirection, BoxDecorationBreak, ComputedBlockStyle, ComputedStyle, Direction,
-    DominantBaseline, EmphasisSide, EmphasisSkip, FontVariantPosition, HangingPunctuation, Hyphens,
-    InitialLetter, LengthPercentage, LineBreak, LineClamp, LineHeight, OrientationGroup,
-    OverflowWrap, RubyGroup, TabSize, TextAlign, TextAlignLast, TextBoxEdge, TextBoxTrim,
-    TextCombineUpright, TextGroupAlign, TextIndent, TextJustify, TextOrientation, TextOverflow,
-    TextSpacingTrim, TextWrapMode, TextWrapStyle, UnicodeBidi, VerticalAlign, WhiteSpaceCollapse,
-    WordBreak, WritingMode,
+    DominantBaseline, EdgesGroup, EmphasisSide, EmphasisSkip, FontVariantPosition,
+    HangingPunctuation, Hyphens, InitialLetter, LengthPercentage, LineBreak, LineClamp, LineHeight,
+    OrientationGroup, OverflowWrap, RubyGroup, TabSize, TextAlign, TextAlignLast, TextBoxEdge,
+    TextBoxTrim, TextCombineUpright, TextGroupAlign, TextIndent, TextJustify, TextOrientation,
+    TextOverflow, TextSpacingTrim, TextWrapMode, TextWrapStyle, UnicodeBidi, VerticalAlign,
+    WhiteSpaceCollapse, WordBreak, WritingMode,
 };
 use crate::style::{Same, same_by_value, style_struct};
 use crate::unit::{LayoutUnit, TextUnit};
@@ -85,6 +86,20 @@ define_id! {
     pub(crate) struct BoxFactsId(u16);
 }
 
+define_id! {
+    /// The id of a box's margin, border and padding as its style gives them,
+    /// in the table of those with a percentage.
+    ///
+    /// Row 0 stands for none: a box whose edges have no percentage keeps the
+    /// lengths it was lowered with, whatever the basis.
+    pub(crate) struct EdgesId(u16);
+}
+
+impl EdgesId {
+    /// No percentage edges.
+    pub(super) const NONE: Self = Self(0);
+}
+
 impl BoxFactsId {
     /// The id of [`BoxFacts::INITIAL`], the table's first row.
     ///
@@ -97,6 +112,7 @@ same_by_value!(
     TextFactsId,
     ShapingFactsId,
     FontRequestId,
+    EdgesId,
     TextFlags,
     BoxFlags,
     TextSetting,
@@ -634,6 +650,11 @@ style_struct! {
         /// Its padding and border across the line, `(over, under)`, on the
         /// grid. A kept box's extent adds them to its font's.
         pub(crate) across: (LayoutUnit, LayoutUnit),
+        /// Its margin, border and padding as the style gives them, where a
+        /// margin or padding has a percentage: `room`, `margin_line`,
+        /// `margin_across` and `across` are resolved from them again for
+        /// each basis.
+        pub(super) edges: EdgesId,
         /// `vertical-align` where it applies, and `baseline` elsewhere.
         ///
         /// It applies to inline boxes, `::first-letter` boxes and atomic
@@ -657,13 +678,15 @@ impl BoxFacts {
         margin_line: (LayoutUnit::ZERO, LayoutUnit::ZERO),
         margin_across: (LayoutUnit::ZERO, LayoutUnit::ZERO),
         across: (LayoutUnit::ZERO, LayoutUnit::ZERO),
+        edges: EdgesId::NONE,
         align: VerticalAlign::Baseline,
         bidi: UnicodeBidi::Normal,
         ruby: RubyGroup::INITIAL,
     };
 
     /// Lowers the box facts of a node of `kind` set in `style`, in a block
-    /// of `writing_mode`.
+    /// of `writing_mode` whose percentages are of `basis` pixels. `edges`
+    /// names the style's edges where they have a percentage.
     ///
     /// - A container (an inline box, a ruby container or annotation, a
     ///   `::first-letter` box) has every fact, `vertical-align` only where
@@ -671,7 +694,13 @@ impl BoxFacts {
     /// - An atomic inline has only its `vertical-align`. Its margins are in
     ///   its own row.
     /// - Anything else, the block and floats among them, has none.
-    fn new(style: &StyleKey, kind: NodeKind, writing_mode: WritingMode) -> Self {
+    fn new(
+        style: &StyleKey,
+        kind: NodeKind,
+        writing_mode: WritingMode,
+        basis: f32,
+        edges_id: EdgesId,
+    ) -> Self {
         let align = if kind.reads_vertical_align() {
             style.line.vertical_align
         } else {
@@ -713,13 +742,18 @@ impl BoxFacts {
         let breaks_everywhere = !matches!(style.line.vertical_align, VerticalAlign::Baseline)
             || style.bidi.unicode_bidi != UnicodeBidi::Normal;
         let any_along = |opens: bool| {
-            [edges.margin, edges.border, edges.padding]
-                .iter()
-                .any(|sides| {
-                    let (left, right) = sides.along_line(writing_mode);
-                    let (start, end) = style.bidi.direction.line_order(left, right);
-                    (if opens { start } else { end }) != 0.0
-                })
+            let side = |left: bool, right: bool| {
+                let (start, end) = style.bidi.direction.line_order(left, right);
+                if opens { start } else { end }
+            };
+            let (margin, padding) = (
+                edges.margin.along_line(writing_mode),
+                edges.padding.along_line(writing_mode),
+            );
+            let border = edges.border.along_line(writing_mode);
+            side(!margin.0.is_zero(), !margin.1.is_zero())
+                || side(border.0 != 0.0, border.1 != 0.0)
+                || side(!padding.0.is_zero(), !padding.1.is_zero())
         };
         set(
             BoxFlags::BREAKS_SHAPING_AT_START,
@@ -729,20 +763,30 @@ impl BoxFacts {
             BoxFlags::BREAKS_SHAPING_AT_END,
             breaks_everywhere || any_along(false),
         );
+        let mut facts = Self {
+            flags,
+            edges: edges_id,
+            align,
+            bidi: style.bidi.unicode_bidi,
+            ruby: style.ruby,
+            ..Self::INITIAL
+        };
+        facts.resolve(edges, writing_mode, basis);
+        facts
+    }
+
+    /// Resolves `edges`, its style's, onto the grid, their percentages taken
+    /// of `basis` pixels, in a block of `writing_mode`.
+    fn resolve(&mut self, edges: &EdgesGroup, writing_mode: WritingMode, basis: f32) {
+        let edges = edges.used(basis);
         let (padding, border) = (
             edges.padding.across_line_on_grid(writing_mode),
             edges.border.across_line_on_grid(writing_mode),
         );
-        Self {
-            flags,
-            room: edges.inline(writing_mode),
-            margin_line: edges.margin.along_line_on_grid(writing_mode),
-            margin_across: edges.margin.across_line_on_grid(writing_mode),
-            across: (padding.0 + border.0, padding.1 + border.1),
-            align,
-            bidi: style.bidi.unicode_bidi,
-            ruby: style.ruby,
-        }
+        self.room = edges.inline(writing_mode);
+        self.margin_line = edges.margin.along_line_on_grid(writing_mode);
+        self.margin_across = edges.margin.across_line_on_grid(writing_mode);
+        self.across = (padding.0 + border.0, padding.1 + border.1);
     }
 
     /// Whether every flag of `flag` is set.
@@ -986,6 +1030,9 @@ pub(crate) struct Facts {
     shapings: Table<ShapingFactsId, ShapingFacts>,
     requests: Table<FontRequestId, FontRequest>,
     boxes: Table<BoxFactsId, BoxFacts>,
+    /// The edges of boxes with percentage margins or padding, boxed: a
+    /// layout with none makes no table.
+    edges: Option<Box<Table<EdgesId, EdgesGroup>>>,
 }
 
 /// The result of lowering a style: the id, or none if a table was full,
@@ -1005,6 +1052,7 @@ impl Facts {
             shapings: Table::new(),
             requests: Table::new(),
             boxes: Table::new(),
+            edges: None,
         }
     }
 
@@ -1019,6 +1067,9 @@ impl Facts {
         self.shapings.clear();
         self.requests.clear();
         self.boxes.clear();
+        if let Some(edges) = &mut self.edges {
+            edges.clear();
+        }
     }
 
     /// Lowers `style` into its text facts, in a block of `writing_mode`.
@@ -1048,7 +1099,7 @@ impl Facts {
     }
 
     /// Lowers the box facts of a node of `kind` set in `style`, in a block
-    /// of `writing_mode`.
+    /// of `writing_mode` whose percentages are of `basis` pixels.
     ///
     /// It finds them through `lookup` and interns them if they are new.
     /// The id is `None` where the table is full.
@@ -1058,9 +1109,21 @@ impl Facts {
         style: &StyleKey,
         kind: NodeKind,
         writing_mode: WritingMode,
+        basis: f32,
     ) -> Lowered<BoxFactsId> {
         let mut flags = ContentFlags::NONE;
-        let facts = BoxFacts::new(style, kind, writing_mode);
+        // A container's edges with a percentage, kept for the next basis.
+        // Where their table is full, the box keeps the lengths it has now.
+        let edges = if kind.is_container() && style.edges.has_percentage() {
+            let table = self.edges.get_or_insert_with(Box::default);
+            if table.is_empty() {
+                table.push_bounded(EdgesGroup::INITIAL, "an empty table has room");
+            }
+            intern(lookup, table, style.edges, &mut flags).unwrap_or(EdgesId::NONE)
+        } else {
+            EdgesId::NONE
+        };
+        let facts = BoxFacts::new(style, kind, writing_mode, basis, edges);
         if facts == BoxFacts::INITIAL {
             return Lowered {
                 id: Some(BoxFactsId::INITIAL),
@@ -1076,6 +1139,25 @@ impl Facts {
         }
         let id = intern(lookup, &mut self.boxes, facts, &mut flags);
         Lowered { id, flags }
+    }
+
+    /// Resolves every box's edges again, their percentages taken of `basis`
+    /// pixels, in a block of `writing_mode`.
+    ///
+    /// Rows keep their ids: a row with percentage edges names them, so two
+    /// rows that resolve alike at one basis stay apart at another.
+    pub(super) fn resolve_boxes(&mut self, writing_mode: WritingMode, basis: f32) {
+        let Some(table) = self.edges.as_deref() else {
+            return;
+        };
+        for facts in self.boxes.as_mut_slice() {
+            if facts.edges == EdgesId::NONE {
+                continue;
+            }
+            if let Some(edges) = table.get(facts.edges) {
+                facts.resolve(edges, writing_mode, basis);
+            }
+        }
     }
 
     /// Returns the text facts `id` names.
@@ -1187,6 +1269,13 @@ trait HoldsFlags {
     fn content_flags(&self) -> ContentFlags;
 }
 
+impl HoldsFlags for EdgesGroup {
+    /// Edges are kept only where a margin or padding has a percentage.
+    fn content_flags(&self) -> ContentFlags {
+        ContentFlags::PERCENTAGES
+    }
+}
+
 heap_bytes! {
-    Facts { texts, shapings, requests, boxes }
+    Facts { texts, shapings, requests, boxes, edges }
 }

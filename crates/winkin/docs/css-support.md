@@ -262,7 +262,7 @@ A box is opened with `LayoutBuilder::open_box` and closed with `close_box`.
 
 | Property | Values | Status | Notes and caveats | Config |
 |---|---|---|---|---|
-| `margin`, `border-width`, `padding` | lengths per physical side | Supported | The host resolves percentages against the block's width and snaps border widths as CSS does (below 1 px to 1, else down to a whole pixel). Each length is truncated onto the 1/64 px grid, as Chrome holds it. The sides along the line take room on it; the sides across it do not. | — |
+| `margin`, `border-width`, `padding` | lengths per physical side, and percentages for margins and padding | Supported | A percentage is of `BuildOptions::percentage_basis`, which `Layout::measure` changes without building again. The host snaps border widths as CSS does (below 1 px to 1, else down to a whole pixel). Each length is truncated onto the 1/64 px grid, as Chrome holds it. The sides along the line take room on it; the sides across it do not. | — |
 | `box-decoration-break` | `slice`, `clone` | Supported | Under `clone` every fragment takes both edges, and a line holds a cloned box's closing edge. Chrome 153 ships letting that edge overflow, a bug fixed behind a flag; winkin has the fix. | — |
 | Culling | — | Supported | A box with no edges, no `vertical-align`, nothing it paints and its parent's font metrics keeps no fragment, as Chrome culls one. Set `ComputedStyle::paints` for a box with a background, border or outline. `Layout::box_fragments` still answers for a culled box, from its descendants. | — |
 | Text decoration | — | Supported | Set `ComputedStyle::decorates` for a box whose text is underlined, overlined or struck through. `Line::paints` hands out each decoration bar with its baseline and the font's underline metrics; the host draws it. For `auto` a bar gives Chrome's thickness and gap (`underline_thickness`, `underline_gap`). For `text-decoration-thickness: from-font` and `text-underline-position: from-font` it gives the font's `post` underline, falling back to `auto` as Chrome does (`underline_thickness_from_font`, `underline_gap_from_font`), and the font's own lines as they are (`font_underline`, and `font_line_through` from `OS/2`, which Chrome never reads). | — |
@@ -278,7 +278,7 @@ An inline-block or a replaced element is pushed with
 
 | Feature | Status | Notes and caveats | Config |
 |---|---|---|---|
-| Size and baseline | Supported | `BoxSize::baseline` is `None` for a box with no baseline, which aligns its margin box's bottom edge. Sizes and margins are truncated onto the grid, as in Chrome. `Layout::set_atomic_sizes` changes block sizes and baselines after building, outside ruby and initial letters. | — |
+| Size and baseline | Supported | `BoxSize::baseline` is `None` for a box with no baseline, which aligns its margin box's bottom edge. Sizes and margins are truncated onto the grid, as in Chrome. `Layout::measure` changes sizes after building. | — |
 | `vertical-align` | Supported | Against the margin box. An atomic has no strut of its own, as in Chrome. | — |
 | In the text | Supported | One U+FFFC: it has an offset, a caret on either side and a bidi class. It ends a run of white space. | — |
 

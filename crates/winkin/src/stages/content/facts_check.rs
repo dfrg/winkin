@@ -51,7 +51,13 @@ pub(crate) fn lowered(
         noted_text(&mut wanted, style);
     }
     if let Some(box_) = box_ {
-        box_is(facts.box_facts(box_), style, kind, writing_mode);
+        box_is(
+            facts.box_facts(box_),
+            style,
+            kind,
+            writing_mode,
+            content.basis(),
+        );
         noted_box(&mut wanted, style, kind);
     }
     // Checks the flags the style says the content holds. `LINE_PADDING`,
@@ -377,7 +383,13 @@ fn computed_line_height(style: &StyleKey, normal: LayoutUnit) -> f32 {
 }
 
 /// Checks `facts` against what a node of `kind` set in `style` is as a box.
-fn box_is(facts: &BoxFacts, style: &StyleKey, kind: NodeKind, writing_mode: WritingMode) {
+fn box_is(
+    facts: &BoxFacts,
+    style: &StyleKey,
+    kind: NodeKind,
+    writing_mode: WritingMode,
+    basis: f32,
+) {
     let at = kind;
     let align = if matches!(
         kind,
@@ -401,7 +413,7 @@ fn box_is(facts: &BoxFacts, style: &StyleKey, kind: NodeKind, writing_mode: Writ
         );
         return;
     }
-    let edges = &style.edges;
+    let edges = &style.edges.used(basis);
     let across = |sides: Sides<f32>| sides.across_line_on_grid(writing_mode);
     let (padding, border) = (across(edges.padding), across(edges.border));
     let flag = |flag: BoxFlags| facts.has(flag);
@@ -419,8 +431,9 @@ fn box_is(facts: &BoxFacts, style: &StyleKey, kind: NodeKind, writing_mode: Writ
             && facts.ruby == style.ruby
             && flag(BoxFlags::PAINTS) == style.paints
             && flag(BoxFlags::DECORATES) == style.decorates
-            && flag(BoxFlags::HAS_EDGES) == edges.any()
-            && flag(BoxFlags::CLONES) == (edges.decoration_break == BoxDecorationBreak::Clone)
+            && flag(BoxFlags::HAS_EDGES) == style.edges.any()
+            && flag(BoxFlags::CLONES)
+                == (style.edges.decoration_break == BoxDecorationBreak::Clone)
             && flag(BoxFlags::RTL) == (style.bidi.direction == Direction::Rtl)
             && flag(BoxFlags::TRIMS_TEXT_BOX) == (style.line.text_box_trim != TextBoxTrim::None)
             && flag(BoxFlags::INITIAL_LETTER) == style.line.initial_letter.is_set()
@@ -438,13 +451,25 @@ fn edge_breaks_shaping(style: &StyleKey, writing_mode: WritingMode, opens: bool)
     {
         return true;
     }
-    let side = |sides: Sides<f32>| {
+    let side = |sides: Sides<bool>| {
         let (left, right) = sides.along_line(writing_mode);
         let (start, end) = style.bidi.direction.line_order(left, right);
         if opens { start } else { end }
     };
+    let set = |sides: Sides<LengthPercentage>| Sides {
+        top: !sides.top.is_zero(),
+        right: !sides.right.is_zero(),
+        bottom: !sides.bottom.is_zero(),
+        left: !sides.left.is_zero(),
+    };
     let edges = &style.edges;
-    side(edges.margin) != 0.0 || side(edges.border) != 0.0 || side(edges.padding) != 0.0
+    let border = Sides {
+        top: edges.border.top != 0.0,
+        right: edges.border.right != 0.0,
+        bottom: edges.border.bottom != 0.0,
+        left: edges.border.left != 0.0,
+    };
+    side(set(edges.margin)) || side(border) || side(set(edges.padding))
 }
 
 /// Checks `block`, the block's facts, against `root`, its own style.

@@ -367,20 +367,6 @@ pub enum PunctuationTrim {
 }
 
 impl PunctuationTrim {
-    /// Returns the choice that halves the marks of a font with no `halt` if
-    /// `halves`.
-    ///
-    /// Tests use it to shape a layout's text again as it was built, from
-    /// `ShapedFlags::HALVES_PUNCTUATION`.
-    #[cfg(test)]
-    pub(crate) fn from_halving(halves: bool) -> Self {
-        if halves {
-            Self::Always
-        } else {
-            Self::FontFeature
-        }
-    }
-
     /// Returns whether a mark in a font with no `halt` is trimmed by halving
     /// its own advance, as under [`Always`](Self::Always).
     pub(crate) fn halves_advances(self) -> bool {

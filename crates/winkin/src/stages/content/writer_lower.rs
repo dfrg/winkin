@@ -99,6 +99,7 @@ impl ContentWriter<'_> {
     /// initial ones, a culled box's, never its parent's. Each counts as a
     /// style replaced.
     fn lower(&mut self, style: &StyleKey, kind: NodeKind, stand_in: TextFactsId) -> NodeFacts {
+        let basis = self.content.basis();
         let Content {
             lists,
             facts,
@@ -124,7 +125,7 @@ impl ContentWriter<'_> {
                 .get_or_insert_with(Box::default)
                 .text(style, lower_text),
         };
-        let box_ = facts.lower_box(lookup, style, kind, writing_mode);
+        let box_ = facts.lower_box(lookup, style, kind, writing_mode, basis);
         flags.insert(new.union(box_.flags));
         #[cfg(any(debug_assertions, test))]
         facts_check::lowered(self.content, style, kind, text, box_.id);
@@ -167,6 +168,7 @@ impl ContentWriter<'_> {
             ruby,
             ..StyleKey::INITIAL
         };
+        let basis = self.content.basis();
         let Content {
             lists,
             facts,
@@ -175,7 +177,7 @@ impl ContentWriter<'_> {
             ..
         } = &mut *self.content;
         let (_, lookup) = lists.lowering();
-        let box_ = facts.lower_box(lookup, &style, kind, block.writing_mode);
+        let box_ = facts.lower_box(lookup, &style, kind, block.writing_mode, basis);
         flags.insert(box_.flags);
         #[cfg(any(debug_assertions, test))]
         facts_check::lowered(self.content, &style, kind, None, box_.id);

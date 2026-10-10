@@ -182,7 +182,7 @@ fn document(layout: &mut winkin::Layout, cx: &mut Context, styles: &Styles, word
     nowrap.text.wrap_mode = TextWrapMode::NoWrap;
     let mut boxed = root;
     boxed.edges = EdgesGroup {
-        padding: Sides::all(3.0),
+        padding: Sides::from_px(3.0),
         ..EdgesGroup::INITIAL
     };
     boxed.bidi.unicode_bidi = UnicodeBidi::Isolate;

@@ -67,7 +67,7 @@ fn document(layout: &mut Layout, cx: &mut Context, repeat: usize) {
     let mut small = root;
     small.font.size = 10.0;
     let mut boxed = small;
-    boxed.edges.padding = Sides::all(1.5);
+    boxed.edges.padding = Sides::from_px(1.5);
     boxed.paints = true;
     let marked = |n: usize| {
         let mut style = root;

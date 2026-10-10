@@ -496,7 +496,7 @@ fn a_box_edge_moves_no_break() {
     let painted = styled(|style| style.paints = true);
     let padded = styled(|style| {
         style.edges = EdgesGroup {
-            padding: Sides::all(4.0),
+            padding: Sides::from_px(4.0),
             ..EdgesGroup::INITIAL
         };
     });

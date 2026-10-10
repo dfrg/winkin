@@ -661,7 +661,7 @@ fn a_relayout_equals_a_fresh_layout() {
     };
     let padded = ComputedStyle {
         edges: EdgesGroup {
-            padding: Sides::all(2.5),
+            padding: Sides::from_px(2.5),
             ..EdgesGroup::INITIAL
         },
         ..root
@@ -750,8 +750,8 @@ fn any_area_gives_valid_items() {
     anywhere.text.word_break = WordBreak::BreakAll;
     let roomy = ComputedStyle {
         edges: EdgesGroup {
-            margin: Sides::all(-3.0),
-            padding: Sides::all(5.0),
+            margin: Sides::from_px(-3.0),
+            padding: Sides::from_px(5.0),
             ..EdgesGroup::INITIAL
         },
         ..anywhere

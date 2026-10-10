@@ -356,8 +356,8 @@ pub(super) fn spans(root: &ComputedStyle<'static>) -> Vec<ComputedStyle<'static>
         fraction: 0.0,
     };
     let mut edged = *root;
-    edged.edges.padding.left = 4.0;
-    edged.edges.padding.right = 2.0;
+    edged.edges.padding.left = LengthPercentage::from_px(4.0);
+    edged.edges.padding.right = LengthPercentage::from_px(2.0);
     let mut raised = *root;
     raised.line.vertical_align = VerticalAlign::Super;
     let mut larger = *root;

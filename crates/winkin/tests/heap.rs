@@ -139,7 +139,7 @@ fn build(layout: &mut Layout, cx: &mut Context, document: Document, paragraphs: 
         ..ComputedStyle::initial()
     };
     let mut boxed = root;
-    boxed.edges.padding = Sides::all(2.5);
+    boxed.edges.padding = Sides::from_px(2.5);
     boxed.paints = true;
     let mut first = ComputedStyle {
         font: FontGroup {
@@ -223,7 +223,7 @@ const DOCUMENTS: [Document; 4] = [
 const WIDTHS: [f32; 3] = [240.0, 97.5, 600.0];
 
 /// A layout's record, what it takes beside what it keeps on the heap, is
-/// 1,344 bytes at most on a 64-bit target.
+/// 1,376 bytes at most on a 64-bit target.
 ///
 /// - The stages' first-line variants are boxed, made only where a layout
 ///   has one.
@@ -237,20 +237,23 @@ const WIDTHS: [f32; 3] = [240.0, 97.5, 600.0];
 /// - The used fonts are one table, each sharing its instance's record.
 /// - The analysis keeps no table of levels, which its runs hold. The levels
 ///   of the bidi controls that split a line's runs take 8, boxed.
-/// - The content's facts take 112 bytes: the four tables the builder lowers
-///   the styles into, and the block's own facts. The measure stage's text
+/// - The content's facts take 120 bytes: the four tables the builder lowers
+///   the styles into, the boxed table of percentage edges, and the block's
+///   own facts. The measure stage's text
 ///   metrics take 24, their table's.
 /// - The layout keeps no style table. The builder's memo of the styles it
 ///   lowered takes 8, boxed, and its index of atomic inline keys 8, boxed.
+/// - The shaped text keeps each cluster's advance, 24 bytes, so that new
+///   box sizes are measured without shaping again.
 /// - The lines keep how far the first line's annotations move an initial
 ///   letter: 4 bytes, 8 with padding.
 ///
 /// The whole of a layout is this and its heap.
 #[test]
 #[cfg(target_pointer_width = "64")]
-fn a_layout_record_is_1344_bytes_at_most() {
+fn a_layout_record_is_1376_bytes_at_most() {
     let record = size_of::<Layout>();
-    assert!(record <= 1344, "a layout's record is {record} bytes");
+    assert!(record <= 1376, "a layout's record is {record} bytes");
 }
 
 /// A layout never built keeps nothing.

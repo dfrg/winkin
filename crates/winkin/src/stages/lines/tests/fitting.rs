@@ -77,7 +77,7 @@ fn the_search_agrees_with_a_straightforward_breaker() {
     let root = sized(&LATIN, 16.0);
     let boxed = ComputedStyle {
         edges: EdgesGroup {
-            padding: Sides::all(3.0),
+            padding: Sides::from_px(3.0),
             border: Sides::all(1.5),
             ..EdgesGroup::INITIAL
         },
@@ -85,11 +85,12 @@ fn the_search_agrees_with_a_straightforward_breaker() {
     };
     let cloned = ComputedStyle {
         edges: EdgesGroup {
-            padding: Sides {
+            padding: Sides::<f32> {
                 left: 2.0,
                 right: 5.25,
                 ..Sides::ZERO
-            },
+            }
+            .into(),
             decoration_break: BoxDecorationBreak::Clone,
             ..EdgesGroup::INITIAL
         },

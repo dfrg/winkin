@@ -153,10 +153,11 @@ fn a_paragraph_that_goes_back_ends_its_line_at_the_first_overflow() {
     let root = ahem(20.0);
     let back = ComputedStyle {
         edges: EdgesGroup {
-            margin: Sides {
+            margin: Sides::<f32> {
                 left: -40.0,
                 ..Sides::ZERO
-            },
+            }
+            .into(),
             ..EdgesGroup::INITIAL
         },
         ..root

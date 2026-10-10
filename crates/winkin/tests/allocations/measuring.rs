@@ -53,8 +53,8 @@ fn prose(layout: &mut Layout, cx: &mut Context, (family, language): (&str, &str)
             ..LineGroup::INITIAL
         },
         edges: EdgesGroup {
-            margin: Sides::all(2.0),
-            padding: Sides::all(3.0),
+            margin: Sides::from_px(2.0),
+            padding: Sides::from_px(3.0),
             ..EdgesGroup::INITIAL
         },
         ..root

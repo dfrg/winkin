@@ -2,7 +2,7 @@
 
 use core::hash::{Hash, Hasher};
 
-use super::WritingMode;
+use super::{LengthPercentage, WritingMode};
 use crate::style::same::{Same, same_by_value};
 use crate::unit::LayoutUnit;
 
@@ -39,6 +39,54 @@ impl Sides<f32> {
     /// Returns `true` if any side is nonzero.
     pub fn any(self) -> bool {
         self.top != 0.0 || self.right != 0.0 || self.bottom != 0.0 || self.left != 0.0
+    }
+}
+
+/// Lengths and percentages of the containing block's inline size: the
+/// margin and padding of a box.
+impl Sides<LengthPercentage> {
+    /// Returns sides each `px` pixels long, with no percentage.
+    pub const fn from_px(px: f32) -> Self {
+        Self::all(LengthPercentage::from_px(px))
+    }
+
+    /// Returns `true` if any side is nonzero, at any basis.
+    pub fn any(self) -> bool {
+        !(self.top.is_zero()
+            && self.right.is_zero()
+            && self.bottom.is_zero()
+            && self.left.is_zero())
+    }
+
+    /// Whether any side has a percentage, so that its length depends on
+    /// the basis.
+    pub(crate) fn has_percentage(self) -> bool {
+        [self.top, self.right, self.bottom, self.left]
+            .iter()
+            .any(|side| side.fraction != 0.0)
+    }
+
+    /// Returns the lengths in pixels, each percentage taken of `basis`
+    /// pixels.
+    pub(crate) fn resolve(self, basis: f32) -> Sides<f32> {
+        Sides {
+            top: self.top.resolve(basis),
+            right: self.right.resolve(basis),
+            bottom: self.bottom.resolve(basis),
+            left: self.left.resolve(basis),
+        }
+    }
+}
+
+impl From<Sides<f32>> for Sides<LengthPercentage> {
+    /// Takes each side's length in pixels, with no percentage.
+    fn from(px: Sides<f32>) -> Self {
+        Self {
+            top: LengthPercentage::from_px(px.top),
+            right: LengthPercentage::from_px(px.right),
+            bottom: LengthPercentage::from_px(px.bottom),
+            left: LengthPercentage::from_px(px.left),
+        }
     }
 }
 

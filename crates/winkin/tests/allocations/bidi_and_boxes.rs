@@ -46,11 +46,12 @@ fn document(layout: &mut Layout, cx: &mut Context, direction: BaseDirection, rep
             unicode_bidi,
         },
         edges: EdgesGroup {
-            padding: Sides {
+            padding: Sides::<f32> {
                 left: 2.0,
                 right: 3.5,
                 ..Sides::ZERO
-            },
+            }
+            .into(),
             decoration_break: if clone {
                 BoxDecorationBreak::Clone
             } else {
@@ -218,11 +219,12 @@ fn nested(layout: &mut Layout, cx: &mut Context, depth: u64) {
             unicode_bidi,
         },
         edges: EdgesGroup {
-            padding: Sides {
+            padding: Sides::<f32> {
                 left: 1.0,
                 right: 1.5,
                 ..Sides::ZERO
-            },
+            }
+            .into(),
             decoration_break: if clone {
                 BoxDecorationBreak::Clone
             } else {

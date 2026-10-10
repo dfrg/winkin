@@ -5,6 +5,7 @@
 //!   taking their neighbours' script.
 
 use super::*;
+use crate::style::LengthPercentage;
 
 /// Shaping stops at a box edge with margin, border or padding on that inline
 /// side, `vertical-align` other than `baseline`, or any `unicode-bidi`. A box
@@ -27,11 +28,11 @@ fn shaping_stops_at_edges_with_room_or_a_shift_or_bidi() {
         writing_mode: WritingMode::VerticalRl,
         ..horizontal
     };
-    let left = styled(|s| s.edges.padding.left = 2.0);
-    let right_margin = styled(|s| s.edges.margin.right = 2.0);
+    let left = styled(|s| s.edges.padding.left = LengthPercentage::from_px(2.0));
+    let right_margin = styled(|s| s.edges.margin.right = LengthPercentage::from_px(2.0));
     let top_border = styled(|s| s.edges.border.top = 1.0);
     let rtl_left = styled(|s| {
-        s.edges.padding.left = 2.0;
+        s.edges.padding.left = LengthPercentage::from_px(2.0);
         s.bidi.direction = Direction::Rtl;
     });
     assert_eq!(stops(&left, &horizontal), [2], "the start side, before");

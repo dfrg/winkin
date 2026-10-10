@@ -41,7 +41,7 @@ fn finding_runs_at_boundaries_matches_scanning_every_cluster() {
             };
             let padded = ComputedStyle {
                 edges: EdgesGroup {
-                    padding: Sides::all(2.0),
+                    padding: Sides::from_px(2.0),
                     ..EdgesGroup::INITIAL
                 },
                 ..style
@@ -79,13 +79,12 @@ fn finding_runs_at_boundaries_matches_scanning_every_cluster() {
             };
             let mut shape = || {
                 let mut out = Shaped::new();
-                let mut advances = Advances::new(Vec::new(), Vec::new());
                 shape_runs(
                     &input,
                     &mut ShapeSession::new(fixture.cx.shaping(), None),
                     &mut out,
-                    &mut advances,
                 );
+                let advances = out.advances_into(Advances::new(Vec::new(), Vec::new()));
                 (out, advances.into_parts())
             };
             let (fast, fast_advances) = shape();
@@ -273,7 +272,7 @@ fn runs_end_at_fonts_and_shaping_breaks() {
     };
     let padded = ComputedStyle {
         edges: EdgesGroup {
-            padding: Sides::all(2.0),
+            padding: Sides::from_px(2.0),
             ..EdgesGroup::INITIAL
         },
         ..style
@@ -352,10 +351,11 @@ fn a_first_letter_is_shaped_across_whatever_its_bidi() {
             ..style.bidi
         },
         edges: EdgesGroup {
-            padding: Sides {
+            padding: Sides::<f32> {
                 left: 8.0,
-                ..Sides::all(0.0)
-            },
+                ..Sides::ZERO
+            }
+            .into(),
             ..EdgesGroup::INITIAL
         },
         ..style

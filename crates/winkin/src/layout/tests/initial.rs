@@ -63,14 +63,16 @@ fn an_initial_letter_is_set_as_chrome_sets_it() {
     };
     let mut padded = letter;
     padded.edges = EdgesGroup {
-        padding: Sides {
+        padding: Sides::<f32> {
             left: 2.0,
-            ..Sides::all(0.0)
-        },
-        margin: Sides {
+            ..Sides::ZERO
+        }
+        .into(),
+        margin: Sides::<f32> {
             right: 5.0,
-            ..Sides::all(0.0)
-        },
+            ..Sides::ZERO
+        }
+        .into(),
         ..EdgesGroup::INITIAL
     };
     let mut raised = letter;

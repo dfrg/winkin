@@ -6,6 +6,7 @@
 //! - conditional punctuation, narrow only in Chinese.
 
 use super::*;
+use crate::style::LengthPercentage;
 
 /// A fixture over Ahem, a Japanese font whose `水` is a whole em, and an
 /// ASCII font with no `水`, which Han falls back from to the first.
@@ -243,8 +244,8 @@ fn a_seam_reaches_across_box_edges_and_not_past_controls_or_floats() {
     let on = spaced(&sized(&PUNCT, 20.0), true, true);
     let block = ComputedBlockStyle::new(&on);
     let mut padded = on;
-    padded.edges.padding.left = 10.0;
-    padded.edges.padding.right = 10.0;
+    padded.edges.padding.left = LengthPercentage::from_px(10.0);
+    padded.edges.padding.right = LengthPercentage::from_px(10.0);
     assert_eq!(
         gaps(
             &mut fixture,

@@ -49,10 +49,10 @@ fn styles(root: &ComputedStyle<'static>) -> Vec<ComputedStyle<'static>> {
         out.push(style);
     }
     let mut edged = rtl;
-    edged.edges.margin.left = 3.7;
+    edged.edges.margin.left = LengthPercentage::from_px(3.7);
     edged.edges.border.top = 1.0;
-    edged.edges.padding.right = 2.33;
-    edged.edges.padding.bottom = 1.5;
+    edged.edges.padding.right = LengthPercentage::from_px(2.33);
+    edged.edges.padding.bottom = LengthPercentage::from_px(1.5);
     edged.edges.decoration_break = BoxDecorationBreak::Clone;
     edged.decorates = true;
     out.push(edged);
@@ -284,7 +284,7 @@ fn text_facts_are_shared_where_only_a_box_differs() {
     let roots = roots();
     let root = roots[0];
     let mut edged = root;
-    edged.edges.padding.left = 4.0;
+    edged.edges.padding.left = LengthPercentage::from_px(4.0);
     edged.decorates = true;
     let mut transformed = root;
     transformed.text.transform.case = TextCase::Uppercase;

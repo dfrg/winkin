@@ -161,10 +161,11 @@ fn an_anchor_at_a_break_falls_on_the_line_chromes_breaker_gives_it() {
     // wide.
     let padded = ComputedStyle {
         edges: EdgesGroup {
-            padding: Sides {
+            padding: Sides::<f32> {
                 left: 3.0,
                 ..Sides::ZERO
-            },
+            }
+            .into(),
             ..EdgesGroup::INITIAL
         },
         ..root

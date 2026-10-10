@@ -5,7 +5,6 @@
 //! [`shape_range`]. Combined units are fitted to their ems as the walk
 //! reaches each one's end.
 
-use alloc::vec::Vec;
 use core::ops::Range;
 
 use super::sink::SinkMark;
@@ -35,12 +34,12 @@ pub(super) fn shape_text(
     end: ClusterId,
     cx: &mut ShapeSession<'_, '_>,
     out: &mut ShapedText,
-    advances: &mut Vec<InlineLayoutUnit>,
 ) -> (usize, ShapedFlags) {
     let ShapedText {
         glyphs,
         runs,
         combined,
+        advances,
     } = out;
     let analysis = input.analysis;
     // Reserve a word per cluster, and at least one shaping run per script

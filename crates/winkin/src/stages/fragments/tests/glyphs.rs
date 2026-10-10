@@ -18,8 +18,8 @@ fn glyphs_stand_at_the_exact_differences_of_the_prefix() {
     let larger = sized(&NARROW, 21.0);
     let padded = ComputedStyle {
         edges: EdgesGroup {
-            padding: Sides::all(3.3),
-            margin: Sides::all(1.7),
+            padding: Sides::from_px(3.3),
+            margin: Sides::from_px(1.7),
             ..EdgesGroup::INITIAL
         },
         ..root

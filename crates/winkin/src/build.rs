@@ -19,6 +19,8 @@
 //! finishes is closed, ruby included. A builder dropped without finishing
 //! closes its content the same way, so a layout is never left half built.
 
+use core::hash::{Hash, Hasher};
+
 use crate::context::Context;
 use crate::font::FontMetricsProvider;
 use crate::layout::PreparedStages;
@@ -192,10 +194,10 @@ impl Clear {
     }
 }
 
-/// Options for recording additional layout data.
+/// Options for a build: what to record, and the geometry to start with.
 ///
 /// Construct with [`Default::default`] and set the required fields.
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
+#[derive(Copy, Clone, Debug, Default)]
 #[non_exhaustive]
 pub struct BuildOptions {
     /// Whether to record source offsets for position conversion.
@@ -209,6 +211,30 @@ pub struct BuildOptions {
     ///
     /// [`Layout::text`]: crate::Layout::text
     pub map_source: bool,
+    /// The width, in pixels, that percentage margins and padding of the
+    /// boxes are taken of: the containing block's inline size.
+    ///
+    /// Defaults to zero. [`Layout::measure`] sets another without building
+    /// again.
+    ///
+    /// [`Layout::measure`]: crate::Layout::measure
+    pub percentage_basis: f32,
+}
+
+impl PartialEq for BuildOptions {
+    fn eq(&self, other: &Self) -> bool {
+        self.map_source == other.map_source
+            && self.percentage_basis.to_bits() == other.percentage_basis.to_bits()
+    }
+}
+
+impl Eq for BuildOptions {}
+
+impl Hash for BuildOptions {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.map_source.hash(state);
+        self.percentage_basis.to_bits().hash(state);
+    }
 }
 
 /// Builds layout content in document order.

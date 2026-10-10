@@ -4,7 +4,8 @@
 //! - atomic inlines as their margin boxes.
 
 use super::*;
-use crate::style::{VerticalAlign, WritingMode};
+use crate::build::FloatSide;
+use crate::style::{LengthPercentage, VerticalAlign, WritingMode};
 
 /// A box's edges' room along a line, `left` at its left and `right` at its
 /// right.
@@ -22,21 +23,22 @@ fn the_room_between_items_is_the_edges_of_the_boxes_between_them() {
     let root = sized(&AHEM_FAMILY, 10.0);
     let roomy = ComputedStyle {
         edges: EdgesGroup {
-            margin: Sides::all(2.0),
+            margin: Sides::from_px(2.0),
             border: Sides::all(1.0),
-            padding: Sides::all(3.0),
+            padding: Sides::from_px(3.0),
             ..EdgesGroup::INITIAL
         },
         ..root
     };
     let odd = ComputedStyle {
         edges: EdgesGroup {
-            margin: Sides {
+            margin: Sides::<f32> {
                 left: 0.3,
                 right: -1.2,
                 ..Sides::ZERO
-            },
-            padding: Sides::all(0.7),
+            }
+            .into(),
+            padding: Sides::from_px(0.7),
             ..EdgesGroup::INITIAL
         },
         paints: true,
@@ -230,7 +232,7 @@ fn an_atomic_inline_is_its_margin_box() {
     let root = sized(&AHEM_FAMILY, 20.0);
     let margined = ComputedStyle {
         edges: EdgesGroup {
-            margin: Sides::all(1.0),
+            margin: Sides::from_px(1.0),
             ..EdgesGroup::INITIAL
         },
         ..root
@@ -281,10 +283,11 @@ fn an_empty_box_after_a_lines_last_space_ends_the_line() {
     let root = sized(&AHEM_FAMILY, 10.0);
     let padded = ComputedStyle {
         edges: EdgesGroup {
-            padding: Sides {
+            padding: Sides::<f32> {
                 left: 3.0,
                 ..Sides::ZERO
-            },
+            }
+            .into(),
             ..EdgesGroup::INITIAL
         },
         ..root
@@ -407,11 +410,12 @@ fn aligned_atomics(
             ..root.line
         },
         edges: EdgesGroup {
-            margin: Sides {
+            margin: Sides::<f32> {
                 top: 1.0,
                 bottom: 2.0,
                 ..Sides::ZERO
-            },
+            }
+            .into(),
             ..EdgesGroup::INITIAL
         },
         ..*root
@@ -450,11 +454,11 @@ fn set_size(n: u64) -> BoxSize {
     }
 }
 
-/// Setting atomic inlines' block sizes and baselines, then breaking again,
-/// equals a layout built with the new sizes, on the first line and after
-/// it, in horizontal and vertical lines alike.
+/// Measuring with new atomic inline block sizes and baselines, then
+/// breaking again, equals a layout built with the new sizes, on the first
+/// line and after it, in horizontal and vertical lines alike.
 #[test]
-fn a_relayout_after_set_atomic_sizes_equals_a_fresh_layout() {
+fn a_relayout_after_measuring_new_sizes_equals_a_fresh_layout() {
     let root = sized(&AHEM_FAMILY, 10.0);
     let first_line = sized(&AHEM_FAMILY, 16.0);
     for writing_mode in [WritingMode::HorizontalTb, WritingMode::VerticalRl] {
@@ -472,7 +476,7 @@ fn a_relayout_after_set_atomic_sizes_equals_a_fresh_layout() {
             "a first line's measure"
         );
         let intrinsic = layout.intrinsic_sizes();
-        assert!(layout.set_atomic_sizes((0..10).map(|n| (NodeKey(n), set_size(n)))));
+        assert!(layout.measure(&mut cx, 0.0, (0..10).map(|n| (NodeKey(n), set_size(n)))));
         assert_eq!(layout.lines().len(), 0, "setting a size clears the lines");
         assert_eq!(layout.intrinsic_sizes(), intrinsic);
         let mut fresh = Layout::new();
@@ -491,14 +495,14 @@ fn a_relayout_after_set_atomic_sizes_equals_a_fresh_layout() {
         let mut one_by_one = Layout::new();
         aligned_atomics(&mut cx, &mut one_by_one, block, built_size);
         for n in 0..10 {
-            assert!(one_by_one.set_atomic_size(NodeKey(n), set_size(n)));
+            assert!(one_by_one.measure(&mut cx, 0.0, [(NodeKey(n), set_size(n))]));
         }
         one_by_one.break_lines(&mut cx, Area::new(400.0), &mut NoExclusions);
         assert_eq!(laid_out(&one_by_one), laid_out(&fresh), "{writing_mode:?}");
     }
 }
 
-/// Sizes in reverse document order, or shuffled, set what sizes in
+/// Sizes in reverse document order, or shuffled, measure what sizes in
 /// document order do.
 #[test]
 fn atomic_sizes_in_any_order_set_the_same() {
@@ -512,9 +516,9 @@ fn atomic_sizes_in_any_order_set_the_same() {
         aligned_atomics(&mut cx, layout, block, built_size);
     }
     let pair = |n: u64| (NodeKey(n), set_size(n));
-    assert!(forward.set_atomic_sizes((0..10).map(pair)));
-    assert!(backward.set_atomic_sizes((0..10).rev().map(pair)));
-    assert!(shuffled.set_atomic_sizes([7, 2, 9, 0, 5, 3, 8, 1, 6, 4].map(pair)));
+    assert!(forward.measure(&mut cx, 0.0, (0..10).map(pair)));
+    assert!(backward.measure(&mut cx, 0.0, (0..10).rev().map(pair)));
+    assert!(shuffled.measure(&mut cx, 0.0, [7, 2, 9, 0, 5, 3, 8, 1, 6, 4].map(pair)));
     for width in [45.0, 120.0] {
         for layout in [&mut forward, &mut backward, &mut shuffled] {
             layout.break_lines(&mut cx, Area::new(width), &mut NoExclusions);
@@ -547,7 +551,11 @@ fn a_shared_key_sets_every_atomic_inline_keyed_so() {
     let mut cx = context();
     let mut layout = Layout::new();
     atomics(&mut cx, &mut layout, 10.0, 10.0);
-    assert!(layout.set_atomic_sizes([(NodeKey(6), size(14.0)), (NodeKey(5), size(32.0))]));
+    assert!(layout.measure(
+        &mut cx,
+        0.0,
+        [(NodeKey(6), size(14.0)), (NodeKey(5), size(32.0))]
+    ));
     let mut fresh = Layout::new();
     atomics(&mut cx, &mut fresh, 32.0, 14.0);
     for width in [40.0, 400.0] {
@@ -568,13 +576,11 @@ fn a_shared_key_sets_every_atomic_inline_keyed_so() {
     assert_ne!(blocks[0].1, blocks[1].1);
 }
 
-/// Setting atomic inlines' sizes refuses, and changes nothing, where the
-/// content would need building again: a key no atomic inline has, a box
-/// keyed so that is no atomic inline, a size along the line it was not
-/// built with, and content with ruby. A pair refused after one that would
-/// be set refuses the whole call.
+/// Measuring with box sizes that change nothing keeps the lines: a key no
+/// box has, a key of a box that is no atomic inline, and the sizes the
+/// boxes have.
 #[test]
-fn set_atomic_sizes_refuses_what_needs_a_rebuild() {
+fn measuring_what_changes_nothing_keeps_the_lines() {
     let mut cx = context();
     let mut layout = Layout::new();
     let root = sized(&AHEM_FAMILY, 10.0);
@@ -596,34 +602,165 @@ fn set_atomic_sizes_refuses_what_needs_a_rebuild() {
         block: 30.0,
         ..size
     };
-    let wider = BoxSize {
-        inline: 21.0,
-        ..taller
-    };
-    assert!(!layout.set_atomic_size(NodeKey(9), taller));
-    assert!(!layout.set_atomic_size(NodeKey(1), taller));
-    assert!(!layout.set_atomic_size(NodeKey(3), wider));
-    // Each refusal comes after a pair that would be set.
-    assert!(!layout.set_atomic_sizes([(NodeKey(3), taller), (NodeKey(9), taller)]));
-    assert!(!layout.set_atomic_sizes([(NodeKey(3), taller), (NodeKey(4), wider)]));
-    assert_eq!(laid_out(&layout), before, "a refusal keeps the lines");
-    layout.break_lines(&mut cx, Area::new(100.0), &mut NoExclusions);
-    assert_eq!(laid_out(&layout), before, "a refusal sets no size");
-    // Sizes that change nothing keep the lines.
-    assert!(layout.set_atomic_sizes([(NodeKey(3), size), (NodeKey(4), size)]));
-    assert_eq!(laid_out(&layout), before, "the same sizes keep the lines");
-    assert!(layout.set_atomic_sizes([(NodeKey(3), taller), (NodeKey(4), taller)]));
+    assert!(!layout.measure(&mut cx, 0.0, [(NodeKey(9), taller)]));
+    assert!(!layout.measure(&mut cx, 0.0, [(NodeKey(1), taller)]));
+    assert!(!layout.measure(&mut cx, 0.0, [(NodeKey(3), size), (NodeKey(4), size)]));
+    assert!(
+        !layout.measure(&mut cx, 25.0, []),
+        "no percentage reads the basis"
+    );
+    assert_eq!(laid_out(&layout), before, "nothing changed keeps the lines");
+    assert!(layout.measure(&mut cx, 0.0, [(NodeKey(3), taller), (NodeKey(4), taller)]));
     assert_eq!(layout.lines().len(), 0, "a new size clears the lines");
+}
 
-    build(&mut cx, &mut layout, &ComputedBlockStyle::new(&root), |b| {
-        b.open_ruby(NodeKey(1), &root, None);
-        b.atomic(NodeKey(3), &root, None, size);
-        b.open_annotation(NodeKey(4), &root, None);
-        b.text(NodeKey(5), "X");
-        b.close_annotation();
-        b.close_ruby();
-    });
-    assert!(!layout.set_atomic_size(NodeKey(3), taller));
+/// Measures `layout`, built by `calls` with `built`, again with `sizes` and
+/// percentages of `basis`, and checks it lays out as content built with
+/// them at each of `widths`.
+fn measures_as_built(
+    root: &ComputedStyle<'_>,
+    calls: impl Fn(&mut LayoutBuilder<'_>, &dyn Fn(u64) -> BoxSize),
+    built: impl Fn(u64) -> BoxSize,
+    sizes: impl Fn(u64) -> BoxSize,
+    basis: f32,
+    keys: &[u64],
+    widths: &[f32],
+) {
+    let mut cx = context();
+    let block = ComputedBlockStyle::new(root);
+    let mut layout = Layout::new();
+    let mut b = layout.builder(NodeKey(0), &block, BuildOptions::default());
+    calls(&mut b, &built);
+    b.finish(&mut cx);
+    layout.break_lines(&mut cx, Area::new(widths[0]), &mut NoExclusions);
+    let pairs: Vec<_> = keys.iter().map(|&key| (NodeKey(key), sizes(key))).collect();
+    layout.measure(&mut cx, basis, pairs.iter().copied());
+    let mut fresh = Layout::new();
+    let options = BuildOptions {
+        percentage_basis: basis,
+        ..BuildOptions::default()
+    };
+    let mut b = fresh.builder(NodeKey(0), &block, options);
+    calls(&mut b, &sizes);
+    b.finish(&mut cx);
+    assert_eq!(layout.intrinsic_sizes(), fresh.intrinsic_sizes());
+    for &width in widths {
+        layout.break_lines(&mut cx, Area::new(width), &mut NoExclusions);
+        fresh.break_lines(&mut cx, Area::new(width), &mut NoExclusions);
+        assert_eq!(laid_out(&layout), laid_out(&fresh), "at {width}");
+    }
+}
+
+/// A new size along the line measures as content built with it.
+#[test]
+fn measuring_new_inline_sizes_equals_a_fresh_layout() {
+    let root = sized(&AHEM_FAMILY, 10.0);
+    measures_as_built(
+        &root,
+        |b, size| {
+            b.text(NodeKey(10), "XX ");
+            b.atomic(NodeKey(1), &root, None, size(1));
+            b.text(NodeKey(11), " XXX ");
+            b.atomic(NodeKey(2), &root, None, size(2));
+        },
+        built_size,
+        |n| BoxSize {
+            inline: 31.0 + n as f32,
+            ..set_size(n)
+        },
+        0.0,
+        &[1, 2],
+        &[40.0, 75.0, 400.0],
+    );
+}
+
+/// A new size of an atomic inline that is a ruby base measures as content
+/// built with it.
+#[test]
+fn measuring_an_atomic_inline_in_ruby_equals_a_fresh_layout() {
+    let root = sized(&AHEM_FAMILY, 10.0);
+    measures_as_built(
+        &root,
+        |b, size| {
+            b.open_ruby(NodeKey(1), &root, None);
+            b.atomic(NodeKey(3), &root, None, size(3));
+            b.open_annotation(NodeKey(4), &root, None);
+            b.text(NodeKey(5), "X");
+            b.close_annotation();
+            b.close_ruby();
+            b.text(NodeKey(6), " XX");
+        },
+        built_size,
+        |n| BoxSize {
+            block: 30.0,
+            ..built_size(n)
+        },
+        0.0,
+        &[3],
+        &[40.0, 400.0],
+    );
+}
+
+/// A float's new size measures as content built with it.
+#[test]
+fn measuring_a_new_float_size_equals_a_fresh_layout() {
+    let root = sized(&AHEM_FAMILY, 10.0);
+    measures_as_built(
+        &root,
+        |b, size| {
+            b.text(NodeKey(10), "XX XX ");
+            b.float(NodeKey(1), &root, FloatSide::Left, size(1));
+            b.text(NodeKey(11), "XXX XX XXXX");
+        },
+        built_size,
+        |n| BoxSize {
+            inline: 50.0,
+            block: 22.0,
+            ..built_size(n)
+        },
+        0.0,
+        &[1],
+        &[60.0, 120.0, 400.0],
+    );
+}
+
+/// Percentage margins and padding of inline boxes, atomic inlines and
+/// floats measure against a new basis as content built with it.
+#[test]
+fn measuring_a_new_percentage_basis_equals_a_fresh_layout() {
+    let root = sized(&AHEM_FAMILY, 10.0);
+    let percent = |fraction: f32| LengthPercentage { px: 1.0, fraction };
+    let edged = ComputedStyle {
+        edges: EdgesGroup {
+            margin: Sides {
+                left: percent(0.05),
+                right: percent(0.0),
+                ..Sides::from_px(0.0)
+            },
+            padding: Sides::all(percent(0.1)),
+            ..EdgesGroup::INITIAL
+        },
+        ..root
+    };
+    for basis in [0.0, 80.0, 333.0] {
+        measures_as_built(
+            &root,
+            |b, size| {
+                b.text(NodeKey(10), "XX ");
+                b.open_box(NodeKey(1), &edged, None);
+                b.text(NodeKey(11), "XXX XX");
+                b.close_box();
+                b.atomic(NodeKey(2), &edged, None, size(2));
+                b.float(NodeKey(3), &edged, FloatSide::Right, size(3));
+                b.text(NodeKey(12), " XXXX XX");
+            },
+            built_size,
+            built_size,
+            basis,
+            &[],
+            &[50.0, 140.0, 500.0],
+        );
+    }
 }
 
 /// Text with `count` atomic inlines keyed `0..count`, the `n`th built with
@@ -639,7 +776,7 @@ fn many_atomics(cx: &mut Context, layout: &mut Layout, block: &ComputedBlockStyl
     });
 }
 
-/// Setting the sizes of atomic inlines in document order costs steps
+/// Measuring the sizes of atomic inlines in document order costs steps
 /// linear in their number: each search starts where the one before ended.
 ///
 /// Twice the atomic inlines take at most about twice the steps. Steps are
@@ -656,7 +793,7 @@ fn setting_atomic_sizes_in_order_costs_linear_steps() {
         many_atomics(&mut cx, &mut layout, &block, count);
         let _ = work::take();
         let pairs = (0..count).map(|n| (NodeKey(n), set_size(n % 10)));
-        assert!(layout.set_atomic_sizes(pairs));
+        assert!(layout.measure(&mut cx, 0.0, pairs));
         work::take()
     };
     let (small, large) = (steps(300), steps(600));

@@ -68,8 +68,8 @@ Additional APIs:
 - `Line::paints`: paint order and geometry, including font decoration metrics.
 - `Line::annotations`: ruby text runs and atomic inlines.
 - `Layout::metrics`, `intrinsic_sizes` and `room_below`: host block measurements.
-- `Layout::set_atomic_sizes`: new block sizes and baselines for atomic
-  inlines, without building again.
+- `Layout::measure`: new sizes for atomic inlines and floats, and a new
+  basis for percentage margins and padding, without building again.
 - `Layout::floats` and `static_positions`: where floats went, and each
   absolutely positioned box's static position.
 - `selection`: carets, hit testing, motion, selection rectangles and copy.

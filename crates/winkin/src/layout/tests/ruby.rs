@@ -108,18 +108,19 @@ fn a_ruby_column_starting_a_line_keeps_its_annotation() {
     let padded = |vertical: bool| ComputedStyle {
         edges: EdgesGroup {
             padding: if vertical {
-                Sides {
+                Sides::<f32> {
                     top: 5.0,
                     bottom: 5.0,
                     ..Sides::ZERO
                 }
             } else {
-                Sides {
+                Sides::<f32> {
                     left: 5.0,
                     right: 5.0,
                     ..Sides::ZERO
                 }
-            },
+            }
+            .into(),
             ..EdgesGroup::INITIAL
         },
         ..small
@@ -697,18 +698,20 @@ fn a_box_inside_an_annotation_has_its_own_fragment() {
     // One side's edges.
     let left = ComputedStyle {
         edges: EdgesGroup {
-            margin: Sides {
+            margin: Sides::<f32> {
                 left: 4.0,
                 ..Sides::ZERO
-            },
+            }
+            .into(),
             border: Sides {
                 left: 3.0,
                 ..Sides::ZERO
             },
-            padding: Sides {
+            padding: Sides::<f32> {
                 left: 2.0,
                 ..Sides::ZERO
-            },
+            }
+            .into(),
             ..EdgesGroup::INITIAL
         },
         ..small
@@ -735,17 +738,19 @@ fn a_box_inside_an_annotation_has_its_own_fragment() {
     // Edges all round, painted.
     let round = ComputedStyle {
         edges: EdgesGroup {
-            margin: Sides {
+            margin: Sides::<f32> {
                 left: 1.0,
                 right: 1.0,
                 ..Sides::ZERO
-            },
+            }
+            .into(),
             border: Sides::all(2.0),
-            padding: Sides {
+            padding: Sides::<f32> {
                 left: 3.0,
                 right: 3.0,
                 ..Sides::ZERO
-            },
+            }
+            .into(),
             ..EdgesGroup::INITIAL
         },
         paints: true,
@@ -806,11 +811,12 @@ fn a_box_inside_an_annotation_has_its_own_fragment() {
     };
     let padded = ComputedStyle {
         edges: EdgesGroup {
-            padding: Sides {
+            padding: Sides::<f32> {
                 left: 5.0,
                 right: 5.0,
                 ..Sides::ZERO
-            },
+            }
+            .into(),
             ..EdgesGroup::INITIAL
         },
         ..small
@@ -1110,11 +1116,12 @@ fn empty_nested_annotation_edges_do_not_enlarge_neighboring_glyphs() {
     let mut cx = context();
     let base = sized(&AHEM_FAMILY, 16.0);
     let mut padded = base;
-    padded.edges.padding = Sides {
+    padded.edges.padding = Sides::<f32> {
         left: 3.0,
         right: 5.0,
         ..Sides::default()
-    };
+    }
+    .into();
     let mut layout = Layout::new();
     for before in [false, true] {
         build(&mut cx, &mut layout, &ComputedBlockStyle::new(&base), |b| {
@@ -1345,12 +1352,13 @@ fn split_ruby_slices_annotation_box_edges() {
     base.ruby.align = RubyAlign::Start;
     let small = sized(&AHEM_FAMILY, 10.0);
     let mut boxed = small;
-    boxed.edges.padding = Sides {
+    boxed.edges.padding = Sides::<f32> {
         left: 5.0,
         right: 7.0,
         top: 0.0,
         bottom: 0.0,
-    };
+    }
+    .into();
     build(&mut cx, &mut layout, &ComputedBlockStyle::new(&base), |b| {
         b.open_ruby(NodeKey(1), &base, None);
         b.text(NodeKey(2), "AAAA BBBB CCCC DDDD");
@@ -1614,21 +1622,23 @@ fn a_ruby_container_keeps_a_box_whose_edges_take_room() {
     let small = sized(&AHEM_FAMILY, 10.0);
     let edged = ComputedStyle {
         edges: EdgesGroup {
-            margin: Sides {
+            margin: Sides::<f32> {
                 left: 20.0,
                 right: 10.0,
                 ..Sides::ZERO
-            },
+            }
+            .into(),
             border: Sides {
                 left: 5.0,
                 right: 10.0,
                 ..Sides::ZERO
             },
-            padding: Sides {
+            padding: Sides::<f32> {
                 left: 10.0,
                 right: 20.0,
                 ..Sides::ZERO
-            },
+            }
+            .into(),
             ..EdgesGroup::INITIAL
         },
         paints: true,
@@ -1786,11 +1796,12 @@ fn an_annotation_outside_ruby_keeps_its_own_style() {
                 left: 3.0,
                 ..Sides::ZERO
             },
-            padding: Sides {
+            padding: Sides::<f32> {
                 left: 5.0,
                 right: 5.0,
                 ..Sides::ZERO
-            },
+            }
+            .into(),
             ..EdgesGroup::INITIAL
         },
         ..small
@@ -2268,11 +2279,12 @@ fn base_text_after_the_last_annotation_breaks_as_the_lines_text() {
     let mut cx = context();
     let base = sized(&AHEM_FAMILY, 16.0);
     let mut padded = base;
-    padded.edges.padding = Sides {
+    padded.edges.padding = Sides::<f32> {
         left: 3.0,
         right: 5.0,
         ..Sides::default()
-    };
+    }
+    .into();
     let mut layout = Layout::new();
     build(&mut cx, &mut layout, &ComputedBlockStyle::new(&base), |b| {
         b.open_ruby(NodeKey(1), &base, None);
@@ -2306,11 +2318,12 @@ fn base_text_after_the_last_annotation_breaks_as_the_lines_text() {
 fn an_empty_column_takes_its_annotations_edges() {
     let base = sized(&AHEM_FAMILY, 16.0);
     let mut padded = base;
-    padded.edges.padding = Sides {
+    padded.edges.padding = Sides::<f32> {
         left: 3.0,
         right: 5.0,
         ..Sides::default()
-    };
+    }
+    .into();
     for before in [false, true] {
         let mut cx = context();
         let mut layout = Layout::new();
@@ -2486,11 +2499,12 @@ fn annotation_boxes(
         let edges = match kind {
             AnnotationBox::Painted => EdgesGroup::INITIAL,
             AnnotationBox::Padded => EdgesGroup {
-                padding: Sides {
+                padding: Sides::<f32> {
                     left: 4.0,
                     right: 4.0,
                     ..Sides::ZERO
-                },
+                }
+                .into(),
                 ..EdgesGroup::INITIAL
             },
             AnnotationBox::Bordered => EdgesGroup {

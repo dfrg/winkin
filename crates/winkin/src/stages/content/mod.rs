@@ -60,7 +60,8 @@ use crate::data::{
     HashIndex, Id, Keyed, Table, TextOffset, define_flags, define_id, find_sorted, heap_bytes,
 };
 use crate::style::{
-    ComputedStyle, FirstLineVariant, InitialLetter, VerticalAlign, WhiteSpaceTrim, WritingMode,
+    ComputedStyle, FirstLineVariant, InitialLetter, LengthPercentage, Sides, VerticalAlign,
+    WhiteSpaceTrim, WritingMode,
 };
 use crate::unit::LayoutUnit;
 use crate::work;
@@ -442,6 +443,9 @@ pub(crate) struct Atomic {
     /// Its border box and baseline as the host laid it out: finite and not
     /// negative.
     pub(super) size: BoxSize,
+    /// Its style's margins, which `margin_inline` and `margins_across` are
+    /// resolved from against the content's percentage basis.
+    margin: Sides<LengthPercentage>,
     /// Its margin box along the line. This is its border box, truncated
     /// onto the grid as Chrome holds a box's lengths, plus its style's
     /// margins along the line on either side, on the grid.
@@ -453,23 +457,45 @@ pub(crate) struct Atomic {
 
 impl Atomic {
     /// Makes the atomic inline of `item`, `size` as the host laid it out,
-    /// set in `style` in a block of `writing_mode`. The writer lowers its
-    /// margin box here.
+    /// set in `style` in a block of `writing_mode` whose percentages are of
+    /// `basis` pixels. The writer lowers its margin box here.
     fn new(
         item: ItemId,
         size: BoxSize,
         style: &ComputedStyle<'_>,
         writing_mode: WritingMode,
+        basis: f32,
     ) -> Self {
-        let margin = style.edges.margin;
-        let (left, right) = margin.along_line_on_grid(writing_mode);
-        Self {
+        let mut atomic = Self {
             item,
             size,
-            margin_inline: LayoutUnit::from_px_truncated(size.inline) + left + right,
-            margins_across: margin.across_line_on_grid(writing_mode),
-        }
+            margin: style.edges.margin,
+            margin_inline: LayoutUnit::ZERO,
+            margins_across: (LayoutUnit::ZERO, LayoutUnit::ZERO),
+        };
+        atomic.resolve(writing_mode, basis);
+        atomic
     }
+
+    /// Lowers its margin box again from its size and margins, their
+    /// percentages taken of `basis` pixels.
+    fn resolve(&mut self, writing_mode: WritingMode, basis: f32) {
+        let margin = self.margin.resolve(basis);
+        let (left, right) = margin.along_line_on_grid(writing_mode);
+        self.margin_inline = LayoutUnit::from_px_truncated(self.size.inline) + left + right;
+        self.margins_across = margin.across_line_on_grid(writing_mode);
+    }
+}
+
+/// How setting a box's size changed it.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub(crate) enum SizeChange {
+    /// It kept its size.
+    None,
+    /// Only its block size or baseline changed.
+    Across,
+    /// Its inline size changed.
+    Along,
 }
 
 impl Keyed for Atomic {
@@ -549,6 +575,9 @@ pub(crate) struct Float {
     size: BoxSize,
     /// The side it floats to.
     pub(crate) side: FloatSide,
+    /// Its style's margins, which `margin_box` is resolved from against
+    /// the content's percentage basis.
+    margin: Sides<LengthPercentage>,
     /// Its margin box, as `(along the line, across it)`, never negative.
     ///
     /// It is the border box as the host laid it out plus its style's
@@ -564,28 +593,40 @@ pub(crate) struct Float {
 
 impl Float {
     /// Makes the float anchored at `item`, `size` as the host laid it out, on
-    /// `side`, set in `style` in a block of `writing_mode`.
+    /// `side`, set in `style` in a block of `writing_mode` whose percentages
+    /// are of `basis` pixels.
     fn new(
         item: ItemId,
         size: BoxSize,
         side: FloatSide,
         style: &ComputedStyle<'_>,
         writing_mode: WritingMode,
+        basis: f32,
     ) -> Self {
-        let (left, right) = style.edges.margin.along_line_on_grid(writing_mode);
-        let (over, under) = style.edges.margin.across_line_on_grid(writing_mode);
-        let margin_box = |size: f32, start: LayoutUnit, end: LayoutUnit| {
-            (LayoutUnit::from_px_truncated(size) + start + end).max(LayoutUnit::ZERO)
-        };
-        Self {
+        let mut float = Self {
             item,
             size,
             side,
-            margin_box: (
-                margin_box(size.inline, left, right),
-                margin_box(size.block, over, under),
-            ),
-        }
+            margin: style.edges.margin,
+            margin_box: (LayoutUnit::ZERO, LayoutUnit::ZERO),
+        };
+        float.resolve(writing_mode, basis);
+        float
+    }
+
+    /// Lowers its margin box again from its size and margins, their
+    /// percentages taken of `basis` pixels.
+    fn resolve(&mut self, writing_mode: WritingMode, basis: f32) {
+        let margin = self.margin.resolve(basis);
+        let (left, right) = margin.along_line_on_grid(writing_mode);
+        let (over, under) = margin.across_line_on_grid(writing_mode);
+        let margin_box = |size: f32, start: LayoutUnit, end: LayoutUnit| {
+            (LayoutUnit::from_px_truncated(size) + start + end).max(LayoutUnit::ZERO)
+        };
+        self.margin_box = (
+            margin_box(self.size.inline, left, right),
+            margin_box(self.size.block, over, under),
+        );
     }
 }
 
@@ -889,6 +930,9 @@ define_flags! {
         /// Some style sets `text-justify` other than `auto`. A justified
         /// line then reads each cluster's own value.
         pub(crate) const TEXT_JUSTIFY = 1 << 24;
+        /// A box's, atomic inline's or float's margin or padding has a
+        /// percentage, which the content resolves against its basis.
+        pub(crate) const PERCENTAGES = 1 << 25;
     }
 }
 
@@ -914,6 +958,9 @@ pub(crate) struct Content {
     pub(crate) block: BlockFacts,
     /// What the content holds.
     pub(crate) flags: ContentFlags,
+    /// The width, in pixels, that the boxes' percentage margins and padding
+    /// are resolved against.
+    basis: f32,
 }
 
 impl Content {
@@ -928,6 +975,7 @@ impl Content {
             extras: None,
             block: BlockFacts::INITIAL,
             flags: ContentFlags::NONE,
+            basis: 0.0,
         }
     }
 
@@ -954,8 +1002,9 @@ impl Content {
     }
 
     /// Empties everything for a new build, keeping every allocation. The
-    /// build records the offset map where `map` asks.
-    fn clear(&mut self, block: BlockFacts, map: bool) {
+    /// build records the offset map where `map` asks, and resolves
+    /// percentages against `basis` pixels.
+    fn clear(&mut self, block: BlockFacts, map: bool, basis: f32) {
         self.text.clear();
         self.nodes.clear();
         self.items.clear();
@@ -974,6 +1023,7 @@ impl Content {
         }
         self.block = block;
         self.flags = ContentFlags::NONE;
+        self.basis = basis;
     }
 
     /// Records in the offset map with `record`, where this build records
@@ -1091,28 +1141,85 @@ impl Content {
         self.nodes.key(self.item_node(atomic.item))
     }
 
-    /// The border box and baseline atomic inline `atomic` has, or `None`
-    /// past the last.
-    pub(crate) fn atomic_size(&self, atomic: AtomicId) -> Option<BoxSize> {
-        self.atomics().get(atomic).map(|atomic| atomic.size)
-    }
-
-    /// Gives atomic inline `atomic` the block size and baseline of `size`,
-    /// a sanitized size with the inline size it was built with. Returns
-    /// whether its size changed.
-    pub(crate) fn set_atomic_size(&mut self, atomic: AtomicId, size: BoxSize) -> bool {
+    /// Gives atomic inline `atomic` the border box and baseline of `size`,
+    /// a sanitized size, and returns how its size changed.
+    pub(crate) fn set_atomic_size(&mut self, atomic: AtomicId, size: BoxSize) -> SizeChange {
+        let writing_mode = self.block.writing_mode;
+        let basis = self.basis;
         let Some(atomic) = self
             .extras
             .as_deref_mut()
             .and_then(|extras| extras.atomics.get_mut(atomic))
         else {
-            return false;
+            return SizeChange::None;
         };
         if atomic.size == size {
+            return SizeChange::None;
+        }
+        let along = atomic.size.inline != size.inline;
+        atomic.size = size;
+        if along {
+            atomic.resolve(writing_mode, basis);
+            SizeChange::Along
+        } else {
+            SizeChange::Across
+        }
+    }
+
+    /// Gives float `float` the border box of `size`, a sanitized size, and
+    /// returns whether its size changed.
+    pub(crate) fn set_float_size(&mut self, float: FloatId, size: BoxSize) -> bool {
+        let writing_mode = self.block.writing_mode;
+        let basis = self.basis;
+        let Some(float) = self
+            .extras
+            .as_deref_mut()
+            .and_then(|extras| extras.floats.get_mut(float))
+        else {
+            return false;
+        };
+        if float.size == size {
             return false;
         }
-        atomic.size = size;
+        float.size = size;
+        float.resolve(writing_mode, basis);
         true
+    }
+
+    /// Returns the key of the node float `float` anchors.
+    pub(crate) fn float_key(&self, float: &Float) -> NodeKey {
+        self.nodes.key(self.item_node(float.item))
+    }
+
+    /// Resolves the boxes' percentage margins and padding against `basis`
+    /// pixels, and returns whether any length changed.
+    ///
+    /// Content with no percentage keeps its lengths, whatever the basis.
+    pub(crate) fn set_basis(&mut self, basis: f32) -> bool {
+        if self.basis.to_bits() == basis.to_bits() {
+            return false;
+        }
+        self.basis = basis;
+        if !self.flags.contains(ContentFlags::PERCENTAGES) {
+            return false;
+        }
+        let writing_mode = self.block.writing_mode;
+        self.facts.resolve_boxes(writing_mode, basis);
+        if let Some(extras) = self.extras.as_deref_mut() {
+            for atomic in extras.atomics.as_mut_slice() {
+                atomic.resolve(writing_mode, basis);
+            }
+            for float in extras.floats.as_mut_slice() {
+                float.resolve(writing_mode, basis);
+            }
+        }
+        true
+    }
+
+    /// The width, in pixels, that the boxes' percentages are resolved
+    /// against.
+    pub(crate) fn basis(&self) -> f32 {
+        self.basis
     }
 
     /// The atomic inline `item` places, or `None` where it places none.
@@ -1156,7 +1263,7 @@ impl Content {
 
 heap_bytes! {
     /// Its tables, and the extras' box and theirs where a build made it.
-    Content { text, nodes, items, lists, facts, extras; block, flags }
+    Content { text, nodes, items, lists, facts, extras; block, flags, basis }
 }
 
 // The writer and the records its files share: `writer` builds it, and

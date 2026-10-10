@@ -251,6 +251,16 @@ impl LengthPercentage {
         fraction: 0.0,
     };
 
+    /// Returns a length of `px` pixels, with no percentage.
+    pub const fn from_px(px: f32) -> Self {
+        Self { px, fraction: 0.0 }
+    }
+
+    /// Whether it is zero whatever its basis: neither part is nonzero.
+    pub(crate) fn is_zero(self) -> bool {
+        self.px == 0.0 && self.fraction == 0.0
+    }
+
     /// Returns the length in pixels, with the percentage taken of `basis` pixels.
     ///
     /// A NaN in either part or in `basis` gives a NaN. The grid it goes onto

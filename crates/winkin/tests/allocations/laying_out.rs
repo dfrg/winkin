@@ -71,8 +71,8 @@ fn prose(layout: &mut Layout, cx: &mut Context, how: How, text: &str) {
     };
     let roomy = ComputedStyle {
         edges: EdgesGroup {
-            margin: Sides::all(1.5),
-            padding: Sides::all(3.0),
+            margin: Sides::from_px(1.5),
+            padding: Sides::from_px(3.0),
             ..EdgesGroup::INITIAL
         },
         ..root

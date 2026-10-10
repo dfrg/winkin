@@ -145,12 +145,21 @@ impl<'a> ContentWriter<'a> {
         options: BuildOptions,
         limits: ContentLimits,
     ) -> Self {
-        let BuildOptions { map_source } = options;
+        let BuildOptions {
+            map_source,
+            percentage_basis,
+        } = options;
+        // A basis that is no length resolves percentages as zero does.
+        let basis = if percentage_basis.is_finite() {
+            percentage_basis
+        } else {
+            0.0
+        };
         let (root, first_line) = (block.style, block.first_line);
         let facts = BlockFacts::new(block, root);
         #[cfg(any(debug_assertions, test))]
         super::facts_check::block_is(&facts, root);
-        content.clear(facts, map_source);
+        content.clear(facts, map_source, basis);
         let ContentScratch {
             open: stack,
             words,

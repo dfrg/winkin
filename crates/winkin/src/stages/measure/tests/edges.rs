@@ -288,13 +288,14 @@ fn an_atomic_inline_is_its_margin_box() {
     let ahem = families_style(&AHEM_FAMILY);
     let margined = ComputedStyle {
         edges: EdgesGroup {
-            margin: Sides {
+            margin: Sides::<f32> {
                 top: 2.0,
                 right: 3.0,
                 bottom: 4.0,
                 left: 5.0,
-            },
-            padding: Sides::all(100.0),
+            }
+            .into(),
+            padding: Sides::from_px(100.0),
             ..EdgesGroup::INITIAL
         },
         ..ahem
@@ -354,12 +355,13 @@ fn an_atomic_inline_with_no_baseline_is_centred_in_a_vertical_line() {
     let ahem = families_style(&AHEM_FAMILY);
     let margined = ComputedStyle {
         edges: EdgesGroup {
-            margin: Sides {
+            margin: Sides::<f32> {
                 top: 2.0,
                 right: 3.0,
                 bottom: 4.0,
                 left: 5.0,
-            },
+            }
+            .into(),
             ..EdgesGroup::INITIAL
         },
         ..ahem
@@ -471,20 +473,22 @@ fn edges_and_atomic_sizes_are_truncated_onto_the_grid() {
         (-10.507_812_5, 0.0, -10.5),
     ] {
         let edges = EdgesGroup {
-            margin: Sides {
+            margin: Sides::<f32> {
                 left: margin,
                 right: margin,
                 ..Sides::ZERO
-            },
-            padding: Sides {
+            }
+            .into(),
+            padding: Sides::<f32> {
                 left: padding,
                 right: padding,
                 ..Sides::ZERO
-            },
+            }
+            .into(),
             ..EdgesGroup::INITIAL
         };
         assert_eq!(
-            edges.inline(horizontal),
+            edges.used(0.0).inline(horizontal),
             (lu(expected), lu(expected)),
             "margin {margin}, padding {padding}"
         );
@@ -496,7 +500,7 @@ fn edges_and_atomic_sizes_are_truncated_onto_the_grid() {
     let padded = edged(&ahem, [10.012, 0.0, 10.99], [-10.012, 0.0, 0.01]);
     let margined = ComputedStyle {
         edges: EdgesGroup {
-            margin: Sides::all(10.012),
+            margin: Sides::from_px(10.012),
             ..EdgesGroup::INITIAL
         },
         ..ahem

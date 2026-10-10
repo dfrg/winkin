@@ -43,7 +43,7 @@ fn prose(layout: &mut Layout, cx: &mut Context, (family, language): (&str, &str)
     anywhere.text.word_break = WordBreak::BreakAll;
     let boxed = ComputedStyle {
         edges: EdgesGroup {
-            padding: Sides::all(3.0),
+            padding: Sides::from_px(3.0),
             ..EdgesGroup::INITIAL
         },
         ..root

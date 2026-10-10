@@ -53,7 +53,7 @@ fn boxed(cx: &mut Context) -> Layout {
     let painted = ComputedStyle {
         paints: true,
         edges: EdgesGroup {
-            padding: Sides::all(2.0),
+            padding: Sides::from_px(2.0),
             ..EdgesGroup::INITIAL
         },
         ..style

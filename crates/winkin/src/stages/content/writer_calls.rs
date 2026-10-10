@@ -437,7 +437,11 @@ impl ContentWriter<'_> {
             self.append(item, OBJECT);
             self.content.record(|map| map.generated(0..1, at));
             let writing_mode = self.content.block.writing_mode;
-            let atomic = Atomic::new(item, size, style, writing_mode);
+            let basis = self.content.basis();
+            if style.edges.margin.has_percentage() {
+                self.content.flags.insert(ContentFlags::PERCENTAGES);
+            }
+            let atomic = Atomic::new(item, size, style, writing_mode, basis);
             let atomics = &mut self.content.extras_mut().atomics;
             let id = atomics.next_id();
             atomics.push_bounded(atomic, "an atomic has an item, and fits where it does");
@@ -502,7 +506,11 @@ impl ContentWriter<'_> {
         };
         if let Some(item) = self.push_item(ItemKind::Float, node, ItemFlags::NONE) {
             let writing_mode = self.content.block.writing_mode;
-            let float = Float::new(item, size, side, style, writing_mode);
+            let basis = self.content.basis();
+            if style.edges.margin.has_percentage() {
+                self.content.flags.insert(ContentFlags::PERCENTAGES);
+            }
+            let float = Float::new(item, size, side, style, writing_mode, basis);
             if self.content.extras_mut().floats.push(float).is_none() {
                 debug_assert!(false, "a float has an item, and fits where it does");
             }

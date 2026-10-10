@@ -490,11 +490,12 @@ fn a_mixed_direction_paragraph_rebuilds_and_relays_out() {
     let style = sized(&families, 16.0);
     let padded = ComputedStyle {
         edges: EdgesGroup {
-            padding: Sides {
+            padding: Sides::<f32> {
                 left: 2.0,
                 right: 2.0,
                 ..Sides::ZERO
-            },
+            }
+            .into(),
             ..EdgesGroup::INITIAL
         },
         ..style
@@ -684,7 +685,7 @@ fn nest(fixture: &mut Fixture, layout: &mut Layout, nesting: Nesting, depth: u64
     let root = sized(&LATIN, 16.0);
     let padded = ComputedStyle {
         edges: EdgesGroup {
-            padding: Sides::all(1.0),
+            padding: Sides::from_px(1.0),
             ..EdgesGroup::INITIAL
         },
         ..root

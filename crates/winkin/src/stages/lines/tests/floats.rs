@@ -244,12 +244,13 @@ fn a_float_a_paragraph_opens_with_is_what_its_first_line_starts_beside() {
     assert_eq!(layout.floats().count(), 1);
 
     let mut margined = style;
-    margined.edges.margin = Sides {
+    margined.edges.margin = Sides::<f32> {
         top: 0.0,
         right: 10.0,
         bottom: 5.0,
         left: -20.0,
-    };
+    }
+    .into();
     fixture.build(&mut layout, &ComputedBlockStyle::new(&style), |b| {
         b.float(
             NodeKey(2),
@@ -270,12 +271,13 @@ fn a_float_a_paragraph_opens_with_is_what_its_first_line_starts_beside() {
     // Its size and margins are each truncated onto the grid, as Chrome
     // holds a box's lengths: 50.012 is 50, 10.012 is 10, -10.012 is -10 and
     // 10.99 is 10.984375.
-    margined.edges.margin = Sides {
+    margined.edges.margin = Sides::<f32> {
         top: 10.99,
         right: 10.012,
         bottom: 0.0,
         left: -10.012,
-    };
+    }
+    .into();
     fixture.build(&mut layout, &ComputedBlockStyle::new(&style), |b| {
         b.float(
             NodeKey(2),

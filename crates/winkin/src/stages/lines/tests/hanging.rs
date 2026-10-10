@@ -206,11 +206,12 @@ fn a_cloned_box_pays_for_its_edges_on_every_line() {
     let root = ahem(20.0);
     let boxed = |decoration_break| ComputedStyle {
         edges: EdgesGroup {
-            padding: Sides {
+            padding: Sides::<f32> {
                 left: 10.0,
                 right: 10.0,
                 ..Sides::ZERO
-            },
+            }
+            .into(),
             decoration_break,
             ..EdgesGroup::INITIAL
         },
@@ -294,8 +295,8 @@ fn the_intrinsic_sizes_are_widths_the_text_fits() {
     let root = sized(&LATIN, 16.0);
     let boxed = ComputedStyle {
         edges: EdgesGroup {
-            margin: Sides::all(2.0),
-            padding: Sides::all(1.25),
+            margin: Sides::from_px(2.0),
+            padding: Sides::from_px(1.25),
             ..EdgesGroup::INITIAL
         },
         ..sized(&NARROW, 13.0)

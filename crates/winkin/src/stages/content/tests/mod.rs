@@ -25,6 +25,7 @@ use super::memo::StyleKey;
 use super::writer::ContentLimits;
 use super::*;
 use crate::data::{HeapBytes, Id};
+use crate::style::LengthPercentage;
 use crate::style::{
     ComputedStyle, EdgesGroup, FirstLineVariant, FontFamilyName, FontFeature, FontGroup,
     GenericFamily, Language, LineBreak, Sides, Tag, TextAutospace, TextCase, TextCombineUpright,
@@ -1619,7 +1620,7 @@ fn the_flags_say_what_the_content_holds() {
 
     let edged = styled(|style| {
         style.edges = EdgesGroup {
-            padding: Sides::all(2.0),
+            padding: Sides::from_px(2.0),
             ..EdgesGroup::INITIAL
         };
     });
@@ -1759,14 +1760,14 @@ fn items_past_the_limit_leave_every_box_closed() {
 // Sizes -------------------------------------------------------------------------
 
 /// An item is 16 bytes, and a node 32 with its four fact ids. The builder's
-/// key of a style is about 200 bytes. Each kind of facts stays within the
-/// size asserted below.
+/// key of a style is about 240 bytes, its margins and padding with their
+/// percentages. Each kind of facts stays within the size asserted below.
 #[test]
 fn the_records_are_the_size_the_design_says() {
     assert_eq!(size_of::<Item>(), 16);
     assert_eq!(size_of::<Node>(), 32);
     let style = size_of::<StyleKey>();
-    assert!(style <= 208, "a style's key is {style} bytes");
+    assert!(style <= 240, "a style's key is {style} bytes");
     let text = size_of::<TextFacts>();
     assert!(text <= 44, "text facts are {text} bytes");
     let shaping = size_of::<ShapingFacts>();
@@ -1790,7 +1791,7 @@ fn full_fact_tables_take_stand_ins_and_say_so() {
             step += 1.0 / 64.0;
             styled(|style| {
                 style.font.size = 1.0 + step;
-                style.edges.padding.left = step;
+                style.edges.padding.left = LengthPercentage::from_px(step);
             })
         })
         .collect();

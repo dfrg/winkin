@@ -15,9 +15,11 @@ computed style. `LayoutBuilder::finish` prepares everything that does not
 depend on the available width. `Layout::break_lines` then breaks the content
 into lines for one width. Preparing runs once per content change; breaking
 runs once per width, and a second width repeats none of the preparation.
-`Layout::set_atomic_sizes` gives atomic inlines new block sizes and
-baselines without building again: it measures again the extents of those
-whose size changed, and keeps the rest.
+`Layout::measure` gives the boxes new geometry without building again: new
+sizes for atomic inlines and floats, and a new width for percentage margins
+and padding. It keeps the analysis, fonts and shaping and measures again from
+the shaped advances, or, where only atomic inlines' block sizes and baselines
+change, measures again only their extents.
 
 The host reads the result through views on [`Layout`](../src/layout/mod.rs):
 lines and the items on them, paint operations, box fragments, floats and

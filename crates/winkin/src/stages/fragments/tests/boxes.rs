@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::style::FirstLineVariant;
+use crate::style::LengthPercentage;
 
 /// A box that paints or has room gets an item, and any other box is culled.
 ///
@@ -25,8 +26,8 @@ fn a_box_that_paints_gets_an_item_and_one_that_does_not_is_culled() {
     };
     let roomy = ComputedStyle {
         edges: EdgesGroup {
-            margin: Sides::all(2.0),
-            padding: Sides::all(3.0),
+            margin: Sides::from_px(2.0),
+            padding: Sides::from_px(3.0),
             ..EdgesGroup::INITIAL
         },
         ..root
@@ -158,7 +159,7 @@ fn an_empty_box_gets_an_item() {
     };
     let padded = ComputedStyle {
         edges: EdgesGroup {
-            padding: Sides::all(4.0),
+            padding: Sides::from_px(4.0),
             ..EdgesGroup::INITIAL
         },
         paints: true,
@@ -203,7 +204,7 @@ fn an_atomic_inline_stands_on_its_baseline() {
     let root = ahem(20.0);
     let margined = ComputedStyle {
         edges: EdgesGroup {
-            margin: Sides::all(1.0),
+            margin: Sides::from_px(1.0),
             ..EdgesGroup::INITIAL
         },
         ..root
@@ -259,7 +260,7 @@ fn a_box_covers_the_white_space_hanging_in_it() {
     };
     let right = aligned(TextAlign::Right, TextAlignLast::Auto);
     let mut padded = painted(&pre_wrap);
-    padded.edges.padding.right = 5.0;
+    padded.edges.padding.right = LengthPercentage::from_px(5.0);
     // Each case is (block, style, text before, in the box, after, the box
     // on line 0).
     let cases = [
@@ -344,15 +345,17 @@ fn a_boxs_margins_and_padding_place_it_truncated_onto_the_grid() {
     let edged = ComputedStyle {
         paints: true,
         edges: EdgesGroup {
-            margin: Sides {
+            margin: Sides::<f32> {
                 left: 10.012,
                 right: -10.012,
                 ..Sides::ZERO
-            },
-            padding: Sides {
+            }
+            .into(),
+            padding: Sides::<f32> {
                 left: 10.99,
                 ..Sides::ZERO
-            },
+            }
+            .into(),
             ..EdgesGroup::INITIAL
         },
         ..root
@@ -400,11 +403,12 @@ fn a_cloned_box_has_both_edges_on_every_line() {
         let padded = ComputedStyle {
             paints: true,
             edges: EdgesGroup {
-                padding: Sides {
+                padding: Sides::<f32> {
                     left: 10.0,
                     right: 10.0,
                     ..Sides::ZERO
-                },
+                }
+                .into(),
                 decoration_break,
                 ..EdgesGroup::INITIAL
             },

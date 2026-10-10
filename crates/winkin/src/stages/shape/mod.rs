@@ -60,8 +60,8 @@ pub(crate) struct ShapeInput<'a> {
     pub(crate) punctuation_trim: PunctuationTrim,
 }
 
-/// Shapes the text of `input` into `out`, and each cluster's advance into
-/// `advances`, using the caches in `cx`.
+/// Shapes the text of `input` into `out`, each cluster's advance among
+/// them, using the caches in `cx`.
 ///
 /// Where font selection gave the first paragraph runs of its own under
 /// `::first-line`, it shapes that paragraph again in those styles and fonts.
@@ -70,18 +70,15 @@ pub(crate) struct ShapeInput<'a> {
 ///
 /// Returns how many glyphs were left out because a sidecar was full.
 ///
-/// This call alone clears and fills `out` and `advances`. It sets `out`'s
-/// flags once, from both shapings: an unsafe break in either lets the
-/// breaker reshape. Measurement takes `advances` next.
+/// This call alone clears and fills `out`. It sets `out`'s flags once,
+/// from both shapings: an unsafe break in either lets the breaker reshape.
+/// Measurement copies the advances next.
 pub(crate) fn shape_runs(
     input: &ShapeInput<'_>,
     cx: &mut ShapeSession<'_, '_>,
     out: &mut Shaped,
-    advances: &mut Advances,
 ) -> usize {
     out.clear();
-    advances.text.clear();
-    advances.first_line.clear();
     let clusters = &input.analysis.clusters;
     if clusters.is_empty() {
         return 0;
@@ -92,7 +89,6 @@ pub(crate) fn shape_runs(
         clusters.end_id(),
         cx,
         out.text.text_mut(),
-        &mut advances.text,
     );
     // The first line's variant, where it sets text differently. Otherwise
     // the first line is set as the text is, and its advances stay empty.
@@ -105,7 +101,6 @@ pub(crate) fn shape_runs(
             reach.end,
             cx,
             out.text.first_line_mut(),
-            &mut advances.first_line,
         );
         dropped = dropped.saturating_add(first_dropped);
         flags.insert(first_flags);
@@ -667,6 +662,9 @@ pub(crate) struct ShapedText {
     /// Each unit is one script run. Font fallback may split it into several
     /// shaping runs, which share the fit. Sorted by run, and sparse.
     combined: SortedTable<(ScriptRunId, CombineFit)>,
+    /// Each cluster's advance along the line, in 48.16, which measurement
+    /// copies and sums.
+    pub(crate) advances: Vec<InlineLayoutUnit>,
 }
 
 impl ShapedText {
@@ -675,6 +673,7 @@ impl ShapedText {
             glyphs: GlyphStore::new(),
             runs: ShapedRuns::new(),
             combined: SortedTable::new(),
+            advances: Vec::new(),
         }
     }
 
@@ -682,6 +681,7 @@ impl ShapedText {
         self.glyphs.clear();
         self.runs.clear();
         self.combined.clear();
+        self.advances.clear();
     }
 
     /// Returns how the combined unit in script run `run` fits its em.
@@ -761,6 +761,20 @@ impl Shaped {
     pub(crate) fn first_line_heap_bytes(&self) -> usize {
         self.text.first_line_heap_bytes()
     }
+
+    /// Returns `into` holding a copy of the text's and the first line's
+    /// advances, its own buffers cleared first: one allocation each going
+    /// round.
+    pub(crate) fn advances_into(&self, into: Advances) -> Advances {
+        let (mut text, mut first_line) = into.into_parts();
+        text.clear();
+        text.extend_from_slice(&self.text.get(FirstLineVariant::Standard).advances);
+        first_line.clear();
+        if let Some(first) = self.text.first_line() {
+            first_line.extend_from_slice(&first.advances);
+        }
+        Advances::new(text, first_line)
+    }
 }
 
 heap_bytes! {
@@ -768,7 +782,7 @@ heap_bytes! {
 }
 
 heap_bytes! {
-    ShapedText { glyphs, runs, combined }
+    ShapedText { glyphs, runs, combined, advances }
 }
 
 heap_bytes! {
@@ -792,13 +806,13 @@ impl Default for Shaped {
 /// `::first-line` styles where font selection gave it runs of its own. The
 /// second is empty otherwise.
 ///
-/// This is not part of [`Shaped`]. Advances are in 48.16, the type of the
-/// prefix sums measurement turns them into in place. So a cluster's advance
-/// is exactly its glyphs', however wide.
+/// Advances are in 48.16, the type of the prefix sums measurement turns
+/// them into. So a cluster's advance is exactly its glyphs', however wide.
 ///
-/// The buffers move by value from shaping to measurement, and back between
-/// builds through `Measured::recycle`. Each buffer has one writer at a time
-/// and keeps one allocation going round.
+/// Each [`ShapedText`] keeps its own, so that the text can be measured again
+/// with other box sizes. Measurement copies them into the buffers its last
+/// prefix sums were kept in (`Measured::recycle`) and sums them there in
+/// place.
 pub(crate) struct Advances {
     text: Vec<InlineLayoutUnit>,
     first_line: Vec<InlineLayoutUnit>,

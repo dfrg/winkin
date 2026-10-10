@@ -438,9 +438,9 @@ fn edged<'a>(style: &ComputedStyle<'a>, left: [f32; 3], right: [f32; 3]) -> Comp
     };
     ComputedStyle {
         edges: EdgesGroup {
-            margin: sides(0),
+            margin: sides(0).into(),
             border: sides(1),
-            padding: sides(2),
+            padding: sides(2).into(),
             ..EdgesGroup::INITIAL
         },
         ..*style

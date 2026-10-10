@@ -303,21 +303,25 @@ impl OrientationGroup {
 style_struct! {
     /// Margin, border and padding on physical sides. Not inherited.
     ///
-    /// Resolve percentages against the block width. Layout maps edges to the
-    /// writing mode and truncates lengths toward zero on the 1/64-pixel grid,
-    /// matching Chrome: 10.012 px becomes 10 px and 10.99 px becomes
-    /// 10.984375 px.
+    /// Percentages in margins and padding are of the containing block's
+    /// inline size, which a layout takes from [`BuildOptions::percentage_basis`]
+    /// and [`Layout::measure`]. Layout maps edges to the writing mode and
+    /// truncates lengths toward zero on the 1/64-pixel grid, matching Chrome:
+    /// 10.012 px becomes 10 px and 10.99 px becomes 10.984375 px.
+    ///
+    /// [`BuildOptions::percentage_basis`]: crate::BuildOptions::percentage_basis
+    /// [`Layout::measure`]: crate::Layout::measure
     pub struct EdgesGroup {
-        /// `margin`, in pixels.
-        pub margin: Sides<f32>,
+        /// `margin`, in pixels and as a fraction of the basis.
+        pub margin: Sides<LengthPercentage>,
         /// Used `border-width` in pixels, or zero for border style `none`.
         ///
         /// Snap widths before building, matching Chrome: positive widths below
         /// one pixel become one; larger widths round down to whole pixels.
         /// Thus 0.5 px becomes 1 px and 2.5 px becomes 2 px.
         pub border: Sides<f32>,
-        /// `padding`, in pixels.
-        pub padding: Sides<f32>,
+        /// `padding`, in pixels and as a fraction of the basis.
+        pub padding: Sides<LengthPercentage>,
         /// `box-decoration-break`.
         pub decoration_break: BoxDecorationBreak,
     }
@@ -326,17 +330,45 @@ style_struct! {
 impl EdgesGroup {
     /// No margin, border or padding.
     pub const INITIAL: Self = Self {
-        margin: Sides::ZERO,
+        margin: Sides::from_px(0.0),
         border: Sides::ZERO,
-        padding: Sides::ZERO,
+        padding: Sides::from_px(0.0),
         decoration_break: BoxDecorationBreak::Slice,
     };
 
-    /// Returns `true` if any side has a nonzero margin, border or padding.
+    /// Returns `true` if any side has a nonzero margin, border or padding,
+    /// at any basis.
     pub fn any(&self) -> bool {
         self.margin.any() || self.border.any() || self.padding.any()
     }
 
+    /// Whether a margin or padding has a percentage.
+    pub(crate) fn has_percentage(&self) -> bool {
+        self.margin.has_percentage() || self.padding.has_percentage()
+    }
+
+    /// Returns the edges in pixels, each percentage taken of `basis` pixels.
+    pub(crate) fn used(&self, basis: f32) -> UsedEdges {
+        UsedEdges {
+            margin: self.margin.resolve(basis),
+            border: self.border,
+            padding: self.padding.resolve(basis),
+        }
+    }
+}
+
+/// A box's margin, border and padding in pixels, its percentages resolved.
+#[derive(Copy, Clone, Debug)]
+pub(crate) struct UsedEdges {
+    /// `margin`, in pixels.
+    pub(crate) margin: Sides<f32>,
+    /// `border-width`, in pixels.
+    pub(crate) border: Sides<f32>,
+    /// `padding`, in pixels.
+    pub(crate) padding: Sides<f32>,
+}
+
+impl UsedEdges {
     /// Returns the room a box takes along the line at each end.
     ///
     /// The pair is `(line-left, line-right)`. Each end sums the margin,
@@ -344,7 +376,7 @@ impl EdgesGroup {
     /// Each length is truncated onto layout's grid, as Chrome makes a
     /// `LayoutUnit` from a float.
     ///
-    /// Every stage that charges a box's edges calls this: measurement for the
+    /// Every stage that charges a box's edges reads this: measurement for the
     /// prefix sums, the breaker for a line's ends, and line layout for the
     /// pieces. So fitting and placing cannot disagree. The caller picks the
     /// end an opening or closing edge takes from the edge's bidi level. The

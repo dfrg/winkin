@@ -160,7 +160,7 @@ fn any_area_gives_valid_reads() {
     let root = sized(&LATIN, 16.0);
     let roomy = ComputedStyle {
         edges: EdgesGroup {
-            padding: Sides::all(4.0),
+            padding: Sides::from_px(4.0),
             ..EdgesGroup::INITIAL
         },
         ..root

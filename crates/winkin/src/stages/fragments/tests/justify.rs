@@ -180,8 +180,8 @@ fn every_justified_line_spends_exactly_its_room() {
     let narrow = sized(&NARROW, 17.3);
     let boxed = ComputedStyle {
         edges: EdgesGroup {
-            padding: Sides::all(2.3),
-            margin: Sides::all(0.7),
+            padding: Sides::from_px(2.3),
+            margin: Sides::from_px(0.7),
             ..EdgesGroup::INITIAL
         },
         ..sized(&LATIN, 11.0)
