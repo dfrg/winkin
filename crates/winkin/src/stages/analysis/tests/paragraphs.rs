@@ -153,10 +153,13 @@ fn a_paragraphs_flags_say_what_it_holds() {
     }
     assert_eq!(analysis(&layout).flags, union);
 
-    // An atomic inline, which raises nothing, and a box with `unicode-bidi`,
+    // An atomic inline, which raises nothing, and a right-to-left isolate,
     // whose controls reach every paragraph it spans, and not the one after
     // it: what opens the bidi gate a paragraph is resolved behind.
-    let isolate = styled(|style| style.bidi.unicode_bidi = UnicodeBidi::Isolate);
+    let isolate = styled(|style| {
+        style.bidi.unicode_bidi = UnicodeBidi::Isolate;
+        style.bidi.direction = Direction::Rtl;
+    });
     let layout = build(|b| {
         b.text(key(1), "a");
         b.atomic(key(2), &ComputedStyle::initial(), None, BoxSize::default());
@@ -170,12 +173,48 @@ fn a_paragraphs_flags_say_what_it_holds() {
         b.text(key(9), "d");
     });
     assert_eq!(cluster_levels(&layout), [0, 0, 0, 2, 0, 2, 0, 0]);
-    // The block's override reaches every paragraph.
+    // Left-to-right controls with nothing right to left move no level:
+    // Blink finds such a paragraph unidirectional and leaves it at 0.
+    for unicode_bidi in [
+        UnicodeBidi::Embed,
+        UnicodeBidi::Isolate,
+        UnicodeBidi::BidiOverride,
+        UnicodeBidi::IsolateOverride,
+        UnicodeBidi::Plaintext,
+    ] {
+        let ltr = styled(|style| style.bidi.unicode_bidi = unicode_bidi);
+        let layout = build(|b| {
+            b.text(key(1), "a ");
+            b.open_box(key(2), &ltr, None);
+            b.text(key(3), "b 1.");
+            b.close_box();
+            b.text(key(4), " c");
+        });
+        assert!(
+            cluster_levels(&layout).iter().all(|&level| level == 0),
+            "{unicode_bidi:?}"
+        );
+        assert!(
+            !analysis(&layout).flags.contains(F::MIXED_LEVELS),
+            "{unicode_bidi:?}"
+        );
+    }
+    // Right-to-left text beside one still has the paragraph resolved, the
+    // isolate's text two levels up.
+    let ltr = styled(|style| style.bidi.unicode_bidi = UnicodeBidi::Isolate);
+    let layout = build(|b| {
+        b.text(key(1), "\u{5D0} ");
+        b.open_box(key(2), &ltr, None);
+        b.text(key(3), "b");
+        b.close_box();
+    });
+    assert_eq!(cluster_levels(&layout), [1, 0, 2]);
+    // The block's left-to-right override moves no level either.
     let overriding = styled(|style| style.bidi.unicode_bidi = UnicodeBidi::BidiOverride);
     let layout = build_with(&ComputedBlockStyle::new(&overriding), |b| {
         b.text(key(1), "a");
         b.line_break(key(2));
         b.text(key(3), "b");
     });
-    assert_eq!(cluster_levels(&layout), [2, 0, 2]);
+    assert_eq!(cluster_levels(&layout), [0, 0, 0]);
 }

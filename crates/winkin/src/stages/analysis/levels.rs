@@ -185,8 +185,7 @@ impl BidiInput {
     pub(super) fn begin_paragraph(&mut self, content: &Content) -> bool {
         self.inside.clear();
         self.inside.extend_from_slice(&self.open);
-        let letter = content.block.initial_letter;
-        self.open.iter().any(|&open| Some(open) != letter)
+        self.open.iter().any(|&open| moves_levels(content, open))
     }
 
     /// Adds the next cluster's unit, of `class`; returns its class's mask.
@@ -709,12 +708,11 @@ fn bidi_units(
 /// ([`opens_controls`]) is never among them unless it is the initial
 /// letter.
 ///
-/// The initial letter's isolate moves no level by itself: in a paragraph
-/// with nothing right to left, in a block that is not, every cluster stays
-/// at level 0 around it. So it alone does not have the paragraph resolved.
+/// Controls that move no level by themselves ([`moves_levels`]) alone do
+/// not have the paragraph resolved.
 fn track(open: &mut Vec<NodeId>, content: &Content, item: &Item) -> bool {
     let node = item.node;
-    let moves = content.block.initial_letter != Some(node);
+    let moves = moves_levels(content, node);
     match item.kind {
         kind if kind.is_open() && opens_controls(content, node) => {
             open.push(node);
@@ -810,6 +808,37 @@ fn opens_controls(content: &Content, node: NodeId) -> bool {
         Some(NodeKind::Annotation) => true,
         Some(NodeKind::Box | NodeKind::Ruby) => {
             box_facts(content, node).bidi != UnicodeBidi::Normal
+        }
+        _ => false,
+    }
+}
+
+/// Whether the controls `node` opens may move a level by themselves: put a
+/// cluster at another level than 0 in a paragraph with nothing right to
+/// left, in a block that is not.
+///
+/// Left-to-right embeddings, overrides and isolates, and first-strong
+/// isolates with nothing right to left to find, raise even levels over even
+/// ones. Blink then finds the paragraph unidirectional and leaves every
+/// item at level 0 (`InlineNode::SegmentBidiRuns`), and so does a paragraph
+/// they alone are in. The initial letter's isolate is one of them.
+/// Right-to-left controls may move a level, and an annotation's isolate
+/// raises its text, which splits the runs at its edges.
+fn moves_levels(content: &Content, node: NodeId) -> bool {
+    if content.block.initial_letter == Some(node) {
+        return false;
+    }
+    match content.nodes.kind(node) {
+        Some(NodeKind::Annotation) => true,
+        Some(NodeKind::Box | NodeKind::Ruby) => {
+            let facts = box_facts(content, node);
+            match facts.bidi {
+                UnicodeBidi::Normal | UnicodeBidi::Plaintext => false,
+                UnicodeBidi::Embed
+                | UnicodeBidi::BidiOverride
+                | UnicodeBidi::Isolate
+                | UnicodeBidi::IsolateOverride => facts.direction() == Direction::Rtl,
+            }
         }
         _ => false,
     }

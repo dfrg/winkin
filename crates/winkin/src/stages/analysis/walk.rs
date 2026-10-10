@@ -40,7 +40,7 @@ use crate::stages::content::{
     Content, ContentFlags, Item, ItemFlags, ItemId, ItemKind, LanguageId, MAX_RUBY_DEPTH, NodeId,
     TextFlags, TextSetting,
 };
-use crate::style::{FirstLineVariant, TextCombineUpright, WhiteSpaceCollapse};
+use crate::style::{Direction, FirstLineVariant, TextCombineUpright, WhiteSpaceCollapse};
 use crate::unicode::{self, CoreProps, RareProps};
 use crate::work;
 
@@ -470,7 +470,9 @@ impl<'a> ClusterWriter<'a> {
             paragraph: ParagraphState::default(),
             runs: Runs::new(),
             controls: false,
-            block_overrides: content.block.overrides.is_some(),
+            // A left-to-right override raises even levels over even ones,
+            // which Blink leaves at 0 (`levels::moves_levels`).
+            block_overrides: content.block.overrides == Some(Direction::Rtl),
             requested: BidiLevel::from_direction(content.block.direction),
             any_nowrap: flags.contains(ContentFlags::NOWRAP),
             any_atomics: flags.contains(ContentFlags::ATOMICS),
