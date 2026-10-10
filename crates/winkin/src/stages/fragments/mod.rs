@@ -88,6 +88,13 @@ pub(crate) fn place_fragments(
     out: &mut Fragments,
 ) {
     debug_assert_eq!(input.lines.lines.len(), input.placements.len());
+    // Each line writes its `Line` item, and each content item at least one
+    // item: room for those at once, where a fresh layout's tables would
+    // grow by doubling.
+    let lines = input.lines.lines.len();
+    out.line_heads.reserve(lines);
+    out.items
+        .reserve(lines.saturating_add(input.stages.content.items.len()));
     scratch.begin();
     Placer::new(input, input.lines.block).lines(scratch, out);
 }

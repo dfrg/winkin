@@ -221,5 +221,6 @@ mod positioned;
 mod ruby;
 #[cfg(debug_assertions)]
 mod seeks;
+mod sizing;
 mod text_runs;
 mod vertical;

@@ -291,3 +291,45 @@ fn an_emphasis_mark_is_centred_on_its_cluster_whatever_the_font_metrics() {
         }
     }
 }
+
+/// Content with emphasis marks or ruby annotations has annotations, and
+/// plain content has none and never lends a block after it negative room.
+#[test]
+fn a_layout_says_whether_it_has_annotations() {
+    let mut cx = context();
+    let plain_style = sized(&AHEM_FAMILY, 20.0);
+    let mut plain = Layout::new();
+    build(
+        &mut cx,
+        &mut plain,
+        &ComputedBlockStyle::new(&plain_style),
+        |b| b.text(NodeKey(1), "XX XX"),
+    );
+    plain.break_lines(&mut cx, Area::new(30.0), &mut NoExclusions);
+    assert!(!plain.has_annotations());
+    assert!(plain.room_below() >= 0.0);
+    let marked_style = marked(20.0, EmphasisSkip::INITIAL);
+    let mut marked_layout = Layout::new();
+    build(
+        &mut cx,
+        &mut marked_layout,
+        &ComputedBlockStyle::new(&marked_style),
+        |b| b.text(NodeKey(1), "XX"),
+    );
+    assert!(marked_layout.has_annotations());
+    let mut ruby = Layout::new();
+    build(
+        &mut cx,
+        &mut ruby,
+        &ComputedBlockStyle::new(&plain_style),
+        |b| {
+            b.open_ruby(NodeKey(1), &plain_style, None);
+            b.text(NodeKey(2), "XX");
+            b.open_annotation(NodeKey(3), &plain_style, None);
+            b.text(NodeKey(4), "X");
+            b.close_annotation();
+            b.close_ruby();
+        },
+    );
+    assert!(ruby.has_annotations());
+}

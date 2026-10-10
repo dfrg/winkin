@@ -58,6 +58,12 @@ pub(crate) use placement::{LinePlacements, LineView};
 use placement::{PendingLine, PlacementFacts};
 pub(crate) use trim::TextBoxTrims;
 
+/// Whether `stages`' lines may carry ruby annotations or emphasis marks,
+/// which take room over a line and under it.
+pub(crate) fn annotated(stages: Stages<'_>) -> bool {
+    AnnotationRoom::wanted(stages.content, stages.measured)
+}
+
 use annotate::{AnnotationRoom, Carry};
 
 use height::{BoxStack, CarriedBoxes, LineFonts};

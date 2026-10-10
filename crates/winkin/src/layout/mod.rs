@@ -441,6 +441,37 @@ impl Layout {
         self.break_lines_with_provider(cx, area, exclusions, Some(provider));
     }
 
+    /// Breaks the content in `area` to size it, without positioning items.
+    ///
+    /// The lines are those [`break_lines`](Self::break_lines) makes, and
+    /// floats are placed through `exclusions` alike. [`metrics`](Self::metrics),
+    /// [`room_below`](Self::room_below), and each line's count, width, extent
+    /// and band are as `break_lines` gives them; a line's left edge is its
+    /// band's and its top zero, before alignment and positioning. Items,
+    /// paints, box fragments, static positions, hit tests and carets see
+    /// no items until the next `break_lines`.
+    ///
+    /// A host that sizes a block before it places it calls this first: it
+    /// skips the positioning that `break_lines` does again.
+    pub fn size_lines(&mut self, cx: &mut Context, area: Area, exclusions: &mut dyn Exclusions) {
+        self.break_with_provider(cx, area, exclusions, None, false);
+    }
+
+    /// Breaks the content to size it, using host glyph metrics.
+    ///
+    /// Behaves like [`size_lines`](Self::size_lines), but uses `provider`
+    /// when reshaping line edges, as
+    /// [`break_lines_with_metrics`](Self::break_lines_with_metrics) does.
+    pub fn size_lines_with_metrics(
+        &mut self,
+        cx: &mut Context,
+        area: Area,
+        exclusions: &mut dyn Exclusions,
+        provider: &dyn FontMetricsProvider,
+    ) {
+        self.break_with_provider(cx, area, exclusions, Some(provider), false);
+    }
+
     /// Returns pending `@font-face` faces needed by this content, without duplicates.
     ///
     /// After loading a face, update the context collection and rebuild layouts
@@ -539,6 +570,17 @@ impl Layout {
     /// unfinished layout.
     pub fn intrinsic_sizes(&self) -> IntrinsicSizes {
         self.stages.measured.intrinsic.into()
+    }
+
+    /// Returns whether the lines may carry ruby annotations or emphasis
+    /// marks.
+    ///
+    /// Only then does [`Area::room_above`](crate::Area::room_above) change
+    /// the lines, and can [`room_below`](Self::room_below) be negative. A
+    /// host need not work out the room above for content without them.
+    /// Available after the builder finishes.
+    pub fn has_annotations(&self) -> bool {
+        lines::annotated(self.stages())
     }
 
     /// Returns space below the last line that the next block can use.
@@ -745,6 +787,19 @@ impl Layout {
         exclusions: &mut dyn Exclusions,
         provider: Option<&dyn FontMetricsProvider>,
     ) {
+        self.break_with_provider(cx, area, exclusions, provider, true);
+    }
+
+    /// Breaks the content in `area`, and positions its items where `place`
+    /// says.
+    fn break_with_provider(
+        &mut self,
+        cx: &mut Context,
+        area: Area,
+        exclusions: &mut dyn Exclusions,
+        provider: Option<&dyn FontMetricsProvider>,
+        place: bool,
+    ) {
         cx.start_break(self.content.size());
         self.clear_lines();
         // What preparing made, borrowed immutably, so it stays frozen.
@@ -770,6 +825,10 @@ impl Layout {
         // Line layout: place items using breaking's block result, their tabs
         // sized in the area the breaker sized them in.
         let (placements, scratch) = cx.placing();
+        if !place {
+            placements.clear();
+            return;
+        }
         let input = PlaceInput {
             stages,
             lines,
