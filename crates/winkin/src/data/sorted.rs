@@ -3,7 +3,7 @@
 
 use alloc::vec::Vec;
 
-use super::HeapBytes;
+use super::{HeapBytes, sort_by_key};
 use crate::work;
 
 /// An entry a table is sorted by, and found by: its key, which it holds.
@@ -90,7 +90,7 @@ impl<T: Keyed> SortedTable<T> {
     /// every key before `mark`.
     pub(crate) fn sort_from(&mut self, mark: usize) {
         if let Some(tail) = self.entries.get_mut(mark..) {
-            tail.sort_unstable_by_key(Keyed::key);
+            sort_by_key(tail, Keyed::key);
         }
         debug_assert!(
             self.entries

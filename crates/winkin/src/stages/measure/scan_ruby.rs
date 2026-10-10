@@ -21,7 +21,7 @@ use super::{
     RubySide, Scan, ScanWalk, TabReach, ruby,
 };
 use crate::config::RubyOverhangRule;
-use crate::data::{Id, IdRange};
+use crate::data::{Id, IdRange, sort_by_key};
 use crate::stages::analysis::{ClusterAttrs, ClusterClass, ClusterId};
 use crate::stages::content::{
     Content, Item, ItemFlags, ItemId, ItemKind, NodeId, TextFactsId, TextFlags,
@@ -159,7 +159,7 @@ impl RubyBoundaries {
                 .rooms
                 .get_slice_mut(first_room..past_room)
             {
-                rooms.sort_unstable_by_key(|room| room.at);
+                sort_by_key(rooms, |room| room.at);
             }
             if let Some(open) = &self.column {
                 room.overhang.start = InlineLayoutUnit::from_layout(open.start_overhang);

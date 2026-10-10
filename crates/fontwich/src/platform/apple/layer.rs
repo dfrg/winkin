@@ -49,6 +49,8 @@ use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use std::ffi::OsStr;
+
+use crate::sort;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
@@ -346,12 +348,14 @@ fn listing() -> Listing {
         }
         // Sorted within each half, so that two runs list the same order
         // however the file system answered.
-        names[first..].sort_by(|a, b| compare_names(&a.0, &b.0));
+        sort::by(&mut names[first..], |a, b| {
+            compare_names(&a.0, &b.0).then_with(|| a.0.cmp(&b.0))
+        });
     }
     // `names` keeps its two halves, primaries first, which marks the
     // secondary ones. `ListedFamilies` is searched, not walked, so it sorts
     // whole. The two halves share no name, so the order is certain.
-    families.sort_by(|a, b| compare_names(&a.name, &b.name));
+    sort::by(&mut families, |a, b| compare_names(&a.name, &b.name));
     Listing {
         names,
         primaries,

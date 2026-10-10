@@ -51,6 +51,8 @@ use alloc::vec::Vec;
 use core::num::NonZeroU32;
 use core::ops::Range;
 
+use crate::data::sort_by_key;
+
 // --------------------------------------------------------------------------
 // The types a caller deals in
 // --------------------------------------------------------------------------
@@ -1085,7 +1087,7 @@ impl<U: Unit> Resolver<'_, U> {
                     BidiClass::LEFT_TO_RIGHT
                 };
                 let bracket_pairs = &mut self.scratch.bracket_pairs[..];
-                bracket_pairs.sort_unstable_by_key(|pair| pair.0);
+                sort_by_key(bracket_pairs, |pair| pair.0);
                 let mut strong_scan = 0;
                 let mut preceding_strong = BidiClass::OTHER_NEUTRAL;
                 for &(open, close) in &*bracket_pairs {

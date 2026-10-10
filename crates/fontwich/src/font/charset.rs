@@ -543,7 +543,7 @@ fn read_file(
     // A subtable ends where the next begins, or with the table. Its own
     // length field is no help: format 4's is sixteen bits, and a CJK font's
     // format 4 can be longer than that says.
-    offsets.sort_unstable();
+    sort::by(&mut offsets, Ord::cmp);
     let extent = |offset: u32| {
         let next = offsets
             .iter()
@@ -556,7 +556,7 @@ fn read_file(
         .iter()
         .filter_map(|&(offset, rank)| Some((rank?, offset)))
         .collect();
-    candidates.sort_unstable();
+    sort::by(&mut candidates, Ord::cmp);
     for (_, offset) in candidates {
         let Some(bytes) = font.read(at + u64::from(offset), extent(offset)) else {
             continue;

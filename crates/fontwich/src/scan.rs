@@ -5,6 +5,8 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use std::path::{Path, PathBuf};
 
+use crate::sort;
+
 use crate::font::{
     FileFont, Font, TABLE_LIMIT, family_names, postscript_name, read_u32, standalone_name_table,
 };
@@ -121,7 +123,7 @@ impl Scanned {
         let mut paths: Vec<PathBuf> = entries
             .filter_map(|entry| Some(entry.ok()?.path()))
             .collect();
-        paths.sort();
+        sort::by(&mut paths, Ord::cmp);
         for path in paths {
             if path.is_dir() {
                 self.directory(&path);

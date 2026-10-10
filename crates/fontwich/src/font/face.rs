@@ -5,6 +5,8 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ops::RangeInclusive;
 
+use crate::sort;
+
 use parlance::{FontFeature, FontStyle, FontVariation, FontWeight, FontWidth};
 
 use super::matching::clamp;
@@ -103,7 +105,7 @@ impl Face {
                 .map(|range| (*range.start(), (*range.end()).min(0x10FFFF)))
                 .filter(|(start, end)| start <= end)
                 .collect();
-            ranges.sort_unstable();
+            sort::by(&mut ranges, Ord::cmp);
             for (start, end) in ranges {
                 builder.insert(start, end);
             }

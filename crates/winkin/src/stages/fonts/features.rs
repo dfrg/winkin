@@ -41,7 +41,7 @@ use read_fonts::{TableProvider, types};
 
 use super::CaseMap;
 use super::instance::Instances;
-use crate::data::{FxHasher, LruCache, define_flags, define_id, heap_bytes};
+use crate::data::{FxHasher, LruCache, define_flags, define_id, heap_bytes, stable_sort_by_key};
 use crate::stages::content::FontRequest;
 use crate::style::{FontKerning, FontVariantCaps, FontVariantPosition, FontVariants};
 
@@ -617,7 +617,7 @@ pub(super) fn position_tag(position: FontVariantPosition) -> Option<[u8; 4]> {
 /// settings gives one list.
 pub(super) fn settle<T: Copy>(settings: &mut Vec<T>, tag: impl Fn(&T) -> Tag) {
     // Stable, so the settings of one tag keep their order.
-    settings.sort_by_key(|setting| tag(setting).to_bytes());
+    stable_sort_by_key(settings, |setting| tag(setting).to_bytes());
     // Keeps the first setting of each tag, holding the last one's value.
     settings.dedup_by(|later, kept| {
         let same = tag(later) == tag(kept);

@@ -33,7 +33,7 @@
 //! - `hash`: the one hash, [`FxHasher`];
 //! - `heap`: [`HeapBytes`], what a table keeps on the heap, and
 //!   [`heap_bytes!`], which sums a struct's tables;
-//! - `sort`: the crate's one sort, [`sort_by_key`].
+//! - `sort`: the crate's sorts, [`sort_by_key`] and [`stable_sort_by_key`].
 
 mod bits;
 mod flags;
@@ -59,6 +59,6 @@ pub(crate) use index::HashIndex;
 pub(crate) use lru::LruCache;
 pub(crate) use offset::TextOffset;
 pub(crate) use runs::{Run, RunCursor, Runs};
-pub(crate) use sort::sort_by_key;
+pub(crate) use sort::{sort_by_key, stable_sort_by_key};
 pub(crate) use sorted::{Keyed, SortedCursor, SortedTable, find_sorted};
 pub(crate) use table::{Table, make_room, make_text_room};

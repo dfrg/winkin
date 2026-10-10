@@ -24,7 +24,7 @@ use super::{
     Placer,
 };
 use crate::data::IdRange;
-use crate::data::{Id, Table, define_id, heap_bytes};
+use crate::data::{Id, Table, define_id, heap_bytes, stable_sort_by_key};
 use crate::stages::analysis::{BidiLevel, ClusterClass, ClusterId};
 use crate::stages::content::{ItemFlags, ItemId, ItemKind, NodeId, NodeKind};
 use crate::stages::lines::{LineView, RubyPiece};
@@ -859,7 +859,9 @@ impl<'a> Placer<'a> {
                 .get(open.column)
                 .is_some_and(|column| column.parent.is_some())
         }) {
-            columns.sort_by_key(|open| self.rubies.get(open.column).map(|column| column.close));
+            stable_sort_by_key(&mut columns[..], |open| {
+                self.rubies.get(open.column).map(|column| column.close)
+            });
         }
         let baseline = line.ascent();
         for index in 0..columns.len() {

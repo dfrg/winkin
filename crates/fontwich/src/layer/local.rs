@@ -8,6 +8,8 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+use crate::sort;
+
 use super::{FamilyId, Layer};
 #[cfg(feature = "std")]
 use crate::font::{FileFont, TABLE_LIMIT, standalone_name_table};
@@ -93,7 +95,7 @@ impl Layer {
             }
             family = family.next();
         }
-        names.sort_unstable_by_key(|local| local.hash);
+        sort::by_key(&mut names, |local| local.hash);
         names
     }
 }

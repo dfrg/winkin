@@ -18,6 +18,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+use crate::sort;
 use crate::sync::{Mutex, Once};
 
 use core::cmp::Ordering;
@@ -407,10 +408,12 @@ impl Layer {
             })
             .collect();
 
-        // Drop a family whose own name an earlier one already has. The sort
-        // is stable, so among equal names the first listed comes first.
+        // Drop a family whose own name an earlier one already has. Equal
+        // names keep the order they were listed in, so the first comes first.
         let mut order: Vec<usize> = (0..listed.len()).collect();
-        order.sort_by(|&a, &b| compare_names(&listed[a].0, &listed[b].0));
+        sort::by(&mut order, |&a, &b| {
+            compare_names(&listed[a].0, &listed[b].0).then(a.cmp(&b))
+        });
         let mut keep = alloc::vec![true; listed.len()];
         for pair in order.windows(2) {
             if compare_names(&listed[pair[0]].0, &listed[pair[1]].0) == Ordering::Equal {
@@ -721,9 +724,12 @@ fn index(families: &[Arc<FamilyRecord>]) -> Vec<NameEntry> {
             })
         })
         .collect();
-    // A stable sort over entries in family order, so among equal names the
-    // first family's entry comes first and `dedup_by` keeps it.
-    index.sort_by(|a, b| compare_names(name(a), name(b)));
+    // Equal names keep the entries' order, family by family, so among them
+    // the first family's entry comes first and `dedup_by` keeps it.
+    sort::by(&mut index, |a, b| {
+        compare_names(name(a), name(b))
+            .then((a.family.index(), a.name).cmp(&(b.family.index(), b.name)))
+    });
     index.dedup_by(|later, earlier| compare_names(name(later), name(earlier)) == Ordering::Equal);
     index
 }
