@@ -7,8 +7,27 @@
 use super::*;
 use crate::tests::unicode_test_data;
 
+/// Grapheme boundaries in `text`, `boundaries`, with the boundary clusters add
+/// inside a grapheme of a space and the marks after it.
+///
+/// UAX #14 sets no mark on a space and breaks between them, so the marks are
+/// a cluster of their own. Such a grapheme is the only one that starts with
+/// a space and goes on past it.
+fn with_spaces_apart(text: &str, boundaries: &[usize]) -> Vec<usize> {
+    let mut out = Vec::new();
+    for pair in boundaries.windows(2) {
+        out.push(pair[0]);
+        if text.as_bytes().get(pair[0]) == Some(&b' ') && pair[1] > pair[0] + 1 {
+            out.push(pair[0] + 1);
+        }
+    }
+    out.extend(boundaries.last());
+    out
+}
+
 /// The grapheme clusters are UAX #29 17.0's: `GraphemeBreakTest.txt`, from
-/// ICU4X's copy of the Unicode file, every line, as one text preserved.
+/// ICU4X's copy of the Unicode file, every line, as one text preserved, but
+/// for a space and its marks ([`with_spaces_apart`]).
 ///
 /// The file has no U+FFFC; a boundary after one is the next test's.
 #[test]
@@ -60,7 +79,7 @@ fn clusters_follow_the_grapheme_break_test() {
                 .filter_map(|id| clusters.end(id))
                 .map(|end| end.end().get()),
         );
-        assert_eq!(found, expected, "{line}");
+        assert_eq!(found, with_spaces_apart(&text, &expected), "{line}");
         cases += 1;
     }
     // The file's 766, less the 75 with a CR.
@@ -163,6 +182,7 @@ fn clusters_across_latin_1_and_the_rest_are_icus_graphemes() {
         let layout = pre(&text);
         assert_eq!(layout.content().text, text, "preserved as written");
         let graphemes: Vec<_> = cx.graphemes().segment_str(&text).collect();
+        let graphemes = with_spaces_apart(&text, &graphemes);
         let expected: Vec<&str> = graphemes
             .windows(2)
             .map(|pair| &text[pair[0]..pair[1]])

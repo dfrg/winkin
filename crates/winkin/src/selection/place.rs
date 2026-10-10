@@ -419,10 +419,14 @@ pub(super) fn snap(layout: &Layout, unsnapped: ClusteredPosition) -> ClusteredPo
 /// Returns whether the boundary before `cluster` is inside a grapheme and no stop.
 ///
 /// That is where `cluster` continues a grapheme split at an item boundary,
-/// and no box's margin, border or padding takes room there. Chrome makes
-/// such an edge a stop of its own.
+/// or is the marks after a space, and no box's margin, border or padding
+/// takes room there. Chrome makes such an edge a stop of its own.
 fn divides_grapheme(layout: &Layout, cluster: ClusterId) -> bool {
-    layout.analysis().clusters.is_continuation(cluster) && !is_box_edge(layout, cluster)
+    layout
+        .analysis()
+        .clusters
+        .continues_grapheme(layout.text(), cluster)
+        && !is_box_edge(layout, cluster)
 }
 
 /// Returns whether a box opening or closing before `cluster` has margin, border or padding.

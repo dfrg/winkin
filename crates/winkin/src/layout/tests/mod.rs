@@ -215,6 +215,7 @@ fn any_area_gives_valid_reads() {
 mod boxes;
 mod emphasis;
 mod generated;
+mod graphemes;
 mod initial;
 mod paint;
 mod positioned;

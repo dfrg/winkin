@@ -687,10 +687,19 @@ impl ClusterWriter<'_> {
             // orientation may; Latin-1 reads none for either.
             let rare = (ch >= '\u{100}').then(|| unicode::rare_props(ch));
             let grapheme = self.grapheme_boundary(at, ch, rare);
-            let starts = offset == 0 || grapheme || self.after_object;
+            // Marks after a lone space start a cluster of their own. UAX #14
+            // sets no mark on a space (LB9) and breaks after it before them
+            // (LB10, LB18), as Chrome and Firefox do, inside the grapheme the
+            // two make. Carets keep to the grapheme
+            // (`Clusters::continues_grapheme`).
+            let after_space = !grapheme
+                && self.pending.as_ref().is_some_and(|pending| {
+                    pending.first == ' ' && pending.last == ' ' && pending.start + 1 == at
+                });
+            let starts = offset == 0 || grapheme || self.after_object || after_space;
             // A cluster that starts only because an item does is the rest of
             // a grapheme the item boundary divided.
-            let continuation = !grapheme && !self.after_object && !object;
+            let continuation = !grapheme && !self.after_object && !object && !after_space;
             if starts {
                 self.start_cluster(at, ch, props, rare, continuation);
             } else if let Some(pending) = &mut self.pending {

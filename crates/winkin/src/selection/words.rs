@@ -598,7 +598,7 @@ fn reach(
         work::step();
         let generates = clusters.class(at) == Some(ClusterClass::BreakOpportunity);
         generated |= generates;
-        if !generates && !clusters.is_continuation(at) && counts(clusters, text, at) {
+        if !generates && !clusters.continues_grapheme(text, at) && counts(clusters, text, at) {
             counted += 1;
         }
         bytes += short_len(clusters, text, at);
@@ -607,7 +607,7 @@ fn reach(
             // Back to a grapheme's start, which a split grapheme's later
             // part is not.
             Side::Before => {
-                if (done && !clusters.is_continuation(at)) || at <= paragraph.start {
+                if (done && !clusters.continues_grapheme(text, at)) || at <= paragraph.start {
                     return (at, generated);
                 }
                 at = ClusterId::new(at.get() - 1);
@@ -616,7 +616,7 @@ fn reach(
             // continues a split grapheme.
             Side::After => {
                 let next = ClusterId::new(at.get() + 1);
-                if (done && !clusters.is_continuation(next)) || next >= paragraph.end {
+                if (done && !clusters.continues_grapheme(text, next)) || next >= paragraph.end {
                     return (next, generated);
                 }
                 at = next;

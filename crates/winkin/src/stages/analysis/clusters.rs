@@ -4,6 +4,7 @@ use core::ops::Range;
 
 use crate::data::{BitTable, Id, IdRange, Table, TextOffset, heap_bytes};
 use crate::stages::content::VariantText;
+use crate::unicode::{self, GraphemeClusterBreak};
 use crate::work;
 
 use super::{ClusterId, ParagraphFlags};
@@ -366,6 +367,33 @@ impl Clusters {
         self.ends
             .get(cluster)
             .is_some_and(|end| end.is_variation_selector())
+    }
+
+    /// Whether `cluster` goes on with the grapheme the cluster before it
+    /// started, `text` being the layout's.
+    ///
+    /// It does where it continues a grapheme an item boundary divided
+    /// ([`is_continuation`](Self::is_continuation)), and where it is the
+    /// marks after a space, which a line may break before. Carets and word
+    /// bounds keep to the grapheme in both.
+    pub(crate) fn continues_grapheme(&self, text: &str, cluster: ClusterId) -> bool {
+        if self.is_continuation(cluster) {
+            return true;
+        }
+        let start = self.start(cluster).get();
+        let before = start.checked_sub(1).and_then(|at| text.as_bytes().get(at));
+        before == Some(&b' ')
+            && text
+                .get(start..)
+                .and_then(|rest| rest.chars().next())
+                .is_some_and(|ch| {
+                    matches!(
+                        unicode::rare_props(ch).grapheme_cluster_break(),
+                        GraphemeClusterBreak::Extend
+                            | GraphemeClusterBreak::SpacingMark
+                            | GraphemeClusterBreak::Zwj
+                    )
+                })
     }
 
     /// Where `cluster` starts: where the one before it ends.
