@@ -1,0 +1,10 @@
+a[bc]d
+[ab]c
+a[bc]
+a[[bc]]d
+a[]b
+א[בג]ד
+a[בג]d
+ab{cd}e
+{ab}c
+a{b{c}d}e

@@ -12,7 +12,7 @@ use core::ops::Range;
 use super::overhang::{Overhanging, Ruby, TextBeside};
 use super::{BoundaryRoom, Scan, ScanPrefix, ScanWalk};
 use crate::config::RubyOverhangRule;
-use crate::data::{Id, IdRange, sort_by_key};
+use crate::data::{Id, IdRange};
 use crate::stages::analysis::{ClusterAttrs, ClusterClass, ClusterId};
 use crate::stages::content::{
     Content, Item, ItemFlags, ItemId, ItemKind, NodeId, TextFactsId, TextFlags,
@@ -147,19 +147,9 @@ impl RubyBoundaries {
                 tab_before: self.last_tab,
                 font_run: &font_run,
             };
-            let first_room = out.ruby_columns().rooms.next_id();
             let mut look = *walk;
             self.column = sizing.column(&mut look, seams, at, first, before, out);
             self.font_run = font_run.get();
-            let past_room = out.ruby_columns().rooms.next_id();
-            if let Some(rooms) = out
-                .rare_mut()
-                .rubies
-                .rooms
-                .get_slice_mut(first_room..past_room)
-            {
-                sort_by_key(rooms, |room| room.at);
-            }
             if let Some(open) = &self.column {
                 room.overhang.start = InlineLayoutUnit::from_layout(open.start_overhang);
             }
@@ -372,9 +362,7 @@ impl<'a> Sizing<'_, 'a> {
             look: *walk,
             seams,
             base: InlineLayoutUnit::ZERO,
-            in_base: true,
-            base_end: at,
-            base_end_item: first,
+            base_end: None,
             level: None,
             levels: out.rare_mut().rubies.levels.next_id(),
             count: 0,
@@ -387,6 +375,7 @@ impl<'a> Sizing<'_, 'a> {
             ended: false,
         };
         let (end, index) = self.measure_parts(&mut state, id, at, first, out)?;
+        let (base_end, base_end_item) = state.base_end.unwrap_or((at, first));
         let close = state.close.unwrap_or(index);
         // Base text after the last annotation is the line's, not a column.
         let next =
@@ -418,13 +407,13 @@ impl<'a> Sizing<'_, 'a> {
         let opportunities = JustifyOpportunities::from_base(
             content,
             scan.input.analysis,
-            at..state.base_end,
+            at..base_end,
             justify,
             out.ruby_columns(),
             (id, id),
             None,
         )
-        .map_or(0, |found| found.count_range(at..state.base_end));
+        .map_or(0, |found| found.count_range(at..base_end));
         // Work out the overhang, and so where the base sits in the column.
         // It never reaches the container's next column, whose base is the
         // text after it: Chrome reaches over no ruby column
@@ -435,7 +424,7 @@ impl<'a> Sizing<'_, 'a> {
         };
         // The base's em box, or the container's font's where the base holds
         // no text: an empty base keeps its annotations, which stand on it.
-        let base_em = self.em(first, state.base_end_item, false, out);
+        let base_em = self.em(first, base_end_item, false, out);
         let empty = base_em.is_none();
         let base_em = if empty {
             ruby::strut_em(scan.input.fonts, facts.text_request(text))
@@ -469,14 +458,17 @@ impl<'a> Sizing<'_, 'a> {
             RubyOverhangRule::KanaOnly => {
                 let left = space - overhang.0 - overhang.1;
                 let spread = RubySpread::from_base(ruby.align, left, opportunities);
-                spread.with_start(spread.start + overhang.0)
+                RubySpread {
+                    start: spread.start + overhang.0,
+                    ..spread
+                }
             }
         };
         let mut record = RubyColumn {
             open: first,
-            base_end: state.base_end_item,
+            base_end: base_end_item,
             close,
-            base: at..state.base_end,
+            base: at..base_end,
             parent: self.parent,
             may_break: false,
             levels,
@@ -616,19 +608,21 @@ impl<'a> Sizing<'_, 'a> {
         let (mut c, mut index) = (at, index);
         let mut child_first = ItemId::new(index.get() + 1);
         loop {
-            let child_id = out.ruby_columns().columns.next_id();
+            let rubies = out.ruby_columns();
+            let (child_id, levels) = (rubies.columns.next_id(), rubies.levels.next_id());
             let open = child.column(&mut state.look, state.seams, c, child_first, None, out)?;
-            let record = out.ruby_columns().get(child_id)?;
+            let rubies = out.ruby_columns();
+            let record = rubies.get(child_id)?;
             state.base += InlineLayoutUnit::from_layout(record.width);
-            let child_end = out.ruby_columns().columns.next_id();
-            for descendant in out.ruby_columns().slice(child_id..child_end) {
-                for level in out.ruby_columns().levels(descendant) {
-                    let depth = match level.side {
-                        RubySide::Over => &mut state.depths.0,
-                        RubySide::Under => &mut state.depths.1,
-                    };
-                    *depth = (*depth).max(level.depth.saturating_add(1));
-                }
+            // The levels of the child and its descendants, written as it was
+            // sized.
+            let written = rubies.levels.get_slice(levels..rubies.levels.next_id());
+            for level in written.unwrap_or_default() {
+                let depth = match level.side {
+                    RubySide::Over => &mut state.depths.0,
+                    RubySide::Under => &mut state.depths.1,
+                };
+                *depth = (*depth).max(level.depth.saturating_add(1));
             }
             c = open.end;
             index = record.close;
@@ -666,7 +660,7 @@ impl<'a> Sizing<'_, 'a> {
                 };
                 level.width += own + state.look.spacing(scan, class, c);
             }
-        } else if state.in_base {
+        } else if state.base_end.is_none() {
             state.base += state.look.step(scan, class, advance, c) + gap;
         }
     }
@@ -747,11 +741,7 @@ impl<'a> Sizing<'_, 'a> {
                     if state.count == 0 {
                         state.levels = out.rare_mut().rubies.levels.next_id();
                     }
-                    if state.in_base {
-                        state.in_base = false;
-                        state.base_end = at;
-                        state.base_end_item = index;
-                    }
+                    state.base_end.get_or_insert((at, index));
                     state.level = Some(OpenLevel {
                         item: index,
                         start: at,
@@ -783,24 +773,20 @@ impl<'a> Sizing<'_, 'a> {
                             item.flags.contains(ItemFlags::ANNOTATION_FOLLOWS);
                     }
                 }
-                ItemKind::Open | ItemKind::Close if annotation => {
-                    if let Some(level) = state.level.as_mut() {
-                        let opens = item.kind == ItemKind::Open;
-                        level.width += edge_room(content, None, item, opens);
+                // The builder puts no initial letter inside ruby.
+                ItemKind::Open | ItemKind::Close => {
+                    let room = edge_room(content, None, item, item.kind == ItemKind::Open);
+                    if annotation {
+                        if let Some(level) = state.level.as_mut() {
+                            level.width += room;
+                        }
+                    } else if state.base_end.is_none() {
+                        state.base += room;
                     }
-                }
-                ItemKind::Open | ItemKind::Close if state.in_base => {
-                    // The builder puts no initial letter inside ruby.
-                    let opens = item.kind == ItemKind::Open;
-                    state.base += edge_room(content, None, item, opens);
                 }
                 ItemKind::RubyClose | ItemKind::RubyOpen if !annotation => {
                     // The container ends, and the column with it.
-                    if state.in_base {
-                        state.in_base = false;
-                        state.base_end = at;
-                        state.base_end_item = index;
-                    }
+                    state.base_end.get_or_insert((at, index));
                     state.close = Some(index);
                     state.ended = true;
                     break;
@@ -1023,12 +1009,10 @@ struct Measuring<'a> {
     seams: Seams,
     /// The base's width so far, as the prefix will hold it.
     base: InlineLayoutUnit,
-    /// The base hasn't ended yet.
-    in_base: bool,
     /// Where the base ends, and the first item past it: the first
-    /// annotation's opening item, or the container's end.
-    base_end: ClusterId,
-    base_end_item: ItemId,
+    /// annotation's opening item, or the container's end. `None` while the
+    /// base goes on.
+    base_end: Option<(ClusterId, ItemId)>,
     /// The annotation open, if any.
     level: Option<OpenLevel>,
     /// The column's first level in the stage's table.
@@ -1054,12 +1038,12 @@ struct Measuring<'a> {
 /// Takes back the running widths a column that may not split recorded for
 /// its levels: the steps from `steps_start` on, and each level's mark.
 fn forget_steps(record: &RubyColumn, steps_start: StepId, out: &mut MeasuredText) {
-    out.rare_mut().rubies.steps.truncate(steps_start);
-    out.rare_mut().rubies.floors.truncate(steps_start);
-    for level in record.levels.clone().ids() {
-        if let Some(level) = out.rare_mut().rubies.levels.get_mut(level) {
-            level.steps = None;
-        }
+    let rubies = &mut out.rare_mut().rubies;
+    rubies.steps.truncate(steps_start);
+    rubies.floors.truncate(steps_start);
+    let levels = rubies.levels.get_slice_mut(record.levels.clone());
+    for level in levels.unwrap_or_default() {
+        level.steps = None;
     }
 }
 

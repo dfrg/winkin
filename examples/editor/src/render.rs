@@ -6,9 +6,12 @@ use vello_cpu::peniko::{Blob, FontData};
 use vello_cpu::{Glyph, Pixmap, RenderContext, Resources};
 use winkin::Item;
 
-use crate::editor::Editor;
+use crate::editor::{Editor, SPAN_KEYS};
 
 pub const MARGIN: f32 = 32.0;
+
+/// The border width of a `[`…`]` box, as the editor styles it.
+const BOX_BORDER: f32 = 3.0;
 
 pub struct Renderer {
     context: RenderContext,
@@ -47,6 +50,31 @@ impl Renderer {
             Affine::scale(scale)
                 * Affine::translate((f64::from(MARGIN), f64::from(MARGIN - scroll))),
         );
+        // Each `[`…`]` box: its border box filled with the border colour,
+        // then its padding box over it. An open side has no border.
+        for line in editor.layout.lines() {
+            let metrics = line.metrics();
+            for item in line.items() {
+                let Item::Box(fragment) = item else { continue };
+                if fragment.key().0 >= SPAN_KEYS {
+                    continue;
+                }
+                let (inline, block) = (fragment.inline(), fragment.block());
+                let left = metrics.left + inline.left;
+                let right = metrics.left + inline.right;
+                let (top, bottom) = (metrics.top + block.over, metrics.top + block.under);
+                ctx.set_paint(color(96, 140, 200));
+                ctx.fill_rect(&rect(left, top, right, bottom));
+                let border = |open: bool| if open { 0.0 } else { BOX_BORDER };
+                ctx.set_paint(color(36, 46, 62));
+                ctx.fill_rect(&rect(
+                    left + border(fragment.is_open_left()),
+                    top + BOX_BORDER,
+                    right - border(fragment.is_open_right()),
+                    bottom - BOX_BORDER,
+                ));
+            }
+        }
         ctx.set_paint(color(49, 76, 112));
         for rect in editor.layout.selection_rects(editor.selection.range()) {
             let line = editor.layout.line(rect.line).unwrap().metrics();
@@ -127,6 +155,15 @@ impl Renderer {
         ctx.render(&mut self.pixmap, &mut self.resources);
         &self.pixmap
     }
+}
+
+fn rect(left: f32, top: f32, right: f32, bottom: f32) -> Rect {
+    Rect::new(
+        f64::from(left),
+        f64::from(top),
+        f64::from(right),
+        f64::from(bottom),
+    )
 }
 
 fn color(r: u8, g: u8, b: u8) -> AlphaColor<Srgb> {

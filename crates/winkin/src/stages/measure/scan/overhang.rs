@@ -6,7 +6,7 @@ use crate::config::RubyOverhangRule;
 use crate::data::Id;
 use crate::stages::analysis::{ClusterAttrs, ClusterClass, ClusterId};
 use crate::stages::content::{ItemId, NodeId, TextFactsId, TextFlags};
-use crate::stages::measure::{RubySide, TabReach, ruby};
+use crate::stages::measure::{RubySide, RubySpread, TabReach};
 use crate::style::{RubyAlign, RubyGroup, RubyOverhang};
 use crate::unicode::TextSpacingClass;
 use crate::unit::{InlineLayoutUnit, LayoutUnit};
@@ -88,7 +88,9 @@ impl Sizing<'_, '_> {
         // computed size rounded to a pixel (`ComputedPixelSize`). So a 17px
         // annotation overhangs by 8, not 8.5 (measured with Chrome 153).
         let half = LayoutUnit::from_px_whole(size).half().floor_px();
-        let inset = ruby::base_inset(space, opportunities);
+        // The base's inset each side under `space-around`, as Chrome's
+        // `ComputeRubyBaseInset` takes it.
+        let inset = RubySpread::from_base(RubyAlign::SpaceAround, space, opportunities).start;
         let spaces = ruby.group.overhang == RubyOverhang::Spaces;
         let (mut start, mut end) = match (spaces, align) {
             (false, RubyAlign::Start) => (LayoutUnit::ZERO, space.min(half)),

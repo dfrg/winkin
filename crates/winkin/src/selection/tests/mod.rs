@@ -2,9 +2,11 @@
 //!
 //! This file holds the context, the styles and the shared queries. The
 //! children pin:
+//! - `box_edges`: the two positions at a box edge with room, which
+//!   deliberately differ from Chrome's one;
 //! - `carets`: carets, strong and weak, at wraps, soft hyphens and direction
 //!   changes;
-//! - `hit`: hit testing in and past lines, padding, ellipses and ruby;
+//! - `hit`: hit testing in and past lines, ellipses and ruby;
 //! - `caret_motion`: motion by character, line and line end, logical and on
 //!   screen;
 //! - `word_motion`: motion by word, on each platform and in each script;
@@ -13,6 +15,7 @@
 //! - `vertical`: vertical lines and combined text;
 //! - `cost`: the cost of each query;
 //! - `ruby`: split ruby annotations;
+//! - `seams`: the side a caret keeps at a boundary between nodes;
 //! - `security`: text masked by `-webkit-text-security`;
 //! - `seeks`: the searches each public call makes.
 //!
@@ -204,6 +207,7 @@ const THAI: &str = "\u{E09}\u{E31}\u{E19}\u{E0A}\u{E2D}\u{E1A}\u{E01}\u{E34}\u{E
 /// "I write Japanese text on a computer": kanji, hiragana and katakana.
 const JAPANESE: &str = "\u{79C1}\u{306F}\u{30B3}\u{30F3}\u{30D4}\u{30E5}\u{30FC}\u{30BF}\u{30FC}\u{3067}\u{65E5}\u{672C}\u{8A9E}\u{306E}\u{30C6}\u{30AD}\u{30B9}\u{30C8}\u{3092}\u{66F8}\u{304D}\u{307E}\u{3059}\u{3002}";
 
+mod box_edges;
 mod caret_motion;
 mod carets;
 // Steps are counted only in debug builds.
@@ -213,6 +217,7 @@ mod hit;
 mod offsets;
 mod rects;
 mod ruby;
+mod seams;
 mod security;
 // Seeks are counted only in debug builds.
 #[cfg(debug_assertions)]

@@ -53,6 +53,8 @@ pub(crate) struct RubyColumns {
     /// boundaries to its end, beside `steps`: written whole as the level
     /// closes.
     pub(super) floors: Table<StepId, InlineLayoutUnit>,
+    /// The rooms of nested columns, in text order: each column's goes at its
+    /// end once its descendants', which end no later, are in.
     pub(super) rooms: Table<ColumnRoomId, ColumnRoom>,
     /// The tabs the columns' overhang reaches into, in text order.
     pub(super) tab_reaches: Vec<TabReach>,
@@ -119,16 +121,10 @@ impl RubyColumns {
     /// A cut at or past `from` is never narrower than this from any start.
     /// The floors never fall from one boundary to the next.
     pub(crate) fn level_floor(&self, level: &RubyLevel, from: ClusterId) -> InlineLayoutUnit {
-        let offset = from.get().saturating_sub(level.clusters.start.get());
-        if offset
-            > level
-                .clusters
-                .end
-                .get()
-                .saturating_sub(level.clusters.start.get())
-        {
+        if from > level.clusters.end {
             return InlineLayoutUnit::ZERO;
         }
+        let offset = from.get().saturating_sub(level.clusters.start.get());
         let floors = Self::level_steps(level, &self.floors);
         floors.get(offset).copied().unwrap_or_default()
     }
@@ -292,12 +288,6 @@ impl RubyColumns {
             .unwrap_or_default()
     }
 
-    /// The columns `columns` names, in text order: empty where they are not
-    /// the table's.
-    pub(super) fn slice(&self, columns: Range<RubyColumnId>) -> &[RubyColumn] {
-        self.columns.get_slice(columns).unwrap_or_default()
-    }
-
     /// Returns where `column` ends: past its last level, or its base's end
     /// where it has no level.
     fn column_end(&self, column: &RubyColumn) -> ClusterId {
@@ -335,22 +325,16 @@ impl RubyColumns {
         near: RubyColumnId,
         clusters: Range<ClusterId>,
     ) -> Range<RubyColumnId> {
-        let from = self.walk_to(near, |column| column.base.start < clusters.start);
-        let to = self.walk_to(from, |column| column.base.start < clusters.end);
+        let from = self.walk_to(near, clusters.start);
+        let to = self.walk_to(from, clusters.end);
         from..to.max(from)
     }
 
-    /// Returns the first column `before` does not hold of, walked to from
-    /// column `near` a column at a time, either way.
-    ///
-    /// `before` must hold of every column up to some point and of none
-    /// after, as a halving's predicate does.
-    fn walk_to(
-        &self,
-        near: RubyColumnId,
-        mut before: impl FnMut(&RubyColumn) -> bool,
-    ) -> RubyColumnId {
+    /// Returns the first column whose base starts at or past `bound`, walked
+    /// to from column `near` a column at a time, either way.
+    fn walk_to(&self, near: RubyColumnId, bound: ClusterId) -> RubyColumnId {
         let columns = self.columns.as_slice();
+        let before = |column: &RubyColumn| column.base.start < bound;
         let mut at = near.get().min(columns.len());
         while let Some(back) = at.checked_sub(1)
             && columns.get(back).is_some_and(|column| !before(column))
@@ -358,7 +342,7 @@ impl RubyColumns {
             work::step();
             at = back;
         }
-        while columns.get(at).is_some_and(&mut before) {
+        while columns.get(at).is_some_and(before) {
             work::step();
             at += 1;
         }
@@ -369,7 +353,7 @@ impl RubyColumns {
     /// from column `near`: what [`nearest`](Self::nearest) finds, with no
     /// search.
     fn nearest_from(&self, near: RubyColumnId, cluster: ClusterId) -> Option<RubyColumnId> {
-        let past = self.walk_to(near, |column| column.base.start <= cluster);
+        let past = self.walk_to(near, ClusterId::new(cluster.get() + 1));
         past.get().checked_sub(1).map(RubyColumnId::new)
     }
 
@@ -401,7 +385,8 @@ impl RubyColumns {
     }
 
     /// The column whose base holds `cluster`, by halving, or `None` where no
-    /// base does.
+    /// base does, which the tests check a walk's answers against.
+    #[cfg(test)]
     pub(super) fn base_containing(&self, cluster: ClusterId) -> Option<RubyColumnId> {
         let mut id = self.nearest(cluster)?;
         loop {
@@ -516,35 +501,18 @@ impl RubyColumns {
         cluster: ClusterId,
         side: RubySide,
     ) -> Option<RubyLevelId> {
-        let mut id = self.base_containing(cluster)?;
-        let mut found = None;
-        loop {
-            let column = self.get(id)?;
-            if let Some((level, _)) = self.outermost(column, side) {
-                found = Some(level);
-            }
-            match column.parent {
-                Some(parent) => id = parent,
-                None => return found,
-            }
-        }
+        ColumnWalk::from_column(self, self.nearest(cluster)?, cluster).outermost(cluster, side)
     }
 
-    /// The outermost level of `column` on `side`, and how many of its
-    /// levels are on that side, the outermost the last of them; `None`
+    /// The outermost level of `column` on `side`, the last there; `None`
     /// where it has none there. What an emphasis mark over its base is set
     /// past, as Chrome sets it (`SetTextEmphasisAnnotationMetrics`).
-    fn outermost(&self, column: &RubyColumn, side: RubySide) -> Option<(RubyLevelId, usize)> {
-        let mut count = 0;
-        let mut outermost = None;
-        for (at, level) in self.levels(column).iter().enumerate() {
+    fn outermost(&self, column: &RubyColumn, side: RubySide) -> Option<RubyLevelId> {
+        let at = (self.levels(column).iter()).rposition(|level| {
             work::step();
-            if level.side == side {
-                count += 1;
-                outermost = Some(RubyLevelId::new(column.levels.start.get() + at));
-            }
-        }
-        outermost.map(|id| (id, count))
+            level.side == side
+        })?;
+        Some(RubyLevelId::new(column.levels.start.get() + at))
     }
 }
 
@@ -629,9 +597,13 @@ impl<'a> ColumnWalk<'a> {
     /// Starts a walk at `at`, walking to its nearest column from column
     /// `near`, any column near it.
     pub(crate) fn from_column(columns: &'a RubyColumns, near: RubyColumnId, at: ClusterId) -> Self {
+        Self::with_near(columns, columns.nearest_from(near, at))
+    }
+    /// Starts a walk whose nearest column is `near`.
+    fn with_near(columns: &'a RubyColumns, near: Option<RubyColumnId>) -> Self {
         let mut walk = Self {
             columns,
-            near: columns.nearest_from(near, at),
+            near,
             stack: [RubyColumnId::new(0); MAX_RUBY_DEPTH],
             depth: 0,
         };
@@ -639,18 +611,22 @@ impl<'a> ColumnWalk<'a> {
         walk
     }
     /// Refills the ancestry stack from the nearest column, outermost first.
+    ///
+    /// Out of line: a walk rebuilds only where it meets another column.
+    #[inline(never)]
     fn rebuild(&mut self) {
         self.depth = 0;
         let mut id = self.near;
-        while let Some(at) = id {
-            if self.depth >= self.stack.len() {
-                break;
-            }
-            self.stack[self.depth] = at;
+        while let Some(at) = id
+            && let Some(slot) = self.stack.get_mut(self.depth)
+        {
+            *slot = at;
             self.depth += 1;
             id = self.columns.get(at).and_then(|column| column.parent);
         }
-        self.stack[..self.depth].reverse();
+        (self.stack.get_mut(..self.depth))
+            .unwrap_or_default()
+            .reverse();
     }
     /// Steps the nearest column to `cluster`'s, one column at a time, and
     /// rebuilds the stack where it changes.
@@ -700,10 +676,7 @@ impl<'a> ColumnWalk<'a> {
     pub(crate) fn outermost(&mut self, cluster: ClusterId, side: RubySide) -> Option<RubyLevelId> {
         self.base(cluster)?;
         self.active(cluster).find_map(|id| {
-            self.columns
-                .get(id)
-                .and_then(|column| self.columns.outermost(column, side))
-                .map(|(id, _)| id)
+            (self.columns.get(id)).and_then(|column| self.columns.outermost(column, side))
         })
     }
 }
@@ -760,13 +733,7 @@ impl<'a> ColumnScope<'a> {
     /// Finds the answer for `cluster` and the span of clusters it holds for:
     /// up to the nearest column boundary either side.
     fn refresh(&mut self, cluster: ClusterId, parent: Option<RubyColumnId>) {
-        let mut walk = ColumnWalk {
-            columns: self.columns,
-            near: self.near,
-            stack: [RubyColumnId::new(0); MAX_RUBY_DEPTH],
-            depth: 0,
-        };
-        walk.rebuild();
+        let mut walk = ColumnWalk::with_near(self.columns, self.near);
         self.current = walk.scope_column(cluster, parent);
         self.near = walk.near;
         self.parent = parent;
@@ -916,47 +883,6 @@ impl RubyColumn {
     /// (`kBaseShorterRubyMarker`), and spreads nothing inside it.
     pub(super) fn is_base_shorter(&self) -> bool {
         self.width > self.base_width
-    }
-
-    /// Where its room goes under `ruby-align: space-around` on a justified
-    /// line whose start it stands at (`start`), whose end (`end`), or both,
-    /// as Chrome's `ApplyRubyAlign` places it with `on_start_edge` and
-    /// `on_end_edge`: its base flush with the edge, all its
-    /// room at the other side but what the base's opportunities share; at
-    /// both edges, all its room inside the base, as `space-between` puts it,
-    /// or the base centred where it has no opportunity, and over the whole
-    /// of `line`, the line's room, where it is wider than its base and so
-    /// all the line holds, as Chrome spreads a base-shorter column alone on
-    /// a line. At neither, the measure stage's placement.
-    ///
-    /// Returns the room before its base, the room its base's opportunities
-    /// share, and its width on the line.
-    pub(crate) fn room_on_edges(
-        &self,
-        start: bool,
-        end: bool,
-        line: LayoutUnit,
-    ) -> (LayoutUnit, LayoutUnit, LayoutUnit) {
-        let space = self.width - self.base_width;
-        match (start, end) {
-            (false, false) => (self.room_before, self.room_inside, self.width),
-            (true, false) => (LayoutUnit::ZERO, self.room_inside, self.width),
-            (false, true) => (space - self.room_inside, self.room_inside, self.width),
-            (true, true) => {
-                let width = if self.is_base_shorter() {
-                    line.max(self.width)
-                } else {
-                    self.width
-                };
-                let space = width - self.base_width;
-                // Room inside is what a base with an opportunity shares.
-                if self.room_inside > LayoutUnit::ZERO {
-                    (LayoutUnit::ZERO, space, width)
-                } else {
-                    (space.half(), LayoutUnit::ZERO, width)
-                }
-            }
-        }
     }
 
     /// The ruby container it is in, of `content`, whose items it is among:

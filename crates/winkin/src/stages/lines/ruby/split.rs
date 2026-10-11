@@ -35,8 +35,7 @@ use crate::stages::content::ItemId;
 use crate::stages::lines::reshape::EdgeEnd;
 use crate::stages::lines::search::{gallop_last, overflowing, settle};
 use crate::stages::lines::{
-    Breaker, BreakerParagraph, EdgeShapeId, Fitted, Fitting, LineHead, LineId, Lines,
-    ReshapedPieces,
+    Breaker, BreakerParagraph, Fitted, Fitting, LineHead, LineId, Lines, ReshapedPieces,
 };
 use crate::stages::measure::{
     LineEdgeFlags, RubyColumn, RubyColumnId, RubyLevel, RubyLevelId, is_monolithic,
@@ -62,16 +61,6 @@ struct ProposedPiece {
     base_width: LayoutUnit,
     /// What it overhangs the text before it.
     before: LayoutUnit,
-}
-
-/// A level's part measured with its edges reshaped.
-struct ReshapedLevel {
-    /// Its width, its edges reshaped.
-    width: LayoutUnit,
-    /// Where it ends once trailing collapsed white space is left out.
-    visible_end: ClusterId,
-    /// The edge shapes it kept, where it kept them.
-    shapes: Range<EdgeShapeId>,
 }
 
 /// A base cut, with what the trial reads of it.
@@ -214,7 +203,10 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
                     level: id,
                     from,
                     item,
-                    remaining: self.level_width(level, from..level.clusters.end, item),
+                    remaining: self.visible_width(
+                        level,
+                        self.visible_annotation(level, from..level.clusters.end, item),
+                    ),
                     target: None,
                     end: level.clusters.end,
                     width: None,
@@ -272,12 +264,6 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
         visible
     }
 
-    /// Returns the unshaped width of `range` of `level`, less the collapsed
-    /// spaces it ends with, their items walked to from `near`.
-    fn level_width(&self, level: &RubyLevel, range: Range<ClusterId>, near: ItemId) -> LayoutUnit {
-        self.visible_width(level, self.visible_annotation(level, range, near))
-    }
-
     /// Returns the unshaped width of `visible` of `level`, a range with no
     /// collapsed spaces at its end.
     fn visible_width(&self, level: &RubyLevel, visible: Range<ClusterId>) -> LayoutUnit {
@@ -303,26 +289,27 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
 
     /// Returns the width of the rest of a column from `start`, its base's
     /// end, with each level from where `cuts` resume it to its end, and its
-    /// levels' edges reshaped.
+    /// levels' edges reshaped; and its base's width, less what hangs.
     fn rest_width(
         &mut self,
         out: &mut Lines,
         para: &BreakerParagraph,
         base: Range<ClusterId>,
         cuts: &[LevelCut],
-    ) -> LayoutUnit {
+    ) -> (LayoutUnit, LayoutUnit) {
         let rubies = self.stages.measured.ruby_columns();
-        let mut width = self.base_width(base);
+        let base = self.base_width(base);
+        let mut width = base;
         for cut in cuts {
             if let Some(level) = rubies.level(cut.level) {
-                let range = cut.from..level.clusters.end;
+                let end = level.clusters.end;
                 width = width.max(
-                    self.reshaped_level_width(out, para, level, (range, cut.item), false)
+                    self.reshaped_level(out, para, (level, cut), end, false)
                         .width,
                 );
             }
         }
-        width
+        (width, base)
     }
 
     /// Finds the column the line from `start` continues, and sizes its
@@ -351,9 +338,8 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
         }
         let mut cuts = mem::take(&mut self.scratch.level_cuts);
         self.start_levels(out, column, Some(&continued.levels), &mut cuts);
-        let width = self.rest_width(out, para, start..column.base.end, &cuts);
+        let (width, base) = self.rest_width(out, para, start..column.base.end, &cuts);
         self.scratch.level_cuts = cuts;
-        let base = self.base_width(start..column.base.end);
         let extra = column.width - column.base_width - column.overhang.0 - column.overhang.1;
         continued.rest = Some(Rest {
             width,
@@ -474,11 +460,17 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
         let opportunity = |range: Range<ClusterId>, kind: (bool, bool)| {
             rubies.opportunity(self.clusters, range, Some(id), kind, &near)
         };
+        // The cut at `at`, the item of a hyphen before it found by `cursor`.
+        let mut cut = |at: ClusterId| BaseCut {
+            at,
+            width: self.base_width(base.start..at),
+            hyphen: self.hyphen(at, cursor),
+        };
         loop {
             let mut past = end.min(furthest);
             while let Some(at) = opportunity(base.start..past, (true, *emergency)) {
                 work::step();
-                let cut = self.cut_base(&base, at, cursor);
+                let cut = cut(at);
                 if cut.width + cut.hyphen <= target {
                     return Some(cut);
                 }
@@ -487,24 +479,9 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
             if *emergency {
                 let at = opportunity(base.start..end, (false, false))
                     .or_else(|| opportunity(base.start..end, (false, true)))?;
-                return Some(self.cut_base(&base, at, cursor));
+                return Some(cut(at));
             }
             *emergency = true;
-        }
-    }
-
-    /// Returns the cut of `base` at `at`, the item of a hyphen before it
-    /// found by `cursor`.
-    fn cut_base(
-        &self,
-        base: &Range<ClusterId>,
-        at: ClusterId,
-        cursor: &mut RunCursor<ItemId, ClusterId>,
-    ) -> BaseCut {
-        BaseCut {
-            at,
-            width: self.base_width(base.start..at),
-            hyphen: self.hyphen(at, cursor),
         }
     }
 
@@ -619,14 +596,9 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
             }
             let level_width = match cut.width {
                 Some(level_width) => level_width,
-                None => {
-                    let range = cut.from..cut.end;
-                    let level_width = self
-                        .reshaped_level_width(out, para, level, (range, cut.item), false)
-                        .width;
-                    cut.width = Some(level_width);
-                    level_width
-                }
+                None => *cut
+                    .width
+                    .insert((self.reshaped_level(out, para, (level, cut), cut.end, false)).width),
             };
             width = width.max(level_width);
         }
@@ -671,19 +643,20 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
         self.edge_pieces(out, para, range, window, &mut head, ends)
     }
 
-    /// Measures `range` of `level`, whose first item is `near`, with its
-    /// edges reshaped, keeping the edge shapes where `retain`. Without
-    /// `retain` the edge tables are taken back.
-    fn reshaped_level_width(
+    /// Measures the part of `level` from where `cut` resumes it to `end`,
+    /// with its edges reshaped, keeping the edge shapes where `retain`.
+    /// Without `retain` the edge tables are taken back.
+    fn reshaped_level(
         &mut self,
         out: &mut Lines,
         para: &BreakerParagraph,
-        level: &RubyLevel,
-        (range, near): (Range<ClusterId>, ItemId),
+        (level, cut): (&RubyLevel, &LevelCut),
+        end: ClusterId,
         retain: bool,
-    ) -> ReshapedLevel {
+    ) -> PartLevel {
         let rubies = self.stages.measured.ruby_columns();
-        let visible = self.visible_annotation(level, range, near);
+        let clusters = cut.from..end;
+        let visible = self.visible_annotation(level, clusters.clone(), cut.item);
         let visible_end = visible.end;
         let mark = out.edges.mark();
         let mut width = self.visible_width(level, visible.clone());
@@ -705,10 +678,13 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
         if !retain {
             out.edges.rewind(mark);
         }
-        ReshapedLevel {
+        PartLevel {
+            level: cut.level,
+            clusters,
             width,
             visible_end,
             shapes: from..out.edges.shapes.next_id(),
+            item: cut.item,
         }
     }
 
@@ -732,20 +708,8 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
         let levels_start = ruby.levels.next_id();
         for cut in cuts {
             if let Some(level) = rubies.level(cut.level) {
-                let clusters = cut.from..cut.end;
-                let ReshapedLevel {
-                    width,
-                    visible_end,
-                    shapes,
-                } = self.reshaped_level_width(out, para, level, (clusters.clone(), cut.item), true);
-                let _ = ruby.levels.push(PartLevel {
-                    level: cut.level,
-                    clusters,
-                    width,
-                    visible_end,
-                    shapes,
-                    item: cut.item,
-                });
+                let _ =
+                    (ruby.levels).push(self.reshaped_level(out, para, (level, cut), cut.end, true));
             }
         }
         ruby.push_part(ColumnPart {
@@ -864,10 +828,7 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
             .and_then(|continued| continued.rest);
         let (whole, base) = match continued {
             Some(rest) => (rest.width, rest.base),
-            None => (
-                self.rest_width(out, fitting.line.para, start..column.base.end, cuts),
-                self.base_width(start..column.base.end),
-            ),
+            None => self.rest_width(out, fitting.line.para, start..column.base.end, cuts),
         };
         let before = if start > fitting.line.start {
             column.overhang.0.min((whole - base).max(LayoutUnit::ZERO))

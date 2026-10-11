@@ -145,9 +145,10 @@ fn a_selection_call_searches_as_often_however_long_the_text() {
 ///
 /// - A caret seeks its cluster and its line, then a text run's font.
 /// - A hit test finds the cluster in the run it hits.
-/// - A motion seeks the focus's cluster. A screen motion seeks its paragraph
-///   and the segments it crosses, and a walk on the screen each caret's font.
-///   A word motion seeks its paragraph once.
+/// - A motion seeks the focus's cluster. A motion forward by character or
+///   word seeks whether a line starts at its stop. A screen motion seeks its
+///   paragraph and the segments it crosses, and a walk on the screen each
+///   caret's font. A word motion seeks its paragraph once.
 /// - Rectangles seek their lines' ends and each text run's font. A copy seeks
 ///   its start.
 /// - Ruby adds the search for an annotation's line.
@@ -157,9 +158,9 @@ fn a_selection_call_searches_as_often_however_long_the_text() {
 fn a_selection_call_searches_no_more_than_it_does() {
     #[rustfmt::skip]
     let most: [(&str, (Layout, usize), [u64; 10]); 3] = [
-        ("article", article(10), [3, 0, 1, 5, 2, 6, 3, 2, 5, 1]),
-        ("bidi", bidi(20), [3, 0, 1, 8, 2, 14, 3, 2, 10, 1]),
-        ("ruby", ruby(10), [8, 1, 1, 5, 2, 6, 8, 7, 27, 1]),
+        ("article", article(10), [3, 0, 2, 6, 3, 7, 3, 2, 5, 1]),
+        ("bidi", bidi(20), [3, 0, 2, 8, 3, 14, 3, 2, 10, 1]),
+        ("ruby", ruby(10), [8, 1, 2, 6, 3, 7, 8, 7, 27, 1]),
     ];
     for (name, (layout, at), most) in most {
         let counts = seeks(&layout, at);

@@ -36,6 +36,37 @@ Cmd/Ctrl+S. The example reads UTF-8 and normalizes line endings to LF.
 | Mouse wheel / trackpad | Scroll vertically |
 | Escape | Cancel IME composition |
 
+## Box edges and style seams
+
+Text between `[` and `]` is laid out in an inline box with 10px of padding
+at each end and a 3px border, drawn behind the text. Text between `{` and
+`}` is a bold span with no room at its ends. The brackets stay in the
+buffer but take no room themselves, so typed text visibly lands inside or
+outside a box or span. Each text segment between brackets is a node of its
+own. The window title shows the focus: its layout offset, its affinity, and
+the node and offset it maps to.
+
+A caret keeps the side it arrived from. Right (forward) lands upstream, at
+the end of the text it passed; Left (backward) lands downstream, at the
+start of the text it came from. A click takes the side of the glyph half it
+hits. Typed text goes into the node on that side: at the seam between
+normal and bold text, arriving from the normal side types normal text, and
+arriving from the bold side types bold text. Without room the two sides
+are drawn at one place, and only the title shows which one the caret has.
+
+A box edge with padding draws the two sides apart. Clicks in the padding
+take the nearer side. Arrows stop once at each edge, on the side they come
+from, and the next press crosses the padding and the next character
+together. To try both:
+
+```sh
+cargo run --release -p winkin_editor -- examples/editor/box-edges.txt
+```
+
+The file holds a plain box, boxes at a line's start and end, nested boxes,
+an empty box, a right-to-left line, Hebrew in a box on a left-to-right
+line, and bold spans in the middle, at the start and nested.
+
 Horizontal arrows cross line boundaries in screen order: Right continues
 onto the next line from the right edge, and Left continues onto the previous
 line from the left edge. This applies to both LTR and RTL paragraphs.

@@ -467,18 +467,20 @@ impl RareMeasures {
         }
     }
 
+    /// Returns an empty set on the heap, out of line, so that each writer
+    /// of a rare table inlines only the test for the box.
+    #[cold]
+    #[inline(never)]
+    fn boxed() -> Box<Self> {
+        Box::new(Self::new())
+    }
+
     fn clear(&mut self) {
         self.edge_costs.clear();
         self.shifts.clear();
         self.em_boxes.clear();
         self.rubies.clear();
         self.initial_letter = None;
-    }
-}
-
-impl Default for RareMeasures {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -517,7 +519,7 @@ impl MeasuredText {
     /// The box is made, empty, the first time a build has any, and kept
     /// after.
     fn rare_mut(&mut self) -> &mut RareMeasures {
-        self.rare.get_or_insert_with(Box::default)
+        self.rare.get_or_insert_with(RareMeasures::boxed)
     }
 
     /// What was found of `paragraph`, or nothing past the last.

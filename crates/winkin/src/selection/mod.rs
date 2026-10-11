@@ -9,6 +9,21 @@
 //! follows logical order. Choose [`WordMotion`] to match platform word stops.
 //! Caret and selection geometry is relative to each line box.
 //!
+//! A position keeps the side it was reached from, in its [`Affinity`]. A
+//! motion forward lands upstream, with the text it passed, and a motion
+//! backward downstream; left and right land on the side they came from. A
+//! click takes the side of the glyph half it hits. At a boundary between
+//! nodes, [`Layout::node_position`] follows the side, so text typed there
+//! goes into the node the caret came from. This is a deliberate choice:
+//! Chrome lands downstream after every motion.
+//!
+//! An inline box edge with margin, border or padding between two pieces of
+//! text on one line draws the two sides apart, each by its own text. A click
+//! in the room selects the nearer side. Character motion stops once at such
+//! an edge in each direction, and the next step crosses the room and the
+//! following character together. Elsewhere both sides are drawn at one
+//! place, except at a wrap, where they are on two lines.
+//!
 //! ```
 //! use winkin::config::PastLines;
 //! use winkin::selection::{
@@ -112,13 +127,25 @@ impl From<usize> for Position {
 ///
 /// At a wrap, upstream selects the preceding line end and downstream the
 /// following line start. At combined-text boundaries, selects the side
-/// before or after the offset. Elsewhere it has no effect.
+/// before or after the offset.
+///
+/// At a boundary between nodes, selects the node: upstream the end of the
+/// one before, downstream the start of the one after, as
+/// [`Layout::node_position`] reports it. Motion keeps the side it arrives
+/// from, so text typed at the caret goes into the node it came from.
+///
+/// At an inline box edge with margin, border or padding facing the offset,
+/// and text on both sides on one line, the caret is also drawn on the
+/// selected side of the box edge. Elsewhere both affinities draw the caret
+/// at one place.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub enum Affinity {
-    /// With the text after it: the start of the line after a wrap.
+    /// With the text after it: the start of the line after a wrap, or the
+    /// start of the node after a boundary.
     #[default]
     Downstream,
-    /// With the text before it: the end of the line before a wrap.
+    /// With the text before it: the end of the line before a wrap, or the
+    /// end of the node before a boundary.
     Upstream,
 }
 
@@ -458,7 +485,22 @@ pub(crate) fn position(
 ) -> Option<Position> {
     let map = layout.content().offset_map()?;
     let at = map.content_offset(key, index_to_u32(offset), affinity.into())?;
-    Some(snapped(layout, Position::new(at.get(), affinity)).position)
+    let found = snapped(layout, Position::new(at.get(), affinity));
+    // Where the two sides are in two nodes, the side is the one in `key`.
+    let side = |affinity: Affinity| {
+        let side = map.source_position(TextOffset::new(found.offset()), affinity.into());
+        side.is_some_and(|(side, _)| side == key)
+            .then_some(Position::new(found.offset(), affinity))
+    };
+    let other = match affinity {
+        Affinity::Upstream => Affinity::Downstream,
+        Affinity::Downstream => Affinity::Upstream,
+    };
+    Some(
+        side(affinity)
+            .or_else(|| side(other))
+            .unwrap_or(found.position),
+    )
 }
 
 impl From<Affinity> for MapSide {

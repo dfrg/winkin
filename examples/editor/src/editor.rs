@@ -2,12 +2,14 @@ use std::ops::Range;
 
 use winkin::selection::{Affinity, Granularity, MotionDirection, Position, Selection, WordMotion};
 use winkin::style::{
-    ComputedStyle, FontFamilyName, GenericFamily, OverflowWrap, UnicodeBidi, WhiteSpaceCollapse,
+    ComputedStyle, EdgesGroup, FontFamilyName, FontWeight, GenericFamily, OverflowWrap, Sides,
+    UnicodeBidi, WhiteSpaceCollapse,
 };
 use winkin::{Area, BuildOptions, ComputedBlockStyle, Context, Layout, NoExclusions, NodeKey};
 
-const TEXT: NodeKey = NodeKey(1);
 const HISTORY_LIMIT: usize = 100;
+/// The first key of a `{`…`}` bold span, which has no room and is not drawn.
+pub const SPAN_KEYS: u64 = 1_000_000;
 const FAMILIES: &[FontFamilyName<'static>] = &[FontFamilyName::Generic(GenericFamily::SystemUi)];
 
 #[derive(Clone)]
@@ -30,6 +32,14 @@ pub enum SelectionUnit {
     Line,
 }
 
+/// A run of buffer text between brackets, laid out as one text node.
+#[derive(Copy, Clone, Debug)]
+struct Segment {
+    key: NodeKey,
+    start: usize,
+    end: usize,
+}
+
 #[derive(Copy, Clone)]
 struct Drag {
     start: Position,
@@ -41,6 +51,7 @@ pub struct Editor {
     pub text: String,
     pub layout: Layout,
     pub selection: Selection,
+    segments: Vec<Segment>,
     cx: Context,
     width: f32,
     undo: Vec<Snapshot>,
@@ -55,6 +66,7 @@ impl Editor {
             text: normalize(&text),
             layout: Layout::new(),
             selection: Position::from(0).into(),
+            segments: Vec::new(),
             cx: Context::new(fontwich::Collection::system()),
             width: 760.0,
             undo: Vec::new(),
@@ -70,20 +82,61 @@ impl Editor {
         let offset = self
             .layout
             .node_position(position)
-            .map_or(self.text.len(), |node| {
-                if node.key == TEXT {
-                    node.offset
-                } else {
-                    self.text.len()
-                }
-            });
+            .and_then(|node| {
+                let segment = self
+                    .segments
+                    .iter()
+                    .find(|segment| segment.key == node.key)?;
+                Some(segment.start + node.offset)
+            })
+            .unwrap_or(self.text.len());
         (offset, position.affinity)
     }
 
-    fn position(&self, source: (usize, Affinity)) -> Position {
-        self.layout
-            .position(TEXT, source.0, source.1)
+    fn position(&self, (offset, affinity): (usize, Affinity)) -> Position {
+        // The segment holding the offset; between two brackets, the one the
+        // affinity leans toward.
+        let holds = |segment: &&Segment| segment.start <= offset && offset <= segment.end;
+        let before = || {
+            self.segments
+                .iter()
+                .rev()
+                .find(|segment| segment.end <= offset)
+        };
+        let after = || self.segments.iter().find(|segment| segment.start >= offset);
+        let segment = match affinity {
+            Affinity::Upstream => self
+                .segments
+                .iter()
+                .find(holds)
+                .or_else(before)
+                .or_else(after),
+            Affinity::Downstream => self
+                .segments
+                .iter()
+                .rev()
+                .find(holds)
+                .or_else(after)
+                .or_else(before),
+        };
+        segment
+            .and_then(|segment| {
+                let local = offset.clamp(segment.start, segment.end) - segment.start;
+                self.layout.position(segment.key, local, affinity)
+            })
             .unwrap_or(Position::from(0))
+    }
+
+    /// Describes the focus: its layout offset and affinity, and its node and offset there.
+    pub fn focus_description(&self) -> String {
+        let focus = self.selection.focus();
+        let node = self
+            .layout
+            .node_position(focus)
+            .map_or("none".to_string(), |node| {
+                format!("node {}@{}", node.key.0, node.offset)
+            });
+        format!("{} {:?}, {node}", focus.offset, focus.affinity)
     }
 
     fn snapshot(&self) -> Snapshot {
@@ -106,17 +159,73 @@ impl Editor {
         style.font.size = 20.0;
         style.text.white_space_collapse = WhiteSpaceCollapse::Preserve;
         style.text.overflow_wrap = OverflowWrap::Anywhere;
+        // A box for each `[`…`]`: 10px of padding at its ends and a 3px border.
+        let boxed = ComputedStyle {
+            edges: EdgesGroup {
+                border: Sides::all(3.0),
+                padding: Sides::<f32> {
+                    left: 10.0,
+                    right: 10.0,
+                    ..Sides::ZERO
+                }
+                .into(),
+                ..EdgesGroup::INITIAL
+            },
+            ..style
+        };
+        // A bold span for each `{`…`}`, with no room at its ends.
+        let mut bold = style;
+        bold.font.weight = FontWeight::BOLD;
         style.bidi.unicode_bidi = UnicodeBidi::Plaintext;
         let block = ComputedBlockStyle::new(&style);
         let mut options = BuildOptions::default();
         options.map_source = true;
         let mut builder = self.layout.builder(NodeKey(0), &block, options);
-        builder.text(TEXT, &self.text);
+        // The text between brackets goes in segments, each a node of its own.
+        // The brackets stay in the buffer and take no text in the layout. A
+        // closing bracket closes only the innermost open one of its kind.
+        let mut segments = Vec::new();
+        let mut boxes = 0;
+        let mut open = Vec::new();
+        let mut start = 0;
+        let mut flush = |builder: &mut winkin::LayoutBuilder<'_>, start: usize, end: usize| {
+            if start < end {
+                let key = NodeKey(1 + segments.len() as u64);
+                builder.text(key, &self.text[start..end]);
+                segments.push(Segment { key, start, end });
+            }
+        };
+        for (at, character) in self.text.char_indices() {
+            match character {
+                '[' | '{' => {
+                    flush(&mut builder, start, at);
+                    boxes += 1;
+                    if character == '[' {
+                        builder.open_box(NodeKey(10_000 + boxes), &boxed, None);
+                    } else {
+                        builder.open_box(NodeKey(SPAN_KEYS + boxes), &bold, None);
+                    }
+                    open.push(character);
+                }
+                ']' | '}' if open.last() == Some(&if character == ']' { '[' } else { '{' }) => {
+                    flush(&mut builder, start, at);
+                    builder.close_box();
+                    open.pop();
+                }
+                _ => continue,
+            }
+            start = at + 1;
+        }
+        flush(&mut builder, start, self.text.len());
+        for _ in open {
+            builder.close_box();
+        }
         // A terminal break gives empty editor paragraphs a line box.
         if self.text.is_empty() || self.text.ends_with('\n') {
-            builder.line_break(NodeKey(2));
+            builder.line_break(NodeKey(20_000));
         }
         assert!(builder.finish(&mut self.cx).is_complete());
+        self.segments = segments;
         self.layout
             .break_lines(&mut self.cx, Area::new(self.width), &mut NoExclusions);
         self.selection = Selection::new(self.position(anchor), self.position(focus));
@@ -607,6 +716,83 @@ mod tests {
             editor.source_range().start,
             editor.text.find("next").unwrap()
         );
+    }
+
+    #[test]
+    fn typing_at_a_style_seam_goes_into_the_node_the_caret_came_from() {
+        let mut editor = Editor::new("ab{cd}e".into());
+        let step = |editor: &mut Editor, direction: MotionDirection| {
+            editor.navigate(direction, Granularity::Character, false)
+        };
+        // Forward to the seam after `b`: the normal text before it.
+        step(&mut editor, MotionDirection::Forward);
+        step(&mut editor, MotionDirection::Forward);
+        assert_eq!(editor.focus_description(), "2 Upstream, node 1@2");
+        editor.insert("x");
+        assert_eq!(editor.focus_description(), "3 Upstream, node 1@3");
+        editor.insert("y");
+        assert_eq!(editor.text, "abxy{cd}e");
+        // Back to the same seam from the bold text: the bold text after it.
+        step(&mut editor, MotionDirection::Forward);
+        step(&mut editor, MotionDirection::Backward);
+        assert_eq!(editor.focus_description(), "4 Downstream, node 2@0");
+        editor.insert("z");
+        assert_eq!(editor.text, "abxy{zcd}e");
+        // Left from the end to the closing seam: the normal text after it.
+        editor.navigate(
+            MotionDirection::Forward,
+            Granularity::DocumentBoundary,
+            false,
+        );
+        step(&mut editor, MotionDirection::Left);
+        editor.insert("w");
+        assert_eq!(editor.text, "abxy{zcd}we");
+        // Right onto the closing seam from the bold text: the bold text.
+        step(&mut editor, MotionDirection::Left);
+        step(&mut editor, MotionDirection::Left);
+        step(&mut editor, MotionDirection::Right);
+        editor.insert("v");
+        assert_eq!(editor.text, "abxy{zcdv}we");
+    }
+
+    #[test]
+    fn typing_at_a_box_edge_goes_on_the_side_the_caret_is_drawn() {
+        let mut editor = Editor::new("a[bc]d".into());
+        let forward = |editor: &mut Editor| {
+            editor.navigate(MotionDirection::Forward, Granularity::Character, false)
+        };
+        let backward = |editor: &mut Editor| {
+            editor.navigate(MotionDirection::Backward, Granularity::Character, false)
+        };
+        // Forward stops after `a`, outside the box.
+        forward(&mut editor);
+        assert_eq!(editor.focus_description(), "1 Upstream, node 1@1");
+        editor.insert("x");
+        assert_eq!(editor.text, "ax[bc]d");
+        // The next step crosses the padding and `b` together.
+        forward(&mut editor);
+        editor.insert("y");
+        assert_eq!(editor.text, "ax[byc]d");
+        // Backward stops before `b`, inside the box.
+        backward(&mut editor);
+        backward(&mut editor);
+        assert_eq!(editor.focus_description(), "2 Downstream, node 2@0");
+        editor.insert("z");
+        assert_eq!(editor.text, "ax[zbyc]d");
+        // Forward to the closing edge stops inside; backward from `d`, outside.
+        for _ in 0..3 {
+            forward(&mut editor);
+        }
+        editor.insert("w");
+        assert_eq!(editor.text, "ax[zbycw]d");
+        editor.navigate(
+            MotionDirection::Forward,
+            Granularity::DocumentBoundary,
+            false,
+        );
+        backward(&mut editor);
+        editor.insert("v");
+        assert_eq!(editor.text, "ax[zbycw]vd");
     }
 
     #[test]

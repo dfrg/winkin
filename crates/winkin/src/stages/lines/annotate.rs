@@ -68,7 +68,7 @@ struct LevelBand {
 ///
 /// A side with no annotations is `None`.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
-struct AnnotationReach {
+pub(crate) struct AnnotationReach {
     over: Option<LayoutUnit>,
     under: Option<LayoutUnit>,
 }
@@ -94,31 +94,20 @@ impl LevelBands {
         }
     }
 
-    /// Stacks the annotation levels of a line's `columns`.
+    /// Stacks the annotation levels of a line's columns, and returns how far
+    /// they reach.
     ///
-    /// The columns are those open across the line's start and on it, then
-    /// those whose bases start on it. Each level's em box sits on the one
+    /// The columns are those `parts`, the line's parts with the table of
+    /// their levels, continue from before `on_line`, then `on_line`, those
+    /// whose bases start on the line. The parts also skip the empty levels
+    /// of columns split across lines. Each level's em box sits on the one
     /// inside it, and the first sits on the bases'. Where every base under a
     /// side is empty, its levels stand on `line`, the line box's extent, as
-    /// Chrome's do. `parts`, the line's parts with the table of their
-    /// levels, skips the empty levels of columns split across lines. Linear
-    /// in the levels.
+    /// Chrome's do. Linear in the levels.
     pub(crate) fn stack(
         &mut self,
         rubies: &RubyColumns,
-        columns: impl Iterator<Item = RubyColumnId> + Clone,
-        line: Extent,
-        parts: Option<(&RubyLines, &[ColumnPart])>,
-    ) {
-        self.stack_reach(rubies, columns, line, parts);
-    }
-
-    /// Stacks the levels as [`stack`](Self::stack) does, and returns how far
-    /// they reach.
-    fn stack_reach(
-        &mut self,
-        rubies: &RubyColumns,
-        columns: impl Iterator<Item = RubyColumnId> + Clone,
+        on_line: Range<RubyColumnId>,
         line: Extent,
         parts: Option<(&RubyLines, &[ColumnPart])>,
     ) -> AnnotationReach {
@@ -126,6 +115,12 @@ impl LevelBands {
         out.clear();
         self.over = 0;
         let mut reach = AnnotationReach::default();
+        let open = parts
+            .map_or(&[][..], |(_, parts)| parts)
+            .iter()
+            .map(|part| part.column)
+            .filter(|&column| column < on_line.start);
+        let columns = open.chain((on_line.start.get()..on_line.end.get()).map(RubyColumnId::new));
         for side in [RubySide::Over, RubySide::Under] {
             let from = out.len();
             let mut base = Extent::NONE;
@@ -335,29 +330,17 @@ impl<'a> AnnotationRoom<'a> {
         let start = clusters.start;
         let (ascent, descent) = (natural.ascent(), natural.descent());
         let rubies = stages.measured.ruby_columns();
-        // The columns split across the line's start, then those on it.
-        let open = parts
-            .map_or(&[][..], |(_, on_line)| on_line)
-            .iter()
-            .map(|part| part.column)
-            .filter(|&column| column < line_columns.start);
         let reach = if rubies.is_empty() {
             AnnotationReach::default()
         } else {
-            bands.stack_reach(
-                rubies,
-                open.chain(
-                    (line_columns.start.get()..line_columns.end.get()).map(RubyColumnId::new),
-                ),
-                natural,
-                parts,
-            )
+            bands.stack(rubies, line_columns.clone(), natural, parts)
         };
         // What the content reaches from the baseline: the em boxes, their
         // marks and the annotations.
-        let (mut over, mut under) = (ems.over, ems.under);
-        let mut marked_over = false;
-        let mut marked_under = false;
+        let mut over = reach.over.map_or(ems.over, |reach| ems.over.max(reach));
+        let mut under = reach.under.map_or(ems.under, |reach| ems.under.max(reach));
+        let (mut annotated_over, mut annotated_under) =
+            (reach.over.is_some(), reach.under.is_some());
         // The line's columns not yet passed. The marked text comes in text
         // order, as the columns do.
         let mut columns = ColumnWalk::from_column(rubies, line_columns.start, start);
@@ -369,30 +352,22 @@ impl<'a> AnnotationRoom<'a> {
             match mark.side {
                 EmphasisSide::Over => {
                     over = over.max(past.unwrap_or(em.ascent()) + mark.height);
-                    marked_over = true;
+                    annotated_over = true;
                 }
                 EmphasisSide::Under => {
                     under = under.max(past.unwrap_or(em.descent()) + mark.height);
-                    marked_under = true;
+                    annotated_under = true;
                 }
             }
         }
-        if let Some(reach) = reach.over {
-            over = over.max(reach);
-        }
-        if let Some(reach) = reach.under {
-            under = under.max(reach);
-        }
-        let annotated_over = reach.over.is_some() || marked_over;
-        let annotated_under = reach.under.is_some() || marked_under;
         let (mut over, mut under) = stages.letter_room(natural, over, under, scale);
         // Content past the line box counts only where annotations or marks
         // are on that side: a font's letters may reach past it anyway.
-        if over > ascent && !annotated_over {
-            over = ascent;
+        if !annotated_over {
+            over = over.min(ascent);
         }
-        if under > descent && !annotated_under {
-            under = descent;
+        if !annotated_under {
+            under = under.min(descent);
         }
         let overflow_over = (over - ascent).max(LayoutUnit::ZERO);
         let space_over = (ascent - over).max(LayoutUnit::ZERO);

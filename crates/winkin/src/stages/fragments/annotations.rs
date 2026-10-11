@@ -8,7 +8,6 @@
 
 use alloc::vec::Vec;
 use core::iter::from_fn;
-use core::ops::Range;
 
 use super::justify::Justified;
 use super::place::{LinePieces, PieceId};
@@ -201,6 +200,9 @@ struct AnnotationPlace {
     /// The first item at its text's start: the level's opening item, or the
     /// first item of a part continued from the line before.
     first: ItemId,
+    /// It sets a split column's part of the level, whose opportunities the
+    /// measured level does not count.
+    part: bool,
 }
 
 impl<'a> Placer<'a> {
@@ -227,20 +229,16 @@ impl<'a> Placer<'a> {
         let Some(last) = columns.last() else {
             return;
         };
-        // The columns open across the line's start come first, then those
-        // whose bases start on it.
-        let split = columns
+        // The columns whose bases start on the line: those after the ones
+        // continued across its start, which are the line's parts.
+        let past = RubyColumnId::new(last.column.get() + 1);
+        let on_line = columns
             .iter()
-            .position(|open| !open.continued)
-            .unwrap_or(columns.len());
-        let on_line = columns.get(split).map_or(Range::default(), |starts| {
-            starts.column..RubyColumnId::new(last.column.get() + 1)
-        });
-        let open = columns.get(..split).unwrap_or_default().iter();
+            .find(|open| !open.continued)
+            .map_or(past..past, |starts| starts.column..past);
         bands.stack(
             self.rubies,
-            open.map(|open| open.column)
-                .chain((on_line.start.get()..on_line.end.get()).map(RubyColumnId::new)),
+            on_line,
             line.extent,
             self.lines
                 .ruby
@@ -248,14 +246,9 @@ impl<'a> Placer<'a> {
                 .map(|ruby| (ruby, self.line_state.column_parts)),
         );
         // Closing-item order is postorder: child annotations precede their
-        // parent's, while siblings retain text order.
-        if columns.iter().any(|open| {
-            self.rubies
-                .get(open.column)
-                .is_some_and(|column| column.parent.is_some())
-        }) {
-            stable_sort_by_key(&mut columns[..], |open| open.close);
-        }
+        // parent's, while siblings retain text order. Columns with none
+        // nested are in that order already.
+        stable_sort_by_key(&mut columns[..], |open| open.close);
         let baseline = line.ascent();
         for index in 0..columns.len() {
             let Some(&open) = columns.get(index) else {
@@ -266,11 +259,7 @@ impl<'a> Placer<'a> {
                 continue;
             };
             // A split column's levels are its part's levels.
-            let part = if open.split {
-                self.line_part(open.column)
-            } else {
-                None
-            };
+            let part = self.line_part(open.column);
             let (Some(lead), Some(trail)) = (
                 pieces.logical.get(open.leading),
                 pieces.logical.get(trailing),
@@ -312,43 +301,14 @@ impl<'a> Placer<'a> {
                     else {
                         continue;
                     };
-                    if share.clusters.is_empty() {
-                        continue;
-                    }
                     if share.clusters.start > level.clusters.start {
                         first = share.item;
                     }
-                    level.clusters = share.clusters.clone();
-                    level.clusters.end = share.visible_end;
+                    level.clusters = share.clusters.start..share.visible_end;
                     if level.clusters.is_empty() {
                         continue;
                     }
                     level.width = share.width;
-                    // Only room spread inside the annotation reads its
-                    // opportunities.
-                    level.opportunities = if width.to_layout() - level.width > LayoutUnit::ZERO
-                        && spreads_inside(self.box_facts(container).ruby.align)
-                    {
-                        let node = self
-                            .items
-                            .get(level.open)
-                            .map_or(container, |item| item.node);
-                        let justify = self
-                            .stages
-                            .content
-                            .facts
-                            .text(self.stages.text_facts(node))
-                            .justify;
-                        JustifyOpportunities::new(
-                            self.stages.content,
-                            self.stages.analysis,
-                            level.clusters.clone(),
-                            justify,
-                        )
-                        .map_or(0, |found| found.count_range(level.clusters.clone()))
-                    } else {
-                        0
-                    };
                 }
                 // The level's depth on its side, counting out from the base,
                 // picks its band on the line.
@@ -363,6 +323,7 @@ impl<'a> Placer<'a> {
                     baseline: baseline - open.shift - raise,
                     container,
                     first,
+                    part: part.is_some(),
                 };
                 self.emit_annotation(annotation, boxes, out, line, &level, place);
             }
@@ -411,11 +372,28 @@ impl<'a> Placer<'a> {
         let first = self.first_level(walk, clusters.end);
         let rtl =
             self.gates.ruby_in_bidi && !clusters.is_empty() && first.is_some_and(BidiLevel::is_rtl);
-        let spread = RubySpread::from_annotation(
+        let (align, space) = (
             self.box_facts(place.container).ruby.align,
-            self.gates.text_align,
             place.width.to_layout() - level.width,
-            level.opportunities,
+        );
+        // A part counts its own opportunities, which only room spread inside
+        // it reads.
+        let opportunities = if place.part && space > LayoutUnit::ZERO && spreads_inside(align) {
+            JustifyOpportunities::new(
+                content,
+                self.stages.analysis,
+                clusters.clone(),
+                text.justify,
+            )
+            .map_or(0, |found| found.count_range(clusters.clone()))
+        } else {
+            level.opportunities
+        };
+        let spread = RubySpread::from_annotation(
+            align,
+            self.gates.text_align,
+            space,
+            opportunities,
             size,
             rtl,
         );

@@ -5,8 +5,8 @@
 //! order already, and are not stable. [`stable_sort_by_key`] is the
 //! insertion sort alone, for the few lists whose equal keys keep their
 //! order. The crate sorts a line's shifted boxes, the segments of a line
-//! that bidi reorders, a paragraph's bracket pairs, the room ruby columns
-//! take, and a font's feature settings. These come a few at a time.
+//! that bidi reorders, a paragraph's bracket pairs, a line's ruby columns
+//! by their ends, and a font's feature settings. These come a few at a time.
 //!
 //! `core`'s sort is about 4 KB of code for each type it sorts. These are a
 //! few hundred bytes and allocate nothing. They are as quick for a few

@@ -625,12 +625,16 @@ impl Layout {
     ///
     /// [`PastLines`] controls points outside the line boxes. Within a line,
     /// character halves determine the nearest caret boundary. Points outside
-    /// items use the nearest item edge.
+    /// items use the nearest item edge, a tie going to the left.
     ///
-    /// Hyphens and ellipses map to their underlying text; box edges map to
-    /// adjacent text. Atomic inlines use the nearer side. Ruby annotations
-    /// are hit-tested in their own positions. At bidi boundaries, the hit
-    /// uses the position with a caret at that edge, matching Chrome.
+    /// A point on a glyph beside a boundary between nodes takes the side of
+    /// that glyph: upstream before the boundary, downstream after it (see
+    /// [`Affinity`]). Hyphens and ellipses map to their underlying text. A
+    /// point in a box's margin, border or padding maps to the nearer adjacent
+    /// text, on that side of the box edge. Atomic inlines use the nearer
+    /// side. Ruby annotations are hit-tested in their own positions. At bidi
+    /// boundaries, the hit uses the position with a caret at that edge,
+    /// matching Chrome.
     #[inline]
     pub fn hit_test(&self, inline: f32, block: f32, past_lines: PastLines) -> Option<Position> {
         selection::hit_test(self, inline, block, past_lines)
@@ -638,7 +642,9 @@ impl Layout {
 
     /// Returns caret geometry for `position`, or `None` if there are no lines.
     ///
-    /// At a wrap, affinity selects the line. At bidi boundaries, the caret
+    /// At a wrap, affinity selects the line. At a box edge with margin,
+    /// border or padding, it selects the side of the edge (see [`Affinity`]).
+    /// At bidi boundaries, the caret
     /// uses the paragraph direction; [`carets`](Self::carets) also returns
     /// the alternate position. Text hidden by an ellipsis retains its caret
     /// position beyond the ellipsis, matching Chrome.
@@ -698,7 +704,10 @@ impl Layout {
     /// Returns `None` if [`BuildOptions::map_source`](crate::BuildOptions::map_source)
     /// was disabled. Collapsed whitespace, inserted break opportunities and
     /// node boundaries may have multiple source positions. Upstream affinity
-    /// selects the first; downstream selects the last, matching Chrome.
+    /// selects the first; downstream selects the last. At a boundary between
+    /// nodes, upstream is the end of the node before and downstream the start
+    /// of the node after, the node that text typed there goes into (see
+    /// [`Affinity`]).
     pub fn node_position(&self, position: Position) -> Option<NodePosition> {
         selection::node_position(self, position)
     }
@@ -708,6 +717,11 @@ impl Layout {
     /// Collapsed whitespace and inserted content may have multiple layout
     /// positions. Upstream affinity selects the first; downstream selects
     /// the last. Offsets past the source text are clamped to its end.
+    ///
+    /// At a boundary between nodes, the returned position is on the side of
+    /// node `key`, whatever `affinity` asks, so that
+    /// [`node_position`](Self::node_position) maps it back to `key` (see
+    /// [`Affinity`]).
     ///
     /// Returns `None` if source mapping was disabled or `key` identifies no
     /// text node.

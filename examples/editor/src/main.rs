@@ -87,7 +87,12 @@ impl App {
             self.clamp_scroll();
         }
         self.ime_cursor();
-        self.window.as_ref().unwrap().request_redraw();
+        let window = self.window.as_ref().unwrap();
+        window.set_title(&format!(
+            "Winkin — text editor — {}",
+            self.editor.focus_description()
+        ));
+        window.request_redraw();
     }
 
     fn ime_cursor(&self) {

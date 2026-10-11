@@ -8,8 +8,10 @@
 //!   (Windows) or goes to the line's start or end (macOS and Linux), as Blink's
 //!   `ShouldMoveCaretToHorizontalBoundaryWhenPastTopOrBottom` does.
 //! - In the line, the hit is in the leaf under the point. Where no leaf is
-//!   under it, the nearest leaf after and then before is hit at its near edge,
-//!   as in `PositionForPointInInlineBox`.
+//!   under it, the nearer leaf either side is hit at its near edge, a tie
+//!   going left. A box's room is so split at its middle, each half hitting
+//!   the position drawn on its side. Chrome's `PositionForPointInInlineBox`
+//!   prefers the leaf after; this follows the two positions a box edge has.
 //! - In text, the hit is the nearer edge of the cluster under the point. On
 //!   an atomic inline it is before or after by its halves, the middle before.
 //! - A ruby annotation's text is hit where the point is on it. An ellipsis or
@@ -189,6 +191,12 @@ fn hit_point(layout: &Layout, line: &Line<'_>, x: f32, y: Option<f32>) -> Cluste
             );
             (beside, hit)
         }
+        // In a gap the nearer leaf is hit at its edge facing the point, a tie
+        // going left, so a box's room is split at its middle.
+        (None, Some((_, left)), Some((before, right))) if x - right <= left - x => {
+            let offset = before.leaf.edge_offset(true);
+            (before, (offset, None))
+        }
         (None, Some((beside, _)), _) => {
             let offset = beside.leaf.edge_offset(false);
             (beside, (offset, None))
@@ -222,19 +230,24 @@ struct Beside<'a> {
 
 /// Returns `offset` in the leaf `beside` holds, adjusted at a direction change.
 ///
-/// Where `offset` is at the leaf's visual edge and the leaf beside that edge
-/// is nearer the paragraph's level, it returns that leaf's offset at the
-/// edge. That is the position whose caret is drawn there, as Blink's
-/// `BidiAdjustment::AdjustForHitTest` finds it. With it comes whether the
-/// offset is still `offset`.
+/// Where `offset` is at the leaf's visual edge and the leaf meeting that
+/// edge is nearer the paragraph's level, it returns that leaf's offset at
+/// the edge. That is the position whose caret is drawn there, as Blink's
+/// `BidiAdjustment::AdjustForHitTest` finds it. A leaf across a box's room
+/// does not meet the edge, since each side of the room has its own caret.
+/// With the position comes whether the offset is still `offset`.
 fn adjusted(beside: &Beside<'_>, offset: usize) -> (Position, bool) {
     let leaf = &beside.leaf;
     let right = leaf.edge_offset(true) == offset;
     let left = leaf.edge_offset(false) == offset;
     let neighbour = if right {
-        beside.right
+        beside
+            .right
+            .filter(|next| next.inline.left == leaf.inline.right)
     } else if left {
-        beside.left
+        beside
+            .left
+            .filter(|next| next.inline.right == leaf.inline.left)
     } else {
         None
     };

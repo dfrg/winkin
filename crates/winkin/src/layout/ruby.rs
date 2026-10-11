@@ -130,34 +130,11 @@ impl<'a> Annotation<'a> {
     /// [`descendants`](BoxFragment::descendants) returns zero; use
     /// [`runs`](Self::runs) to access annotation text.
     pub fn boxes(&self) -> impl Iterator<Item = BoxFragment<'a>> + Clone + use<'a> {
-        AnnotationBoxes {
-            line: self.line,
-            items: self.text.iter(),
-        }
-    }
-}
-
-/// The boxes inside one annotation that keep a fragment, outermost first:
-/// what [`Annotation::boxes`] walks.
-#[derive(Clone)]
-struct AnnotationBoxes<'a> {
-    line: Line<'a>,
-    items: Iter<'a, FragmentItem>,
-}
-
-impl<'a> Iterator for AnnotationBoxes<'a> {
-    type Item = BoxFragment<'a>;
-
-    fn next(&mut self) -> Option<BoxFragment<'a>> {
-        let item = self
-            .items
-            .by_ref()
-            .find(|item| item.kind() == FragmentItemKind::Box)?;
-        Some(BoxFragment::from_item(self.line, item))
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (0, Some(self.items.len()))
+        let line = self.line;
+        self.text
+            .iter()
+            .filter(|item| item.kind() == FragmentItemKind::Box)
+            .map(move |item| BoxFragment::from_item(line, item))
     }
 }
 

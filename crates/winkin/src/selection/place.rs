@@ -11,9 +11,14 @@
 //! - The item holds the offset. Where two meet at it, the one nearer the
 //!   paragraph's level wins, the side Chrome draws the caret on. At equal
 //!   levels the one before wins, as Blink's `ComputeInlineCaretPosition`
-//!   resolves it, so a caret at a padded box's edge stands outside the
-//!   padding. Ruby annotation text is searched where the base text has no
-//!   match.
+//!   resolves it. Ruby annotation text is searched where the base text has
+//!   no match.
+//! - A box edge that takes room along the line, with a leaf either side on
+//!   one line, is two positions, and the affinity is the side: upstream is
+//!   drawn in the leaf before, downstream in the leaf after. Each stands on
+//!   its own side of the room, where text typed there goes. Chrome keeps one
+//!   position there, always in the text before; this deliberately does not
+//!   follow it. Firefox has the two positions.
 //! - A soft hyphen is not matched to Chrome. Blink's line ends with the
 //!   generated hyphen, so the position after the soft hyphen stays on that
 //!   line even downstream, and the next line's start is no caret position.
@@ -24,9 +29,10 @@ use crate::data::{Id, TextOffset};
 use crate::layout::Layout;
 use crate::layout::{Atomic, CrossExtents, Item, Line, TextRun};
 use crate::stages::analysis::{BidiLevel, ClusterId, Clusters};
-use crate::stages::content::{BoxFlags, ItemKind};
+use crate::stages::content::{BoxFlags, ContentFlags, ItemKind};
 use crate::stages::lines::{InlineExtents, LineId};
 use crate::style::FirstLineVariant;
+use crate::unit::LayoutUnit;
 use crate::work;
 
 /// A leaf of a line as a caret sees it: a text run or an atomic inline.
@@ -422,9 +428,15 @@ fn divides_grapheme(layout: &Layout, cluster: ClusterId) -> bool {
         && !is_box_edge(layout, cluster)
 }
 
-/// Returns whether a box opening or closing before `cluster` has margin, border or padding.
+/// Returns whether a box opening or closing before `cluster` takes room along the line there.
+///
+/// The room is the margin, border and padding on the side facing the
+/// boundary: a box's start where it opens, its end where it closes.
 fn is_box_edge(layout: &Layout, cluster: ClusterId) -> bool {
     let content = layout.content();
+    if !content.flags.contains(ContentFlags::BOXES_WITH_EDGES) {
+        return false;
+    }
     let (nodes, facts) = (&content.nodes, &content.facts);
     layout
         .analysis()
@@ -433,11 +445,58 @@ fn is_box_edge(layout: &Layout, cluster: ClusterId) -> bool {
         .any(|item| {
             work::step();
             content.items.get(item).is_some_and(|item| {
-                let own = nodes.box_facts(item.node, FirstLineVariant::Standard);
-                matches!(item.kind, ItemKind::Open | ItemKind::Close)
-                    && facts.box_facts(own).has(BoxFlags::HAS_EDGES)
+                let row = facts.box_facts(nodes.box_facts(item.node, FirstLineVariant::Standard));
+                let (left, right) = row.room;
+                let rtl = row.has(BoxFlags::RTL);
+                let room = match item.kind {
+                    ItemKind::Open if rtl => right,
+                    ItemKind::Open => left,
+                    ItemKind::Close if rtl => left,
+                    ItemKind::Close => right,
+                    _ => return false,
+                };
+                room > LayoutUnit::ZERO
             })
         })
+}
+
+/// Returns whether `snapped`, a snapped position, is at a box edge whose two sides are two positions.
+///
+/// That is a box edge taking room along the line with a leaf either side on
+/// one line, so the two affinities draw the caret at two places. At a
+/// line's start or end only the side inside the line exists, and this is
+/// false.
+pub(super) fn is_sided(layout: &Layout, snapped: ClusteredPosition) -> bool {
+    if !is_box_edge(layout, snapped.cluster) {
+        return false;
+    }
+    let side = |affinity: Affinity| {
+        let position = Position::new(snapped.offset(), affinity);
+        caret(
+            layout,
+            ClusteredPosition {
+                position,
+                ..snapped
+            },
+            None,
+        )
+    };
+    match (side(Affinity::Upstream), side(Affinity::Downstream)) {
+        (Some(up), Some(down)) => up.line == down.line && up.inline != down.inline,
+        _ => false,
+    }
+}
+
+/// Returns whether a line after the first starts at `cluster`, so upstream there is on the line before.
+///
+/// That is a wrap or a forced break. The text's end starts no line.
+pub(super) fn starts_line(layout: &Layout, cluster: ClusterId) -> bool {
+    let lines = &layout.line_records().lines;
+    let line = layout.line_records().first_reaching(cluster);
+    lines
+        .get(line)
+        .is_some_and(|record| record.clusters().end == cluster)
+        && lines.get(LineId::new(line.get() + 1)).is_some()
 }
 
 /// Returns whether a caret can stop at `cluster`'s start.
@@ -520,15 +579,14 @@ pub(super) fn carets(
 ) -> Option<Carets> {
     let id = line(layout, snapped, near)?;
     let line = Line::new(layout, id)?;
-    let position = snapped.position;
-    if let Some(found) = line_carets(layout, &line, position) {
+    if let Some(found) = line_carets(layout, &line, snapped) {
         return Some(found);
     }
-    let at = position.offset;
+    let at = snapped.offset();
     // Upstream past what the line placed, the caret is on the next line.
-    if position.affinity == Affinity::Upstream
+    if snapped.position.affinity == Affinity::Upstream
         && let Some(next) = Line::new(layout, LineId::new(id.get() + 1))
-        && let Some(found) = line_carets(layout, &next, position)
+        && let Some(found) = line_carets(layout, &next, snapped)
     {
         return Some(found);
     }
@@ -577,22 +635,25 @@ fn touches(line: &Line<'_>, at: usize) -> bool {
     })
 }
 
-/// Returns the carets of `position` among `line`'s leaves that hold or meet at its offset.
+/// Returns the carets of `snapped`, a snapped position, among `line`'s leaves that hold or meet at its offset.
 ///
 /// It searches the base text first, then the annotations. `None` where no
 /// leaf does.
-fn line_carets(layout: &Layout, line: &Line<'_>, position: Position) -> Option<Carets> {
-    touching(layout, leaves(*line), position)
-        .or_else(|| touching(layout, annotation_leaves(*line), position))
+fn line_carets(layout: &Layout, line: &Line<'_>, snapped: ClusteredPosition) -> Option<Carets> {
+    touching(layout, leaves(*line), snapped)
+        .or_else(|| touching(layout, annotation_leaves(*line), snapped))
 }
 
-/// Returns the carets of `position` among `leaves`, all of one line.
+/// Returns the carets of `snapped`, a snapped position, among `leaves`, all of one line.
 ///
 /// The strong caret is in the leaf holding the offset. At a boundary
 /// between two leaves, it is in the one nearer the paragraph's level, the
 /// side Chrome draws the caret on. At equal levels it is in the one before,
 /// which Blink resolves first. Where the two leaves read in different
 /// directions, the other gives the weak caret.
+///
+/// At a box edge taking room between the two, the affinity is the side:
+/// upstream the leaf before, downstream the one after, with no weak caret.
 ///
 /// At the edge of combined text, the affinity chooses: downstream the leaf
 /// after, upstream the one before. A click in a unit then draws its caret in
@@ -601,8 +662,9 @@ fn line_carets(layout: &Layout, line: &Line<'_>, position: Position) -> Option<C
 fn touching<'a>(
     layout: &Layout,
     leaves: impl Iterator<Item = Leaf<'a>>,
-    position: Position,
+    snapped: ClusteredPosition,
 ) -> Option<Carets> {
+    let position = snapped.position;
     let at = position.offset;
     let (mut before, mut after) = (None, None);
     for leaf in leaves {
@@ -620,6 +682,18 @@ fn touching<'a>(
         if start < end && start == at {
             after = Some(leaf);
         }
+    }
+    if let (Some(before), Some(after)) = (before, after)
+        && is_box_edge(layout, snapped.cluster)
+    {
+        let side = match position.affinity {
+            Affinity::Upstream => before,
+            Affinity::Downstream => after,
+        };
+        return Some(Carets {
+            strong: side.caret(layout, at),
+            weak: None,
+        });
     }
     let (strong, weak) = match (before, after) {
         (Some(before), Some(after)) if after.level() < before.level() => (after, Some(before)),

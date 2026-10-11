@@ -585,7 +585,7 @@ define_flags! {
         /// An inline box has margin, border or padding on some side, or is
         /// the block's initial letter. An initial letter's ink takes room at
         /// its edges however its own edges are set.
-        pub(super) const BOXES_WITH_EDGES = 1 << 0;
+        pub(crate) const BOXES_WITH_EDGES = 1 << 0;
         /// There is an atomic inline.
         pub(crate) const ATOMICS = 1 << 1;
         /// There is a float.

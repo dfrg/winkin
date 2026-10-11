@@ -198,7 +198,11 @@ fn a_character_step_inside_an_arabic_line_costs_the_same_however_long_the_line()
                 selection.modify(&layout, direction.moving(Granularity::Character));
             }
         }
-        assert_eq!(selection.focus(), middle);
+        // Left is forward here, so the caret lands upstream, with the text it passed.
+        assert_eq!(
+            selection.focus(),
+            Position::new(middle.offset, Affinity::Upstream)
+        );
         let start = Position::from(0);
         let mut selection = Selection::from(start);
         for _ in 0..16 {

@@ -13,8 +13,14 @@
 //!   stops. Past the line's edge, right continues onto the next line and
 //!   left onto the previous line.
 //! - Character motion's rules hold. A builder break opportunity's two sides
-//!   are one stop. Every stop is downstream, except at combined text's edge,
-//!   where the affinity chooses the caret's side.
+//!   are one stop. A stop keeps the side the step came from: the leaf it
+//!   leaves, upstream at that leaf's logical end, or inside a leaf upstream
+//!   going the way it reads. At a wrap the line's end is downstream, one stop
+//!   with the next line's start.
+//! - A box edge that takes room is one stop each way, on the side the step
+//!   came from: the edge of the leaf it leaves. The edge of the leaf it
+//!   enters is no stop, so the next step crosses the room and the cluster
+//!   past it together. A line's first stop is its own place.
 //! - At a leaf's edge, a position is a stop only where its caret is drawn
 //!   there. A position drawn where the caret already is, across a change of
 //!   direction, is passed over; the arrow would not move the caret.
@@ -99,25 +105,35 @@ fn starts_last_line(layout: &Layout, focus: ClusteredPosition) -> bool {
 /// Returns whether a logical step moves visibly the requested way on the same line.
 ///
 /// The caller has checked that the text reads one way. There a step that
-/// stays at its offset does not move. A downstream caret is drawn on the
-/// line holding its offset, so two downstream positions on different lines
-/// have carets on different lines. Where both are on one line and the step
-/// crosses only drawn text, it moves the way the paragraph maps it. Only
-/// other steps place both carets, each a walk of the line.
+/// stays at its offset does not move. A caret is drawn on the line holding
+/// its offset, unless it is upstream at the line's end, so two such
+/// positions on different lines have carets on different lines. Where both
+/// are on one line and the step crosses only drawn text, it moves the way
+/// the paragraph maps it. Only other steps place both carets, each a walk of
+/// the line.
 fn advances(layout: &Layout, from: ClusteredPosition, to: ClusteredPosition, right: bool) -> bool {
     if from.offset() == to.offset() {
         return false;
     }
-    let downstream = from.position.affinity == Affinity::Downstream
-        && to.position.affinity == Affinity::Downstream;
-    if downstream && layout.line_records().ruby.is_none() {
-        let Some(line) = place::line(layout, from, None) else {
-            return false;
-        };
+    let lines = layout.line_records();
+    // Whether a position on `line` is upstream at its end, where its caret
+    // may be on the next line.
+    let ends = |at: ClusteredPosition, line: LineId| {
+        at.position.affinity == Affinity::Upstream
+            && lines
+                .lines
+                .get(line)
+                .is_none_or(|record| record.clusters().end == at.cluster)
+    };
+    if lines.ruby.is_none()
+        && let Some(line) = place::line(layout, from, None)
+        && !ends(from, line)
+    {
         if place::line(layout, to, Some(line)) != Some(line) {
-            return false;
-        }
-        if crosses_drawn_text(layout, line, from.cluster, to.cluster) {
+            if to.position.affinity == Affinity::Downstream {
+                return false;
+            }
+        } else if !ends(to, line) && crosses_drawn_text(layout, line, from.cluster, to.cluster) {
             return true;
         }
     }
@@ -368,7 +384,7 @@ fn twin(
             && place::is_stop(layout, stop.located.cluster)
             && is_drawn(layout, &line, stop.located, x)
         {
-            found = Some((downstream(layout, stop.located, &line).0, stop.rtl));
+            found = Some((arrival(layout, stop.located, &line).0, stop.rtl));
         }
     });
     found
@@ -430,6 +446,24 @@ struct Inside {
     rtl: bool,
 }
 
+impl Inside {
+    /// Returns `located`, a stop strictly inside the leaf, on the side a step right or left comes from.
+    ///
+    /// A step the way the leaf reads lands upstream, and one against it
+    /// downstream, as a motion in text order does.
+    fn arrived(self, located: ClusteredPosition, right: bool) -> ClusteredPosition {
+        let affinity = if right != self.rtl {
+            Affinity::Upstream
+        } else {
+            Affinity::Downstream
+        };
+        ClusteredPosition {
+            position: Position::new(located.offset(), affinity),
+            ..located
+        }
+    }
+}
+
 /// Where a caret stop is along its line, in the order a walk on the screen meets it.
 ///
 /// It orders by x, then by leaf left to right, then by stop within the leaf
@@ -482,6 +516,8 @@ struct Stop {
     place: Place,
     /// Whether it is at its leaf's edge, where another leaf may draw its caret.
     edge: bool,
+    /// Whether, at its leaf's edge, it is the left one.
+    left: bool,
     /// Whether its leaf reads right to left.
     rtl: bool,
     /// Its leaf, where it is strictly inside it.
@@ -498,10 +534,20 @@ fn step(layout: &Layout, focus: ClusteredPosition, caret: &Caret, right: bool) -
     let mut stops = stops(layout, line, right, Some((focus, caret)));
     let mut on_focus_line = true;
     loop {
+        // Whether a stop of this line has been passed over already.
+        let mut passed = on_focus_line;
         let landing = stops.find(|stop| {
             // A builder break opportunity's two sides are one stop, and a
             // position is one stop with itself.
             if only_generated_between(layout, focus.cluster, stop.located.cluster) {
+                return false;
+            }
+            // A leaf entered across a box's room is not stopped at its edge:
+            // the step crosses the room and the cluster past it together. A
+            // line's first stop is its own place.
+            let entering = stop.edge && stop.left == right && passed;
+            passed = true;
+            if entering && place::is_sided(layout, stop.located) {
                 return false;
             }
             // Skip another position drawn where the caret is, across a change
@@ -515,7 +561,10 @@ fn step(layout: &Layout, focus: ClusteredPosition, caret: &Caret, right: bool) -
             !in_place && (!stop.edge || is_drawn(layout, &line, stop.located, stop.place.x))
         });
         if let Some(stop) = landing {
-            let (located, caret) = downstream(layout, stop.located, &line);
+            let (located, caret) = match stop.inside {
+                Some(leaf) => (leaf.arrived(stop.located, right), None),
+                None => arrival(layout, stop.located, &line),
+            };
             return Some(Landing {
                 located,
                 inside: stop.inside,
@@ -539,9 +588,10 @@ fn step(layout: &Layout, focus: ClusteredPosition, caret: &Caret, right: bool) -
 /// It is the next text-order stop the way the leaf reads, where that is still
 /// inside the leaf. Its caret is then drawn in the leaf, past `at`'s.
 fn within(layout: &Layout, at: ClusteredPosition, leaf: Inside, right: bool) -> Option<Landing> {
-    let to = motion::by_character(layout, at.cluster, right != leaf.rtl);
+    let to = motion::next_stop(layout, at.cluster, right != leaf.rtl);
+    let to = ClusteredPosition::from_cluster(&layout.analysis().clusters, to, Affinity::Downstream);
     (leaf.start < to.offset() && to.offset() < leaf.end).then_some(Landing {
-        located: to,
+        located: leaf.arrived(to, right),
         inside: Some(leaf),
         caret: None,
     })
@@ -777,6 +827,7 @@ fn leaf_stops(layout: &Layout, at: i64, leaf: &Leaf<'_>, mut each: impl FnMut(St
                 rank: if rtl { -rank } else { rank },
             },
             edge,
+            left: (rank == 0) != rtl,
             rtl,
             inside: (!edge).then_some(inside),
         });
@@ -839,6 +890,7 @@ fn bare_stop(layout: &Layout, line: &Line<'_>) -> Stop {
             rank: 0,
         },
         edge: false,
+        left: false,
         rtl: line.level().is_rtl(),
         inside: None,
     }
@@ -865,13 +917,14 @@ fn only_generated_between(layout: &Layout, a: ClusterId, b: ClusterId) -> bool {
     })
 }
 
-/// Returns a stop at `located` on `line` as a character motion leaves it, normally downstream.
+/// Returns a stop at `located` on `line` as a character motion arrives at it.
 ///
-/// It stays upstream at combined text's edge, where downstream would draw
-/// the caret elsewhere on the line. At a wrap, downstream is the next line's
-/// start, one stop with the line's end. The caret comes with it where it was
-/// found.
-fn downstream(
+/// It keeps the side of the leaf it is drawn in, upstream at the leaf's
+/// logical end, so the caret stays with the text it came from. Where
+/// upstream is on another line than downstream, at a wrap, it is downstream:
+/// the next line's start, one stop with the line's end. The caret comes with
+/// it where it was found.
+fn arrival(
     layout: &Layout,
     located: ClusteredPosition,
     line: &Line<'_>,
@@ -888,7 +941,7 @@ fn downstream(
         place::caret(layout, located, near),
         place::caret(layout, down, near),
     ) {
-        (Some(up), Some(caret)) if up.line == caret.line && up != caret => (located, Some(up)),
+        (Some(up), Some(caret)) if up.line == caret.line => (located, Some(up)),
         (_, caret) => (down, caret),
     }
 }

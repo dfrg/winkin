@@ -36,9 +36,6 @@ pub(super) struct LineColumn {
     index: usize,
     /// Its base and sizes on this line.
     pub(super) sizes: ColumnSizes,
-    /// Whether the line sets a part of it, the column being split across
-    /// lines.
-    pub(super) split: bool,
     /// Its closing item: the item after its last.
     pub(super) close: ItemId,
     /// Where it ends on this line: its part's base end where the line
@@ -117,6 +114,47 @@ impl ColumnSizes {
     /// Returns its base's clusters on the line.
     fn base(&self) -> Range<ClusterId> {
         self.base.0..self.base.1
+    }
+
+    /// Where its room goes under `ruby-align: space-around` on a justified
+    /// line whose start it stands at (`start`), whose end (`end`), or both,
+    /// as Chrome's `ApplyRubyAlign` places it with `on_start_edge` and
+    /// `on_end_edge`: its base flush with the edge, all its
+    /// room at the other side but what the base's opportunities share; at
+    /// both edges, all its room inside the base, as `space-between` puts it,
+    /// or the base centred where it has no opportunity, and over the whole
+    /// of `line`, the line's room, where it is wider than its base and so
+    /// all the line holds, as Chrome spreads a base-shorter column alone on
+    /// a line. At neither, `before` and `inside`, its room elsewhere.
+    ///
+    /// Returns the room before its base, the room its base's opportunities
+    /// share, and its width on the line.
+    fn room_on_edges(
+        &self,
+        (before, inside): (LayoutUnit, LayoutUnit),
+        (start, end): (bool, bool),
+        line: LayoutUnit,
+    ) -> (LayoutUnit, LayoutUnit, LayoutUnit) {
+        let space = self.width - self.base_width;
+        match (start, end) {
+            (false, false) => (before, inside, self.width),
+            (true, false) => (LayoutUnit::ZERO, inside, self.width),
+            (false, true) => (space - inside, inside, self.width),
+            (true, true) => {
+                let width = if self.width > self.base_width {
+                    line.max(self.width)
+                } else {
+                    self.width
+                };
+                let space = width - self.base_width;
+                // Room inside is what a base with an opportunity shares.
+                if inside > LayoutUnit::ZERO {
+                    (LayoutUnit::ZERO, space, width)
+                } else {
+                    (space.half(), LayoutUnit::ZERO, width)
+                }
+            }
+        }
     }
 }
 
@@ -259,27 +297,30 @@ impl<'a> Placer<'a> {
         let align = self.box_facts(container).ruby.align;
         let text = content.facts.text(self.stages.text_facts(container));
         let scope = (id, id.max(self.line_state.line_column));
+        let (analysis, ruby_columns) = (self.stages.analysis, self.rubies);
+        let opportunities = || {
+            let (justify, base) = (text.justify, base.clone());
+            JustifyOpportunities::from_base(
+                content,
+                analysis,
+                base,
+                justify,
+                ruby_columns,
+                scope,
+                None,
+            )
+        };
         let (mut room_before, mut room_inside) = (column.room_before, column.room_inside);
         if part.is_some() {
             let space = sizes.width - sizes.base_width;
             // Only room spread inside the base reads its opportunities.
-            let opportunities = if space > LayoutUnit::ZERO && spreads_inside(align) {
-                JustifyOpportunities::from_base(
-                    content,
-                    self.stages.analysis,
-                    base.clone(),
-                    text.justify,
-                    self.rubies,
-                    scope,
-                    None,
-                )
-                .map_or(0, |found| found.count_range(base.clone()))
+            let count = if space > LayoutUnit::ZERO && spreads_inside(align) {
+                opportunities().map_or(0, |found| found.count_range(base.clone()))
             } else {
                 0
             };
-            let spread = RubySpread::from_base(align, space, opportunities);
-            room_before = spread.start;
-            room_inside = spread.inside;
+            let spread = RubySpread::from_base(align, space, count);
+            (room_before, room_inside) = (spread.start, spread.inside);
         }
         let level = if base.is_empty() {
             self.line_state.level
@@ -307,40 +348,22 @@ impl<'a> Placer<'a> {
         } else {
             (false, false)
         };
-        let (room_before, room_inside, width) = if starts || ends {
-            // The room at the edges is the column's, sized as on the line.
-            let on_line = RubyColumn {
-                base_width: sizes.base_width,
-                width: sizes.width,
-                room_before,
-                room_inside,
-                ..column.clone()
-            };
-            on_line.room_on_edges(starts, ends, self.line_state.ruby_edges.room)
-        } else {
-            (room_before, room_inside, sizes.width)
-        };
+        let (room_before, room_inside, width) = sizes.room_on_edges(
+            (room_before, room_inside),
+            (starts, ends),
+            self.line_state.ruby_edges.room,
+        );
         let room_after =
             (width - sizes.base_width - room_before - room_inside).max(LayoutUnit::ZERO);
-        let (room_before, room_inside, width, room_after) = (
-            InlineLayoutUnit::from_layout(room_before),
-            InlineLayoutUnit::from_layout(room_inside),
-            InlineLayoutUnit::from_layout(width),
-            InlineLayoutUnit::from_layout(room_after),
-        );
+        let [room_before, room_inside, width, room_after] =
+            [room_before, room_inside, width, room_after].map(InlineLayoutUnit::from_layout);
         let (shift, _) = boxes.innermost_shifts();
-        let parent_room = if column.parent.is_some() && !base.is_empty() {
-            self.line_state.spread.as_ref().map_or(
-                (InlineLayoutUnit::ZERO, InlineLayoutUnit::ZERO),
-                |spread| {
-                    (
-                        spread.room(base.start).0,
-                        spread.room(ClusterId::new(base.end.get() - 1)).1,
-                    )
-                },
-            )
-        } else {
-            (InlineLayoutUnit::ZERO, InlineLayoutUnit::ZERO)
+        let parent_room = match &self.line_state.spread {
+            Some(spread) if column.parent.is_some() && !base.is_empty() => (
+                spread.room(base.start).0,
+                spread.room(ClusterId::new(base.end.get() - 1)).1,
+            ),
+            _ => (InlineLayoutUnit::ZERO, InlineLayoutUnit::ZERO),
         };
         let leading = pieces.logical.next_id();
         pieces.push(Piece::new(
@@ -352,23 +375,7 @@ impl<'a> Placer<'a> {
             boxes.innermost(),
             shift,
         ));
-        let (analysis, ruby_columns) = (self.stages.analysis, self.rubies);
-        let clusters = base.clone();
-        self.line_state.spread = Justified::new(
-            || {
-                JustifyOpportunities::from_base(
-                    content,
-                    analysis,
-                    base,
-                    text.justify,
-                    ruby_columns,
-                    scope,
-                    None,
-                )
-            },
-            clusters,
-            room_inside,
-        );
+        self.line_state.spread = Justified::new(opportunities, base.clone(), room_inside);
         let index = rubies.columns.len();
         let parent = self.line_state.open_column;
         self.line_state.open_column = Some(index);
@@ -376,7 +383,6 @@ impl<'a> Placer<'a> {
             column: id,
             index,
             sizes,
-            split: part.is_some(),
             close: column.close,
             end,
             container,

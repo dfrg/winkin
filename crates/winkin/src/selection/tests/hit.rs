@@ -1,6 +1,6 @@
 //! Hit testing tests. They pin:
 //! - a point hitting the nearer edge, a ligature divided evenly;
-//! - points at a direction change, past the lines and in a box's padding;
+//! - points at a direction change and past the lines;
 //! - the text an ellipsis hides staying live;
 //! - a point on an annotation hitting its text.
 
@@ -136,35 +136,6 @@ fn a_point_past_the_lines_hits_the_nearest() {
     // Nothing laid out, nothing hit.
     assert_eq!(Layout::new().hit_test(0.0, 0.0, PastLines::Column), None);
     assert_eq!(Layout::new().caret(Position::from(0)), None);
-}
-
-/// A point in a box's padding hits the text beside it, with the caret outside the padding, as in Chrome.
-#[test]
-fn a_point_in_a_boxs_padding_hits_the_text_beside_it() {
-    let padded = styled(|style| {
-        style.edges = EdgesGroup {
-            padding: Sides::<f32> {
-                left: 10.0,
-                right: 10.0,
-                ..Sides::ZERO
-            }
-            .into(),
-            ..EdgesGroup::INITIAL
-        }
-    });
-    let layout = laid_with(&ComputedBlockStyle::new(&ahem()), 400.0, |b| {
-        b.text(NodeKey(1), "a");
-        b.open_box(NodeKey(2), &padded, None);
-        b.text(NodeKey(3), "bc");
-        b.close_box();
-        b.text(NodeKey(4), "d");
-    });
-    let left = hit(&layout, 25.0, 0);
-    assert_eq!(left.offset, 1);
-    assert_eq!(position_caret(&layout, left), (0, 20.0));
-    let right = hit(&layout, 75.0, 0);
-    assert_eq!(right.offset, 3);
-    assert_eq!(position_caret(&layout, right), (0, 70.0));
 }
 
 /// Text an ellipsis hides keeps its carets and hits, under and past the ellipsis, and is copied.

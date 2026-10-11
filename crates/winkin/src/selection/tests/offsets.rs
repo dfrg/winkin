@@ -19,9 +19,10 @@ fn positions_are_places_in_the_callers_text() {
         let node = layout.node_position(position).unwrap();
         assert_eq!((node.key, node.offset), (NodeKey(3), offset));
     }
+    // Collapsed white space at a node's end is on that node's side.
     assert_eq!(
         layout.position(NodeKey(1), 5, Affinity::Downstream),
-        Some(Position::from(4))
+        Some(Position::new(4, Affinity::Upstream))
     );
     let before = layout
         .node_position(Position::new(4, Affinity::Upstream))

@@ -138,12 +138,7 @@ impl RubySpread {
         }
         match align {
             RubyAlign::SpaceAround if opportunities > 0 => {
-                let inset = space
-                    .divided(i32::try_from(opportunities.saturating_add(1)).unwrap_or(i32::MAX));
-                Self {
-                    start: inset.half(),
-                    inside: space - inset,
-                }
+                Self::from_space_around(space, opportunities, None)
             }
             RubyAlign::SpaceBetween if opportunities > 0 => Self {
                 start: LayoutUnit::ZERO,
@@ -178,67 +173,42 @@ impl RubySpread {
         font_size: f32,
         rtl: bool,
     ) -> Self {
-        if space <= LayoutUnit::ZERO {
-            return Self::default();
+        if space <= LayoutUnit::ZERO || align != RubyAlign::SpaceAround {
+            return Self::from_base(align, space, opportunities);
         }
-        let centred = Self {
-            start: space.half(),
-            inside: LayoutUnit::ZERO,
-        };
         // The spread that puts `left` of the room on the physical left,
         // measured from the logical start.
         let from_left = |left: LayoutUnit| Self {
             start: if rtl { space - left } else { left },
             inside: LayoutUnit::ZERO,
         };
-        match align {
-            RubyAlign::Start => Self::default(),
-            RubyAlign::Center => centred,
-            RubyAlign::SpaceBetween if opportunities > 0 => Self {
-                start: LayoutUnit::ZERO,
-                inside: space,
-            },
-            RubyAlign::SpaceBetween => centred,
-            RubyAlign::SpaceAround => match text_align {
-                TextAlign::Start | TextAlign::Justify if opportunities > 0 => {
-                    let count = i32::try_from(opportunities.saturating_add(1)).unwrap_or(i32::MAX);
-                    let cap = LayoutUnit::from_px(2.0 * font_size);
-                    let inset = space.divided(count).min(cap);
-                    Self {
-                        start: inset.half(),
-                        inside: space - inset,
-                    }
-                }
-                TextAlign::Start | TextAlign::Justify | TextAlign::Center => centred,
-                TextAlign::Left => from_left(LayoutUnit::ZERO),
-                TextAlign::Right => from_left(space),
-                TextAlign::End => Self {
-                    start: space,
-                    inside: LayoutUnit::ZERO,
-                },
+        match text_align {
+            TextAlign::Start | TextAlign::Justify if opportunities > 0 => {
+                let cap = LayoutUnit::from_px(2.0 * font_size);
+                Self::from_space_around(space, opportunities, Some(cap))
+            }
+            TextAlign::Start | TextAlign::Justify | TextAlign::Center => {
+                Self::from_base(RubyAlign::Center, space, 0)
+            }
+            TextAlign::Left => from_left(LayoutUnit::ZERO),
+            TextAlign::Right => from_left(space),
+            TextAlign::End => Self {
+                start: space,
+                inside: LayoutUnit::ZERO,
             },
         }
     }
 
-    /// Returns the same spread with `start` before its first cluster.
-    ///
-    /// JLREQ's overhang uses it to put the room it reaches over the text
-    /// before a column ahead of the base's own room.
-    pub(super) fn with_start(self, start: LayoutUnit) -> Self {
-        Self { start, ..self }
+    /// Returns `space` spread under `space-around` over `opportunities`, one
+    /// or more: an inset each side of half what one more opportunity would
+    /// take, no more than `cap` in all, and the rest at the opportunities.
+    fn from_space_around(space: LayoutUnit, opportunities: u32, cap: Option<LayoutUnit>) -> Self {
+        let count = i32::try_from(opportunities.saturating_add(1)).unwrap_or(i32::MAX);
+        let inset = space.divided(count);
+        let inset = cap.map_or(inset, |cap| inset.min(cap));
+        Self {
+            start: inset.half(),
+            inside: space - inset,
+        }
     }
-}
-
-/// Returns how far a base is inset each side under `space-around`, as
-/// Chrome's `ComputeRubyBaseInset` says.
-///
-/// The column is `space` wider than the base, which has `opportunities`.
-/// The inset bounds how far an annotation may overhang under `auto` and
-/// `spaces`.
-pub(super) fn base_inset(space: LayoutUnit, opportunities: u32) -> LayoutUnit {
-    if opportunities == 0 {
-        return space.half();
-    }
-    let count = i32::try_from(opportunities.saturating_add(1)).unwrap_or(i32::MAX);
-    space.divided(count).half()
 }
