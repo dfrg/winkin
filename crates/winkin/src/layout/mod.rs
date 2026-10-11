@@ -235,9 +235,6 @@ impl PreparedStages {
         new_fonts: bool,
     ) {
         let config = *cx.config();
-        // The buffers the last prefix sums were kept in, the text's and the
-        // first line's, holding a copy of the advances to sum.
-        let advances = self.shaped.advances_into(self.measured.recycle());
         let input = MeasureInput {
             content,
             analysis: &self.analysis,
@@ -254,7 +251,6 @@ impl PreparedStages {
             &input,
             &mut ShapeSession::new(shaping, provider),
             scratch,
-            advances,
             &mut self.measured,
             new_fonts,
         );

@@ -989,19 +989,23 @@ impl<'a> PaintedLine<'a> {
         let used = layout
             .fonts()
             .primary_font(content.facts.text_request(text));
+        // On a line `text-fit` scales, the font's metrics scale with the
+        // text, as Chrome decorates through the scaled font.
+        let scale = self.line.record().scale();
+        let scaled = |px: f32| if scale == 1.0 { px } else { px * scale };
         let (size, ascent, descent) = used.map_or((0.0, 0.0, 0.0), |used| {
             let metrics = &used.metrics;
             (
-                used.size.to_px(),
-                metrics.ascent.to_px(),
-                metrics.descent.to_px(),
+                scaled(used.size.to_px()),
+                scaled(metrics.ascent.to_px()),
+                scaled(metrics.descent.to_px()),
             )
         });
         // A line the font does not give has no thickness.
         let line = |offset: LayoutUnit, thickness: LayoutUnit| {
             (thickness > LayoutUnit::ZERO).then(|| FontDecorationLine {
-                offset: offset.to_px(),
-                thickness: thickness.to_px(),
+                offset: scaled(offset.to_px()),
+                thickness: scaled(thickness.to_px()),
             })
         };
         let underline = used.and_then(|used| {

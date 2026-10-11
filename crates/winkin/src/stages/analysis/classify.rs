@@ -265,19 +265,14 @@ pub(super) fn is_east_asian(ch: char) -> bool {
         )
 }
 
-/// The bidi classes of a paragraph's characters that may take one of its
-/// clusters off its level, as bits of a mask of classes: those that read
-/// right to left, R, AN and AL, and the controls, LRE, LRO, RLE, RLO, PDF,
-/// FSI, LRI, RLI and PDI.
+/// The bidi classes that may take a cluster of a left-to-right paragraph
+/// off level 0, as bits of a mask of classes: those that read right to
+/// left, R, AN and AL, and the right-to-left controls, RLE, RLO and RLI.
+///
+/// The rest raise only even levels, which Blink drops for level 0.
 pub(super) const LEVEL_CLASSES: u32 = BidiClass::RIGHT_TO_LEFT.mask()
     | BidiClass::ARABIC_NUMBER.mask()
     | BidiClass::ARABIC_LETTER.mask()
-    | BidiClass::LEFT_TO_RIGHT_EMBEDDING.mask()
-    | BidiClass::LEFT_TO_RIGHT_OVERRIDE.mask()
     | BidiClass::RIGHT_TO_LEFT_EMBEDDING.mask()
     | BidiClass::RIGHT_TO_LEFT_OVERRIDE.mask()
-    | BidiClass::POP_DIRECTIONAL_FORMAT.mask()
-    | BidiClass::FIRST_STRONG_ISOLATE.mask()
-    | BidiClass::LEFT_TO_RIGHT_ISOLATE.mask()
-    | BidiClass::RIGHT_TO_LEFT_ISOLATE.mask()
-    | BidiClass::POP_DIRECTIONAL_ISOLATE.mask();
+    | BidiClass::RIGHT_TO_LEFT_ISOLATE.mask();

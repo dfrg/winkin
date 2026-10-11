@@ -1,7 +1,7 @@
 //! Box edges: the room the items at a boundary take along the line.
 //!
 //! [`edge_room`] is the one function every reader charges an edge by. The
-//! scan's line-end costs live in `scan_ends.rs`.
+//! scan's line-end costs live in `scan/ends.rs`.
 
 use super::InitialLetter;
 use super::scan::BoundaryRoom;

@@ -113,7 +113,7 @@ fn the_hot_word_agrees_with_icu() {
         assert_eq!(word.0 >> 31, 0, "U+{cp:04X}: bits past the layout");
         assert_eq!(
             word.bidi_class(),
-            BidiClass::new(bidi_class(bidi.get(ch))),
+            BidiClass(bidi_class(bidi.get(ch))),
             "U+{cp:04X}"
         );
         assert_eq!(
@@ -541,6 +541,8 @@ fn brackets_agree_with_icu() {
             Some((closing, opens)) => {
                 assert!(word.bracket_pair().is_some(), "U+{cp:04X}");
                 assert_eq!(word.opens_bracket(), opens, "U+{cp:04X}");
+                // Analysis asks for a bracket only of an ON cluster.
+                assert_eq!(word.bidi_class(), BidiClass::OTHER_NEUTRAL, "U+{cp:04X}");
                 assert_eq!(
                     closing_bracket(word),
                     Some(canonical_bracket(closing)),
@@ -764,6 +766,4 @@ fn a_stand_in_has_its_characters_word_break() {
     assert!(asked > 100_000, "{asked} characters");
 }
 
-mod bidi_allocations;
-mod bidi_conformance;
 mod normalize;

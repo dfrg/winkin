@@ -34,6 +34,13 @@
 //! Nothing is allocated and nothing restarts. Each walk holds a few words of
 //! state and hands out each glyph or cluster once.
 //!
+//! **On a line `text-fit` scales,** a cluster's place is its unscaled place
+//! from the item's start, less the fixed spacing before it, times the scale,
+//! plus that spacing back ([`FitText`]). Each place is worked out from the
+//! item's start, so the steps add up to the item's advance, which line
+//! layout scaled the same way. Glyph offsets and a multi-glyph cluster's own
+//! advances scale too.
+//!
 //! **A ruby annotation's text** is on a line of its own, and the prefix sums
 //! give it nothing. Its clusters step by their glyphs' own advances, which
 //! shaping keeps for it, plus spacing, with a running sum.
@@ -42,13 +49,14 @@ use super::justify::{Justified, JustifiedLine};
 use super::{FragmentItem, FragmentItemFlags, Fragments};
 use crate::data::{Id, Table};
 use crate::stages::analysis::{Analysis, ClusterId};
-use crate::stages::content::{ContentFlags, ItemId, ShapingFactsId, VariantText};
+use crate::stages::content::{ContentFlags, ItemId, NodeId, ShapingFactsId, VariantText};
 use crate::stages::lines::{EdgeClusterId, EdgeShape, LineId, LineRecord, Lines};
 use crate::stages::measure::{JustifyOpportunities, LetterWordSpacing, WordSpacingRule};
 use crate::stages::shape::{ClusterGlyphs, GlyphWord, ShapedText, SidecarGlyph, SidecarGlyphId};
 use crate::stages::{LineStages, Stages};
 use crate::unit::{InlineLayoutUnit, TextUnit};
 use core::fmt;
+use core::ops::Range;
 
 /// What a reader reads a text item back through: the prepared tables, the
 /// lines and the fragment items.
@@ -141,6 +149,72 @@ impl fmt::Debug for AnnotationText<'_> {
     }
 }
 
+/// How the text of one node steps on a line `text-fit` scales: the scale,
+/// and its letter- and word-spacing set as fixed lengths, which keep their
+/// size.
+///
+/// Line layout scales a text item's advance by it, and a reader its
+/// clusters' steps. It reads the fixed spacing as an annotation's text reads
+/// its spacing.
+#[derive(Copy, Clone, Debug)]
+pub(super) struct FitText<'a> {
+    fixed: AnnotationText<'a>,
+    scale: f32,
+}
+
+impl<'a> FitText<'a> {
+    /// Makes the stepper for `node`'s text on a line scaled by `scale`, read
+    /// in `stages`, whose word-spacing goes where `words` says.
+    #[inline(never)]
+    pub(super) fn new(
+        stages: &LineStages<'a>,
+        node: NodeId,
+        words: WordSpacingRule,
+        scale: f32,
+    ) -> Self {
+        let facts = &stages.content.facts;
+        let shaping = facts.text(stages.text_facts(node)).shaping;
+        Self {
+            fixed: AnnotationText {
+                analysis: stages.analysis,
+                source: stages.text(),
+                shaped: stages.shaped,
+                spacing: LetterWordSpacing::from_fixed(facts, shaping, words),
+            },
+            scale,
+        }
+    }
+
+    /// Returns the fixed spacing after each of `clusters`, summed.
+    pub(super) fn fixed_sum(&self, clusters: Range<ClusterId>) -> InlineLayoutUnit {
+        if self.fixed.spacing.is_none() {
+            return InlineLayoutUnit::ZERO;
+        }
+        (clusters.start.get()..clusters.end.get()).fold(InlineLayoutUnit::ZERO, |sum, at| {
+            sum + self.fixed.spacing_after(ClusterId::new(at))
+        })
+    }
+
+    /// Returns where a place `unscaled` from the item's start, with `fixed`
+    /// of fixed spacing before it, stands once scaled.
+    pub(super) fn place(
+        &self,
+        unscaled: InlineLayoutUnit,
+        fixed: InlineLayoutUnit,
+    ) -> InlineLayoutUnit {
+        (unscaled - fixed).times(self.scale) + fixed
+    }
+}
+
+/// What a text item's clusters step by besides the prefix sums.
+#[derive(Copy, Clone, Debug)]
+enum TextSteps<'a> {
+    /// A ruby annotation's text, which steps by its glyphs' own advances.
+    Annotation(AnnotationText<'a>),
+    /// The item's text on a line `text-fit` scales.
+    Fitted(FitText<'a>),
+}
+
 /// A glyph of a text item where it is drawn, in line layout's exact units.
 /// The views convert it to pixels.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -210,8 +284,9 @@ struct Steps<'a> {
     pen_end: InlineLayoutUnit,
     /// Its line's justification, where the line is justified.
     justify: Option<Justified<'a>>,
-    /// A ruby annotation's text, which steps by its glyphs' own advances.
-    annotation: Option<AnnotationText<'a>>,
+    /// What its clusters step by besides the prefix sums: an annotation's
+    /// glyphs, or the scale of a line `text-fit` scales.
+    text: Option<TextSteps<'a>>,
     /// The room `ruby-align` spread on the item's left and right, which its
     /// leftmost and rightmost clusters step over, and whether the item runs
     /// right to left, which makes its last cluster the leftmost.
@@ -246,7 +321,7 @@ impl<'a> Steps<'a> {
                 pen: InlineLayoutUnit::ZERO,
                 pen_end: item.advance(),
                 justify: None,
-                annotation: None,
+                text: None,
                 ends: (InlineLayoutUnit::ZERO, InlineLayoutUnit::ZERO, false),
             };
         }
@@ -266,7 +341,7 @@ impl<'a> Steps<'a> {
                 pen: InlineLayoutUnit::ZERO,
                 pen_end: InlineLayoutUnit::ZERO,
                 justify: None,
-                annotation: Some(AnnotationText::new(
+                text: Some(TextSteps::Annotation(AnnotationText::new(
                     stages,
                     input.stages.measured.word_spacing_rule,
                     stages
@@ -274,7 +349,7 @@ impl<'a> Steps<'a> {
                         .facts
                         .text(stages.text_facts(item.node))
                         .shaping,
-                )),
+                ))),
                 ends: {
                     let (left, right) = input.fragments.spread_room(id, item);
                     (left, right, item.level.is_rtl())
@@ -322,7 +397,12 @@ impl<'a> Steps<'a> {
             pen,
             pen_end,
             justify: None,
-            annotation: None,
+            text: {
+                let scale = line.scale();
+                let words = input.stages.measured.word_spacing_rule;
+                (scale != 1.0)
+                    .then(|| TextSteps::Fitted(FitText::new(stages, item.node, words, scale)))
+            },
             ends: {
                 let (left, right) = input.fragments.spread_room(id, item);
                 (left, right, item.level.is_rtl())
@@ -381,7 +461,7 @@ impl<'a> Steps<'a> {
     /// On a justified line the shift is the room of an opportunity before
     /// it.
     fn step_and_shift(&self, i: usize) -> (InlineLayoutUnit, InlineLayoutUnit) {
-        if let Some(text) = &self.annotation {
+        if let Some(TextSteps::Annotation(text)) = &self.text {
             let cluster = ClusterId::new(self.start.get() + i);
             let step = self
                 .reshaped(i)
@@ -393,7 +473,19 @@ impl<'a> Steps<'a> {
             let (extra, shift) = self.end_room(i);
             return (step + extra, shift);
         }
-        let shaped = match self.reshaped(i) {
+        let shaped = match &self.text {
+            Some(TextSteps::Fitted(fit)) => self.fitted_step(fit, i),
+            _ => self.unscaled_step(i),
+        };
+        let (room, shift) = self.room(i);
+        let (extra, end_shift) = self.end_room(i);
+        (shaped + room + extra, shift + end_shift)
+    }
+
+    /// Returns the item's `i`th cluster's advance as shaped, before any
+    /// scale or room.
+    fn unscaled_step(&self, i: usize) -> InlineLayoutUnit {
+        match self.reshaped(i) {
             Some(at) => self
                 .edge_advances
                 .get(at)
@@ -401,10 +493,31 @@ impl<'a> Steps<'a> {
                     InlineLayoutUnit::from_text(step)
                 }),
             None => self.boundary_pen(i + 1) - self.boundary_pen(i),
+        }
+    }
+
+    /// Returns where the item's `i`th boundary stands once `fit` scales it,
+    /// from the item's start.
+    ///
+    /// Without a reshaped edge or fixed spacing it reads the prefix sums.
+    /// Otherwise it sums the steps before it, which only a scaled line with
+    /// either pays.
+    fn fitted_place(&self, fit: &FitText<'_>, i: usize) -> InlineLayoutUnit {
+        let unscaled = if self.shapes.is_empty() {
+            self.boundary_pen(i) - self.pen
+        } else {
+            (0..i).fold(InlineLayoutUnit::ZERO, |sum, at| {
+                sum + self.unscaled_step(at)
+            })
         };
-        let (room, shift) = self.room(i);
-        let (extra, end_shift) = self.end_room(i);
-        (shaped + room + extra, shift + end_shift)
+        let fixed = fit.fixed_sum(self.start..ClusterId::new(self.start.get() + i));
+        fit.place(unscaled, fixed)
+    }
+
+    /// Returns the item's `i`th cluster's advance once `fit` scales it: the
+    /// distance between its two scaled boundaries.
+    fn fitted_step(&self, fit: &FitText<'_>, i: usize) -> InlineLayoutUnit {
+        self.fitted_place(fit, i + 1) - self.fitted_place(fit, i)
     }
 
     /// Returns the room `ruby-align` spread beside the item's `i`th cluster,
@@ -608,13 +721,14 @@ impl<'a> GlyphWalk<'a> {
         // the room from the steps instead makes the compiler build them
         // apart and copy them in, which slows reading a short run by a
         // fifth.
-        let prefixed = steps.shapes.is_empty() && steps.annotation.is_none() && !item.is_spread();
+        let prefixed = steps.shapes.is_empty() && steps.text.is_none() && !item.is_spread();
         let straight = prefixed && steps.justify.is_none() && !item.level.is_rtl() && steps.len > 0;
         let straight_justified =
             prefixed && steps.justify.is_some() && !item.level.is_rtl() && steps.len > 0;
         // A right-to-left annotation is walked from its right with a running
         // sum.
-        let annotation_rtl = item.level.is_rtl() && steps.annotation.is_some();
+        let annotation_rtl =
+            item.level.is_rtl() && matches!(steps.text, Some(TextSteps::Annotation(_)));
         walk.base = base;
         walk.prefixed = prefixed;
         walk.straight = straight;
@@ -687,12 +801,22 @@ impl<'a> GlyphWalk<'a> {
         cluster: ClusterId,
     ) -> Option<ExactGlyph> {
         let (glyph, rest) = glyphs.split_first()?;
+        let scale = match self.steps.text {
+            Some(TextSteps::Fitted(fit)) => fit.scale,
+            _ => 1.0,
+        };
         let (dx, dy) = (glyph.x_offset, glyph.y_offset);
+        let (dx, dy) = if scale == 1.0 {
+            (dx, dy)
+        } else {
+            let scaled = |offset: TextUnit| TextUnit::from_px(offset.to_px() * scale);
+            (scaled(dx), scaled(dy))
+        };
         let advance = if rest.is_empty() {
             // The cluster's last glyph takes the rest of its advance.
             end - pen
         } else {
-            InlineLayoutUnit::from_text(glyph.advance)
+            InlineLayoutUnit::from_text(glyph.advance).times(scale)
         };
         if !rest.is_empty() {
             self.pending = Some(Pending {

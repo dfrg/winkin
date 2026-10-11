@@ -20,7 +20,6 @@ use crate::stages::analysis::{
 };
 use crate::stages::content::{ItemFlags, ItemId, ItemKind, ShapingFactsId};
 use crate::stages::fonts::{FontRunId, FontRuns, UsedFontId};
-use crate::stages::measure::PrefixAdvances;
 use crate::style::FirstLineVariant;
 use crate::unit::{InlineLayoutUnit, LayoutUnit, TextUnit};
 use crate::work;
@@ -43,10 +42,8 @@ pub(super) fn shape_text(
         advances,
     } = out;
     let analysis = input.analysis;
-    // Reserve a word per cluster, and at least one shaping run per script
-    // run the walk will pass. Reserve an advance per cluster plus the one
-    // entry measurement appends for its prefix sums; without that entry the
-    // buffer would double.
+    // Reserve a word and an advance per cluster, and at least one shaping
+    // run per script run the walk will pass.
     let script_runs = analysis
         .runs
         .iter()
@@ -54,7 +51,7 @@ pub(super) fn shape_text(
         .count();
     glyphs.words.reserve(end.get());
     runs.reserve(end.get(), script_runs);
-    make_room(advances, PrefixAdvances::capacity_needed(end.get()));
+    make_room(advances, end.get());
     // A cluster of one expanded glyph points at the entry already holding
     // it. Upright text draws a few hundred glyphs thousands of times.
     let mut shared = cx.take_shared_glyphs();
@@ -319,16 +316,32 @@ impl<'a> Walk<'a> {
     /// there, and reads it.
     ///
     /// It skips the items ending at or before `cluster`, empty ones
-    /// included. Returns whether the item is text that does not shape like
-    /// the text item before it.
+    /// included. Returns whether an item it skips stops shaping, as the
+    /// edges of ruby, annotations and some boxes (`BoxFacts::breaks_shaping`)
+    /// and floats do, or the item is text that does not shape like the text
+    /// item before it.
     fn items_to(&mut self, cluster: ClusterId) -> bool {
         let content = self.input.content;
         let item_clusters = &self.input.analysis.item_clusters;
-        while self.item.end() <= cluster && content.items.get(self.item.id()).is_some() {
+        let mut edge = false;
+        while self.item.end() <= cluster
+            && let Some(item) = content.items.get(self.item.id())
+        {
+            edge |= match item.kind {
+                ItemKind::Open | ItemKind::Close => (content.facts)
+                    .box_facts(
+                        content
+                            .nodes
+                            .box_facts(item.node, FirstLineVariant::Standard),
+                    )
+                    .breaks_shaping(item.kind == ItemKind::Open),
+                ItemKind::Text | ItemKind::Atomic | ItemKind::Break => false,
+                _ => true,
+            };
             item_clusters.step(&mut self.item);
         }
         let Some(item) = content.items.get(self.item.id()) else {
-            return false;
+            return edge;
         };
         let shaping = content
             .facts
@@ -336,12 +349,12 @@ impl<'a> Walk<'a> {
             .shaping;
         self.shaping = shaping;
         if item.kind != ItemKind::Text {
-            return false;
+            return edge;
         }
         let differs = self.text.is_some_and(|last| last != shaping);
         self.text = Some(shaping);
         self.annotation = item.flags.contains(ItemFlags::ANNOTATION);
-        differs
+        edge || differs
     }
 }
 

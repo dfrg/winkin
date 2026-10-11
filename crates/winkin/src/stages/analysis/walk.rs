@@ -30,7 +30,7 @@ use super::graphemes::GraphemeCursor;
 use super::scripts::{self, RunBuilder, Setting};
 use super::{
     Analysis, AnalysisContext, AnalysisInput, AnalysisScratch, BidiLevel, ClusterAttrs,
-    ClusterClass, ClusterId, Paragraph, ParagraphFlags, ParagraphState, RunOrientation, levels,
+    ClusterClass, ClusterId, Paragraph, ParagraphFlags, ParagraphState, RunOrientation, bidi,
 };
 use crate::config::SmallKana;
 use crate::data::{Id, TextOffset, define_flags};
@@ -621,7 +621,7 @@ impl<'a> ClusterWriter<'a> {
             script_runs: RunBuilder::new(),
             controls: false,
             // A left-to-right override raises even levels over even ones,
-            // which Blink leaves at 0 (`levels::moves_levels`).
+            // which Blink leaves at 0 (`bidi::moves_levels`).
             block_overrides: content.block.overrides == Some(Direction::Rtl),
             requested: BidiLevel::from_direction(content.block.direction),
             any_nowrap: flags.contains(ContentFlags::NOWRAP),
@@ -733,15 +733,13 @@ impl ClusterWriter<'_> {
     /// Marks a shaping stop at the boundary here, on the cluster ending here.
     ///
     /// A separator stops shaping anyway, and before the text's start there is
-    /// no cluster to mark.
+    /// no cluster to mark. The paragraph's shaping gate stays shut: shaping's
+    /// fast path finds the stop at the item.
     fn stop_shaping(&mut self) {
         if let Some(pending) = &mut self.pending
             && !pending.class.is_forced_break()
         {
             pending.shape_break = true;
-            self.paragraph
-                .flags
-                .insert(ParagraphFlags::HAS_SHAPING_STOPS);
         }
     }
 
@@ -1489,7 +1487,7 @@ impl ClusterWriter<'_> {
         // differ from it. Resolved only where something right to left or a
         // control can raise a level, or the block reads right to left.
         let end = self.out.clusters.end_id();
-        let (level, level_flags) = levels::resolve(
+        let (level, level_flags) = bidi::resolve(
             self.content,
             self.out,
             &mut self.scratch.bidi,

@@ -240,3 +240,58 @@ impl TextGroupAlign {
         }
     }
 }
+
+/// `text-fit`: scales the text of each line to fill it.
+///
+/// Lines break at the text's own size, and each is scaled after. The scale
+/// multiplies glyph advances, font metrics, `normal` and `<number>` line
+/// heights, and percentage spacing; lengths keep their size. It applies only
+/// to a block with no floats, initial letter or ruby, and does not change
+/// intrinsic sizes.
+#[derive(Copy, Clone, PartialEq, Debug, Default)]
+pub struct TextFit {
+    /// Whether text grows to fill a line, shrinks to fit it, or neither.
+    pub kind: TextFitKind,
+    /// Which lines scale, and whether they share one scale.
+    pub target: TextFitTarget,
+    /// The scale limit as a fraction, `1.5` for `150%`, or `None` for no
+    /// limit.
+    ///
+    /// Growing is held to at most `max(limit, 1)`, and shrinking to at least
+    /// `min(limit, 1)`.
+    pub limit: Option<f32>,
+}
+
+impl TextFit {
+    /// `none`: the initial value.
+    pub const NONE: Self = Self {
+        kind: TextFitKind::None,
+        target: TextFitTarget::Consistent,
+        limit: None,
+    };
+}
+
+/// The first keyword of `text-fit`.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
+pub enum TextFitKind {
+    /// No scaling. The initial value.
+    #[default]
+    None,
+    /// Text grows to fill lines narrower than their room.
+    Grow,
+    /// Text shrinks to fit lines wider than their room.
+    Shrink,
+}
+
+/// The second keyword of `text-fit`.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
+pub enum TextFitTarget {
+    /// One scale for every line of the block: the least that fills the lines
+    /// it measures. The initial value.
+    #[default]
+    Consistent,
+    /// Each line takes its own scale, except a paragraph's last line.
+    PerLine,
+    /// Each line takes its own scale.
+    PerLineAll,
+}

@@ -34,7 +34,7 @@ use fontwich::{FallbackKey, FallbackOverride, Family, GenericBucket};
 
 use fontwich::{Charset, Collection, FaceDescriptors, LayerBuilder, Role, Script};
 
-use super::{coverage, select_kept, *};
+use super::{coverage, select, *};
 
 use crate::stages::analysis::{ClusterClass, ParagraphFlags};
 

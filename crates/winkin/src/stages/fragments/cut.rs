@@ -34,7 +34,7 @@ enum PieceCut {
 }
 
 /// Where generated text's items go: node, level, boundary, the first part's
-/// start from the line box's left, baseline and flags.
+/// start from the line box's left, baseline, flags and scale.
 #[derive(Copy, Clone, Debug)]
 struct GeneratedAt {
     node: NodeId,
@@ -43,6 +43,9 @@ struct GeneratedAt {
     inline: InlineLayoutUnit,
     baseline: LayoutUnit,
     flags: FragmentItemFlags,
+    /// The scale `text-fit` sets the text in: the line's for a hyphen, 1
+    /// for an ellipsis.
+    scale: f32,
 }
 
 /// The ellipsis that ends a cut line: its start from the line box's left,
@@ -73,6 +76,7 @@ impl<'a> Placer<'a> {
         piece: &Piece,
         flags: FragmentItemFlags,
         baseline: LayoutUnit,
+        scale: f32,
     ) {
         let Some(text) = self.line_state.hyphen else {
             return;
@@ -84,6 +88,7 @@ impl<'a> Placer<'a> {
             inline: piece.inline,
             baseline: baseline - piece.shift,
             flags,
+            scale,
         };
         self.emit_generated(out, text, at);
     }
@@ -98,7 +103,11 @@ impl<'a> Placer<'a> {
             let Some(piece) = generated.get(id) else {
                 continue;
             };
-            let advance = piece.advance;
+            let advance = if at.scale == 1.0 {
+                piece.advance
+            } else {
+                piece.advance.times(at.scale)
+            };
             let item = FragmentItem::from_generated(
                 at.node,
                 at.level,
@@ -181,6 +190,7 @@ impl<'a> Placer<'a> {
             inline: ellipsis.inline,
             baseline,
             flags: FragmentItemFlags::NONE,
+            scale: 1.0,
         };
         self.emit_generated(out, ellipsis.text, at);
     }

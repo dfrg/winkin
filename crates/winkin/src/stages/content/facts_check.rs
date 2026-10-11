@@ -174,7 +174,8 @@ fn noted_text(flags: &mut ContentFlags, style: &StyleKey) {
     );
     flags.set(
         ContentFlags::NONZERO_SPACING,
-        style.text.letter_spacing != 0.0 || style.text.word_spacing != LengthPercentage::ZERO,
+        style.text.letter_spacing != LengthPercentage::ZERO
+            || style.text.word_spacing != LengthPercentage::ZERO,
     );
     flags.set(
         ContentFlags::DOMINANT_BASELINE,
@@ -221,7 +222,11 @@ fn text_is(
     let request = facts.request(shaping.font);
     let text_group = &style.text;
     // Letter spacing on glyph geometry's grid.
-    let letter = TextUnit::from_px(text_group.letter_spacing);
+    let letter = TextUnit::from_px(
+        text_group
+            .letter_spacing
+            .resolve(style.font.computed_size()),
+    );
     // What font selection reads (`stages/fonts/mod.rs`, `features.rs`,
     // `lists.rs`).
     let upright = writing_mode.is_vertical_typographic()

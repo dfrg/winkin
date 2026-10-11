@@ -5,6 +5,7 @@
 use core::iter;
 
 use super::*;
+use crate::style::LengthPercentage;
 use crate::tests::VARIATION_FONTS;
 
 /// Returns what font selection made for `layout`, by what each font is rather than by the
@@ -271,7 +272,7 @@ fn choosing_for_many_clusters_at_once_matches_asking_every_cluster() {
         fn resized<'a>(style: &ComputedStyle<'a>, random: &mut Lcg) -> ComputedStyle<'a> {
             let mut style = *style;
             style.font.size = [20.0, 32.0, 13.3][random.next(3)];
-            style.text.letter_spacing = [0.0, 0.0, 2.0][random.next(3)];
+            style.text.letter_spacing = LengthPercentage::from_px([0.0, 0.0, 2.0][random.next(3)]);
             style
         }
         let root = style_of(&mut random);
@@ -325,9 +326,9 @@ fn choosing_for_many_clusters_at_once_matches_asking_every_cluster() {
         for pass in ["cold", "warm"] {
             let [by_shortcut, by_cluster] = &mut layouts;
             shortcut.build(by_shortcut, &block, calls);
-            select_kept::PER_CLUSTER.with(|per_cluster| per_cluster.set(true));
+            select::PER_CLUSTER.with(|per_cluster| per_cluster.set(true));
             asked.build(by_cluster, &block, calls);
-            select_kept::PER_CLUSTER.with(|per_cluster| per_cluster.set(false));
+            select::PER_CLUSTER.with(|per_cluster| per_cluster.set(false));
             assert_eq!(
                 selection(&shortcut, by_shortcut),
                 selection(&asked, by_cluster),

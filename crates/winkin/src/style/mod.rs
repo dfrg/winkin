@@ -176,12 +176,13 @@ style_struct! {
         pub hyphenate_character: Option<&'a str>,
         /// `tab-size`.
         pub tab_size: TabSize,
-        /// `letter-spacing`, resolved to pixels.
+        /// `letter-spacing`, as a length plus a percentage.
         ///
-        /// Percentages use the computed font size and inherit as percentages.
-        /// Resolve them separately for each element, matching CSS Text 4 and
-        /// Chrome.
-        pub letter_spacing: f32,
+        /// Percentages use the computed font size and inherit unchanged.
+        /// Layout resolves them, matching CSS Text 4 and Chrome. Under
+        /// `text-fit`, a length with no percentage keeps its size while the
+        /// text scales, and a percentage scales with it.
+        pub letter_spacing: LengthPercentage,
         /// `word-spacing`, as a length plus a percentage.
         ///
         /// Percentages use the computed font size, not the space width, and
@@ -216,7 +217,7 @@ impl TextGroup<'_> {
         hyphens: Hyphens::Manual,
         hyphenate_character: None,
         tab_size: TabSize::INITIAL,
-        letter_spacing: 0.0,
+        letter_spacing: LengthPercentage::ZERO,
         word_spacing: LengthPercentage::ZERO,
         autospace: TextAutospace::NO_AUTOSPACE,
         spacing_trim: TextSpacingTrim::Normal,
@@ -602,6 +603,8 @@ pub struct ComputedBlockStyle<'a> {
     pub text_box_trim: TextBoxTrim,
     /// `text-box-edge` on the block.
     pub text_box_edge: TextBoxEdge,
+    /// `text-fit`.
+    pub text_fit: TextFit,
 }
 
 impl<'a> ComputedBlockStyle<'a> {
@@ -624,6 +627,7 @@ impl<'a> ComputedBlockStyle<'a> {
             text_group_align: initial.text_group_align,
             text_box_trim: initial.text_box_trim,
             text_box_edge: initial.text_box_edge,
+            text_fit: TextFit::NONE,
         }
     }
 }

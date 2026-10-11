@@ -2,12 +2,12 @@
 //! each exactly, reshaped edges included.
 //!
 //! Its siblings each add to [`Breaker`]'s `impl`:
-//! - `fit_search` chooses a line's end in its band.
-//! - `fit_measure` measures one candidate end.
-//! - `fit_reshape` shapes a line's unsafe edges again.
-//! - `fit_floats` places the floats a line reaches.
-//! - `fit_wrap` balances and scores a paragraph's lines.
-//! - `fit_ruby` splits a ruby column across lines.
+//! - `search` chooses a line's end in its band.
+//! - `candidate` measures one candidate end.
+//! - `reshape` shapes a line's unsafe edges again.
+//! - `floats` places the floats a line reaches.
+//! - `wrap` balances and scores a paragraph's lines.
+//! - `ruby` splits a ruby column across lines.
 //! - `height` measures a fitted line's height.
 //!
 //! The breaker and the records its files share are defined in the stage's
@@ -29,14 +29,14 @@ use core::ops::Range;
 
 use super::Clamp;
 use super::annotate::{AnnotationRoom, Carry};
-use super::fit_floats::Placing;
-use super::fit_wrap::{LayoutMark, RecentMarks};
+use super::floats::Placing;
 use super::height::{self, Height};
 use super::score::{LineChoice, PlannedEnds, WrapLineId};
 use super::trim::TextBoxTrims;
+use super::wrap::{LayoutMark, RecentMarks};
 use super::{
     Area, BlockExtents, BreakInput, BreakScratch, EdgeMark, Exclusions, LineBand, LineFlags,
-    LineFloatId, LineRecord, Lines, PendingLine,
+    LineFloatId, LineRecord, Lines, PendingLine, TextFitting,
 };
 use crate::data::Id;
 use crate::stages::analysis::{ClusterClass, ClusterId, Paragraph, ParagraphFlags, ParagraphId};
@@ -288,7 +288,7 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
     /// Returns the breaker for `input`, around what `exclusions` answers.
     ///
     /// `room_above` is the room over the first line for annotations and
-    /// marks.
+    /// marks. `fitting` says how `text-fit` scales each line's text.
     pub(super) fn new(
         input: &BreakInput<'a>,
         shaping: &'c mut ShapeSession<'m, 'provider>,
@@ -296,6 +296,7 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
         exclusions: &'c mut dyn Exclusions,
         clamp: Clamp,
         room_above: LayoutUnit,
+        fitting: Option<TextFitting>,
     ) -> Self {
         let stages = input.stages;
         let (content, analysis) = (stages.content, stages.analysis);
@@ -338,6 +339,8 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
             text_align: content.block.text_align,
             text_indent: content.block.text_indent,
             line_fonts: height::LineFonts::default(),
+            text_fit: fitting,
+            line_scale: 1.0,
         }
     }
 
@@ -413,9 +416,9 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
     /// That is the line box's bottom, less `trimmed` (what `text-box-trim`
     /// takes off the first line) and what it takes off the last.
     fn block_end_if_last(&self, line: &super::PendingLine, trimmed: LayoutUnit) -> LayoutUnit {
-        let under = self
-            .trims
-            .map_or(LayoutUnit::ZERO, |trims| trims.end(line.extent));
+        let under = self.trims.map_or(LayoutUnit::ZERO, |trims| {
+            trims.end(line.extent, line.scale())
+        });
         line.facts.block_start + line.extent.box_height() - trimmed - under
     }
 
@@ -664,6 +667,11 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
             if FLOATS {
                 self.place_on_line(out, head, &line, &mut cursor.floats, &mut band, &mut fitted);
             }
+            if let Some(fitting) = self.text_fit {
+                let line = (cursor.items, start);
+                let last = fitted.end == para.end;
+                self.line_scale = self.fit_text(out, fitting, line, band, &mut fitted, last);
+            }
             let height = self.extent(out, para, cursor.items, start, fitted.end);
             let tall = height.extent.box_height();
             if settles < SETTLES
@@ -721,7 +729,7 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
         if out.lines.is_empty()
             && let Some(trims) = self.trims
         {
-            cursor.trimmed = trims.start(line.extent);
+            cursor.trimmed = trims.start(line.extent, line.scale());
         }
         // `line-clamp: auto`: a line that would take the block's content
         // past its end, if it were the last, is not kept.
@@ -840,6 +848,7 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
                 floats: floats..out.floats.next_id(),
                 shifts: shifts..out.shifts.next_id(),
                 flags,
+                scale_bits: self.line_scale.to_bits(),
             },
         }
     }

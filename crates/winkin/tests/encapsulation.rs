@@ -77,7 +77,8 @@ const ALLOWED_USIZE_RANGES: &[Entry] = &[
     ("src/layout/mod.rs", "pub fn selection_rects", "public API: the text a selection paints, a byte range into the caller's `Layout::text`"),
     ("src/layout/mod.rs", "        range: Range<usize>,", "public API: `selected_text`'s range, the text a selection copies, a byte range into the caller's `Layout::text`, its parameter on a line of its own"),
     ("src/stages/content/lists.rs", "fn range(self)", "a byte range into the string the interned family lists keep their names in, to slice a `str` with"),
-    ("src/unicode/bidi.rs", "fn range(&self)", "the bidi algorithm: a level run's paragraph positions"),
+    ("src/stages/analysis/bidi/resolver.rs", "fn range(&self)", "the bidi algorithm: a level run's positions among its paragraph's units"),
+    ("src/stages/analysis/bidi/resolver.rs", "range: Range<usize>,", "the bidi algorithm: positions among a paragraph's units, or in the resolver's working copy of their classes"),
 ];
 
 /// Constructors not named `new`, `from_*` or `with_*`, by file and name,
@@ -129,8 +130,8 @@ const DOORS: &[&str] = &[
 /// of runs.
 #[rustfmt::skip]
 const ALLOWED_DOORS: &[Entry] = &[
-    ("src/stages/lines/ruby.rs", "partition_point(", "retained continuation rows are keyed by line, not runs; rewind finds the first discarded line"),
-    ("src/stages/lines/ruby.rs", "lines.at(", "entry: the lines a caret's or a selection's ruby pieces can be on, from the clusters at its ends, seeking once each"),
+    ("src/stages/lines/ruby/mod.rs", "partition_point(", "retained continuation rows are keyed by line, not runs; rewind finds the first discarded line"),
+    ("src/stages/lines/ruby/mod.rs", "lines.at(", "entry: the lines a caret's or a selection's ruby pieces can be on, from the clusters at its ends, seeking once each"),
     ("src/stages/lines/height.rs", "cursor_containing(", "entry: a line's text that fallback fonts widen across its edges seeks its shaping run once a line, then carries the cursor"),
     // The doors' and the primitives' own bodies.
     ("src/data/runs.rs", ".containing(", "body: `Runs::cursor_containing` seeks by `Runs::containing`"),
@@ -158,7 +159,7 @@ const ALLOWED_DOORS: &[Entry] = &[
     ("src/stages/fragments/boxes.rs", "partition_point(", "line layout's box parts, by their left: geometry"),
     ("src/stages/measure/items.rs", "partition_point(", "body: `KeptBoxes::first_from`, a walk's one seek among the kept boxes by node, not a table of runs"),
     ("src/path/curves.rs", "partition_point(", "text on a path: a segment of the path by arc length"),
-    ("src/stages/measure/scan_em_boxes.rs", "cursor_containing(", "entry: the unshaped first-line tail of an item, sought once then walked in font order"),
+    ("src/stages/measure/scan/em_boxes.rs", "cursor_containing(", "entry: the unshaped first-line tail of an item, sought once then walked in font order"),
     // Entries: a random-access read starts here, seeks once, and walks.
     ("src/selection/motion.rs", ".containing(", "entry: `paragraph_level` and `paragraph_boundary` seek the focus's paragraph from its cluster, once a motion"),
     ("src/selection/place.rs", "clusters.at(", "entry: `Spot::new`, a caller's offset to its cluster, the one search a public call makes from an offset; the rest steps from the spot by id"),
@@ -175,8 +176,8 @@ const ALLOWED_DOORS: &[Entry] = &[
     ("src/stages/fragments/annotations.rs", "first_from(", "entry: an annotation line's walk over the kept boxes seeks its element once a level, then walks to its boxes in node order"),
     ("src/stages/fragments/annotations.rs", "line_edges_touching(", "entry: an annotation line's reshaped edges, sought once a level rather than once a cluster"),
     ("src/stages/fragments/read.rs", "line_edges_touching(", "entry: a fragment's line's reshaped edges, read alone"),
-    ("src/stages/lines/fit_reshape.rs", "run_containing(", "entry: `text-spacing-trim` at a line's start or end mark, from its shaping run's facts, by rank once a line edge"),
-    ("src/stages/lines/fit_reshape.rs", ".containing(", "entry: the breaker's edge reshapes, once a line edge: the shaping run of a start window or an end piece, by rank, which the reshape takes with its neighbours, the run's id ± 1"),
+    ("src/stages/lines/reshape.rs", "run_containing(", "entry: `text-spacing-trim` at a line's start or end mark, from its shaping run's facts, by rank once a line edge"),
+    ("src/stages/lines/reshape.rs", ".containing(", "entry: the breaker's edge reshapes, once a line edge: the shaping run of a start window or an end piece, by rank, which the reshape takes with its neighbours, the run's id ± 1"),
     ("src/stages/measure/autospace.rs", "cursor_containing(", "entry: `gap_after`, a seam at a line's end, seeks the item after it where the characters leave a seam possible"),
     ("src/stages/measure/autospace.rs", ".containing(", "entry: `gap_after`'s run after a seam, by rank, where a paragraph's levels differ and the caller holds no run; the side before steps back from it"),
     ("src/stages/measure/autospace.rs", "Slot::new(", "entries: `room_before`, a seam where line layout draws its room, seeks the place after it once; `gap_after_near` seeks once a reshaped piece, then steps"),

@@ -26,9 +26,10 @@ use crate::stages::analysis::ClusterId;
 use crate::stages::lines::{Area, NoExclusions};
 use crate::style::FirstLineVariant;
 use crate::style::{
-    ComputedStyle, FontFamilyName, FontGroup, HangEnd, HangingPunctuation, Hyphens, Language,
-    LengthPercentage, LineBreak, OverflowWrap, TabSize, TextAlign, TextAutospace, TextGroup,
-    TextIndent, TextWrapMode, VerticalAlign, WhiteSpaceCollapse, WordBreak,
+    BidiGroup, ComputedStyle, Direction, FontFamilyName, FontGroup, HangEnd, HangingPunctuation,
+    Hyphens, Language, LengthPercentage, LineBreak, OverflowWrap, TabSize, TextAlign,
+    TextAutospace, TextGroup, TextIndent, TextWrapMode, UnicodeBidi, VerticalAlign,
+    WhiteSpaceCollapse, WordBreak,
 };
 use crate::unicode::is_default_ignorable;
 use crate::{ComputedBlockStyle, Item, Layout, LayoutBuilder, NodeKey, work};
@@ -154,8 +155,16 @@ fn content(rng: &mut Rng, b: &mut LayoutBuilder<'_>, spans: &[ComputedStyle<'_>]
             && open < 3
             && let Some(style) = spans.get(rng.below(spans.len()))
         {
-            b.open_box(NodeKey(key), style, None);
-            key += 1;
+            // Now and then inside the word, where a kern or a ligature may
+            // cross the box's edge.
+            let mut at = rng.below(text.len());
+            while !text.is_char_boundary(at) {
+                at -= 1;
+            }
+            b.text(NodeKey(key), text.get(..at).unwrap_or_default());
+            text.drain(..at);
+            b.open_box(NodeKey(key + 1), style, None);
+            key += 2;
             open += 1;
         }
         b.text(NodeKey(key), &text);
@@ -309,7 +318,7 @@ pub(super) fn roots() -> Vec<ComputedStyle<'static>> {
     preserved.text.white_space_collapse = WhiteSpaceCollapse::Preserve;
     preserved.text.tab_size = TabSize::Spaces(4.0);
     let mut spaced = plain;
-    spaced.text.letter_spacing = 1.5;
+    spaced.text.letter_spacing = LengthPercentage::from_px(1.5);
     let mut hanging = plain;
     hanging.text.hanging_punctuation = HangingPunctuation {
         first: true,
@@ -344,7 +353,7 @@ pub(super) fn roots() -> Vec<ComputedStyle<'static>> {
 }
 
 /// The spans' styles: bare, decorated, spaced, with edges, raised, larger,
-/// in Ahem.
+/// in Ahem, and isolated or embedded.
 pub(super) fn spans(root: &ComputedStyle<'static>) -> Vec<ComputedStyle<'static>> {
     let bare = *root;
     let painted = ComputedStyle {
@@ -384,8 +393,33 @@ pub(super) fn spans(root: &ComputedStyle<'static>) -> Vec<ComputedStyle<'static>
     let mut strict = *root;
     strict.text.line_break = LineBreak::Strict;
     strict.text.hyphens = Hyphens::None;
+    // Isolates as pages wrap names in, whose edges stop shaping, and an
+    // embedding.
+    let isolate = |direction, unicode_bidi| {
+        let mut style = *root;
+        style.bidi = BidiGroup {
+            direction,
+            unicode_bidi,
+        };
+        style
+    };
     vec![
-        bare, bare, painted, painted, spaced, edged, raised, larger, ahem, nowrap, japanese, strict,
+        bare,
+        bare,
+        painted,
+        painted,
+        spaced,
+        edged,
+        raised,
+        larger,
+        ahem,
+        nowrap,
+        japanese,
+        strict,
+        isolate(Direction::Ltr, UnicodeBidi::Isolate),
+        isolate(Direction::Ltr, UnicodeBidi::Plaintext),
+        isolate(Direction::Rtl, UnicodeBidi::Isolate),
+        isolate(Direction::Ltr, UnicodeBidi::Embed),
     ]
 }
 

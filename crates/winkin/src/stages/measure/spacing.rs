@@ -23,7 +23,7 @@
 use crate::config::WordSpacing;
 use crate::data::Id;
 use crate::stages::analysis::{Analysis, ClusterClass, ClusterId};
-use crate::stages::content::{Content, Facts, NodeId, ShapingFactsId, VariantText};
+use crate::stages::content::{Content, Facts, FixedSpacing, NodeId, ShapingFactsId, VariantText};
 use crate::style::FirstLineVariant;
 use crate::unicode::{self, ScriptId};
 use crate::unit::TextUnit;
@@ -143,6 +143,29 @@ impl LetterWordSpacing {
         }
     }
 
+    /// Returns the part of the spacing of text that shapes as `shaping` set
+    /// as fixed lengths, which `text-fit` leaves unscaled.
+    pub(crate) fn from_fixed(
+        facts: &Facts,
+        shaping: ShapingFactsId,
+        words: WordSpacingRule,
+    ) -> Self {
+        let row = facts.shaping(shaping);
+        let none = TextUnit::from_raw(0);
+        let kept = |flag, spacing| {
+            if row.fixed.contains(flag) {
+                spacing
+            } else {
+                none
+            }
+        };
+        Self {
+            letter: kept(FixedSpacing::LETTER, row.letter),
+            word: kept(FixedSpacing::WORD, row.word),
+            words,
+        }
+    }
+
     /// Returns the room after `cluster`, its text read in `source`.
     ///
     /// It reads the cluster's class and text and calls
@@ -165,7 +188,7 @@ impl LetterWordSpacing {
     }
 
     /// Whether it adds nothing after any cluster.
-    pub(super) fn is_none(self) -> bool {
+    pub(crate) fn is_none(self) -> bool {
         self.letter.raw() == 0 && self.word.raw() == 0
     }
 

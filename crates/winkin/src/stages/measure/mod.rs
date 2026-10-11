@@ -1,8 +1,8 @@
 //! Measurement: everything about the text that doesn't depend on the line
 //! width.
 //!
-//! In: [`MeasureInput`], the content, analysis, fonts and shaped glyphs, and
-//! shaping's [`Advances`] by value. Out: [`Measured`].
+//! In: [`MeasureInput`], the content, analysis, fonts and shaped glyphs and
+//! advances. Out: [`Measured`].
 //! Start at: [`measure_text`], then `Scan::walk` in `scan`.
 //!
 //! - `scan` turns the advances into prefix sums, and finds the intrinsic
@@ -33,13 +33,6 @@ mod prefix;
 mod ruby;
 mod ruby_columns;
 mod scan;
-mod scan_em_boxes;
-mod scan_ends;
-mod scan_initial_letter;
-mod scan_intrinsic;
-mod scan_overhang;
-mod scan_ruby;
-mod scan_walk;
 mod spacing;
 mod tabs;
 #[cfg(test)]
@@ -47,20 +40,19 @@ mod tests;
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use core::mem;
 use core::ops::Range;
 
 use crate::config::{
     DominantBaselines, RubyBreakWithin, RubyOverhangRule, SuperSubPosition, WordSpacing,
 };
-use crate::data::{Id, Keyed, SortedTable, Table, define_flags, define_id, heap_bytes, make_room};
+use crate::data::{Id, Keyed, SortedTable, Table, define_flags, define_id, heap_bytes};
 use crate::stages::analysis::{Analysis, ClusterId, ParagraphId};
 use crate::stages::content::{AtomicId, Content, NodeId, TextFactsId};
 use crate::stages::fonts::{FontLineMetrics, Fonts, LineBaseline};
-use crate::stages::shape::{Advances, ShapeSession, Shaped};
+use crate::stages::shape::{ShapeSession, Shaped};
 use crate::style::{FirstLine, FirstLineState, FirstLineVariant};
 use crate::unit::{InlineLayoutUnit, LayoutUnit};
-use scan::Scan;
+use scan::{Scan, ScanPrefix};
 
 pub(super) use autospace::AutospaceRules;
 pub(crate) use edges::{BoundarySplit, edge_room, items_after_break};
@@ -87,8 +79,8 @@ use tabs::{TabReach, TabStops};
 /// What the measure stage reads: the stages before it and some config.
 ///
 /// Of the shaping, it reads the glyph table, which says which clusters
-/// continue a ligature and take no spacing. The advances come in by value.
-/// The config says which clusters take word-spacing, how far a superscript
+/// continue a ligature and take no spacing, and each cluster's advance,
+/// which the prefix sums add up. The config says which clusters take word-spacing, how far a superscript
 /// or subscript moves, and whether `dominant-baseline` moves a box.
 pub(crate) struct MeasureInput<'a> {
     pub(crate) content: &'a Content,
@@ -137,8 +129,8 @@ impl<'a> MeasureInput<'a> {
     }
 }
 
-/// Measures the text of `input` into `out`, turning shaping's `advances`
-/// into prefix sums in place.
+/// Measures the text of `input` into `out`, summing shaping's advances into
+/// prefix sums.
 ///
 /// Where `new_fonts` says the fonts and text facts are new, as after a build,
 /// it first writes each text's primary-font metrics, once for both variants.
@@ -147,19 +139,17 @@ impl<'a> MeasureInput<'a> {
 /// charged its hyphen's width. Otherwise it keeps both, which depend only on
 /// the fonts and the text facts. Where `::first-line` restyles something, it
 /// measures the first paragraph again in its first-line styles, from the
-/// first line's advances or a copy of the text's.
+/// first line's advances or the text's.
 ///
-/// Clears and fills `out`; nothing else writes it. Each advance buffer
-/// becomes a prefix, so ownership passes and each buffer keeps one writer.
+/// Clears and fills `out`; nothing else writes it. Each prefix keeps its
+/// buffer from one measure to the next, so a warm measure allocates none.
 pub(crate) fn measure_text(
     input: &MeasureInput<'_>,
     cx: &mut ShapeSession<'_, '_>,
     scratch: &mut MeasureScratch,
-    advances: Advances,
     out: &mut Measured,
     new_fonts: bool,
 ) {
-    let (advances, mut first_advances) = advances.into_parts();
     out.clear_text();
     out.word_spacing_rule = WordSpacingRule::new(input.word_spacing, input.content);
     if new_fonts {
@@ -175,19 +165,6 @@ pub(crate) fn measure_text(
         }
     }
     let first = input.analysis.first_line_reach(input.content);
-    if let Some(reach) = &first
-        && first_advances.is_empty()
-    {
-        // Set in the text's fonts: its advances, before they are summed,
-        // with room for the end's entry the prefix adds, as shaping makes
-        // room for it.
-        let own = advances.get(..reach.end.get()).unwrap_or_default();
-        make_room(
-            &mut first_advances,
-            PrefixAdvances::capacity_needed(own.len()),
-        );
-        first_advances.extend_from_slice(own);
-    }
     let Measured {
         text,
         text_metrics,
@@ -197,22 +174,13 @@ pub(crate) fn measure_text(
     } = out;
     let generated = generated.as_deref().unwrap_or(&NO_GENERATED);
     let scan = |variant| Scan::new(input, variant, *word_spacing_rule, generated, text_metrics);
-    let widths = scan(FirstLineVariant::Standard).measure(cx, scratch, advances, text.text_mut());
+    let widths = scan(FirstLineVariant::Standard).measure(cx, scratch, text.text_mut());
     if first.is_none() {
         *intrinsic = widths.finish(None);
-        // Kept for the next build that has a first line, where one had.
-        if let Some(fl) = text.kept_first_line_mut() {
-            fl.prefix.sums = first_advances;
-            fl.prefix.sums.clear();
-        }
         return;
     }
-    let first_widths = scan(FirstLineVariant::FirstLine).measure(
-        cx,
-        scratch,
-        first_advances,
-        text.first_line_mut(),
-    );
+    let first_widths =
+        scan(FirstLineVariant::FirstLine).measure(cx, scratch, text.first_line_mut());
     *intrinsic = widths.finish(Some(&first_widths));
 }
 
@@ -761,24 +729,6 @@ impl Measured {
     fn generated_mut(&mut self) -> &mut GeneratedTexts {
         self.generated
             .get_or_insert_with(|| Box::new(GeneratedTexts::new()))
-    }
-
-    /// Empties the texts' measurements and hands back the buffers the
-    /// prefixes were kept in.
-    ///
-    /// Shaping fills them with the next build's advances, and
-    /// [`measure_text`] takes them back. One buffer each goes round, so a
-    /// warm rebuild allocates none. The text metrics and the generated texts
-    /// stay for a measure that keeps the fonts. [`measure_text`] makes them
-    /// again where the fonts are new.
-    pub(crate) fn recycle(&mut self) -> Advances {
-        self.clear_text();
-        let text = mem::take(&mut self.text.text_mut().prefix.sums);
-        let first_line = self
-            .text
-            .kept_first_line_mut()
-            .map_or_else(Vec::new, |first| mem::take(&mut first.prefix.sums));
-        Advances::new(text, first_line)
     }
 
     /// Measures atomic inline `atomic`'s extent again from its row in

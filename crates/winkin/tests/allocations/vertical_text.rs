@@ -3,6 +3,7 @@
 use super::count_allocations;
 use super::test_fonts::{self, TestFont, TestVertical, ahem_fallback};
 use fontwich::Collection;
+use winkin::style::LengthPercentage;
 use winkin::style::{
     ComputedStyle, FontFamilyName, FontGroup, TextAlign, TextCombineUpright, TextOrientation,
     WritingMode,
@@ -53,7 +54,7 @@ fn document(layout: &mut Layout, cx: &mut Context, mode: WritingMode, repeat: us
     let mut marked = root;
     marked.text.emphasis.marks = true;
     let mut spaced = ahem_style(&ahem);
-    spaced.text.letter_spacing = 2.0;
+    spaced.text.letter_spacing = LengthPercentage::from_px(2.0);
     let block = ComputedBlockStyle {
         writing_mode: mode,
         text_align: TextAlign::Justify,

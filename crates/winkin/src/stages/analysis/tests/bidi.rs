@@ -7,6 +7,7 @@
 //! - deep nesting and unbalanced controls.
 
 use super::*;
+use crate::stages::analysis::bidi::BidiInput;
 
 /// Whether some paragraph has clusters at other levels than its own.
 fn mixed(layout: &Layout) -> bool {
@@ -175,7 +176,8 @@ fn each_cluster_is_at_its_resolved_level() {
 /// The text strings together words of Latin, Hebrew, Arabic, European and
 /// Arabic digits, separators and written embeddings, a thousand ways. Each
 /// cluster's run is at the level the resolver gives its class in a
-/// left-to-right paragraph.
+/// left-to-right paragraph, or at 0 where nothing in it is right to left,
+/// as Blink sets a unidirectional paragraph.
 #[test]
 fn the_runs_are_at_the_resolvers_levels() {
     let words = [
@@ -192,7 +194,7 @@ fn the_runs_are_at_the_resolvers_levels() {
         "\u{202C}",
         "\u{65E5}",
     ];
-    let mut input = levels::BidiInput::new();
+    let mut input = BidiInput::new();
     let mut state = 0x2545_F491_u32;
     let mut text = String::new();
     for _ in 0..1000 {
@@ -211,10 +213,65 @@ fn the_runs_are_at_the_resolvers_levels() {
             })
             .collect();
         input.set_classes(&classes);
-        let Some((_, resolved)) = input.levels_resolved(Some(0)) else {
-            panic!("the resolver refused {text:?}");
-        };
+        let (_, mut resolved) = input.levels_resolved(Some(0));
+        if !text
+            .chars()
+            .any(|ch| "\u{5D0}\u{627}\u{661}\u{202B}".contains(ch))
+        {
+            resolved.fill(0);
+        }
         assert_eq!(cluster_levels(&layout), resolved, "{text:?}");
+    }
+}
+
+/// Text with nothing left to right, no number and no control is at level 1
+/// throughout in a right-to-left block, and under `plaintext`, as the
+/// resolver gives it. Under `plaintext`, an information separator inside
+/// starts a bidi paragraph that finds its own direction.
+#[test]
+fn pure_right_to_left_text_is_at_the_resolvers_levels() {
+    let words = [
+        "\u{5D0}\u{5D1}",
+        "\u{627}\u{628}",
+        "\u{5D0}\u{5B4}",
+        " ",
+        ",",
+        "!",
+        "-",
+        "\u{1C}",
+    ];
+    let rtl = ComputedStyle::initial();
+    let rtl = ComputedBlockStyle {
+        direction: BaseDirection::Rtl,
+        ..ComputedBlockStyle::new(&rtl)
+    };
+    let plaintext = bidi(Direction::Ltr, UnicodeBidi::Plaintext);
+    let mut input = BidiInput::new();
+    let mut state = 0x1B87_3593_u32;
+    let mut text = String::new();
+    for _ in 0..1000 {
+        text.clear();
+        state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+        for _ in 0..1 + (state >> 16) % 8 {
+            state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            text.push_str(words[(state >> 16) as usize % words.len()]);
+        }
+        let ruled = [
+            (build_with(&rtl, |b| b.text(key(1), &text)), Some(1)),
+            (root_text(&plaintext, &text), None),
+        ];
+        for (layout, requested) in ruled {
+            let classes: Vec<_> = clusters(&layout)
+                .iter()
+                .map(|cluster| {
+                    let first = cluster.chars().next().unwrap_or(' ');
+                    unicode::core_props(first).bidi_class()
+                })
+                .collect();
+            input.set_classes(&classes);
+            let (_, resolved) = input.levels_resolved(requested);
+            assert_eq!(cluster_levels(&layout), resolved, "{text:?}");
+        }
     }
 }
 
@@ -444,7 +501,7 @@ fn annotations_are_isolated_and_upright_text_reads_left_to_right() {
 }
 
 /// Whitespace or a separator carrying a mark resolves as the neutral that
-/// `unicode::cluster_bidi_class` gives the pair per character. `unicode/tests/bidi_conformance.rs`
+/// `unicode::cluster_bidi_class` gives the pair per character. `tests/bidi_conformance.rs`
 /// holds that function to both conformance files.
 #[test]
 fn a_space_or_a_separator_carrying_a_mark_is_a_neutral() {
@@ -499,95 +556,4 @@ fn deep_nesting_and_unbalanced_controls_are_resolved() {
     let written =
         pre("\u{2069}\u{2069}\u{202C}a\u{202B}\u{202E}\u{2067}\u{5D0}\n\u{2066}\u{2066}b");
     assert!(mixed(&written));
-}
-
-/// A paragraph with nothing right to left, whose only controls are
-/// left-to-right and first-strong isolates, takes the levels its isolates
-/// give it. These match the resolver's, under a left-to-right block and under
-/// `plaintext`.
-///
-/// The test covers every sequence up to four long of the classes such a
-/// paragraph may hold, and long random ones. The random ones nest past UAX
-/// #9's deepest level and close more isolates than they open.
-#[test]
-fn isolates_alone_give_the_resolvers_levels() {
-    use crate::unicode::BidiClass as C;
-    let classes = [
-        C::LEFT_TO_RIGHT,
-        C::EUROPEAN_NUMBER,
-        C::EUROPEAN_SEPARATOR,
-        C::EUROPEAN_TERMINATOR,
-        C::COMMON_SEPARATOR,
-        C::NONSPACING_MARK,
-        C::BOUNDARY_NEUTRAL,
-        C::SEGMENT_SEPARATOR,
-        C::WHITE_SPACE,
-        C::OTHER_NEUTRAL,
-        C::LEFT_TO_RIGHT_ISOLATE,
-        C::FIRST_STRONG_ISOLATE,
-        C::POP_DIRECTIONAL_ISOLATE,
-        C::PARAGRAPH_SEPARATOR,
-    ];
-    let mut input = levels::BidiInput::new();
-    let mut answered = 0;
-    let mut check = |units: &[C]| {
-        input.set_classes(units);
-        for requested in [Some(0), None] {
-            let alone = input.levels_alone();
-            let Some((base, resolved)) = input.levels_resolved(requested) else {
-                panic!("the resolver refused {units:?}");
-            };
-            // Only a separator before the last unit sends it to the resolver.
-            let separated = units
-                .iter()
-                .rev()
-                .skip(1)
-                .any(|&class| class == C::PARAGRAPH_SEPARATOR);
-            assert_eq!(alone.is_none(), separated, "{units:?}");
-            if let Some(alone) = alone {
-                assert_eq!((0, alone), (base, resolved), "{units:?} {requested:?}");
-                answered += 1;
-            }
-        }
-    };
-    let mut units = Vec::new();
-    for len in 0..=4_u32 {
-        for mut code in 0..classes.len().pow(len) {
-            units.clear();
-            for _ in 0..len {
-                units.push(classes[code % classes.len()]);
-                code /= classes.len();
-            }
-            check(&units);
-        }
-    }
-    // A fixed sequence, so that a failure is found again.
-    let mut state: u32 = 0x1B87_3593;
-    let mut next = move |below: usize| {
-        state ^= state << 13;
-        state ^= state >> 17;
-        state ^= state << 5;
-        usize::try_from(state).unwrap_or(0) % below
-    };
-    for round in 0..600 {
-        units.clear();
-        // Every tenth nests past level 125 first.
-        if round % 10 == 0 {
-            units.extend((0..70).map(|at| classes[10 + at % 2]));
-        }
-        for _ in 0..next(120) {
-            // Isolates opened and closed as often as anything else.
-            let class = match next(6) {
-                0 => C::LEFT_TO_RIGHT_ISOLATE,
-                1 => C::POP_DIRECTIONAL_ISOLATE,
-                _ => classes[next(classes.len() - 1)],
-            };
-            units.push(class);
-        }
-        if next(2) == 0 {
-            units.push(C::PARAGRAPH_SEPARATOR);
-        }
-        check(&units);
-    }
-    assert!(answered > 60_000, "{answered}");
 }

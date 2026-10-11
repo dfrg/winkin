@@ -12,6 +12,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use super::*;
+use crate::style::LengthPercentage;
 use crate::style::{LineHeight, TextCase};
 
 /// Builds `text` in `root` into `layout` with `first` as the block's
@@ -107,7 +108,7 @@ fn the_first_line_moves_with_the_width() {
     let mut fixture = fixture();
     let root = sized(&LATIN, 16.0);
     let mut first = sized(&LATIN, 24.0);
-    first.text.letter_spacing = 1.5;
+    first.text.letter_spacing = LengthPercentage::from_px(1.5);
     first.text.word_break = WordBreak::BreakAll;
     let mut root = root;
     root.text.word_break = WordBreak::BreakAll;

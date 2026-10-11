@@ -7,6 +7,7 @@
 //! - valid items under any spacing.
 
 use super::*;
+use crate::style::LengthPercentage;
 
 /// Returns each cluster of line `n`'s text items as the cluster walk reads it, `(left, advance)` in pixels.
 fn cluster_steps(layout: &Layout, n: usize) -> Vec<(f32, f32)> {
@@ -865,7 +866,7 @@ fn letter_spaced_text_draws_no_ligature() {
         "o, f, fi and c, e: ffi's glyph"
     );
     let mut spaced = plain;
-    spaced.text.letter_spacing = 2.0;
+    spaced.text.letter_spacing = LengthPercentage::from_px(2.0);
     fixture.block_text(&mut layout, &ComputedBlockStyle::new(&spaced), "office");
     fixture.lay_out(&mut layout, 500.0);
     assert_eq!(xs(&layout, 0), [0.0, 12.0, 24.0, 36.0, 48.0, 60.0]);
@@ -879,7 +880,7 @@ fn any_spacing_or_justification_gives_valid_items() {
     let mut layout = Layout::new();
     for bad in [f32::NAN, f32::INFINITY, -1e30, f32::MAX, 0.25] {
         let mut style = sized(&LATIN, 20.0);
-        style.text.letter_spacing = bad;
+        style.text.letter_spacing = LengthPercentage::from_px(bad);
         style.text.word_spacing = LengthPercentage {
             px: bad,
             fraction: bad,

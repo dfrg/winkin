@@ -3,6 +3,7 @@
 //! the language and language system the shaping plan gets.
 
 use super::*;
+use crate::style::LengthPercentage;
 
 /// Boundary discovery must produce exactly the cluster scan's runs and glyphs,
 /// including paragraph tails, transparent boxes, first-line variants and the
@@ -84,8 +85,9 @@ fn finding_runs_at_boundaries_matches_scanning_every_cluster() {
                     &mut ShapeSession::new(fixture.cx.shaping(), None),
                     &mut out,
                 );
-                let advances = out.advances_into(Advances::new(Vec::new(), Vec::new()));
-                (out, advances.into_parts())
+                let text = out.text(FirstLineVariant::Standard).advances.clone();
+                let first_line = out.first_line().map(|first| first.advances.clone());
+                (out, (text, first_line.unwrap_or_default()))
             };
             let (fast, fast_advances) = shape();
             let (general, general_advances) = work::general_paths(shape);
@@ -128,8 +130,8 @@ fn finding_runs_at_boundaries_matches_scanning_every_cluster() {
 /// each group of them is a run of its own, with no glyphs, and the text
 /// either side is shaped as runs of its own. A soft hyphen and a lone
 /// control are shaped with their text, hidden, as Blink shapes them: the
-/// LRI goes with the `f` before it, and the run ends after it only because
-/// the `g` it isolates is at another level.
+/// LRI goes with the `f` before it and the `g` it isolates, all at level 0
+/// in a paragraph with nothing right to left.
 #[test]
 fn clusters_not_shaped_are_runs_of_their_own() {
     let mut fixture = fixture();
@@ -158,8 +160,8 @@ fn clusters_not_shaped_are_runs_of_their_own() {
         .iter()
         .map(|(_, _, clusters)| clusters.start.get())
         .collect();
-    // a b | tab | c | ZWSP | d SHY e | FFFC | f LRI | g | LF | h
-    assert_eq!(starts, [0, 2, 3, 4, 5, 8, 9, 11, 12, 13]);
+    // a b | tab | c | ZWSP | d SHY e | FFFC | f LRI g | LF | h
+    assert_eq!(starts, [0, 2, 3, 4, 5, 8, 9, 12, 13]);
     let shy = layout
         .shaped()
         .text(FirstLineVariant::Standard)
@@ -399,7 +401,7 @@ fn a_divided_grapheme_is_split_only_by_a_shaping_property() {
     };
     let spaced = ComputedStyle {
         text: TextGroup {
-            letter_spacing: 1.0,
+            letter_spacing: LengthPercentage::from_px(1.0),
             ..style.text
         },
         ..style
@@ -483,7 +485,7 @@ fn arabic_joins_across_a_run_split() {
     };
     let spaced = ComputedStyle {
         text: TextGroup {
-            letter_spacing: 2.0,
+            letter_spacing: LengthPercentage::from_px(2.0),
             ..style.text
         },
         ..style

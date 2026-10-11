@@ -53,7 +53,7 @@ in, what comes out and where to read next.
   `Content`: the text after white space collapsing and `text-transform`, the
   nodes, the items in reading order, and the interned style facts. It reads
   no font and no width. Start at `ContentWriter::new`, then
-  [`writer_calls.rs`](../src/stages/content/writer_calls.rs).
+  [`writer/calls.rs`](../src/stages/content/writer/calls.rs).
 - **[analysis](../src/stages/analysis/mod.rs).** In: the content. Out:
   `Analysis`: grapheme clusters, line break opportunities, paragraphs, bidi
   levels, and script and orientation runs. Start at `analyze`, then
@@ -61,7 +61,7 @@ in, what comes out and where to read next.
 - **[fonts](../src/stages/fonts/mod.rs).** In: the content and the analysis.
   Out: `Fonts`: a used font for every cluster, as font runs, and the table of
   used fonts with their line metrics. Start at `select_fonts`, then
-  `select_runs` in [`select.rs`](../src/stages/fonts/select.rs).
+  `select_runs` in [`select/mod.rs`](../src/stages/fonts/select/mod.rs).
 - **[shape](../src/stages/shape/mod.rs).** In: the content, analysis and
   fonts. Out: `Shaped`, the glyphs of each shaping run, and the advances,
   handed to measurement by value. Shaping calls
@@ -70,7 +70,7 @@ in, what comes out and where to read next.
 - **[measure](../src/stages/measure/mod.rs).** In: everything before it, and
   the advances. Out: `Measured`: advance prefix sums, intrinsic sizes, item
   extents, line-edge costs and ruby columns. Start at `measure_text`, then
-  `Scan::walk` in [`scan.rs`](../src/stages/measure/scan.rs).
+  `Scan::walk` in [`scan/mod.rs`](../src/stages/measure/scan/mod.rs).
 - **[lines](../src/stages/lines/mod.rs).** In: every prepared table, the
   area and the host's exclusions. Out: `Lines`, each line written whole when
   it is chosen, and the block's result. Edges that the font shaped across are

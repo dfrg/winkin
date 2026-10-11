@@ -80,7 +80,7 @@ fn styles(root: &ComputedStyle<'static>) -> Vec<ComputedStyle<'static>> {
         out.push(style);
     }
     let mut spaced = *root;
-    spaced.text.letter_spacing = 0.000_001;
+    spaced.text.letter_spacing = LengthPercentage::from_px(0.000_001);
     spaced.text.word_spacing = LengthPercentage {
         px: 1.1,
         fraction: 0.13,

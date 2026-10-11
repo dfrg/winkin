@@ -735,9 +735,12 @@ fn sink_clusters<const MARKED: bool, I: Id, A: AdvanceUnit, S: AdvanceStore<A>>(
         let at = if backward { count - 1 - k } else { k };
         TextOffset::from_u32(infos.get(at).map_or(0, |info| info.cluster))
     };
-    let mut cursor = ClusterCursor::new(source, &range);
     let mut writer = ClusterWriter::<MARKED>::new(source, &range, vertical, marks);
     let mut k = 0;
+    if !MARKED && work::fast_paths() {
+        k = writer.write_one_to_one(infos, positions, range.end, out);
+    }
+    let mut cursor = ClusterCursor::new(source, &(writer.next..range.end));
     while k < count {
         work::step();
         let cluster = cursor.locate(label(k));
@@ -847,6 +850,73 @@ impl<'a, const MARKED: bool> ClusterWriter<'a, MARKED> {
         }
         self.drawn = true;
         self.next = ClusterId::new(cluster.get() + 1);
+    }
+
+    /// Writes the clusters from the range's start that are each drawn by one
+    /// glyph, and returns how many it wrote.
+    ///
+    /// It goes on while each glyph is labelled at the start of the next
+    /// cluster, and each cluster starts before the one after it. Only the
+    /// plain path takes it, which reads glyphs in the text's order. A
+    /// cluster is written once the next glyph shows it ends, so the cluster
+    /// before a glyph that breaks the pattern is left to the general walk.
+    #[inline]
+    fn write_one_to_one<I: Id, A: AdvanceUnit, S: AdvanceStore<A>>(
+        &mut self,
+        infos: &[GlyphInfo],
+        positions: &[GlyphPosition],
+        end: ClusterId,
+        out: &mut GlyphSink<'_, I, A, S>,
+    ) -> usize {
+        let first = self.range_start.get();
+        let clusters = end.get().saturating_sub(first);
+        let mut start = self.source.start(self.range_start);
+        let mut held: Option<(&GlyphInfo, &GlyphPosition)> = None;
+        let mut matched = 0;
+        for (info, position) in infos.iter().zip(positions).take(clusters) {
+            let next = self.source.start(ClusterId::new(first + matched + 1));
+            if info.cluster != start.to_u32() || next <= start {
+                break;
+            }
+            if let Some((glyph, placed)) = held {
+                self.write_single(glyph, placed, out);
+            }
+            held = Some((info, position));
+            matched += 1;
+            start = next;
+        }
+        // The last glyph matched draws its cluster alone where no glyph
+        // follows it.
+        if matched == infos.len()
+            && let Some((glyph, placed)) = held
+        {
+            self.write_single(glyph, placed, out);
+        }
+        self.next.get() - first
+    }
+
+    /// Writes the next cluster, drawn by `glyph` alone, labelled at its
+    /// start, at `placed`.
+    #[inline]
+    fn write_single<I: Id, A: AdvanceUnit, S: AdvanceStore<A>>(
+        &mut self,
+        glyph: &GlyphInfo,
+        placed: &GlyphPosition,
+        out: &mut GlyphSink<'_, I, A, S>,
+    ) {
+        work::step();
+        let mut unsafe_to_break = glyph.unsafe_to_break();
+        if self.next == self.range_start {
+            self.first = unsafe_to_break;
+            unsafe_to_break = false;
+        }
+        let flags = Flags {
+            unsafe_to_break,
+            continuation: false,
+        };
+        out.one(glyph, placed, flags);
+        self.drawn = true;
+        self.next = ClusterId::new(self.next.get() + 1);
     }
 
     /// Writes the clusters from the next one up to `end` with no glyphs:

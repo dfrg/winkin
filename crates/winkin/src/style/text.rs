@@ -234,8 +234,8 @@ impl Same for TabSize {
 style_struct! {
     /// A length plus a percentage of the applicable basis.
     ///
-    /// The basis is computed font size for `word-spacing` and line width
-    /// for `text-indent`.
+    /// The basis is computed font size for `letter-spacing` and
+    /// `word-spacing`, and line width for `text-indent`.
     pub struct LengthPercentage {
         /// The length, in pixels.
         pub px: f32,

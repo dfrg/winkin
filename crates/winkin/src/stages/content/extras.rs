@@ -4,7 +4,10 @@
 
 use super::first_line::FirstLineSource;
 use super::map::Map;
-use super::{AbsoluteId, AtomicId, BreakClearanceId, Content, FloatId, ItemId, KeyedBox, NodeKey};
+use super::{
+    AbsoluteId, AtomicId, BreakClearanceId, Content, FloatId, ItemId, KeyedBox, NodeKey,
+    TextFitFacts,
+};
 use crate::build::{BoxSize, Clear, FloatSide, OriginalDisplay};
 use crate::data::{Id, Keyed, SortedTable, Table, heap_bytes};
 use crate::style::{ComputedStyle, LengthPercentage, Sides, WritingMode};
@@ -254,7 +257,6 @@ pub(crate) struct BreakClearance {
 /// layout holds only the box's pointer. Once made, it is cleared with the
 /// content and never dropped. A layout that gains and loses them keeps
 /// their capacity.
-#[derive(Default)]
 pub(super) struct ContentExtras {
     pub(super) map: Map,
     pub(super) first_line_source: FirstLineSource,
@@ -272,6 +274,14 @@ pub(super) struct ContentExtras {
     /// The writer pushes each as its node is made, and sorts them as it
     /// finishes.
     pub(super) keyed_boxes: SortedTable<KeyedBox>,
+    /// The block's `text-fit`.
+    pub(super) text_fit: TextFitFacts,
+}
+
+impl Default for ContentExtras {
+    fn default() -> Self {
+        Self::NONE
+    }
 }
 
 /// What content that keeps no extras reads them as: none of each.
@@ -287,6 +297,7 @@ impl ContentExtras {
         absolutes: Table::new(),
         clearances: Table::new(),
         keyed_boxes: SortedTable::new(),
+        text_fit: TextFitFacts::NONE,
     };
 
     /// The offset map, where this build records it.
@@ -296,5 +307,5 @@ impl ContentExtras {
 }
 
 heap_bytes! {
-    ContentExtras { map, first_line_source, atomics, floats, absolutes, clearances, keyed_boxes }
+    ContentExtras { map, first_line_source, atomics, floats, absolutes, clearances, keyed_boxes; text_fit }
 }

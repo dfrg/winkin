@@ -139,6 +139,9 @@ pub struct BoxFragment<'a> {
     kept: &'a KeptBoxes,
     /// Its row among them, where its item names one.
     kept_box: Option<KeptBoxId>,
+    /// Its extent with its font's ascent and descent scaled, on a line
+    /// `text-fit` scales.
+    fitted: Option<Extent>,
     node: NodeId,
     line: LineId,
     level: BidiLevel,
@@ -163,10 +166,32 @@ impl<'a> BoxFragment<'a> {
     pub(super) fn from_item(line: Line<'a>, item: &'a FragmentItem) -> Self {
         let left = item.inline;
         let layout = line.layout();
+        let kept = &line.stages().measured().kept_boxes;
+        let scale = line.record().scale();
+        let fitted = if scale == 1.0 {
+            None
+        } else {
+            // The font's ascent and descent scale; padding and borders don't.
+            let content = layout.content();
+            let text = content.nodes.text_facts(item.node, line.variant());
+            let font = layout
+                .fonts()
+                .primary_font(content.facts.text_request(text));
+            let extent = item.kept_box().and_then(|at| kept.extent(at));
+            extent.zip(font).map(|(extent, font)| {
+                let (ascent, descent) = (font.metrics.ascent, font.metrics.descent);
+                let more = |length: LayoutUnit| length.times_truncated(scale) - length;
+                Extent::new(
+                    extent.ascent() + more(ascent),
+                    extent.descent() + more(descent),
+                )
+            })
+        };
         Self {
             content: layout.content(),
-            kept: &line.stages().measured().kept_boxes,
+            kept,
             kept_box: item.kept_box(),
+            fitted,
             node: item.node,
             line: line.id(),
             level: item.level,
@@ -217,7 +242,8 @@ impl<'a> BoxFragment<'a> {
     /// A kept box's extent is its row's.
     fn block_extent(&self) -> (LayoutUnit, LayoutUnit) {
         self.across.unwrap_or_else(|| {
-            let extent = self.kept_box.and_then(|at| self.kept.extent(at));
+            let extent =
+                (self.fitted).or_else(|| self.kept_box.and_then(|at| self.kept.extent(at)));
             extent.unwrap_or(Extent::NONE).around(self.baseline)
         })
     }
@@ -501,6 +527,7 @@ fn next_culled<'a>(
         content: layout.content(),
         kept: &line.stages().measured().kept_boxes,
         kept_box: None,
+        fitted: None,
         node: at.node,
         line: line.id(),
         level: part.level,

@@ -5,6 +5,7 @@
 //! - a generated hyphen standing as its text does.
 
 use super::*;
+use crate::style::LengthPercentage;
 
 /// Each glyph of line 0's text runs, where it is drawn.
 fn glyph_places(layout: &Layout) -> Vec<(f32, f32)> {
@@ -366,7 +367,7 @@ fn combined_text_is_spaced_justified_and_marked_as_one_character() {
     use crate::style::{TextCombineUpright, WritingMode};
     let mut cx = combining_context();
     let layout = combined_line(&mut cx, "12", 400.0, |style| {
-        style.text.letter_spacing = 5.0;
+        style.text.letter_spacing = LengthPercentage::from_px(5.0);
     });
     // Two ideographs spaced, and the unit not.
     assert_eq!(layout.line(0).expect("a line").metrics().width, 70.0);

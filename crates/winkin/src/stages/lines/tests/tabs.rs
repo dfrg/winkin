@@ -7,6 +7,7 @@
 //! - tabbed intrinsic sizes the text fits.
 
 use super::*;
+use crate::style::LengthPercentage;
 
 /// A tab is measured where it lands while the break is chosen, not after.
 ///
@@ -124,7 +125,7 @@ fn tab_stops_count_the_block_containers_spaces() {
     let mut fixture = fixture();
     let mut layout = Layout::new();
     let mut block = tabbed(10.0, 4.0);
-    block.text.letter_spacing = 1.0;
+    block.text.letter_spacing = LengthPercentage::from_px(1.0);
     block.text.word_spacing = LengthPercentage {
         px: 2.0,
         fraction: 0.0,

@@ -38,14 +38,14 @@ define_flags! {
         /// Something in it reads right to left: its level is odd, or some
         /// of its clusters' is.
         ///
-        /// An annotation's isolate raises left-to-right text two levels. That
-        /// splits runs with nothing right to left, and Blink's
-        /// `IsBidiEnabled` stays false. So this flag, not `MIXED_LEVELS`,
-        /// says bidi is at work.
+        /// `MIXED_LEVELS` alone may hold only even levels, as a left-to-right
+        /// override around right-to-left text sets them, so this flag says
+        /// bidi is at work.
         pub(crate) const RIGHT_TO_LEFT = 1 << 6;
-        /// A shaping stop inside the paragraph other than its final separator:
-        /// a tab, atomic inline, generated break opportunity or explicit
-        /// shaping boundary. Without it shaping can follow run endpoints.
+        /// A shaping stop inside the paragraph other than its final separator
+        /// and the items' edges: a tab, atomic inline, generated break
+        /// opportunity or preserved ZWNJ. Without it shaping can follow run
+        /// endpoints, which include the items'.
         pub(crate) const HAS_SHAPING_STOPS = 1 << 7;
     }
 }

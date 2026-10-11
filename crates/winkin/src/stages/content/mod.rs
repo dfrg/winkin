@@ -7,7 +7,7 @@
 //! inlines, the floats and the absolutely positioned boxes, and flags for
 //! what the content holds.
 //! Start at: [`ContentWriter::new`], then the builder's calls in
-//! `writer_calls`.
+//! `writer::calls`.
 //!
 //! - `writer`: writes the content, call by call, and finishes it.
 //! - `collapse`: the white space collapsing state machine.
@@ -44,13 +44,6 @@ mod memo;
 mod tests;
 mod transform;
 mod writer;
-mod writer_calls;
-#[cfg(debug_assertions)]
-mod writer_check;
-mod writer_first_letter;
-mod writer_lower;
-mod writer_nodes;
-mod writer_text;
 
 use alloc::boxed::Box;
 use alloc::string::String;
@@ -75,8 +68,8 @@ use extras::{ContentExtras, NO_EXTRAS};
 #[cfg(test)]
 pub(super) use facts::ShapingFacts;
 pub(crate) use facts::{
-    BlockFacts, BoxFacts, BoxFactsId, BoxFlags, Facts, FontRequest, FontRequestId, ShapingFactsId,
-    TextFacts, TextFactsId, TextFlags, TextLineHeight, TextSetting,
+    BlockFacts, BoxFacts, BoxFactsId, BoxFlags, Facts, FixedSpacing, FontRequest, FontRequestId,
+    ShapingFactsId, TextFacts, TextFactsId, TextFitFacts, TextFlags, TextLineHeight, TextSetting,
 };
 #[cfg(any(debug_assertions, test))]
 pub(crate) use facts_check::check;
@@ -746,6 +739,7 @@ impl Content {
             extras.absolutes.clear();
             extras.clearances.clear();
             extras.keyed_boxes.clear();
+            extras.text_fit = TextFitFacts::NONE;
         }
         self.block = block;
         self.flags = ContentFlags::NONE;
@@ -766,6 +760,11 @@ impl Content {
     /// keeps it.
     fn first_line_source(&self) -> Option<&FirstLineSource> {
         Some(&self.extras().first_line_source).filter(|source| !source.is_empty())
+    }
+
+    /// The block's `text-fit`: `none` where the build kept no extras.
+    pub(crate) fn text_fit(&self) -> TextFitFacts {
+        self.extras().text_fit
     }
 
     /// The extras: none of each where the build kept none.

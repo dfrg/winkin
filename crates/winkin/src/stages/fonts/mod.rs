@@ -5,9 +5,9 @@
 //! Start at: [`select_fonts`], then `select::select_runs`.
 //!
 //! - `select` chooses a font for each cluster and writes the font runs.
-//!   `select_pick` tries a candidate list on a grapheme, `select_choice`
-//!   makes a candidate's used fonts, `select_kept` keeps a candidate across
-//!   clusters without asking the list, and `select_generated` chooses the
+//!   Its `pick` tries a candidate list on a grapheme, `choice` makes a
+//!   candidate's used fonts, `kept` keeps a candidate across clusters
+//!   without asking the list, and `generated` chooses the
 //!   fonts of a hyphen and an ellipsis.
 //! - `used` interns the used fonts and works out the size each is used at.
 //! - `coverage` says whether a font covers a cluster, and which
@@ -31,10 +31,6 @@ mod metrics;
 mod positions;
 mod resolution;
 mod select;
-mod select_choice;
-mod select_generated;
-mod select_kept;
-mod select_pick;
 #[cfg(test)]
 mod tests;
 mod used;
@@ -499,7 +495,7 @@ fn select_generated_texts(
                 hyphen.then_some(Generated::Hyphen),
                 cut.then_some(Generated::Ellipsis),
             ];
-            select_generated::select_generated(text_in, id, kinds.into_iter().flatten(), sel, out);
+            select::select_generated(text_in, id, kinds.into_iter().flatten(), sel, out);
         }
     }
 }

@@ -82,8 +82,7 @@ mod tables;
 mod tests;
 
 pub(crate) use bidi::{
-    BIDI_MASK, BidiBracket, BidiClass, BidiScratch, Unit, cluster_bidi_class, reorder_bidi,
-    resolve_bidi,
+    BidiBracket, BidiClass, OVERRIDE_MASK, REMOVED_BY_X9_MASK, cluster_bidi_class, reorder_bidi,
 };
 pub(crate) use normalize::{
     MAX_DECOMPOSITION, compose, decompose, is_default_ignorable, is_mark, is_variation_selector,
@@ -170,7 +169,7 @@ impl CoreProps {
     /// arrives in the resolver's own type with no conversion.
     #[inline]
     pub(crate) const fn bidi_class(self) -> BidiClass {
-        BidiClass::new(((self.0 >> tables::BIDI_CLASS_SHIFT) & tables::BIDI_CLASS_MASK) as u8)
+        BidiClass(((self.0 >> tables::BIDI_CLASS_SHIFT) & tables::BIDI_CLASS_MASK) as u8)
     }
 
     /// The character's Script and Script_Extensions, as the word holds them.

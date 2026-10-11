@@ -84,6 +84,9 @@ pub(super) struct BoxStack {
     /// The boxes open across the line's start, innermost first, which the
     /// walk opens before the line's items.
     carried: Vec<NodeId>,
+    /// The scale `text-fit` sets the line's text in, which its boxes'
+    /// shifts take: 1 where it keeps its size.
+    scale: f32,
 }
 
 impl BoxStack {
@@ -93,12 +96,13 @@ impl BoxStack {
             stack: Table::new(),
             waiting: Table::new(),
             carried: Vec::new(),
+            scale: 1.0,
         }
     }
 }
 
 heap_bytes! {
-    BoxStack { stack, waiting, carried }
+    BoxStack { stack, waiting, carried; scale }
 }
 
 heap_bytes! {
@@ -352,7 +356,7 @@ impl LineStages<'_> {
     /// ([`items_after_break`](measure::items_after_break)). At the text's end
     /// every item is the last line's.
     #[inline]
-    fn items_on_line(
+    pub(super) fn items_on_line(
         &self,
         from: ItemId,
         start: ClusterId,
@@ -616,6 +620,10 @@ pub(super) fn carried_struts(
 /// shifts the line settles are pushed to `shifts`, sorted by node. The line
 /// holds `clusters`, from item `from`, and `ems` gathers its em boxes where
 /// given.
+///
+/// A line whose text `text-fit` scales by `scale` takes its items' extents
+/// and its boxes' shifts at that scale.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn shifted(
     stages: &LineStages<'_>,
     boxes: &mut BoxStack,
@@ -624,6 +632,7 @@ pub(super) fn shifted(
     ems: Option<&mut EmWalk<'_, '_>>,
     from: ItemId,
     clusters: Range<ClusterId>,
+    scale: f32,
 ) -> (Extent, ItemId) {
     let Range { start, end } = clusters;
     let nodes = &stages.content.nodes;
@@ -631,13 +640,25 @@ pub(super) fn shifted(
     let measured = stages.measured;
     boxes.stack.clear();
     boxes.waiting.clear();
+    boxes.scale = scale;
+    let scaled = |item: ItemId, extent: Extent| {
+        if scale == 1.0 {
+            extent
+        } else {
+            stages.scaled_extent(item, extent, scale)
+        }
+    };
     let settled = shifts.next_id();
     let root = NodeId::BLOCK;
     let line = OpenBox {
         node: root,
         text: stages.text_facts(root),
         align: VerticalAlign::Baseline,
-        metrics: measured.extents.strut,
+        metrics: if scale == 1.0 {
+            measured.extents.strut
+        } else {
+            stages.scaled_strut(stages.text_facts(root), scale)
+        },
         pinned: OpenBoxId::new(0),
         waiting: None,
     };
@@ -652,7 +673,7 @@ pub(super) fn shifted(
         for &node in carried.iter().rev() {
             work::step();
             let open = nodes.items(node).start;
-            boxes.open(stages, node, measured.extents.get(open));
+            boxes.open(stages, node, scaled(open, measured.extents.get(open)));
         }
         boxes.carried = carried;
     }
@@ -660,6 +681,7 @@ pub(super) fn shifted(
         let Some(item) = items.get(id) else {
             return;
         };
+        let extent = scaled(id, extent);
         if item.flags.contains(ItemFlags::ANNOTATION) {
             return;
         }
@@ -780,7 +802,14 @@ impl BoxStack {
         else {
             return;
         };
-        let own = stages.measured.shift(open.node);
+        let mut own = stages.measured.shift(open.node);
+        if self.scale != 1.0 {
+            // The scaled shift goes in the line's settled shifts, as what it
+            // adds to the measured one.
+            let more = stages.scaled_shift(open.node, open.align, self.scale);
+            record(shifts, open.node, more);
+            own = own + more;
+        }
         match open.align {
             // Waits for the nearest pinned box around it, or the line.
             VerticalAlign::Top | VerticalAlign::Bottom => {
@@ -913,7 +942,10 @@ fn record(shifts: &mut Table<LineShiftId, LineShift>, node: NodeId, shift: Layou
 ///
 /// `middle`, `text-top` and `text-bottom` measure by these, not by the
 /// leaded text metrics.
-fn primary_metrics<'a>(stages: &LineStages<'a>, text: TextFactsId) -> Option<&'a FontLineMetrics> {
+pub(super) fn primary_metrics<'a>(
+    stages: &LineStages<'a>,
+    text: TextFactsId,
+) -> Option<&'a FontLineMetrics> {
     let request = stages.content.facts.text_request(text);
     stages.fonts.primary_font(request).map(|used| &used.metrics)
 }
@@ -990,6 +1022,9 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
             };
         };
         let columns = self.line_columns(start..end);
+        if self.line_scale != 1.0 {
+            self.scratch.ems.scale(self.line_scale);
+        }
         let (annotated, carry) = annotation.room(
             &self.stages,
             &mut self.scratch.bands,
@@ -997,6 +1032,7 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
             start..end,
             extent,
             AnnotationContinuation {
+                scale: self.line_scale,
                 carry: self.carry,
                 columns,
                 parts: out
@@ -1036,14 +1072,25 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
         let room = self.annotation.as_ref();
         let ems = &mut self.scratch.ems;
         let mut ems = room.map(|room| EmWalk::new(&self.stages, Some(room), ems, start..end));
-        if self.stages.has_shifts() {
+        let scale = self.line_scale;
+        if self.stages.has_shifts() || scale != 1.0 {
             let kept = out.kept_shifts_end();
             let shifts = &mut out.shifts;
             shifts.truncate(kept);
             let boxes = &mut self.scratch.boxes;
             let fonts = &mut self.line_fonts;
             let ems = ems.as_mut();
-            return shifted(&self.stages, boxes, shifts, fonts, ems, from, start..end);
+            let clusters = start..end;
+            return shifted(
+                &self.stages,
+                boxes,
+                shifts,
+                fonts,
+                ems,
+                from,
+                clusters,
+                scale,
+            );
         }
         let mut extent = self.stages.measured.extents.strut;
         let fonts = &mut self.line_fonts;

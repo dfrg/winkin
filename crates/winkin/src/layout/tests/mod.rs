@@ -11,7 +11,8 @@
 //! - `initial`: initial and first letters;
 //! - `vertical`: vertical lines and combined text;
 //! - `positioned`: absolutely positioned boxes' static positions;
-//! - `seeks`: the searches painting and reading make.
+//! - `seeks`: the searches painting and reading make;
+//! - `text_fit`: text scaled to fill its lines.
 
 use alloc::borrow::Cow;
 use alloc::format;
@@ -237,5 +238,6 @@ mod ruby;
 #[cfg(debug_assertions)]
 mod seeks;
 mod sizing;
+mod text_fit;
 mod text_runs;
 mod vertical;

@@ -15,7 +15,7 @@ use crate::style::{EmphasisSide, RubyPosition};
 use crate::unit::{InlineLayoutUnit, LayoutUnit};
 use crate::work;
 
-use super::{Extent, RubyColumnId, RubyLevelId, TabReach};
+use super::{Extent, RubyColumnId, RubyLevelId, ScanPrefix, TabReach};
 
 define_id! { pub(super) struct ColumnRoomId(u32); }
 
@@ -181,7 +181,7 @@ impl RubyColumns {
         id: RubyColumnId,
         input: &super::MeasureInput<'_>,
         shaped: &ShapedText,
-        prefix: &[InlineLayoutUnit],
+        prefix: ScanPrefix<'_>,
         starts: &mut Vec<ClusterId>,
     ) -> Option<(LayoutUnit, LayoutUnit, LayoutUnit)> {
         let column = self.get(id)?;
@@ -248,8 +248,8 @@ impl RubyColumns {
             while visible > start && clusters.hangs(ClusterId::new(visible.get() - 1)) {
                 visible = ClusterId::new(visible.get() - 1);
             }
-            let base = prefix.get(visible.get()).copied().unwrap_or_default()
-                - prefix.get(start.get()).copied().unwrap_or_default();
+            let base =
+                prefix.get(visible).unwrap_or_default() - prefix.get(start).unwrap_or_default();
             let mut width = base.to_layout();
             for (level, from) in levels.iter().zip(starts.iter_mut()) {
                 let past = if end == column.base.end {

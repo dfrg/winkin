@@ -5,6 +5,7 @@ use super::test_fonts::{self, TestAxis, TestFont, ahem_fallback};
 use super::{count_allocations, text};
 use fontwich::{Collection, FaceDescriptors, FontBytes, LayerBuilder, Role};
 use winkin::config::{Config, PositionSynthesis};
+use winkin::style::LengthPercentage;
 use winkin::style::{
     AdjustMetric, ComputedStyle, FontFamilyName, FontFeature, FontGroup, FontSizeAdjust,
     FontVariantCaps, FontVariantPosition, FontVariants, FontVariation, FontWeight, Tag, TextGroup,
@@ -135,7 +136,7 @@ fn prose(layout: &mut Layout, cx: &mut Context, text: &str) {
             ..root.font
         },
         text: TextGroup {
-            letter_spacing: 1.5,
+            letter_spacing: LengthPercentage::from_px(1.5),
             ..root.text
         },
         ..root

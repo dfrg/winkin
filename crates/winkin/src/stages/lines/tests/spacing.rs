@@ -9,6 +9,7 @@
 use super::*;
 use crate::data::IdRange;
 use crate::style::FirstLineVariant;
+use crate::style::LengthPercentage;
 
 /// Returns each line's indent, in pixels.
 fn indents(layout: &Layout) -> Vec<f32> {
@@ -139,12 +140,12 @@ fn spacing_moves_where_lines_break() {
     fixture.text(&mut layout, &style, "XX XX XX");
     fixture.lay_out(&mut layout, 55.0);
     assert_eq!(texts(&layout), ["XX XX ", "XX"]);
-    style.text.letter_spacing = 2.0;
+    style.text.letter_spacing = LengthPercentage::from_px(2.0);
     fixture.text(&mut layout, &style, "XX XX XX");
     fixture.lay_out(&mut layout, 55.0);
     assert_eq!(texts(&layout), ["XX ", "XX ", "XX"]);
     assert_eq!(widths(&layout), [24.0, 24.0, 24.0]);
-    style.text.letter_spacing = 0.0;
+    style.text.letter_spacing = LengthPercentage::from_px(0.0);
     style.text.word_spacing = LengthPercentage {
         px: 6.0,
         fraction: 0.0,
@@ -166,7 +167,7 @@ fn a_reshaped_edge_is_spaced_as_the_paragraph_is() {
     let mut fixture = fixture();
     let mut layout = Layout::new();
     let mut style = break_all(&sized(&LATIN, 20.0));
-    style.text.letter_spacing = 5.0;
+    style.text.letter_spacing = LengthPercentage::from_px(5.0);
     fixture.text(&mut layout, &style, "AVAVAVAV");
     let mut reshaped = 0;
     for width in [28.0, 30.0, 40.0, 43.0, 45.0, 55.0, 58.0, 60.0, 73.0, 90.0] {
@@ -272,7 +273,7 @@ fn negative_spacing_breaks_as_a_negative_margin_does() {
     let mut fixture = fixture();
     let mut layout = Layout::new();
     let mut style = ahem(10.0);
-    style.text.letter_spacing = -12.0;
+    style.text.letter_spacing = LengthPercentage::from_px(-12.0);
     fixture.text(&mut layout, &style, "XXXX XXXX XXXX");
     assert!(
         layout
@@ -298,7 +299,7 @@ fn any_spacing_or_indent_gives_valid_lines() {
     let mut layout = Layout::new();
     for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, f32::MAX, -1e30] {
         let mut style = break_all(&sized(&LATIN, 20.0));
-        style.text.letter_spacing = bad;
+        style.text.letter_spacing = LengthPercentage::from_px(bad);
         style.text.word_spacing = LengthPercentage {
             px: bad,
             fraction: bad,

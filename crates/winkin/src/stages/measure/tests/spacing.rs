@@ -5,6 +5,7 @@
 //! - spacing of any size measured into valid data.
 
 use super::*;
+use crate::stages::content::FixedSpacing;
 use crate::style::FirstLineVariant;
 
 /// A style of `layout`'s, the root's, as the stages read it.
@@ -30,7 +31,7 @@ fn spacing_follows_each_cluster_in_the_prefix() {
     let mut style = sized(&AHEM_FAMILY, 10.0);
     fixture.text(&mut layout, &style, "XX XX");
     assert_eq!(positions(&layout), [0.0, 10.0, 20.0, 30.0, 40.0, 50.0]);
-    style.text.letter_spacing = 2.0;
+    style.text.letter_spacing = LengthPercentage::from_px(2.0);
     style.text.word_spacing = LengthPercentage {
         px: 3.0,
         fraction: 0.0,
@@ -80,7 +81,7 @@ fn a_word_spacing_percentage_is_of_the_font_size() {
     let mut fixture = fixture();
     let mut layout = Layout::new();
     let mut style = sized(&LATIN, 20.0);
-    style.text.letter_spacing = 2.0;
+    style.text.letter_spacing = LengthPercentage::from_px(2.0);
     style.text.word_spacing = LengthPercentage {
         px: 0.0,
         fraction: 0.5,
@@ -132,6 +133,60 @@ fn a_word_spacing_percentage_is_of_the_font_size() {
     assert_eq!(positions(&layout), [0.0, 12.0, 34.0, 56.0, 98.0, 120.0]);
 }
 
+/// `letter-spacing: 50%` adds half the font size after each cluster: 10 px
+/// at 20 px, and 20 px in a span at 40 px holding the same percentage, as a
+/// percentage inherits. A length with no percentage is fixed, which
+/// `text-fit` keeps; a percentage, or a length with one, is not.
+#[test]
+fn a_letter_spacing_percentage_is_of_the_font_size() {
+    let mut fixture = fixture();
+    let mut layout = Layout::new();
+    let mut style = sized(&AHEM_FAMILY, 20.0);
+    style.text.letter_spacing = LengthPercentage {
+        px: 0.0,
+        fraction: 0.5,
+    };
+    let big = ComputedStyle {
+        font: FontGroup {
+            size: 40.0,
+            ..style.font
+        },
+        ..style
+    };
+    fixture.build(&mut layout, &ComputedBlockStyle::new(&style), |b| {
+        b.text(NodeKey(1), "AA");
+        b.open_box(NodeKey(2), &big, None);
+        b.text(NodeKey(3), "A");
+        b.close_box();
+    });
+    assert_eq!(positions(&layout), [0.0, 30.0, 60.0, 120.0]);
+    let mut fixed = |letter: LengthPercentage, word: LengthPercentage| {
+        style.text.letter_spacing = letter;
+        style.text.word_spacing = word;
+        fixture.text(&mut layout, &style, "A A");
+        let content = layout.content();
+        let facts = &content.facts;
+        let text = content
+            .nodes
+            .text_facts(NodeId::BLOCK, FirstLineVariant::Standard);
+        facts.shaping(facts.text(text).shaping).fixed
+    };
+    let px = LengthPercentage::from_px(2.0);
+    let percent = LengthPercentage {
+        px: 0.0,
+        fraction: 0.1,
+    };
+    let both = LengthPercentage {
+        px: 2.0,
+        fraction: 0.1,
+    };
+    let none = LengthPercentage::ZERO;
+    assert_eq!(fixed(px, none), FixedSpacing::LETTER);
+    assert_eq!(fixed(none, px), FixedSpacing::WORD);
+    assert_eq!(fixed(percent, both), FixedSpacing::NONE);
+    assert_eq!(fixed(none, none), FixedSpacing::NONE);
+}
+
 /// The one rule a cluster is spaced by, which the prefix and a reshaped
 /// line edge share, read off each kind of cluster.
 #[test]
@@ -140,7 +195,7 @@ fn spacing_follows_chromes_rules() {
     let mut fixture = fixture();
     let mut layout = Layout::new();
     let mut style = sized(&AHEM_FAMILY, 10.0);
-    style.text.letter_spacing = 2.0;
+    style.text.letter_spacing = LengthPercentage::from_px(2.0);
     style.text.word_spacing = LengthPercentage {
         px: 3.0,
         fraction: 0.0,
@@ -330,7 +385,7 @@ fn negative_spacing_that_goes_back_is_marked() {
     let mut layout = Layout::new();
     for (letter, marked) in [(-5.0, false), (-10.0, false), (-12.0, true)] {
         let mut style = sized(&AHEM_FAMILY, 10.0);
-        style.text.letter_spacing = letter;
+        style.text.letter_spacing = LengthPercentage::from_px(letter);
         fixture.text(&mut layout, &style, "XX XX");
         let flags = layout
             .measured()
@@ -608,7 +663,7 @@ fn any_spacing_gives_valid_measurements() {
         1e-30,
     ] {
         let mut style = sized(&AHEM_FAMILY, 10.0);
-        style.text.letter_spacing = bad;
+        style.text.letter_spacing = LengthPercentage::from_px(bad);
         style.text.word_spacing = LengthPercentage {
             px: bad,
             fraction: bad,

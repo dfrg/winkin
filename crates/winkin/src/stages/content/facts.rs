@@ -46,9 +46,9 @@ use crate::style::{
     DominantBaseline, EdgesGroup, EmphasisSide, EmphasisSkip, FontVariantPosition,
     HangingPunctuation, Hyphens, InitialLetter, LengthPercentage, LineBreak, LineClamp, LineHeight,
     OrientationGroup, OverflowWrap, RubyGroup, TabSize, TextAlign, TextAlignLast, TextBoxEdge,
-    TextBoxTrim, TextCombineUpright, TextGroupAlign, TextIndent, TextJustify, TextOrientation,
-    TextOverflow, TextSpacingTrim, TextWrapMode, TextWrapStyle, UnicodeBidi, VerticalAlign,
-    WhiteSpaceCollapse, WordBreak, WritingMode,
+    TextBoxTrim, TextCombineUpright, TextFit, TextFitKind, TextFitTarget, TextGroupAlign,
+    TextIndent, TextJustify, TextOrientation, TextOverflow, TextSpacingTrim, TextWrapMode,
+    TextWrapStyle, UnicodeBidi, VerticalAlign, WhiteSpaceCollapse, WordBreak, WritingMode,
 };
 use crate::style::{Same, same_by_value, style_struct};
 use crate::unit::{LayoutUnit, TextUnit};
@@ -115,6 +115,7 @@ same_by_value!(
     EdgesId,
     TextFlags,
     BoxFlags,
+    FixedSpacing,
     TextSetting,
     EmphasisSide,
     EmphasisSkip,
@@ -464,6 +465,17 @@ impl HoldsFlags for TextFacts {
     }
 }
 
+define_flags! {
+    /// Which spacings of a [`ShapingFacts`] row are fixed: a nonzero length
+    /// with no percentage, as Chrome's `HasFixedSpacing` has it.
+    pub(crate) struct FixedSpacing(u8) {
+        /// `letter-spacing`.
+        pub(crate) const LETTER = 1 << 0;
+        /// `word-spacing`.
+        pub(crate) const WORD = 1 << 1;
+    }
+}
+
 style_struct! {
     /// What shapes alike: the font request and the other shaping
     /// properties.
@@ -499,20 +511,38 @@ style_struct! {
         pub(crate) trim: TextSpacingTrim,
         /// `text-orientation` and `text-combine-upright`.
         pub(super) orientation: OrientationGroup,
+        /// Which of `letter` and `word` keep their size while `text-fit`
+        /// scales the text.
+        pub(crate) fixed: FixedSpacing,
     }
 }
 
 impl ShapingFacts {
     /// Lowers the shaping facts of `style`, given its font request `font`
     /// and its letter spacing on the grid `letter`.
+    ///
+    /// A spacing is fixed as Chrome's `HasFixedSpacing` has it: a length
+    /// with no percentage, and not zero.
     fn new(style: &StyleKey, font: FontRequestId, letter: TextUnit) -> Self {
-        let word = style.text.word_spacing.resolve(style.font.computed_size());
+        let text = &style.text;
+        let word = TextUnit::from_px(text.word_spacing.resolve(style.font.computed_size()));
+        let none = TextUnit::from_raw(0);
+        let mut fixed = FixedSpacing::NONE;
+        fixed.set(
+            FixedSpacing::LETTER,
+            text.letter_spacing.fraction == 0.0 && letter != none,
+        );
+        fixed.set(
+            FixedSpacing::WORD,
+            text.word_spacing.fraction == 0.0 && word != none,
+        );
         Self {
             font,
             letter,
-            word: TextUnit::from_px(word),
-            trim: style.text.spacing_trim,
+            word,
+            trim: text.spacing_trim,
             orientation: style.orientation,
+            fixed,
         }
     }
 }
@@ -946,6 +976,45 @@ impl BlockFacts {
     }
 }
 
+/// `text-fit` as line breaking reads it: 8 bytes.
+///
+/// The content keeps it with its extras, where a block sets `text-fit`, so
+/// that the block's facts, which every relayout reads, stay small.
+#[derive(Copy, Clone, PartialEq, Debug)]
+pub(crate) struct TextFitFacts {
+    pub(crate) kind: TextFitKind,
+    pub(crate) target: TextFitTarget,
+    /// The bound the limit sets on a scale: the most text grows,
+    /// `max(limit, 1)`, or the least it shrinks to, `min(limit, 1)`.
+    ///
+    /// Without a limit, or with one that is not a number, it is infinity for
+    /// `grow` and zero for `shrink`, which bound nothing.
+    pub(crate) bound: f32,
+}
+
+impl TextFitFacts {
+    /// `text-fit: none`.
+    pub(super) const NONE: Self = Self {
+        kind: TextFitKind::None,
+        target: TextFitTarget::Consistent,
+        bound: f32::INFINITY,
+    };
+
+    /// Lowers `fit`.
+    pub(super) fn new(fit: TextFit) -> Self {
+        let limit = fit.limit.filter(|limit| !limit.is_nan());
+        let bound = match fit.kind {
+            TextFitKind::Shrink => limit.map_or(0.0, |limit| limit.clamp(0.0, 1.0)),
+            TextFitKind::Grow | TextFitKind::None => limit.map_or(f32::INFINITY, |l| l.max(1.0)),
+        };
+        Self {
+            kind: fit.kind,
+            target: fit.target,
+            bound,
+        }
+    }
+}
+
 /// Whether `language` is one of the Chinese macrolanguage's, as Blink's
 /// `LayoutLocale::IsMacrolanguageChinese` lists them from the IANA registry.
 pub(super) fn is_chinese(language: &str) -> bool {
@@ -1001,6 +1070,7 @@ static INITIAL_SHAPING: ShapingFacts = ShapingFacts {
     word: TextUnit::from_raw(0),
     trim: TextSpacingTrim::Normal,
     orientation: OrientationGroup::INITIAL,
+    fixed: FixedSpacing::NONE,
 };
 
 static INITIAL_REQUEST: FontRequest = FontRequest {
@@ -1076,7 +1146,8 @@ impl Facts {
     ) -> Lowered<TextFactsId> {
         let mut flags = ContentFlags::NONE;
         let cjk = matches!(languages.get(style.text.language).language(), "ja" | "zh");
-        let letter = TextUnit::from_px(style.text.letter_spacing);
+        let size = style.font.computed_size();
+        let letter = TextUnit::from_px(style.text.letter_spacing.resolve(size));
         let request = FontRequest::new(style, writing_mode, letter);
         let found = intern(lookup, &mut self.requests, request, &mut flags);
         let text = found.and_then(|font| {

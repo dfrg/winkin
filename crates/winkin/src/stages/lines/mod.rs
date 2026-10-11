@@ -13,11 +13,12 @@
 //! - `height` works out each line box's extent and the shifts only the line
 //!   settles.
 //! - `annotate` makes each line's room for ruby and emphasis marks.
-//! - `ruby` holds the pieces of ruby columns split across lines.
+//! - `ruby` splits ruby columns across lines and holds their pieces.
 //! - `exclusions` is what the host answers: the area and the floats.
 //! - `block` and `trim` finish the block: its end, baselines and
 //!   `text-box-trim`.
 //! - `placement` holds the facts handed to line layout.
+//! - `text_fit` works out the scale `text-fit` sets each line's text in.
 //!
 //! Each line is written once, whole, when it is chosen; line layout decides
 //! nothing about its extent. Breaking reads the prepared tables and never
@@ -26,24 +27,24 @@
 
 mod annotate;
 mod block;
+mod candidate;
 mod exclusions;
 mod fit;
-mod fit_floats;
-mod fit_measure;
-mod fit_reshape;
-mod fit_ruby;
-mod fit_search;
-mod fit_wrap;
+mod floats;
 mod height;
 mod placement;
+mod reshape;
 mod ruby;
 use alloc::boxed::Box;
 pub(crate) use ruby::ColumnPart;
-use ruby::{ContinuationShift, PartLevel, RubyLines, RubyMark};
+use ruby::{ContinuationShift, RubyLines, RubyMark};
 mod score;
+mod search;
 #[cfg(test)]
 mod tests;
+mod text_fit;
 mod trim;
+mod wrap;
 
 use alloc::vec::Vec;
 use core::cell::Cell;
@@ -57,6 +58,7 @@ pub use exclusions::{
 };
 pub(crate) use placement::{LinePlacements, LineView};
 use placement::{PendingLine, PlacementFacts};
+use text_fit::TextFitting;
 use trim::TextBoxTrims;
 
 /// Whether `stages`' lines may carry ruby annotations or emphasis marks,
@@ -89,9 +91,9 @@ use crate::stages::{LineStages, Stages};
 use crate::style::{FirstLineVariant, LineClamp, TextAlign, TextIndent};
 use crate::unit::{InlineLayoutUnit, LayoutUnit, TextUnit};
 use crate::work;
+use candidate::SizedTabs;
 use fit::{Hold, ReshapedStart};
-use fit_measure::SizedTabs;
-use fit_ruby::Continued;
+use ruby::Continued;
 
 /// What line breaking reads: the prepared stages, the area, and the config
 /// choices read at every relayout.
@@ -177,12 +179,59 @@ impl Default for BreakScratch {
 ///   that one.
 /// - Balanced or scored lines are chosen among the lines kept. Where they
 ///   reach past the end, the greedy lines are kept instead.
+///
+/// `text-fit: consistent` lays the lines out twice: once to measure the
+/// scale they share, and again in it.
 pub(crate) fn break_lines(
     input: &BreakInput<'_>,
     cx: &mut ShapeSession<'_, '_>,
     scratch: &mut BreakScratch,
     exclusions: &mut dyn Exclusions,
     out: &mut Lines,
+) {
+    match TextFitting::new(input.stages.content) {
+        None => break_once(input, cx, scratch, exclusions, out, None),
+        Some(fitting) => break_fitted(input, cx, scratch, exclusions, out, fitting),
+    }
+}
+
+/// Breaks the text of `input` into lines as [`break_lines`] does, scaling
+/// each line's text as `fitting` says.
+///
+/// Out of line, so that text `text-fit` leaves alone breaks as without it.
+#[inline(never)]
+fn break_fitted(
+    input: &BreakInput<'_>,
+    cx: &mut ShapeSession<'_, '_>,
+    scratch: &mut BreakScratch,
+    exclusions: &mut dyn Exclusions,
+    out: &mut Lines,
+    fitting: TextFitting,
+) {
+    if !fitting.measures_block() {
+        break_once(input, cx, scratch, exclusions, out, Some(fitting));
+        return;
+    }
+    let from = exclusions.checkpoint();
+    break_once(input, cx, scratch, exclusions, out, Some(fitting));
+    let scale = text_fit::block_scale(input.stages, fitting, out, &scratch.placements);
+    if scale != 1.0 {
+        restart(from, scratch, exclusions, out);
+        let fitting = fitting.with_block_scale(scale);
+        break_once(input, cx, scratch, exclusions, out, Some(fitting));
+    }
+}
+
+/// Breaks the text of `input` into lines once, into `out`, which starts
+/// empty, scaling each line's text as `fitting` says.
+#[inline]
+fn break_once(
+    input: &BreakInput<'_>,
+    cx: &mut ShapeSession<'_, '_>,
+    scratch: &mut BreakScratch,
+    exclusions: &mut dyn Exclusions,
+    out: &mut Lines,
+    fitting: Option<TextFitting>,
 ) {
     scratch.placements.clear();
     scratch.carried.begin();
@@ -191,13 +240,13 @@ pub(crate) fn break_lines(
     let room_above = LayoutUnit::from_px(area.room_above).max(LayoutUnit::ZERO);
     let clamp = Clamp::new(input.stages.content.block.line_clamp, area);
     let Clamp::Height(end) = clamp else {
-        Breaker::new(input, cx, scratch, exclusions, clamp, room_above).lines(out, input);
+        Breaker::new(input, cx, scratch, exclusions, clamp, room_above, fitting).lines(out, input);
         return;
     };
     let from = exclusions.checkpoint();
     // CSS Overflow 4 measures the clamp as if `text-wrap-style` were
     // `stable`. The kept lines are balanced or scored after.
-    let measuring = Breaker::new(input, cx, scratch, exclusions, clamp, room_above);
+    let measuring = Breaker::new(input, cx, scratch, exclusions, clamp, room_above, fitting);
     let chooses = measuring.choice() != LineChoice::Greedy;
     let measured = measuring.with_choice(LineChoice::Greedy).lines(out, input);
     if !measured.overran && !chooses {
@@ -215,13 +264,12 @@ pub(crate) fn break_lines(
     } else {
         Clamp::None
     };
-    let mut breaker = Breaker::new(input, cx, scratch, exclusions, clamp, room_above);
-    breaker.lines(out, input);
+    Breaker::new(input, cx, scratch, exclusions, clamp, room_above, fitting).lines(out, input);
     if !chooses || out.lines.is_empty() || out.block.block_end <= end {
         return;
     }
     restart(from, scratch, exclusions, out);
-    Breaker::new(input, cx, scratch, exclusions, clamp, room_above)
+    Breaker::new(input, cx, scratch, exclusions, clamp, room_above, fitting)
         .with_choice(LineChoice::Greedy)
         .lines(out, input);
 }
@@ -659,7 +707,7 @@ impl Keyed for LineShift {
     }
 }
 
-/// One line: every decision about its ends, written once. 80 bytes.
+/// One line: every decision about its ends, written once. 88 bytes.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct LineRecord {
     /// Its first cluster.
@@ -700,9 +748,20 @@ pub(crate) struct LineRecord {
     shifts: Range<LineShiftId>,
     /// What else is true of it.
     pub(crate) flags: LineFlags,
+    /// The scale `text-fit` sets its text in, as the bits of an `f32`: 1
+    /// where the text keeps its size.
+    ///
+    /// It is a finite positive number.
+    scale_bits: u32,
 }
 
 impl LineRecord {
+    /// Returns the scale `text-fit` sets its text in, 1 where none does.
+    #[inline]
+    pub(crate) fn scale(&self) -> f32 {
+        f32::from_bits(self.scale_bits)
+    }
+
     /// Returns its clusters, what hangs included.
     pub(crate) fn clusters(&self) -> Range<ClusterId> {
         self.start..self.end
@@ -934,7 +993,7 @@ impl Lines {
         };
         let clusters = last.clusters();
         let stages = stages.variant(last.variant());
-        stages.plain_carry(last.first_item, clusters, last.extent)
+        stages.plain_carry(last.first_item, clusters, last.extent, last.scale())
     }
 
     /// Returns how far `line` raises `node`'s baseline for its
@@ -965,8 +1024,8 @@ impl Default for Lines {
 }
 
 // The breaker's state and the records its files share: `fit` builds and
-// drives them, and `fit_search`, `fit_measure`, `fit_reshape`, `fit_floats`,
-// `fit_wrap`, `fit_ruby` and `height` each add to `Breaker`'s `impl`.
+// drives them, and `search`, `candidate`, `reshape`, `floats`, `wrap`,
+// `ruby` and `height` each add to `Breaker`'s `impl`.
 
 /// Where the lines have got to: what the next line starts from.
 ///
@@ -1292,4 +1351,9 @@ struct Breaker<'a, 'c, 'm, 'provider> {
     /// The text item and shaping run the last line's extent read, which the
     /// next line's starts from.
     line_fonts: LineFonts,
+    /// The block's `text-fit`, where it scales the lines.
+    text_fit: Option<TextFitting>,
+    /// The scale the line being measured sets its text in, which its height
+    /// reads.
+    line_scale: f32,
 }

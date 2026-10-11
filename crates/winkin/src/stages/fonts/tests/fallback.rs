@@ -3,6 +3,7 @@
 //! default language, the Standard font, and divided graphemes.
 
 use super::*;
+use crate::style::LengthPercentage;
 
 // The primary font -----------------------------------------------------------
 
@@ -332,9 +333,9 @@ fn letter_spacing_turns_the_common_ligatures_off() {
     let ahem = [FontFamilyName::named("Ahem")];
     let plain = sized(&ahem, 16.0);
     let mut spaced = plain;
-    spaced.text.letter_spacing = 1.5;
+    spaced.text.letter_spacing = LengthPercentage::from_px(1.5);
     let mut tiny = plain;
-    tiny.text.letter_spacing = 1e-9;
+    tiny.text.letter_spacing = LengthPercentage::from_px(1e-9);
     fixture.spans(
         &mut layout,
         &plain,

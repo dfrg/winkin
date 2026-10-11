@@ -77,7 +77,10 @@ impl<'a> TextRun<'a> {
         Some(FontInstance {
             bytes: &drawn.bytes,
             index: drawn.index,
-            size: used.glyph_size().to_px(),
+            size: {
+                let (size, scale) = (used.glyph_size().to_px(), self.line.record().scale());
+                if scale == 1.0 { size } else { size * scale }
+            },
             coords: &drawn.coords,
             embolden: drawn.embolden,
             skew: drawn.skew,
@@ -299,7 +302,13 @@ impl<'a> TextRun<'a> {
     pub(super) fn block_extent(&self) -> (LayoutUnit, LayoutUnit) {
         let extent = self.used().map_or(Extent::NONE, |used| {
             let metrics = &used.metrics;
-            Extent::new(metrics.ascent, metrics.descent)
+            let scale = self.line.record().scale();
+            if scale == 1.0 {
+                Extent::new(metrics.ascent, metrics.descent)
+            } else {
+                let ascent = metrics.ascent.times_truncated(scale);
+                Extent::new(ascent, metrics.descent.times_truncated(scale))
+            }
         });
         extent.around(self.item.block)
     }
@@ -337,7 +346,12 @@ impl<'a> TextRun<'a> {
             };
             used.synthesis.raise() - under
         });
-        self.item.block - raise
+        let scale = self.line.record().scale();
+        if scale == 1.0 {
+            self.item.block - raise
+        } else {
+            self.item.block - raise.times_truncated(scale)
+        }
     }
 
     /// Its clusters in logical order, where each stands along the line and
@@ -556,6 +570,9 @@ pub(crate) struct RunGlyphs<'a> {
     /// The run's baseline from the line box's top, less any synthesized
     /// raise, in pixels.
     baseline: f32,
+    /// The scale `text-fit` sets the line's text in, which generated text's
+    /// glyphs take; the text's walk scales its own.
+    scale: f32,
 }
 
 impl<'a> RunGlyphs<'a> {
@@ -576,16 +593,18 @@ impl<'a> RunGlyphs<'a> {
                         pen: run.item.inline,
                         offset: clusters.start(run.item.clusters().start).get(),
                         left: run.item.inline,
-                        advance: generated.advance,
+                        advance: run.item.advance(),
                     },
                     clusters,
                     baseline,
+                    scale: run.line.record().scale(),
                 }
             }
             None => Self {
                 source: Source::Text(run.line.glyph_walk(run.item)),
                 clusters,
                 baseline,
+                scale: 1.0,
             },
         }
     }
@@ -645,18 +664,22 @@ impl Iterator for RunGlyphs<'_> {
                 glyphs,
                 pen,
                 offset,
+                left,
                 ..
             } => {
+                // The pen runs at the text's own size from the run's left;
+                // a line `text-fit` scales draws it `scale` times as far.
                 let glyph = glyphs.next()?;
                 let (dx, dy) = (glyph.x_offset, glyph.y_offset);
                 let advance = InlineLayoutUnit::from_text(glyph.advance);
                 let x = *pen + InlineLayoutUnit::from_text(dx);
                 *pen += advance;
+                let scale = self.scale;
                 Some(Glyph {
                     id: glyph.id(),
-                    x: x.to_px(),
-                    y: self.baseline - dy.to_px(),
-                    advance: advance.to_px(),
+                    x: left.to_px() + (x - *left).to_px() * scale,
+                    y: self.baseline - dy.to_px() * scale,
+                    advance: advance.to_px() * scale,
                     text_offset: *offset,
                 })
             }

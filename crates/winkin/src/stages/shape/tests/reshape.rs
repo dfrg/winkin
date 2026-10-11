@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::style::FirstLineVariant;
+use crate::style::LengthPercentage;
 
 // Unsafe bits --------------------------------------------------------------
 
@@ -53,7 +54,7 @@ fn a_run_starts_safe() {
     let style = families_style(&LATIN_HEBREW);
     let spaced = ComputedStyle {
         text: TextGroup {
-            letter_spacing: 1.0,
+            letter_spacing: LengthPercentage::from_px(1.0),
             ..style.text
         },
         ..style

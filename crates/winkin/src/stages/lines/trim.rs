@@ -59,29 +59,41 @@ impl TextBoxTrims {
         })
     }
 
-    /// Returns how far every line moves up, given the first line's extent.
+    /// Returns how far every line moves up, given the first line's extent
+    /// and the scale `text-fit` sets its text in.
     ///
     /// It is what the line box reaches past the start edge, or zero where
-    /// the block does not trim its start.
-    pub(super) fn start(self, first: Extent) -> LayoutUnit {
+    /// the block does not trim its start. The edges scale with the text, as
+    /// Chrome scales the line's edge metrics.
+    pub(super) fn start(self, first: Extent, scale: f32) -> LayoutUnit {
         match (self.starts, self.flipped) {
             (false, _) => LayoutUnit::ZERO,
-            (true, false) => first.zero_if_none().ascent() - self.over,
-            (true, true) => first.zero_if_none().descent() - self.under,
+            (true, false) => first.zero_if_none().ascent() - scaled(self.over, scale),
+            (true, true) => first.zero_if_none().descent() - scaled(self.under, scale),
         }
     }
 
     /// Returns how far the block's end moves up, given the last line's
-    /// extent.
+    /// extent and the scale `text-fit` sets its text in.
     ///
     /// It is what the line box reaches past the end edge, or zero where the
     /// block does not trim its end.
-    pub(super) fn end(self, last: Extent) -> LayoutUnit {
+    pub(super) fn end(self, last: Extent, scale: f32) -> LayoutUnit {
         match (self.ends, self.flipped) {
             (false, _) => LayoutUnit::ZERO,
-            (true, false) => last.zero_if_none().descent() - self.under,
-            (true, true) => last.zero_if_none().ascent() - self.over,
+            (true, false) => last.zero_if_none().descent() - scaled(self.under, scale),
+            (true, true) => last.zero_if_none().ascent() - scaled(self.over, scale),
         }
+    }
+}
+
+/// Returns `edge`, an edge's distance from the baseline, on a line whose
+/// text `text-fit` scales by `scale`.
+fn scaled(edge: LayoutUnit, scale: f32) -> LayoutUnit {
+    if scale == 1.0 {
+        edge
+    } else {
+        edge.times_truncated(scale)
     }
 }
 

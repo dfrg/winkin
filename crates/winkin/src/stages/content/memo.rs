@@ -152,7 +152,7 @@ style_struct! {
         /// `hyphenate-character`, or `None` for `auto`.
         pub(super) hyphenate_character: Option<HyphenStringId>,
         pub(super) tab_size: TabSize,
-        pub(super) letter_spacing: f32,
+        pub(super) letter_spacing: LengthPercentage,
         pub(super) word_spacing: LengthPercentage,
         pub(super) autospace: TextAutospace,
         pub(super) spacing_trim: TextSpacingTrim,

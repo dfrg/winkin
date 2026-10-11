@@ -23,6 +23,7 @@ use std::cell::Cell;
 
 use fontwich::{Collection, LayerBuilder, Role};
 use testing::fonts::{AHEM, TestFallback, TestFont};
+use winkin::style::LengthPercentage;
 use winkin::style::{
     ComputedStyle, EmphasisSide, FontFamilyName, FontGroup, Sides, TextAlign, TextCase,
 };
@@ -148,7 +149,7 @@ fn build(layout: &mut Layout, cx: &mut Context, document: Document, paragraphs: 
         },
         ..root
     };
-    first.text.letter_spacing = 1.25;
+    first.text.letter_spacing = LengthPercentage::from_px(1.25);
     let small = ComputedStyle {
         font: FontGroup {
             size: 8.0,

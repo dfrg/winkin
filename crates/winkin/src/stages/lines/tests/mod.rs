@@ -496,11 +496,11 @@ impl Exclusions for Pushed {
 
 // The records --------------------------------------------------------------
 
-/// The records keep their sizes: a line 84 bytes, a reshaped edge 12, what
+/// The records keep their sizes: a line 88 bytes, a reshaped edge 12, what
 /// hangs 16, a band 8.
 #[test]
 fn records_keep_their_sizes() {
-    assert_eq!(size_of::<LineRecord>(), 84);
+    assert_eq!(size_of::<LineRecord>(), 88);
     assert_eq!(size_of::<PlacementFacts>(), 8);
     assert_eq!(size_of::<EdgeShape>(), 12);
     assert_eq!(size_of::<LineHang>(), 16);

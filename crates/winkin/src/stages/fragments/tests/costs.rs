@@ -4,6 +4,7 @@
 //! - step counts in line with the items, however deep boxes nest.
 
 use super::*;
+use crate::style::LengthPercentage;
 
 /// Times a relayout of the ragged article and a read of every line's items and glyphs.
 ///
@@ -426,7 +427,7 @@ fn the_justified_article_relays_out_and_reads_back() {
     let justified = aligned(TextAlign::Justify, TextAlignLast::Auto);
     let plain = sized(&LATIN, 16.0);
     let mut spaced = plain;
-    spaced.text.letter_spacing = 0.5;
+    spaced.text.letter_spacing = LengthPercentage::from_px(0.5);
     for (name, block, style) in [
         ("ragged", ragged, plain),
         ("justified", justified, plain),

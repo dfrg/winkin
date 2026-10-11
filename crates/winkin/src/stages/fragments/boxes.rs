@@ -586,11 +586,8 @@ impl<'a> Placer<'a> {
             .partition_point(|inner| inner.left <= part.right);
         let level_at = |at: VisualId| {
             pieces
-                .order
-                .get(at)
-                .and_then(|&logical| pieces.levels.get(logical))
-                .copied()
-                .unwrap_or(BidiLevel::LTR)
+                .visual(at)
+                .map_or(BidiLevel::LTR, |piece| piece.level)
         };
         let level = level_at(part.left).min(level_at(part.right));
         let item = FragmentItem::from_box_part(

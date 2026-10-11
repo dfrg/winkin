@@ -277,6 +277,8 @@ pub(super) struct AnnotationContinuation<'a> {
     /// The line's parts, with the table of their levels, where any column
     /// is split.
     pub(super) parts: Option<(&'a RubyLines, &'a [ColumnPart])>,
+    /// The scale `text-fit` sets the line's text in.
+    pub(super) scale: f32,
 }
 
 impl<'a> AnnotationRoom<'a> {
@@ -325,6 +327,7 @@ impl<'a> AnnotationRoom<'a> {
             carry: before,
             columns: line_columns,
             parts,
+            scale,
         } = continuation;
         if natural.is_none() {
             return (natural, LayoutUnit::ZERO);
@@ -382,7 +385,7 @@ impl<'a> AnnotationRoom<'a> {
         }
         let annotated_over = reach.over.is_some() || marked_over;
         let annotated_under = reach.under.is_some() || marked_under;
-        let (mut over, mut under) = stages.letter_room(natural, over, under);
+        let (mut over, mut under) = stages.letter_room(natural, over, under, scale);
         // Content past the line box counts only where annotations or marks
         // are on that side: a font's letters may reach past it anyway.
         if over > ascent && !annotated_over {
@@ -453,11 +456,15 @@ impl LineStages<'_> {
     /// nothing left by the line before. It serves
     /// [`Lines::room_below`](super::Lines::room_below) for the last line.
     /// It walks the em boxes once, from item `from`, and stacks no levels.
+    ///
+    /// On a line `text-fit` scales by `scale`, the em boxes scale with the
+    /// text.
     pub(super) fn plain_carry(
         &self,
         from: ItemId,
         clusters: Range<ClusterId>,
         natural: Extent,
+        scale: f32,
     ) -> Carry {
         debug_assert!(
             self.measured.ruby_columns().is_empty(),
@@ -484,7 +491,10 @@ impl LineStages<'_> {
         }
         // This settles it as `room` does with nothing past the line box.
         // Content reaching under the line box counts to its bottom.
-        let (_, under) = self.letter_room(natural, ems.over, ems.under);
+        if scale != 1.0 {
+            ems.scale(scale);
+        }
+        let (_, under) = self.letter_room(natural, ems.over, ems.under, scale);
         let descent = natural.descent();
         (descent - under.min(descent)).max(LayoutUnit::ZERO)
     }
@@ -500,9 +510,11 @@ impl LineStages<'_> {
         natural: Extent,
         over: LayoutUnit,
         under: LayoutUnit,
+        scale: f32,
     ) -> (LayoutUnit, LayoutUnit) {
         let (ascent, descent) = (natural.ascent(), natural.descent());
-        let size = LayoutUnit::from_px(self.block_size());
+        let size = self.block_size();
+        let size = LayoutUnit::from_px(if scale == 1.0 { size } else { size * scale });
         if over == LayoutUnit::MIN || under == LayoutUnit::MIN || over + under < size {
             let leading = ((ascent + descent - size).half()).max(LayoutUnit::ZERO);
             return (ascent - leading, descent - leading);
@@ -585,6 +597,34 @@ impl LineEms {
             marks_under: LayoutUnit::ZERO,
             marked: Extent::NONE,
             marks: Vec::new(),
+        }
+    }
+
+    /// Scales what the em boxes and marks reach by `scale`, on a line whose
+    /// text `text-fit` scales.
+    pub(super) fn scale(&mut self, scale: f32) {
+        let scaled = |length: LayoutUnit| {
+            if length == LayoutUnit::MIN {
+                length
+            } else {
+                length.times_truncated(scale)
+            }
+        };
+        let scaled_extent = |extent: Extent| {
+            if extent.is_none() {
+                extent
+            } else {
+                Extent::new(scaled(extent.ascent()), scaled(extent.descent()))
+            }
+        };
+        self.over = scaled(self.over);
+        self.under = scaled(self.under);
+        self.marks_over = scaled(self.marks_over);
+        self.marks_under = scaled(self.marks_under);
+        self.marked = scaled_extent(self.marked);
+        for mark in &mut self.marks {
+            mark.em = scaled_extent(mark.em);
+            mark.height = scaled(mark.height);
         }
     }
 

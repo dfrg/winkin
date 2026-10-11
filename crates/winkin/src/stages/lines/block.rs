@@ -70,7 +70,9 @@ impl BlockResult {
             LayoutUnit::ZERO
         };
         let trim_end = last.map_or(LayoutUnit::ZERO, |line| {
-            trims.map_or(LayoutUnit::ZERO, |trims| trims.end(line.extent))
+            trims.map_or(LayoutUnit::ZERO, |trims| {
+                trims.end(line.extent, line.scale())
+            })
         });
         let trimmed_end = end - trim_start - trim_end;
         let mut block = Self {

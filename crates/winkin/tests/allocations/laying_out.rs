@@ -556,7 +556,7 @@ fn justified_spaced_and_indented_text_allocates_nothing_warm() {
         |layout: &mut Layout, cx: &mut Context, direction: BaseDirection, justify: TextJustify| {
             let root = ComputedStyle {
                 text: TextGroup {
-                    letter_spacing: 0.75,
+                    letter_spacing: LengthPercentage::from_px(0.75),
                     word_spacing: LengthPercentage {
                         px: 1.5,
                         fraction: 0.25,
@@ -583,7 +583,7 @@ fn justified_spaced_and_indented_text_allocates_nothing_warm() {
             let broken = ComputedStyle {
                 text: TextGroup {
                     word_break: WordBreak::BreakAll,
-                    letter_spacing: -0.5,
+                    letter_spacing: LengthPercentage::from_px(-0.5),
                     ..root.text
                 },
                 paints: true,

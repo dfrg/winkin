@@ -8,7 +8,7 @@
 //! - `graphemes` finds the grapheme boundaries clusters start at.
 //! - `ascii` and `pairs` answer most Latin breaks without ICU.
 //! - `scripts` resolves each cluster's script and splits the runs.
-//! - `levels` builds each paragraph's bidi input and resolves its levels.
+//! - `bidi` builds each paragraph's bidi input and resolves its levels.
 //! - `context` caches the segmenters in the [`Context`](crate::Context).
 //! - `clusters`, `items`, `paragraphs` and `runs` own the stored tables.
 //!
@@ -17,13 +17,13 @@
 //! finished [`Analysis`] and never write to it.
 
 mod ascii;
+mod bidi;
 mod breaks;
 mod classify;
 mod clusters;
 mod context;
 mod graphemes;
 mod items;
-mod levels;
 mod pairs;
 mod paragraphs;
 mod runs;
@@ -41,10 +41,10 @@ use crate::config::SmallKana;
 use crate::data::{define_id, heap_bytes};
 use crate::stages::content::{Content, ContentFlags, ItemId, NodeId};
 
+pub(super) use bidi::ControlLevel;
 pub(crate) use clusters::{ClusterAttrs, ClusterClass, ClusterEnd, Clusters};
 pub(crate) use context::AnalysisContext;
 pub(super) use items::ItemClusters;
-pub(super) use levels::ControlLevel;
 
 pub(crate) use paragraphs::{Paragraph, ParagraphFlags, Paragraphs};
 pub use runs::{BidiLevel, RunOrientation};
@@ -68,7 +68,7 @@ pub(crate) struct AnalysisScratch {
     /// and its paragraph's levels are known only when the paragraph ends.
     pending_runs: Vec<scripts::PendingRun>,
     /// A paragraph's bidi input and the resolver's working memory.
-    bidi: levels::BidiInput,
+    bidi: bidi::BidiInput,
     /// A ruby column's base and what follows the column, which a break
     /// after the column is decided by.
     column_text: String,
@@ -79,7 +79,7 @@ impl AnalysisScratch {
     pub(crate) fn new() -> Self {
         Self {
             pending_runs: Vec::new(),
-            bidi: levels::BidiInput::new(),
+            bidi: bidi::BidiInput::new(),
             column_text: String::new(),
         }
     }
@@ -95,7 +95,7 @@ impl Default for AnalysisScratch {
     }
 }
 
-/// The paragraph the writer is gathering, which `walk` writes and `levels`
+/// The paragraph the writer is gathering, which `walk` writes and `bidi`
 /// resolves when it ends.
 #[derive(Default)]
 struct ParagraphState {

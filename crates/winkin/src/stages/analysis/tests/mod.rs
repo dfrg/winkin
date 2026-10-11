@@ -315,16 +315,14 @@ fn check(layout: &Layout) {
                 assert!(!attrs.has(ClusterAttrs::EMERGENCY_AFTER));
             }
         }
-        let shaping_stops = range.clone().ids().any(|id| {
+        let unshaped = range.clone().ids().any(|id| {
             clusters.attrs(id).is_some_and(|attrs| {
-                attrs.has(ClusterAttrs::SHAPE_BREAK_AFTER)
-                    || (!attrs.class().is_shaped() && attrs.class() != ClusterClass::Separator)
+                !attrs.class().is_shaped() && attrs.class() != ClusterClass::Separator
             })
         });
-        assert_eq!(
-            paragraph.flags.contains(ParagraphFlags::HAS_SHAPING_STOPS),
-            shaping_stops,
-            "paragraph {at}: the shaping gate covers every internal stop"
+        assert!(
+            !unshaped || paragraph.flags.contains(ParagraphFlags::HAS_SHAPING_STOPS),
+            "paragraph {at}: the shaping gate covers every unshaped cluster"
         );
         union.insert(paragraph.flags);
         next = range.end;
@@ -448,6 +446,8 @@ fn records_keep_their_sizes() {
 }
 
 mod bidi;
+mod bidi_allocations;
+mod bidi_conformance;
 mod breaks;
 mod clusters;
 mod orientation;

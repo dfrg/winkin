@@ -2,6 +2,7 @@
 //!
 //! `Placer::place_line` runs each line's phases in order:
 //! - the pieces, in logical order (`pieces`);
+//! - the scale `text-fit` sets the line's text in;
 //! - `line-padding`, justification (`justify`) and alignment;
 //! - reordering by bidi level;
 //! - box parts and the room their edges take (`boxes`);
@@ -29,12 +30,12 @@
 
 use super::{Gates, LineState, Piece, PieceKind, Placer};
 use alloc::vec::Vec;
-use core::iter;
 
 use super::boxes::{BoxPartId, LineBoxId, LineBoxes};
 use super::boxes::{LeafCounts, paint_order};
 use super::cut::LineEllipsis;
 use super::pieces::TabLine;
+use super::read::FitText;
 use super::ruby::LineRubies;
 use super::{
     BlockResult, FragmentItem, FragmentItemFlags, FragmentItemId, Fragments, JustifiedLineId,
@@ -107,8 +108,6 @@ pub(super) struct RubyEdges {
 pub(super) struct LinePieces {
     /// Its pieces in logical order: its content, then what hangs.
     pub(super) logical: Table<PieceId, Piece>,
-    /// Each piece's level as the reordering reads it.
-    pub(super) levels: Table<PieceId, BidiLevel>,
     /// The pieces in visual order.
     pub(super) order: Table<VisualId, PieceId>,
     /// The resolver's `reorder` output as raw indexes, turned into `order`
@@ -128,7 +127,6 @@ impl LinePieces {
     pub(super) const fn new() -> Self {
         Self {
             logical: Table::new(),
-            levels: Table::new(),
             order: Table::new(),
             resolved: Vec::new(),
             carried: Vec::new(),
@@ -161,6 +159,30 @@ impl LinePieces {
     /// takes no justification room and no ruby room before alignment.
     fn hang(&self) -> InlineLayoutUnit {
         self.hang
+    }
+
+    /// Scales the advance of its text and its hyphen by `scale`, all but
+    /// the fixed spacing `fixed` gives each text piece, as `text-fit` sets
+    /// them.
+    ///
+    /// A tab keeps its width to its stop.
+    fn scale_text(&mut self, scale: f32, fixed: impl Fn(&Piece) -> InlineLayoutUnit) {
+        self.hang = InlineLayoutUnit::ZERO;
+        for piece in self.logical.as_mut_slice() {
+            let text =
+                piece.kind == PieceKind::Text && !piece.flags.contains(FragmentItemFlags::TAB);
+            if text || piece.kind == PieceKind::Hyphen {
+                let fixed = if text {
+                    fixed(piece)
+                } else {
+                    InlineLayoutUnit::ZERO
+                };
+                piece.advance = (piece.advance - fixed).times(scale) + fixed;
+            }
+            if piece.flags.contains(FragmentItemFlags::HANGS) {
+                self.hang += piece.advance;
+            }
+        }
     }
 
     /// Adds `piece` as a piece of its own.
@@ -264,30 +286,19 @@ impl LinePieces {
     /// `reorder`; `base` is the lowest level.
     ///
     /// A piece with no level of its own takes the next piece's, or `base` at
-    /// the end, as Blink's opaque items do. `levels` keeps the result.
+    /// the end, as Blink's opaque items do, and keeps it.
     ///
     /// Where every piece is at `base`, as on most lines, the order is
     /// straight through, or reversed for right-to-left, without the walk.
     pub(super) fn reorder(&mut self, base: BidiLevel) {
-        self.levels.clear();
-        let count = self.logical.len();
-        if self.levels.extend(iter::repeat_n(base, count)).is_none() {
-            debug_assert!(false, "no more pieces on a line than a PieceId names");
-        }
-        let uniform = self
-            .logical
-            .as_slice()
-            .iter()
-            .all(|piece| piece.kind.is_opaque() || piece.level == base);
-        if !uniform {
-            let mut next = base;
-            for (at, piece) in self.logical.iter().rev() {
-                if !piece.kind.is_opaque() {
-                    next = piece.level;
-                }
-                if let Some(level) = self.levels.get_mut(at) {
-                    *level = next;
-                }
+        let mut next = base;
+        let mut uniform = true;
+        for piece in self.logical.as_mut_slice().iter_mut().rev() {
+            if piece.kind.is_opaque() {
+                piece.level = next;
+            } else {
+                next = piece.level;
+                uniform &= next == base;
             }
         }
         self.order.clear();
@@ -299,9 +310,12 @@ impl LinePieces {
         } else {
             self.resolved.clear();
             self.resolved.resize(self.logical.len(), 0);
-            let levels = &self.levels;
+            let logical = &self.logical;
             reorder_bidi(&mut self.resolved, |i| {
-                levels.get(PieceId::new(i)).copied().unwrap_or(base).get()
+                logical
+                    .get(PieceId::new(i))
+                    .map_or(base, |piece| piece.level)
+                    .get()
             });
             let resolved = self.resolved.iter();
             self.order
@@ -390,7 +404,7 @@ heap_bytes! {
 }
 
 heap_bytes! {
-    LinePieces { logical, levels, order, resolved, carried; hang, hyphen }
+    LinePieces { logical, order, resolved, carried; hang, hyphen }
 }
 
 /// `text-group-align`: how far each line's band narrows, and how far its
@@ -691,6 +705,9 @@ impl<'a> Placer<'a> {
         self.pieces(pieces, boxes, rubies, line, shapes);
         self.finish_columns(pieces, boxes, rubies, line);
         boxes.carry_open();
+        if line.scale() != 1.0 {
+            self.scale_text(pieces, line.scale());
+        }
         if self.gates.has_line_padding {
             self.pad(pieces);
         }
@@ -747,6 +764,17 @@ impl<'a> Placer<'a> {
             self.annotations(pieces, rubies, out, line);
         }
         out.settle_spread(spread);
+    }
+
+    /// Scales the text of a line `text-fit` scales by `scale`, all but its
+    /// fixed spacing. Out of line, as only such a line pays for it.
+    #[inline(never)]
+    fn scale_text(&self, pieces: &mut LinePieces, scale: f32) {
+        let words = self.input.stages.measured.word_spacing_rule;
+        let stages = &self.stages;
+        pieces.scale_text(scale, |piece| {
+            FitText::new(stages, piece.node, words, scale).fixed_sum(piece.start..piece.end)
+        });
     }
 
     /// Gives each box open from the line before a placeholder at `line`'s
@@ -980,7 +1008,7 @@ impl<'a> Placer<'a> {
             if let Some(split) = split.filter(|split| split.piece == logical) {
                 self.emit_split(out, piece, kind, piece.flags, split, baseline);
             } else if piece.kind == PieceKind::Hyphen {
-                self.emit_hyphen(out, piece, piece.flags, baseline);
+                self.emit_hyphen(out, piece, piece.flags, baseline, line.scale());
             } else {
                 out.items.push_bounded(
                     piece.fragment_item(kind, piece.flags, baseline),

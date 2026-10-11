@@ -4,6 +4,7 @@
 use super::count_allocations;
 use super::test_fonts::{self, TestFont, ahem_fallback};
 use fontwich::Collection;
+use winkin::style::LengthPercentage;
 use winkin::style::{
     ComputedStyle, FontFamilyName, FontGroup, InitialLetter, LineHeight, TextCase, VerticalAlign,
     WordBreak,
@@ -46,7 +47,7 @@ fn document(layout: &mut Layout, cx: &mut Context, words: usize) {
         ..root
     };
     first.line.height = LineHeight::Factor(1.8);
-    first.text.letter_spacing = 1.25;
+    first.text.letter_spacing = LengthPercentage::from_px(1.25);
     first.text.transform.case = TextCase::Uppercase;
     let mut upper = root;
     upper.text.transform.case = TextCase::Uppercase;

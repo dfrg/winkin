@@ -103,7 +103,17 @@ impl<'a> EmphasisMarks<'a> {
             .measured()
             .text_metrics(id)
             .filter(|_| text.has(TextFlags::EMPHASIS))
-            .map(|metrics| metrics.mark);
+            .map(|metrics| {
+                // On a line `text-fit` scales, the mark scales with the text.
+                let scale = line.record().scale();
+                let mark = metrics.mark;
+                if scale == 1.0 {
+                    mark
+                } else {
+                    let ascent = mark.ascent().times_truncated(scale);
+                    Extent::new(ascent, mark.descent().times_truncated(scale))
+                }
+            });
         let combined = item.is_marked() && run.orientation() == RunOrientation::Combined;
         let (places, baseline, size) = match mark {
             Some(mark) if item.is_marked() => {
@@ -210,6 +220,13 @@ fn mark_offset(
             })
     });
     let (over, under) = (em.zero_if_none().ascent(), em.zero_if_none().descent());
+    // On a line `text-fit` scales, the em box scales with the text.
+    let scale = line.record().scale();
+    let (over, under) = if scale == 1.0 {
+        (over, under)
+    } else {
+        (over.times_truncated(scale), under.times_truncated(scale))
+    };
     // Past an annotation of its column on its side, where there is one:
     // how far its em box reaches from the text's baseline.
     let past = annotation_reach(line, item, RubySide::from(side));

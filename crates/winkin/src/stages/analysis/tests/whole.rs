@@ -4,6 +4,7 @@
 //! - text of every kind analysed without a panic.
 
 use super::*;
+use crate::style::LengthPercentage;
 
 /// `::first-line` changes nothing here. It cannot set the four properties
 /// analysis reads.
@@ -27,7 +28,7 @@ fn the_first_line_style_changes_no_analysis() {
     };
     let first_line = styled(|s| {
         s.font.size = 30.0;
-        s.text.letter_spacing = 2.0;
+        s.text.letter_spacing = LengthPercentage::from_px(2.0);
         s.text.word_break = WordBreak::BreakAll;
         s.text.line_break = LineBreak::Anywhere;
         s.text.language = Language::parse("ja").ok();

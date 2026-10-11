@@ -1345,8 +1345,8 @@ fn many_styles_and_lists_intern_once_past_a_few() {
 /// block's.
 #[test]
 fn a_style_compares_its_floats_by_bits() {
-    let nan = styled(|style| style.text.letter_spacing = f32::NAN);
-    let negative_zero = styled(|style| style.text.letter_spacing = -0.0);
+    let nan = styled(|style| style.text.letter_spacing = LengthPercentage::from_px(f32::NAN));
+    let negative_zero = styled(|style| style.text.letter_spacing = LengthPercentage::from_px(-0.0));
     let mut lists = Lists::new();
     lists.clear();
     let mut replaced = 0;
@@ -1474,7 +1474,7 @@ fn a_close_names_its_own_box_and_first_line_style() {
     let element = styled(|style| style.text.language = Language::parse("en").ok());
     let first_line = styled(|style| {
         style.font.size = 40.0;
-        style.text.letter_spacing = 2.0;
+        style.text.letter_spacing = LengthPercentage::from_px(2.0);
         // What `::first-line` may not change.
         style.text.word_break = WordBreak::BreakAll;
         style.text.line_break = LineBreak::Strict;
@@ -1631,7 +1631,11 @@ fn the_flags_say_what_the_content_holds() {
             &styled(|s| s.bidi.unicode_bidi = UnicodeBidi::Isolate),
             None,
         );
-        b.open_box(key(3), &styled(|s| s.text.letter_spacing = 1.0), None);
+        b.open_box(
+            key(3),
+            &styled(|s| s.text.letter_spacing = LengthPercentage::from_px(1.0)),
+            None,
+        );
         b.atomic(
             key(4),
             &ComputedStyle::initial(),
@@ -1760,14 +1764,14 @@ fn items_past_the_limit_leave_every_box_closed() {
 // Sizes -------------------------------------------------------------------------
 
 /// An item is 16 bytes, and a node 32 with its four fact ids. The builder's
-/// key of a style is about 240 bytes, its margins and padding with their
+/// key of a style is about 244 bytes, its margins and padding with their
 /// percentages. Each kind of facts stays within the size asserted below.
 #[test]
 fn the_records_are_the_size_the_design_says() {
     assert_eq!(size_of::<Item>(), 16);
     assert_eq!(size_of::<Node>(), 32);
     let style = size_of::<StyleKey>();
-    assert!(style <= 240, "a style's key is {style} bytes");
+    assert!(style <= 244, "a style's key is {style} bytes");
     let text = size_of::<TextFacts>();
     assert!(text <= 44, "text facts are {text} bytes");
     let shaping = size_of::<ShapingFacts>();
