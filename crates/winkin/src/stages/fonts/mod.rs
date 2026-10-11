@@ -15,6 +15,7 @@
 //! - `features` works out the OpenType features and synthesized capitals.
 //! - `positions` reads what a font's `sups` or `subs` covers.
 //! - `context`, `lists` and `instance` hold the caches kept across layouts.
+//! - `shared` holds the faces several contexts share.
 //! - `metrics` computes a used font's line metrics.
 //! - `resolution` holds a font request's used size and primary font.
 //!
@@ -31,6 +32,7 @@ mod metrics;
 mod positions;
 mod resolution;
 mod select;
+mod shared;
 #[cfg(test)]
 mod tests;
 mod used;
@@ -77,6 +79,7 @@ pub(crate) use context::FontContext;
 use instance::Instance;
 pub(crate) use metrics::{FontLineMetrics, LineBaseline};
 pub(super) use resolution::FontResolution;
+pub use shared::SharedFonts;
 use used::{InitialLetterGrid, UsedFontInterner, adjusted_size, used_size};
 
 /// What font selection reads: the content, its analysis and some config.

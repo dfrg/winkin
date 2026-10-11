@@ -47,6 +47,10 @@ dictionaries = []
 # feature itself.
 fontwich = { version = "0.0.1", path = "../fontwich", default-features = false }
 
+# The lock that guards fonts shared between contexts, without `std`; with
+# `std` it is `std`'s. fontwich's version, already in the build.
+spin = { version = "0.12.3", default-features = false, features = ["mutex", "spin_mutex"] }
+
 # The value types the text stack shares -- weights, widths, slopes, OpenType
 # tags, feature and variation settings, languages, family names, the wrapping
 # keywords -- so that a caller's style needs no conversion at the boundary.

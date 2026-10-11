@@ -118,12 +118,14 @@
 //! by CSS font matching and the platform's fallback. Web
 //! fonts still downloading are listed by [`Layout::wanted_faces`]. A host
 //! that draws with hinted metrics supplies them through
-//! [`font::FontMetricsProvider`].
+//! [`font::FontMetricsProvider`]. Contexts created with one [`SharedFonts`]
+//! parse each font once between them.
 //!
 //! # Features
 //!
-//! - `std` (default): passes `std` on to fontwich, read-fonts and harfrust.
-//!   Without it the crate is `no_std` with `alloc`.
+//! - `std` (default): passes `std` on to fontwich, read-fonts and harfrust,
+//!   and provides [`SharedFonts`]. Without it the crate is `no_std` with
+//!   `alloc`.
 //! - `dictionaries` (default): ICU's dictionaries segment Thai, Lao, Khmer
 //!   and Myanmar lines, and Chinese and Japanese words.
 //!   Without it, an LSTM model segments the Southeast Asian scripts and
@@ -181,7 +183,7 @@ pub use layout::{
 };
 pub use stages::analysis::{BidiLevel, RunOrientation};
 pub use stages::content::NodeKey;
-pub use stages::fonts::{Generated, NormalizedCoord};
+pub use stages::fonts::{Generated, NormalizedCoord, SharedFonts};
 pub use stages::lines::{
     Area, BlockExtents, Exclusions, ExclusionsCheckpoint, FloatRequest, InlineExtents,
     NoExclusions, PlacedFloat,

@@ -1013,30 +1013,37 @@ fn fill(buffer: &mut Buffer, text: &CallText<'_>, call: &CallSettings) {
     }
     buffer.set_flags(flags);
     buffer.set_pre_context(text.before);
-    for (at, ch) in text.chars.char_indices() {
-        // Within the text, which is under 2^30 bytes, so this never
-        // saturates.
-        let at = u32::try_from(at).unwrap_or(u32::MAX);
-        let label = text.base.saturating_add(at);
-        // Each character a case mapping makes is labelled with the byte of
-        // the one it came from, as Blink's `CaseMappingHarfBuzzBufferFiller`
-        // adds them at one cluster: an uppercased `ß` is two glyphs in one
-        // cluster, and the text keeps the author's case.
-        match call.case {
-            CaseMap::Keep => buffer.push(u32::from(ch), label),
-            CaseMap::Upper => match ch {
-                'i' if call.turkic => buffer.push(0x130, label),
-                _ => ch
+    if call.case == CaseMap::Keep {
+        // One count and one reservation for the whole text: pushing a
+        // character at a time grows harfrust's buffer by one record a push.
+        // Its clusters count from the text's start, so `base` is added after.
+        buffer.push_str(text.chars);
+        for info in buffer.glyph_infos_mut() {
+            info.cluster = text.base.saturating_add(info.cluster);
+        }
+    } else {
+        let upper = call.case == CaseMap::Upper;
+        for (at, ch) in text.chars.char_indices() {
+            // Within the text, which is under 2^30 bytes, so this never
+            // saturates.
+            let at = u32::try_from(at).unwrap_or(u32::MAX);
+            let label = text.base.saturating_add(at);
+            // Each character a case mapping makes is labelled with the byte
+            // of the one it came from, as Blink's
+            // `CaseMappingHarfBuzzBufferFiller` adds them at one cluster: an
+            // uppercased `ß` is two glyphs in one cluster, and the text keeps
+            // the author's case.
+            match ch {
+                'i' if upper && call.turkic => buffer.push(0x130, label),
+                _ if upper => ch
                     .to_uppercase()
                     .for_each(|up| buffer.push(u32::from(up), label)),
-            },
-            CaseMap::Lower => match ch {
                 'I' if call.turkic => buffer.push(0x131, label),
                 '\u{130}' if call.turkic => buffer.push(u32::from('i'), label),
                 _ => ch
                     .to_lowercase()
                     .for_each(|low| buffer.push(u32::from(low), label)),
-            },
+            }
         }
     }
     // After the characters, as HarfBuzz sets the context after the text.

@@ -20,7 +20,7 @@
 
 use super::{
     Breaker, EdgeShapeId, Fitted, Fitting, LineBand, LineFlags, LineHang, LineHead, LineStart,
-    Lines,
+    Lines, ReshapedPieces,
 };
 
 use super::candidate::{end_cost, step_segment};
@@ -29,6 +29,7 @@ use crate::data::{Id, IdRange, SortedCursor};
 use crate::stages::analysis::ClusterId;
 use crate::stages::content::ContentFlags;
 use crate::stages::measure::{LineEdgeCost, LineEdgeFlags};
+use crate::stages::shape::ShapedFlags;
 use crate::unit::{InlineLayoutUnit, LayoutUnit};
 
 impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
@@ -167,11 +168,16 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
 
         // The rest of the paragraph, where it fits: one subtraction, and a
         // step back over what hangs. A walked paragraph may overflow on the
-        // way, so it skips this.
+        // way, so it skips this. The candidate is measured only where the
+        // end may fit; otherwise its edges are rewound as it would.
         if !para.walks() {
-            let whole = self.candidate(out, &mut fitting, para.end, false);
-            if let Some(fitted) = settle(&fitting, &whole) {
-                return fitted;
+            if self.end_may_fit(&fitting) {
+                let whole = self.candidate(out, &mut fitting, para.end, false);
+                if let Some(fitted) = settle(&fitting, &whole) {
+                    return fitted;
+                }
+            } else {
+                out.edges.rewind(fitting.head.after());
             }
         }
 
@@ -289,6 +295,42 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
             return overflowing(&fitting, &candidate);
         }
         settle(&fitting, &candidate).unwrap_or_else(|| overflowing(&fitting, &candidate))
+    }
+
+    /// Returns whether the line `fitting` starts may fit to its paragraph's
+    /// end, weighing it without its candidate where nothing there reshapes.
+    ///
+    /// Such a line reaches the prefix to the end less the paragraph's
+    /// hanging tail, and is weighed as [`settle`] weighs it. Returns `true`
+    /// where that does not hold: a start window, seams, tabs, a start
+    /// inside the hanging tail, or spaces at the end the text was shaped
+    /// across.
+    #[inline]
+    fn end_may_fit(&self, fitting: &Fitting<'_, '_>) -> bool {
+        let line = &fitting.line;
+        let para = line.para;
+        let (content_end, tail) = para.end_tail;
+        if line.window.is_some() || para.seams || para.tabs || line.start > content_end {
+            return true;
+        }
+        if self.shaped.contains(ShapedFlags::HAS_UNSAFE)
+            && self.removed_end(line, para.end).is_some()
+        {
+            return true;
+        }
+        let reach =
+            self.stages.measured.prefix.get(para.end) - para.origin + fitting.shift.at(para.end);
+        let content = ((reach - tail).ceil_to_grid() - line.fit_start).to_layout();
+        let end = Candidate {
+            end: para.end,
+            content_end,
+            content,
+            full: content,
+            conditional: None,
+            cost: para.end_cost,
+            pieces: ReshapedPieces::default(),
+        };
+        weigh(fitting, &end).0
     }
 
     /// Returns the last boundary from `start` to `end` whose prefix sum is at

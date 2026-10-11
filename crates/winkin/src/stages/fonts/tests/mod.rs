@@ -16,6 +16,7 @@
 //! - `positions`: `font-variant-position`;
 //! - `vertical`: line metrics in vertical lines;
 //! - `walk`: choosing for many clusters at once against asking each one.
+//! - `shared`: fonts shared between contexts.
 //!
 //! Every layout here is built through [`Fixture::build`], which runs
 //! [`check`] each time.
@@ -446,5 +447,7 @@ mod positions;
 mod presentation;
 mod robustness;
 mod sequences;
+#[cfg(feature = "std")]
+mod shared;
 mod vertical;
 mod walk;

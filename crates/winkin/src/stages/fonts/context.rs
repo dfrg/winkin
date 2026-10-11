@@ -36,6 +36,7 @@ use super::lists::{
     CandidateId, CandidateListId, CandidateLists, ListKey, MatchRequest, NamedListId, NamedLists,
 };
 use super::positions::FeatureCoverages;
+use super::shared::SharedFonts;
 use crate::context::CacheLimits;
 use crate::data::heap_bytes;
 use crate::stages::content::FontRequest;
@@ -105,13 +106,19 @@ pub(crate) struct FontContext {
 impl FontContext {
     /// Makes empty caches for text set in `collection`, each keeping what
     /// `limits` says, allocating nothing.
-    pub(crate) fn new(collection: Collection, limits: &CacheLimits) -> Self {
+    ///
+    /// The instances take the faces they lack from `shared` where given.
+    pub(crate) fn new(
+        collection: Collection,
+        limits: &CacheLimits,
+        shared: Option<SharedFonts>,
+    ) -> Self {
         let instances = limits.font_instances;
         Self {
             collection,
             names: NamedLists::new(limits.family_lists),
             candidates: CandidateLists::new(limits.fallback_lists),
-            instances: Instances::new(instances),
+            instances: Instances::new(instances, shared),
             offers: ScriptOffers::new(instances),
             coverages: FeatureCoverages::new(instances),
         }
@@ -165,13 +172,13 @@ impl FontContext {
         changed
     }
 
-    /// Drops every cache, keeping the collection, each cache keeping what
-    /// `limits` says from now on.
+    /// Drops every cache, keeping the collection and the shared fonts, each
+    /// cache keeping what `limits` says from now on.
     pub(crate) fn clear(&mut self, limits: &CacheLimits) {
         let instances = limits.font_instances;
         self.names = NamedLists::new(limits.family_lists);
         self.candidates = CandidateLists::new(limits.fallback_lists);
-        self.instances = Instances::new(instances);
+        self.instances.clear(instances);
         self.offers = ScriptOffers::new(instances);
         self.coverages = FeatureCoverages::new(instances);
     }

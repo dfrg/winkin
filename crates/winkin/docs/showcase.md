@@ -49,3 +49,13 @@ the four-digit number on its side. Chrome does not support the `digits`
 value.
 
 ![Vertical Japanese columns read from right to left, with readings beside some characters, red sesame marks, and one- and two-digit numbers set upright in a single character's space.](showcase/vertical.png)
+
+## Text fit
+
+`text-fit` scales the text of a line so that the line fills its box. Above,
+preformatted lines of different lengths each grow to the full measure with
+`grow per-line-all`. Below, `grow` and `shrink` take one scale for the whole
+block: the short lines grow until the longest fills the box, and the lines
+too long for it shrink until the longest fits.
+
+![A poster of four blue lines in Palatino, each scaled to fill the same width, so the short last line is set largest; below, two blocks of three lines, one grown and one shrunk by a single scale until its longest line meets the edge.](showcase/text-fit.png)

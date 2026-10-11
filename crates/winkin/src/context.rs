@@ -16,7 +16,7 @@ use fontwich::Collection;
 use crate::config::Config;
 use crate::data::HeapBytes;
 use crate::stages::analysis::{AnalysisContext, AnalysisScratch};
-use crate::stages::fonts::{FontContext, FontScratch};
+use crate::stages::fonts::{FontContext, FontScratch, SharedFonts};
 use crate::stages::fragments::PlaceScratch;
 use crate::stages::lines::{BreakScratch, LinePlacements};
 use crate::stages::measure::MeasureScratch;
@@ -100,10 +100,26 @@ impl Context {
     /// Creates a context with `fonts`, [`Config::platform`] settings and
     /// the default [`CacheLimits`].
     pub fn new(fonts: Collection) -> Self {
+        Self::with_fonts(fonts, None)
+    }
+
+    /// Creates a context as [`new`](Self::new) does, which parses each font
+    /// through `shared`.
+    ///
+    /// Contexts created with clones of one [`SharedFonts`] parse a font once
+    /// between them, so a new context lays out its first text sooner. Layout
+    /// results are the same as with [`new`](Self::new).
+    pub fn with_shared_fonts(fonts: Collection, shared: SharedFonts) -> Self {
+        Self::with_fonts(fonts, Some(shared))
+    }
+
+    /// Creates a context with `fonts`, parsing each through `shared` where
+    /// given.
+    fn with_fonts(fonts: Collection, shared: Option<SharedFonts>) -> Self {
         let limits = CacheLimits::default();
         Self {
             config: Config::platform(),
-            fonts: FontContext::new(fonts, &limits),
+            fonts: FontContext::new(fonts, &limits, shared),
             font_scratch: FontScratch::new(),
             analysis: AnalysisContext::new(),
             analysis_scratch: AnalysisScratch::new(),
@@ -186,10 +202,10 @@ impl Context {
     ///
     /// Includes table capacities, cached values and retained working memory.
     /// Font bytes shared with the collection are reported separately in
-    /// [`ContextHeap::font_data`]. Excludes the collection and allocations
-    /// within read-fonts, harfrust and fontwich values that do not report
-    /// their size: parsed fonts, shape plans, the shaping buffer, and family
-    /// handles.
+    /// [`ContextHeap::font_data`]. Excludes the collection, [`SharedFonts`],
+    /// which reports its own usage, and allocations within read-fonts,
+    /// harfrust and fontwich values that do not report their size: parsed
+    /// fonts, shape plans, the shaping buffer, and family handles.
     pub fn heap_bytes(&self) -> ContextHeap {
         let Self {
             config: _,

@@ -12,7 +12,9 @@
 //! (`Font::instance_builder`), so they share one reading of its tables,
 //! harfrust's included. The feature offers and coverages read the face too.
 //! A face counts the instances cut from it, and goes at the first trim
-//! after the last one does, which releases its bytes.
+//! after the last one does, which releases its bytes. Where the context
+//! shares fonts ([`SharedFonts`]), a face it lacks is cloned from the shared
+//! set, or made there.
 //!
 //! **An instance is found without reading a byte.** Its key is what was
 //! asked of the font: [`fontwich::Font::key`], the merged variation settings
@@ -41,12 +43,13 @@ use core::mem;
 
 use fontwich::{Attributes, Collection, Family, FontBytes, FontKey, Role, Synthesis};
 use parlance::{FontFeature, FontVariation};
-use read_fonts::model::{Blob, Font, Variation};
+use read_fonts::model::{Font, Variation};
 use read_fonts::types::Tag;
 
 use super::UsedInstance;
 use super::features;
 use super::metrics::UnscaledMetrics;
+use super::shared::{SharedFonts, face_font};
 use crate::config::PlatformFontVariations;
 use crate::data::{FxHasher, HeapBytes, LruCache, define_id};
 use crate::stages::content::FontRequest;
@@ -296,19 +299,29 @@ pub(crate) struct Instances {
     request: Vec<FontVariation>,
     /// Working memory for one request's merged features.
     features: Vec<FontFeature>,
+    /// The fonts the context shares with others, which a face it lacks is
+    /// taken from.
+    shared: Option<SharedFonts>,
 }
 
 impl Instances {
-    /// Makes an empty cache that keeps `capacity` instances, allocating
-    /// nothing.
-    pub(super) const fn new(capacity: usize) -> Self {
+    /// Makes an empty cache that keeps `capacity` instances and takes the
+    /// faces it lacks from `shared`, allocating nothing.
+    pub(super) const fn new(capacity: usize, shared: Option<SharedFonts>) -> Self {
         Self {
             table: LruCache::new(capacity),
             faces: LruCache::new(usize::MAX),
             faces_changed: false,
             request: Vec::new(),
             features: Vec::new(),
+            shared,
         }
+    }
+
+    /// Drops every instance and face, keeping `capacity` instances from now
+    /// on and the shared fonts.
+    pub(super) fn clear(&mut self, capacity: usize) {
+        *self = Self::new(capacity, self.shared.take());
     }
 
     /// Sets how many instances a trim keeps.
@@ -395,7 +408,7 @@ impl Instances {
     /// read-fonts reads, or when every face id is taken.
     pub(super) fn face(&mut self, family: &Family, font: &fontwich::Font) -> Option<&Face> {
         self.faces_changed = true;
-        let id = find_or_make_face(&mut self.faces, family, font)?;
+        let id = find_or_make_face(&mut self.faces, self.shared.as_ref(), family, font)?;
         self.faces.get(id)
     }
 
@@ -481,6 +494,7 @@ impl Instances {
             faces_changed,
             request: merged,
             features,
+            shared,
         } = self;
         let key = Key {
             font: key,
@@ -497,7 +511,7 @@ impl Instances {
         if let Some(id) = table.find(hash, |instance| instance.is(&key)) {
             return Some(id);
         }
-        let face_id = find_or_make_face(faces, family, font)?;
+        let face_id = find_or_make_face(faces, shared.as_ref(), family, font)?;
         *faces_changed = true;
         let face = faces.get_mut(face_id)?;
         // Cut from the face, so it shares what every instance of the font
@@ -562,12 +576,13 @@ fn face_hash(key: FontKey) -> u64 {
 /// Finds the face of `font`, of `family`, in `faces` by its key, or makes
 /// it.
 ///
-/// Making it loads the bytes, takes a count on their `Arc`, and holds the
-/// font at its default coordinates. Returns `None` for a font whose bytes
-/// are not here or are not a font read-fonts reads, or when every face id
-/// is taken.
+/// Making it takes the bytes and the font held at its default coordinates
+/// from `shared` where given, and otherwise loads and reads them. Returns
+/// `None` for a font whose bytes are not here or are not a font read-fonts
+/// reads, or when every face id is taken.
 fn find_or_make_face(
     faces: &mut LruCache<FaceId, Face>,
+    shared: Option<&SharedFonts>,
     family: &Family,
     font: &fontwich::Font,
 ) -> Option<FaceId> {
@@ -576,8 +591,7 @@ fn find_or_make_face(
     if let Some(id) = faces.find(hash, |face| face.key == key) {
         return Some(id);
     }
-    let bytes = font.load()?;
-    let held = Font::new(Blob::Shared(bytes.arc().clone()), font.index())?;
+    let (bytes, held) = face_font(shared, family, font, key, hash)?;
     faces.insert(
         hash,
         Face {
@@ -604,6 +618,7 @@ impl HeapBytes for Instances {
             faces_changed: _,
             request,
             features,
+            shared: _,
         } = self;
         let own: usize = table
             .iter()

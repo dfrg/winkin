@@ -1189,6 +1189,12 @@ struct BreakerParagraph {
     /// Every line's fit tries the paragraph's end first. Kept here, that
     /// candidate leaves the line's cost cursor near the line.
     end_cost: LineEdgeCost,
+    /// Where a line ending at its end ends without what hangs, and how far
+    /// what hangs reaches, unreshaped.
+    ///
+    /// A line's fit weighs its end with them before measuring the candidate
+    /// there, which fits on its last line only.
+    end_tail: (ClusterId, InlineLayoutUnit),
     /// `text-autospace` puts room at a seam in it, which a line ending there
     /// gives back.
     seams: bool,

@@ -777,6 +777,7 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
             } else {
                 LineEdgeCost::default()
             },
+            end_tail: self.hanging_tail(range.start, range.end, |_| None),
             seams: measured.contains(MeasureFlags::HAS_AUTOSPACE),
             forced: last
                 .and_then(|last| self.clusters.class(last))

@@ -1,11 +1,11 @@
 //! Font selection: selecting fonts again allocates nothing, with fallback
-//! and mixed scripts.
+//! and mixed scripts, and in contexts sharing their fonts.
 
 use super::test_fonts::{self, TestFont, han_fallback};
 use super::{count_allocations, text};
 use fontwich::Collection;
 use winkin::style::{ComputedStyle, FontFamilyName, FontGroup, FontWeight, Language, TextGroup};
-use winkin::{BuildOptions, ComputedBlockStyle, Context, Layout, NodeKey};
+use winkin::{BuildOptions, ComputedBlockStyle, Context, Layout, NodeKey, SharedFonts};
 
 /// Ahem, and a CJK font that Han and kana fall back to from it, which
 /// has digits and spaces too, as Ahem is asked for first.
@@ -99,5 +99,23 @@ fn selecting_fonts_allocates_nothing_warm() {
         prose(&mut other, &mut cx, language, &same);
         let warm = count_allocations(|| prose(&mut other, &mut cx, language, &same));
         assert_eq!(warm, 0, "{language}: a second layout allocated");
+    }
+}
+
+/// A context sharing its fonts allocates nothing warm, and neither does a
+/// second one once it has grown its own tables: a warm build finds every
+/// face in the context and never asks the shared fonts.
+#[test]
+fn a_context_sharing_fonts_allocates_nothing_warm() {
+    let fonts = collection();
+    let shared = SharedFonts::default();
+    let line = text("Mixed: 漢字 and Latin, 12 digits, 中文 again.", 12);
+    for _ in 0..2 {
+        let mut cx = Context::with_shared_fonts(fonts.clone(), shared.clone());
+        let mut layout = Layout::new();
+        let cold = count_allocations(|| prose(&mut layout, &mut cx, "en", &line));
+        assert!(cold > 0, "a cold context grows");
+        let warm = count_allocations(|| prose(&mut layout, &mut cx, "en", &line));
+        assert_eq!(warm, 0, "rebuilding in a context sharing fonts allocated");
     }
 }
