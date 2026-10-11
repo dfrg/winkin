@@ -666,6 +666,9 @@ fn line_placement_survives_rewinds_and_lives_in_the_context() {
 // The records --------------------------------------------------------------
 
 /// Line layout's records keep their sizes: a fragment item is 40 bytes, and a line head an item id.
+///
+/// The read walks keep theirs too: a reader makes one for every text run,
+/// and a painter copies it.
 #[test]
 fn records_keep_their_sizes() {
     assert_eq!(size_of::<FragmentItem>(), 40);
@@ -673,6 +676,8 @@ fn records_keep_their_sizes() {
     assert_eq!(size_of::<FragmentItemFlags>(), 1);
     assert_eq!(size_of::<LineJustification>(), 32);
     assert_eq!(size_of::<JustifiedLine>(), 40);
+    assert_eq!(size_of::<GlyphWalk<'_>>(), 424);
+    assert_eq!(size_of::<ClusterWalk<'_>>(), 328);
 }
 
 // Relayout -----------------------------------------------------------------

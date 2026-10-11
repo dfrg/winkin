@@ -73,7 +73,7 @@ use super::FontInput;
 use super::context::{CacheChange, FontContext};
 use super::coverage;
 use super::features;
-use super::lists::{CandidateId, CandidateListId, MatchRequest, NamedListId};
+use super::lists::{CandidateId, CandidateListId, ListKey, MatchRequest, NamedListId};
 use super::used::UsedFontInterner;
 use super::{DefaultLanguage, FontResolution, FontRun, FontRuns, UsedFontId};
 use crate::config::PositionSynthesis;
@@ -440,9 +440,12 @@ struct SelectionSpan<'a> {
     /// Where its item's graphemes cross the item's edges (see
     /// [`ItemGraphemes`]).
     graphemes: ItemGraphemes,
-    /// Its candidate lists for text and for emoji.
+    /// What its candidate list for text is keyed by, and that list.
+    key: ListKey,
     text: CandidateListId,
-    emoji: CandidateListId,
+    /// Its candidate list for emoji, found or made where a cluster first
+    /// asks for emoji presentation.
+    emoji: Option<CandidateListId>,
     resolved: ResolvedRequest<'a>,
 }
 
@@ -529,12 +532,19 @@ pub(super) fn select_runs(
             let span = script_runs.get(script.id()).and_then(|run| {
                 let language =
                     default_language.fonts_language(content.lists.languages.get(run.language));
-                let (text, emoji) = sel.cx.span_lists(list, run.script, language, matching)?;
+                let key = ListKey {
+                    list,
+                    script: run.script,
+                    language,
+                    request: matching,
+                    emoji: false,
+                };
                 Some(SelectionSpan {
                     end: run_end,
                     graphemes,
-                    text,
-                    emoji,
+                    key,
+                    text: sel.cx.span_list(key)?,
+                    emoji: None,
                     resolved: ResolvedRequest {
                         request,
                         request_id,
@@ -544,7 +554,7 @@ pub(super) fn select_runs(
                 })
             });
             match span {
-                Some(span) => walk_span(input, &span, at, sel, out),
+                Some(mut span) => walk_span(input, &mut span, at, sel, out),
                 None => {
                     out.push_missing_range(at..run_end, primary);
                 }
@@ -557,9 +567,12 @@ pub(super) fn select_runs(
 }
 
 /// Walks `span` from `from`, making each change the walk stops for.
+///
+/// The span's list for emoji is found or made here. Where the table cannot
+/// take it, the span's clusters from there on are missing.
 fn walk_span(
     input: &Input<'_>,
-    span: &SelectionSpan<'_>,
+    span: &mut SelectionSpan<'_>,
     from: ClusterId,
     sel: &mut Selecting<'_>,
     out: &mut Output<'_>,
@@ -570,9 +583,22 @@ fn walk_span(
         let Some((change, cluster)) = walk(input, span, at, sel, out) else {
             return;
         };
-        sel.cx.apply(change);
         at = cluster;
+        let CacheChange::EmojiList = change else {
+            sel.cx.apply(change);
+            continue;
+        };
+        let key = ListKey {
+            emoji: true,
+            ..span.key
+        };
+        span.emoji = sel.cx.span_list(key);
+        if span.emoji.is_none() {
+            out.push_missing_range(at..span.end, span.resolved.resolution.primary);
+            return;
+        }
     }
+    debug_assert!(false, "a span's walk stopped {MAX_STOPS} times");
     debug_assert!(false, "a span's walk stopped {MAX_STOPS} times");
     out.push_missing_range(at..span.end, span.resolved.resolution.primary);
 }
@@ -745,10 +771,11 @@ fn walk(
     let resolved = &span.resolved;
     let primary = resolved.resolution.primary;
     let (lists, coverages, mut fonts) = cx.walk_caches();
-    let (Some(text_list), Some(emoji_list)) = (lists.get(span.text), lists.get(span.emoji)) else {
+    let Some(text_list) = lists.get(span.text) else {
         out.push_missing_range(from..span.end, primary);
         return None;
     };
+    let emoji_list = span.emoji.and_then(|id| Some((lists.get(id)?, id)));
     let span_text = SpanText {
         source: input.source,
         clusters,
@@ -787,12 +814,10 @@ fn walk(
         let variant = resolved.request.font.variant_emoji;
         let needs = GraphemeNeeds::new(class, chars, selector, variant);
         let (list, list_id, memo, pages) = if needs.presentation.base() == Presentation::Emoji {
-            (
-                emoji_list,
-                span.emoji,
-                &mut *emoji_memo,
-                &mut state.emoji_pages,
-            )
+            let Some((emoji_list, emoji)) = emoji_list else {
+                return Some((CacheChange::EmojiList, cluster));
+            };
+            (emoji_list, emoji, &mut *emoji_memo, &mut state.emoji_pages)
         } else {
             (text_list, span.text, &mut *text_memo, &mut state.text_pages)
         };

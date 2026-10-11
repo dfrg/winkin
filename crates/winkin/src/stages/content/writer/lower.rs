@@ -6,11 +6,16 @@ use alloc::boxed::Box;
 use super::{ContentWriter, InitialLetterUse, LoweredNode, NodeFacts};
 #[cfg(any(debug_assertions, test))]
 use crate::stages::content::facts_check;
+use crate::stages::content::lists::Lookup;
 use crate::stages::content::memo::StyleKey;
 use crate::stages::content::transform::{TextTransformer, Transforms, case_langid};
 use crate::stages::content::{
-    BoxFactsId, Content, ContentFlags, NodeId, NodeKind, TextFacts, TextFactsId, TextFlags,
+    BoxFactsId, Content, ContentFlags, Facts, NodeId, NodeKind, TextFacts, TextFactsId, TextFlags,
 };
+
+/// What lowering a style writes to: the fact tables, their lookup, and the
+/// content's flags.
+type Lowering<'a> = (&'a mut Facts, &'a mut Lookup, &'a mut ContentFlags);
 use crate::style::{
     BidiGroup, ComputedStyle, Direction, FirstLineVariant, RubyGroup, TextTransform,
 };
@@ -103,7 +108,7 @@ impl ContentWriter<'_> {
 
     /// Lowers `style` into the facts of a node of `kind`.
     ///
-    /// The text facts come from the memo, or are lowered and held there.
+    /// The facts come from the memo, or are lowered and held there.
     /// Each new row is interned, and the content's flags are set for what
     /// it holds. The block's styles are lowered once a build and not held,
     /// so a layout with no box makes no memo.
@@ -126,28 +131,32 @@ impl ContentWriter<'_> {
         if style.text.transform.is_math_auto() {
             flags.insert(ContentFlags::MATH_AUTO);
         }
-        let mut new = ContentFlags::NONE;
-        let mut lower_text = || {
+        // The flags each new row holds go in the content's flags.
+        let lower_text = |(facts, lookup, flags): &mut Lowering<'_>| {
             let lowered = facts.lower_text(lookup, languages, style, writing_mode);
-            new = lowered.flags;
+            flags.insert(lowered.flags);
             lowered.id
         };
-        let text = match kind {
-            NodeKind::Block => lower_text(),
+        let lower_box = |(facts, lookup, flags): &mut Lowering<'_>| {
+            let lowered = facts.lower_box(lookup, style, kind, writing_mode, basis);
+            flags.insert(lowered.flags);
+            lowered.id
+        };
+        let cx = &mut (facts, lookup, flags);
+        let (text, box_) = match kind {
+            NodeKind::Block => (lower_text(cx), lower_box(cx)),
             _ => self
                 .memo
                 .get_or_insert_with(Box::default)
-                .text(style, lower_text),
+                .facts(cx, style, kind, lower_text, lower_box),
         };
-        let box_ = facts.lower_box(lookup, style, kind, writing_mode, basis);
-        flags.insert(new.union(box_.flags));
         #[cfg(any(debug_assertions, test))]
-        facts_check::lowered(self.content, style, kind, text, box_.id);
+        facts_check::lowered(self.content, style, kind, text, box_);
         let text = text.unwrap_or_else(|| {
             self.room.report.replace_style();
             stand_in
         });
-        let box_ = box_.id.unwrap_or_else(|| {
+        let box_ = box_.unwrap_or_else(|| {
             self.room.report.replace_style();
             BoxFactsId::INITIAL
         });

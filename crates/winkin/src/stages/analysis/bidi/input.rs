@@ -90,10 +90,10 @@ impl BidiInput {
         self.control_levels.clear();
     }
 
-    /// Moves the writer's open boxes over `item`, returning whether one opened
-    /// or closed.
-    pub(crate) fn walk(&mut self, content: &Content, item: &Item) -> bool {
-        track(&mut self.open, content, item)
+    /// Moves the writer's open boxes over `item`, whose node has box facts
+    /// `facts`, returning whether one opened or closed.
+    pub(crate) fn walk(&mut self, content: &Content, item: &Item, facts: &BoxFacts) -> bool {
+        track(&mut self.open, content, item, facts)
     }
 
     /// Starts a paragraph where the writer's walk is, returning whether any box
@@ -104,7 +104,9 @@ impl BidiInput {
     pub(crate) fn begin_paragraph(&mut self, content: &Content) -> bool {
         self.inside.clear();
         self.inside.extend_from_slice(&self.open);
-        self.open.iter().any(|&open| moves_levels(content, open))
+        self.open
+            .iter()
+            .any(|&open| controls(content, open, box_facts(content, open)) == Some(true))
     }
 
     /// Adds the next cluster's unit, of `class`; returns its class's mask.
@@ -284,7 +286,7 @@ pub(super) fn bidi_units(
                 anchor,
             });
         }
-        track(&mut input.inside, content, item);
+        track(&mut input.inside, content, item, box_facts(content, node));
     }
     mask
 }
@@ -295,19 +297,27 @@ pub(super) fn bidi_units(
 /// `open` lists the open containers that open controls, outermost first.
 /// The writer tracks them over every item, and each paragraph over its own
 /// items. Only what opens controls is kept, so a `::first-letter` box
-/// ([`opens_controls`]) is never among them unless it is the initial
-/// letter.
+/// ([`controls`]) is never among them unless it is the initial letter.
+/// `facts` are the box facts of the item's node.
 ///
-/// Controls that move no level by themselves ([`moves_levels`]) alone do
-/// not have the paragraph resolved.
-fn track(open: &mut Vec<NodeId>, content: &Content, item: &Item) -> bool {
+/// Controls that move no level by themselves alone do not have the
+/// paragraph resolved.
+fn track(open: &mut Vec<NodeId>, content: &Content, item: &Item, facts: &BoxFacts) -> bool {
     let node = item.node;
     match item.kind {
-        kind if kind.is_open() && opens_controls(content, node) => open.push(node),
-        kind if kind.is_close() && open.last() == Some(&node) => _ = open.pop(),
-        _ => return false,
+        kind if kind.is_open() => {
+            let Some(moves) = controls(content, node, facts) else {
+                return false;
+            };
+            open.push(node);
+            moves
+        }
+        kind if kind.is_close() && open.last() == Some(&node) => {
+            open.pop();
+            controls(content, node, facts).unwrap_or(false)
+        }
+        _ => false,
     }
-    moves_levels(content, node)
 }
 
 /// Adds the controls a bidi paragraph starts with and returns their class
@@ -376,53 +386,38 @@ fn override_class(direction: Direction) -> BidiClass {
     }
 }
 
-/// Whether `node` opens controls: the block's initial letter, an
+/// Whether `node`, of box facts `facts`, opens controls, and if it does,
+/// whether they may move a level by themselves.
+///
+/// It opens controls where it is the block's initial letter, an
 /// annotation, or a box or ruby container whose `unicode-bidi` is not
-/// `normal`. [`enter`] adds those controls.
+/// `normal`. [`enter`] adds those controls. Not another `::first-letter`
+/// box: Blink's cascade drops `unicode-bidi` and `direction` for the pseudo
+/// and injects nothing for it, and the content's writer gives its style
+/// `normal` and its parent's direction to match.
 ///
-/// Not another `::first-letter` box: Blink's cascade drops `unicode-bidi`
-/// and `direction` for the pseudo and injects nothing for it, and the
-/// content's writer gives its style `normal` and its parent's direction to
-/// match.
-fn opens_controls(content: &Content, node: NodeId) -> bool {
-    if content.block.initial_letter == Some(node) {
-        return true;
-    }
-    match content.nodes.kind(node) {
-        Some(NodeKind::Annotation) => true,
-        Some(NodeKind::Box | NodeKind::Ruby) => {
-            box_facts(content, node).bidi != UnicodeBidi::Normal
-        }
-        _ => false,
-    }
-}
-
-/// Whether the controls `node` opens may move a level by themselves: put a
-/// cluster at another level than 0 in a paragraph with nothing right to
-/// left, in a block that is not.
-///
-/// Only right-to-left controls do. Left-to-right embeddings, overrides and
+/// Controls move a level where they put a cluster at another level than 0
+/// in a paragraph with nothing right to left, in a block that is not. Only
+/// right-to-left controls do. Left-to-right embeddings, overrides and
 /// isolates, and first-strong isolates with nothing right to left to find,
 /// raise even levels over even ones. Blink then finds the paragraph
 /// unidirectional and leaves every item at level 0
 /// (`InlineNode::SegmentBidiRuns`). An annotation's isolate and the initial
 /// letter's are among them.
-fn moves_levels(content: &Content, node: NodeId) -> bool {
+fn controls(content: &Content, node: NodeId, facts: &BoxFacts) -> Option<bool> {
     if content.block.initial_letter == Some(node) {
-        return false;
+        return Some(false);
     }
     match content.nodes.kind(node) {
-        Some(NodeKind::Annotation | NodeKind::Box | NodeKind::Ruby) => {
-            let facts = box_facts(content, node);
-            match facts.bidi {
-                UnicodeBidi::Normal | UnicodeBidi::Plaintext => false,
-                UnicodeBidi::Embed
-                | UnicodeBidi::BidiOverride
-                | UnicodeBidi::Isolate
-                | UnicodeBidi::IsolateOverride => facts.direction() == Direction::Rtl,
-            }
-        }
-        _ => false,
+        Some(NodeKind::Box | NodeKind::Ruby) if facts.bidi == UnicodeBidi::Normal => None,
+        Some(NodeKind::Annotation | NodeKind::Box | NodeKind::Ruby) => Some(match facts.bidi {
+            UnicodeBidi::Normal | UnicodeBidi::Plaintext => false,
+            UnicodeBidi::Embed
+            | UnicodeBidi::BidiOverride
+            | UnicodeBidi::Isolate
+            | UnicodeBidi::IsolateOverride => facts.direction() == Direction::Rtl,
+        }),
+        _ => None,
     }
 }
 

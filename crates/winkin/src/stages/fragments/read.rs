@@ -50,11 +50,14 @@ use super::{FragmentItem, FragmentItemFlags, Fragments};
 use crate::data::{Id, Table};
 use crate::stages::analysis::{Analysis, ClusterId};
 use crate::stages::content::{ContentFlags, ItemId, NodeId, ShapingFactsId, VariantText};
-use crate::stages::lines::{EdgeClusterId, EdgeShape, LineId, LineRecord, Lines};
-use crate::stages::measure::{JustifyOpportunities, LetterWordSpacing, WordSpacingRule};
+use crate::stages::lines::{EdgeClusterId, EdgeShape, LineId, LineRecord, Lines, ReshapedEdges};
+use crate::stages::measure::{
+    AutospaceRules, JustifyOpportunities, LetterWordSpacing, WordSpacingRule,
+};
 use crate::stages::shape::{ClusterGlyphs, GlyphWord, ShapedText, SidecarGlyph, SidecarGlyphId};
 use crate::stages::{LineStages, Stages};
 use crate::unit::{InlineLayoutUnit, TextUnit};
+use crate::work;
 use core::fmt;
 use core::ops::Range;
 
@@ -233,13 +236,14 @@ pub(crate) struct ExactGlyph {
 }
 
 /// The rest of a multi-glyph cluster: glyphs still to hand out, the next
-/// pen, the cluster's start and end, and the cluster.
+/// pen, and the cluster.
+///
+/// The cluster's left and advance stay in the walk's `placed`, which only its
+/// glyphs set until the last is handed out.
 #[derive(Copy, Clone, Debug)]
 struct Pending<'a> {
     glyphs: &'a [SidecarGlyph],
     pen: InlineLayoutUnit,
-    left: InlineLayoutUnit,
-    end: InlineLayoutUnit,
     cluster: ClusterId,
 }
 
@@ -268,14 +272,15 @@ fn line_justification<'a>(
 ///
 /// Steps come from the prefix sums, or from reshaped line edges where they
 /// hold some clusters. The cluster walk and the glyph walk share this.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct Steps<'a> {
     /// The prefix sum at the boundary before each of the item's clusters.
     prefix: &'a [InlineLayoutUnit],
     /// The line's reshaped edges that hold some of the item's clusters.
     shapes: &'a [EdgeShape],
-    /// The reshaped clusters' advances, which `shapes` index.
-    edge_advances: &'a Table<EdgeClusterId, TextUnit>,
+    /// The lines' reshaped edges: the words, glyphs and advances `shapes`
+    /// index.
+    edges: &'a ReshapedEdges,
     start: ClusterId,
     len: usize,
     /// The pen at the item's first cluster and at the end of its last, from
@@ -288,9 +293,11 @@ struct Steps<'a> {
     /// glyphs, or the scale of a line `text-fit` scales.
     text: Option<TextSteps<'a>>,
     /// The room `ruby-align` spread on the item's left and right, which its
-    /// leftmost and rightmost clusters step over, and whether the item runs
-    /// right to left, which makes its last cluster the leftmost.
-    ends: (InlineLayoutUnit, InlineLayoutUnit, bool),
+    /// leftmost and rightmost clusters step over.
+    ends: (InlineLayoutUnit, InlineLayoutUnit),
+    /// The item runs right to left, which makes its last cluster the
+    /// leftmost.
+    rtl: bool,
 }
 
 impl<'a> Steps<'a> {
@@ -298,7 +305,64 @@ impl<'a> Steps<'a> {
     /// line's variant, whose clusters have `words` glyph words.
     ///
     /// Where the tables don't agree, the steps are empty and nothing draws.
+    ///
+    /// Plain text steps by the prefix sums alone, and its pens are its
+    /// prefix entries. A few flags prove it, and its steps take a few
+    /// stores. Any other text's are made out of line
+    /// ([`from_item`](Self::from_item)), whose larger frame and calls a short
+    /// plain run then skips.
+    #[inline]
     fn new(
+        input: &ReadInput<'a>,
+        stages: &LineStages<'a>,
+        id: LineId,
+        line: &LineRecord,
+        item: &FragmentItem,
+        words: usize,
+    ) -> Self {
+        let clusters = item.text_clusters();
+        let positions = stages.measured.prefix.positions(clusters.clone());
+        // No box edge moves a pen, no autospace seam draws room before the
+        // text after it, no reshaped edge, scale or spread room steps a
+        // cluster, and the line is not justified.
+        let content = stages.content;
+        let plain = work::fast_paths()
+            && !content.flags.contains(ContentFlags::BOXES_WITH_EDGES)
+            && !AutospaceRules::new(content).may_have_room_before(stages)
+            && !item.flags.contains(FragmentItemFlags::TAB)
+            && !item.flags.contains(FragmentItemFlags::ANNOTATION)
+            && !item.is_spread()
+            && line.shapes.is_empty()
+            && line.scale() == 1.0
+            && input.fragments.line_justification(id).is_none();
+        match positions.first() {
+            Some(&pen)
+                if plain
+                    && positions.len() == words
+                    && clusters.end.get().saturating_sub(clusters.start.get()) == words =>
+            {
+                Self {
+                    prefix: positions,
+                    shapes: &[],
+                    edges: &input.lines.edges,
+                    start: clusters.start,
+                    len: words,
+                    pen,
+                    pen_end: stages.measured.prefix.get(clusters.end),
+                    justify: None,
+                    text: None,
+                    ends: (InlineLayoutUnit::ZERO, InlineLayoutUnit::ZERO),
+                    rtl: item.level.is_rtl(),
+                }
+            }
+            _ => Self::from_item(input, stages, id, line, item, words),
+        }
+    }
+
+    /// Makes the steps of text `item` as [`new`](Self::new) does, for any
+    /// text.
+    #[inline(never)]
+    fn from_item(
         input: &ReadInput<'a>,
         stages: &LineStages<'a>,
         id: LineId,
@@ -315,14 +379,15 @@ impl<'a> Steps<'a> {
             return Self {
                 prefix: &[],
                 shapes: &[],
-                edge_advances: &input.lines.edges.advances,
+                edges: &input.lines.edges,
                 start: clusters.start,
                 len: usize::from(words == 1 && end.saturating_sub(start) == 1),
                 pen: InlineLayoutUnit::ZERO,
                 pen_end: item.advance(),
                 justify: None,
                 text: None,
-                ends: (InlineLayoutUnit::ZERO, InlineLayoutUnit::ZERO, false),
+                ends: (InlineLayoutUnit::ZERO, InlineLayoutUnit::ZERO),
+                rtl: item.level.is_rtl(),
             };
         }
         if item.flags.contains(FragmentItemFlags::ANNOTATION) {
@@ -331,7 +396,7 @@ impl<'a> Steps<'a> {
             return Self {
                 prefix: &[],
                 shapes: input.lines.edges.line_edges(line),
-                edge_advances: &input.lines.edges.advances,
+                edges: &input.lines.edges,
                 start: clusters.start,
                 len: if words == end.saturating_sub(start) {
                     words
@@ -350,10 +415,8 @@ impl<'a> Steps<'a> {
                         .text(stages.text_facts(item.node))
                         .shaping,
                 ))),
-                ends: {
-                    let (left, right) = input.fragments.spread_room(id, item);
-                    (left, right, item.level.is_rtl())
-                },
+                ends: input.fragments.spread_room(id, item),
+                rtl: item.level.is_rtl(),
             };
         }
         let positions = prefix.positions(clusters.clone());
@@ -391,7 +454,7 @@ impl<'a> Steps<'a> {
         let mut steps = Self {
             prefix: positions,
             shapes: edges.line_edges_touching(line, &clusters),
-            edge_advances: &edges.advances,
+            edges,
             start: clusters.start,
             len,
             pen,
@@ -403,10 +466,8 @@ impl<'a> Steps<'a> {
                 (scale != 1.0)
                     .then(|| TextSteps::Fitted(FitText::new(stages, item.node, words, scale)))
             },
-            ends: {
-                let (left, right) = input.fragments.spread_room(id, item);
-                (left, right, item.level.is_rtl())
-            },
+            ends: input.fragments.spread_room(id, item),
+            rtl: item.level.is_rtl(),
         };
         if len > 0
             && let Some(row) = input.fragments.line_justification(id)
@@ -465,7 +526,7 @@ impl<'a> Steps<'a> {
             let cluster = ClusterId::new(self.start.get() + i);
             let step = self
                 .reshaped(i)
-                .and_then(|entry| self.edge_advances.get(entry))
+                .and_then(|entry| self.edges.advances.get(entry))
                 .map_or_else(
                     || text.step(cluster),
                     |&advance| InlineLayoutUnit::from_text(advance),
@@ -487,7 +548,8 @@ impl<'a> Steps<'a> {
     fn unscaled_step(&self, i: usize) -> InlineLayoutUnit {
         match self.reshaped(i) {
             Some(at) => self
-                .edge_advances
+                .edges
+                .advances
                 .get(at)
                 .map_or(InlineLayoutUnit::ZERO, |&step| {
                     InlineLayoutUnit::from_text(step)
@@ -527,7 +589,7 @@ impl<'a> Steps<'a> {
     /// room on its right its rightmost.
     #[inline]
     fn end_room(&self, i: usize) -> (InlineLayoutUnit, InlineLayoutUnit) {
-        let (left, right, rtl) = self.ends;
+        let ((left, right), rtl) = (self.ends, self.rtl);
         if left == InlineLayoutUnit::ZERO && right == InlineLayoutUnit::ZERO {
             return (InlineLayoutUnit::ZERO, InlineLayoutUnit::ZERO);
         }
@@ -555,7 +617,6 @@ impl<'a> Steps<'a> {
 #[derive(Clone)]
 pub(crate) struct ClusterWalk<'a> {
     steps: Steps<'a>,
-    rtl: bool,
     /// How many clusters have been handed out.
     done: usize,
     /// Left to right, where the next cluster starts. Right to left, where
@@ -578,13 +639,11 @@ impl<'a> ClusterWalk<'a> {
     ) -> Self {
         let clusters = item.text_clusters();
         let words = clusters.end.get().saturating_sub(clusters.start.get());
-        let rtl = item.level.is_rtl();
         // The steps are built in place, so nothing is copied.
         Self {
             steps: Steps::new(input, stages, id, line, item, words),
-            rtl,
             done: 0,
-            x: if rtl {
+            x: if item.level.is_rtl() {
                 item.inline + item.advance()
             } else {
                 item.inline
@@ -605,7 +664,7 @@ impl Iterator for ClusterWalk<'_> {
         self.done += 1;
         let step = self.steps.step(i);
         let cluster = ClusterId::new(self.steps.start.get() + i);
-        let left = if self.rtl {
+        let left = if self.steps.rtl {
             self.x = self.x - step;
             self.x
         } else {
@@ -635,12 +694,7 @@ pub(crate) struct GlyphWalk<'a> {
     /// The paragraph's words for the item's clusters.
     words: &'a [GlyphWord],
     sidecar: &'a Table<SidecarGlyphId, SidecarGlyph>,
-    edge_words: &'a Table<EdgeClusterId, GlyphWord>,
-    edge_glyphs: &'a Table<SidecarGlyphId, SidecarGlyph>,
     steps: Steps<'a>,
-    rtl: bool,
-    /// Where the item starts on the line.
-    origin: InlineLayoutUnit,
     /// The offset from a cluster's prefix entry to its position.
     ///
     /// Left to right, a cluster after the first starts at entry plus this.
@@ -652,9 +706,9 @@ pub(crate) struct GlyphWalk<'a> {
     /// Left to right, not reshaped and not justified, so a cluster's left is
     /// its prefix entry plus `base`.
     straight: bool,
-    /// The next cluster may take the `straight` path. That needs `straight`,
-    /// a cluster past the first, whose pen may stand past an opening edge,
-    /// and no multi-glyph cluster in progress.
+    /// The next cluster may take the `straight` path. That needs `straight`
+    /// and no multi-glyph cluster in progress, and for the first cluster, a
+    /// pen at its prefix entry, which an opening edge before it moves.
     fast: bool,
     /// As `straight`, on a justified line. A cluster's left is its prefix
     /// entry plus `base` and the room of the opportunities before it.
@@ -664,7 +718,8 @@ pub(crate) struct GlyphWalk<'a> {
     fast_justified: bool,
     /// How many clusters have been visited.
     done: usize,
-    /// Where the next cluster starts, on the running-sum path.
+    /// Where the next cluster starts, on the running-sum path. On the
+    /// prefix sums, where the item starts on the line.
     x: InlineLayoutUnit,
     /// On a justified line, the room the clusters visited so far took.
     room: InlineLayoutUnit,
@@ -686,7 +741,6 @@ impl<'a> GlyphWalk<'a> {
         item: &FragmentItem,
     ) -> Self {
         let shaped = stages.shaped;
-        let lines = input.lines;
         let clusters = item.text_clusters();
         let words = shaped.glyphs.words(clusters);
         // The steps are built in place, and the rest is derived from them
@@ -694,11 +748,7 @@ impl<'a> GlyphWalk<'a> {
         let mut walk = Self {
             words,
             sidecar: &shaped.glyphs.sidecar,
-            edge_words: &lines.edges.words,
-            edge_glyphs: &lines.edges.glyphs,
             steps: Steps::new(input, stages, id, line, item, words.len()),
-            rtl: item.level.is_rtl(),
-            origin: item.inline,
             base: InlineLayoutUnit::ZERO,
             prefixed: false,
             straight: false,
@@ -729,10 +779,20 @@ impl<'a> GlyphWalk<'a> {
         // sum.
         let annotation_rtl =
             item.level.is_rtl() && matches!(steps.text, Some(TextSteps::Annotation(_)));
+        // Where no box has an edge, the first cluster's pen is its prefix
+        // entry, so it takes the fast paths too. Reading that from the steps
+        // makes the compiler build them apart and copy them in.
+        let open = work::fast_paths()
+            && !stages
+                .content
+                .flags
+                .contains(ContentFlags::BOXES_WITH_EDGES);
         walk.base = base;
         walk.prefixed = prefixed;
         walk.straight = straight;
         walk.straight_justified = straight_justified;
+        walk.fast = straight && open;
+        walk.fast_justified = straight_justified && open;
         if annotation_rtl {
             walk.x = item.inline + item.advance();
         }
@@ -756,13 +816,13 @@ impl<'a> GlyphWalk<'a> {
             // One sum with the prefix entry, plus the room the clusters so
             // far took on a justified line.
             let word = self.words.get(i).copied().unwrap_or(GlyphWord::EMPTY);
-            let left = if self.rtl {
+            let left = if steps.rtl {
                 match steps.prefix.get(i + 1) {
                     Some(&after) => self.base - after,
-                    None => self.origin,
+                    None => self.x,
                 }
             } else if i == 0 {
-                self.origin
+                self.x
             } else {
                 self.base + steps.prefix.get(i).copied().unwrap_or(steps.pen_end)
             };
@@ -779,8 +839,9 @@ impl<'a> GlyphWalk<'a> {
         self.x += step;
         match steps.reshaped(i) {
             Some(at) => {
-                let word = self.edge_words.get(at).copied().unwrap_or(GlyphWord::EMPTY);
-                (word, self.edge_glyphs, left, step, shift)
+                let edges = steps.edges;
+                let word = edges.words.get(at).copied().unwrap_or(GlyphWord::EMPTY);
+                (word, &edges.glyphs, left, step, shift)
             }
             None => {
                 let word = self.words.get(i).copied().unwrap_or(GlyphWord::EMPTY);
@@ -822,8 +883,6 @@ impl<'a> GlyphWalk<'a> {
             self.pending = Some(Pending {
                 glyphs: rest,
                 pen: pen + advance,
-                left,
-                end,
                 cluster,
             });
         }
@@ -842,8 +901,8 @@ impl GlyphWalk<'_> {
     /// Returns the next glyph from the paths `next_fast` doesn't take.
     ///
     /// These are a multi-glyph cluster's rest, right-to-left or reshaped
-    /// clusters, justified clusters, and the item's first cluster, whose pen
-    /// may stand past an opening edge.
+    /// clusters, justified clusters, and the item's first cluster where its
+    /// pen stands past an opening edge.
     #[inline(never)]
     fn next_any(&mut self) -> Option<ExactGlyph> {
         if self.fast_justified
@@ -896,11 +955,12 @@ impl GlyphWalk<'_> {
     fn next_slow(&mut self) -> Option<ExactGlyph> {
         if let Some(pending) = self.pending {
             self.pending = None;
-            let ends = (pending.left, pending.end);
+            let (left, step) = self.placed;
+            let ends = (left, left + step);
             return self.expanded(pending.glyphs, pending.pen, ends, pending.cluster);
         }
         while self.done < self.steps.len {
-            let i = if self.rtl {
+            let i = if self.steps.rtl {
                 self.steps.len - 1 - self.done
             } else {
                 self.done
@@ -931,8 +991,8 @@ impl GlyphWalk<'_> {
         None
     }
 
-    /// Returns the next glyph on the fast path: a single-glyph cluster after
-    /// the first, left to right and not reshaped, as most clusters are.
+    /// Returns the next glyph on the fast path: a single-glyph cluster, left
+    /// to right and not reshaped, as most clusters are.
     ///
     /// It reads a word and a sum. `None` for any other cluster.
     #[inline]
@@ -963,6 +1023,16 @@ impl GlyphWalk<'_> {
         })
     }
 
+    /// Returns whether the walk has handed out its last glyph by the fast
+    /// path, which ends with the item's words.
+    ///
+    /// Tested after the fast path, so that a short run ends with no call to
+    /// the general paths and the fast path's code keeps its shape.
+    #[inline]
+    fn ended_fast(&self) -> bool {
+        self.fast && self.done >= self.words.len()
+    }
+
     /// Returns the next glyph with its cluster's exact left and advance.
     ///
     /// Text on a path turns the cluster about these. They are `None` for a
@@ -973,6 +1043,9 @@ impl GlyphWalk<'_> {
     ) -> Option<(ExactGlyph, Option<(InlineLayoutUnit, InlineLayoutUnit)>)> {
         if let Some(glyph) = self.next_fast() {
             return Some((glyph, None));
+        }
+        if self.ended_fast() {
+            return None;
         }
         let glyph = self.next_any()?;
         Some((glyph, Some(self.placed)))
@@ -986,6 +1059,9 @@ impl Iterator for GlyphWalk<'_> {
     fn next(&mut self) -> Option<ExactGlyph> {
         if let Some(glyph) = self.next_fast() {
             return Some(glyph);
+        }
+        if self.ended_fast() {
+            return None;
         }
         self.next_any()
     }

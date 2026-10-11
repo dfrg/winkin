@@ -13,7 +13,7 @@ use super::{Input, MAX_STOPS, Selecting};
 use crate::stages::analysis::ClusterClass;
 use crate::stages::content::{FontRequest, FontRequestId, HyphenStringId, TextFactsId};
 use crate::stages::fonts::context::CacheChange;
-use crate::stages::fonts::lists::{CandidateId, CandidateList, MatchRequest, NamedListId};
+use crate::stages::fonts::lists::{CandidateId, CandidateList, ListKey, MatchRequest, NamedListId};
 use crate::stages::fonts::{
     Generated, GeneratedFonts, GeneratedString, UsedFontId, coverage, features,
 };
@@ -95,14 +95,11 @@ pub(crate) fn select_generated(
 
 /// What choosing a font for a grapheme of a generated text asks with.
 ///
-/// It holds what the request asks of a font, and the family list, language,
-/// matching request and script that find its candidate lists.
+/// It holds what the request asks of a font, and what its candidate list for
+/// text is keyed by.
 struct GeneratedRequest<'a> {
     resolved: ResolvedRequest<'a>,
-    list: NamedListId,
-    language: Language,
-    matching: MatchRequest,
-    script: Script,
+    key: ListKey,
 }
 
 impl<'a> GeneratedRequest<'a> {
@@ -128,10 +125,13 @@ impl<'a> GeneratedRequest<'a> {
                 resolution,
                 script: features::opentype_script(script),
             },
-            list,
-            language,
-            matching: MatchRequest::from(request),
-            script,
+            key: ListKey {
+                list,
+                script,
+                language,
+                request: MatchRequest::from(request),
+                emoji: false,
+            },
         })
     }
 
@@ -166,19 +166,16 @@ impl<'a> GeneratedRequest<'a> {
             used,
             wanted,
         } = sel;
-        let Some((text, emoji)) =
-            cx.span_lists(self.list, self.script, self.language, self.matching)
-        else {
-            return Ok(None);
-        };
         // Whether the grapheme holds a selector is read from it, which has no
         // clusters to say so.
         let variant = self.resolved.request.font.variant_emoji;
         let needs = GraphemeNeeds::new(generated_class(grapheme), grapheme, true, variant);
-        let list_id = if needs.presentation.base() == Presentation::Emoji {
-            emoji
-        } else {
-            text
+        let key = ListKey {
+            emoji: needs.presentation.base() == Presentation::Emoji,
+            ..self.key
+        };
+        let Some(list_id) = cx.span_list(key) else {
+            return Ok(None);
         };
         let (lists, _, mut fonts) = cx.walk_caches();
         let Some(list) = lists.get(list_id) else {

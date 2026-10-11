@@ -25,9 +25,13 @@ impl LineStages<'_> {
     /// isn't stored twice. `from` is the first item at the boundary, or else
     /// the one holding `cluster`. It is a walk's item cursor, so no item is
     /// searched for. Past the last cluster, it returns the end's position.
+    ///
+    /// Where no box has an edge it reads one prefix entry and makes no call.
+    #[inline]
     pub(crate) fn pen(&self, cluster: ClusterId, from: ItemId) -> InlineLayoutUnit {
         let (content, analysis, measured) = (self.content, self.analysis, self.measured);
-        let room = if cluster.get() < analysis.clusters.len() {
+        let edged = content.flags.contains(ContentFlags::BOXES_WITH_EDGES);
+        let room = if edged && cluster.get() < analysis.clusters.len() {
             edges::boundary_room(content, analysis, measured.initial_letter(), cluster, from).1
         } else {
             InlineLayoutUnit::ZERO
@@ -48,6 +52,10 @@ impl LineStages<'_> {
     /// An autospace seam's room that the text after `at` draws
     /// ([`AutospaceRules::room_before`]) is left out too. `paragraph` holds
     /// the cluster before `at`; where it is `None`, no seam is looked for.
+    ///
+    /// Where no box has an edge and no seam can draw room before the text
+    /// after it, it reads one prefix entry and makes no call.
+    #[inline]
     pub(crate) fn pen_end(
         &self,
         at: ClusterId,
@@ -55,7 +63,8 @@ impl LineStages<'_> {
         paragraph: Option<&Paragraph>,
     ) -> InlineLayoutUnit {
         let (content, analysis, measured) = (self.content, self.analysis, self.measured);
-        let closes = if at.get() <= analysis.clusters.len() {
+        let edged = content.flags.contains(ContentFlags::BOXES_WITH_EDGES);
+        let closes = if edged && at.get() <= analysis.clusters.len() {
             edges::boundary_room(content, analysis, measured.initial_letter(), at, from).0
         } else {
             InlineLayoutUnit::ZERO

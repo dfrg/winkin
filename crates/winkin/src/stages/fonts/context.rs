@@ -79,6 +79,9 @@ pub(super) enum CacheChange {
         /// `sups` or `subs`.
         feature: [u8; 4],
     },
+    /// The span needs its candidate list for emoji presentation, which its
+    /// walk finds or makes and holds.
+    EmojiList,
 }
 
 /// The caches that turn a chosen font into an instance and a used font.
@@ -271,40 +274,18 @@ impl FontContext {
         self.candidates.first_available(id)
     }
 
-    /// Finds or makes the candidate lists a span's clusters try.
-    ///
-    /// Both come from family list `list`, for text of `script` whose fonts
-    /// are chosen in `language`, matched for `request`. The first is for
-    /// text presentation, the second for emoji. Returns `None` where the
-    /// table cannot take one.
-    pub(super) fn span_lists(
-        &mut self,
-        list: NamedListId,
-        script: Script,
-        language: Language,
-        request: MatchRequest,
-    ) -> Option<(CandidateListId, CandidateListId)> {
-        let mut key = ListKey {
-            list,
-            script,
-            language,
-            request,
-            emoji: false,
-        };
-        let text = self
-            .candidates
-            .find_or_make(&self.collection, &self.names, key)?;
-        key.emoji = true;
-        let emoji = self
-            .candidates
-            .find_or_make(&self.collection, &self.names, key)?;
-        Some((text, emoji))
+    /// Finds or makes the candidate list `key` names, which a span's
+    /// clusters try. Returns `None` where the table cannot take one.
+    pub(super) fn span_list(&mut self, key: ListKey) -> Option<CandidateListId> {
+        self.candidates
+            .find_or_make(&self.collection, &self.names, key)
     }
 
     /// Makes the change the run loop's walk stopped for.
     ///
-    /// Each change is made at most once per context, so a warm build never
-    /// stops.
+    /// Each change is made at most once per context, so a warm build stops
+    /// only where a span first meets emoji presentation. The span's walk
+    /// makes that change itself.
     pub(super) fn apply(&mut self, change: CacheChange) {
         match change {
             CacheChange::Match(list) => self.candidates.match_next_family(list),
@@ -340,6 +321,7 @@ impl FontContext {
                     );
                 }
             }
+            CacheChange::EmojiList => debug_assert!(false, "a span's walk makes its emoji list"),
         }
     }
 

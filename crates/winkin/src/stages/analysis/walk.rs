@@ -35,8 +35,8 @@ use super::{
 use crate::config::SmallKana;
 use crate::data::{Id, TextOffset, define_flags};
 use crate::stages::content::{
-    Content, ContentFlags, Item, ItemFlags, ItemId, ItemKind, LanguageId, MAX_RUBY_DEPTH, NodeId,
-    TextFlags, TextSetting,
+    BoxFacts, Content, ContentFlags, Item, ItemFlags, ItemId, ItemKind, LanguageId, MAX_RUBY_DEPTH,
+    NodeId, TextFlags, TextSetting,
 };
 use crate::style::{Direction, FirstLineVariant, TextCombineUpright, WhiteSpaceCollapse};
 use crate::unicode::{self, CoreProps, RareProps};
@@ -621,7 +621,7 @@ impl<'a> ClusterWriter<'a> {
             script_runs: RunBuilder::new(),
             controls: false,
             // A left-to-right override raises even levels over even ones,
-            // which Blink leaves at 0 (`bidi::moves_levels`).
+            // which Blink leaves at 0 (`bidi::controls`).
             block_overrides: content.block.overrides == Some(Direction::Rtl),
             requested: BidiLevel::from_direction(content.block.direction),
             any_nowrap: flags.contains(ContentFlags::NOWRAP),
@@ -630,6 +630,19 @@ impl<'a> ClusterWriter<'a> {
             ruby: RubyState::default(),
             combine: CombineState::default(),
         }
+    }
+
+    /// Moves the bidi input's open containers over `item`, an edge of a
+    /// box, a ruby container or an annotation, and returns its node's box
+    /// facts.
+    fn bidi_edge(&mut self, item: &Item) -> &'a BoxFacts {
+        let content = self.content;
+        let id = content
+            .nodes
+            .box_facts(item.node, FirstLineVariant::Standard);
+        let facts = content.facts.box_facts(id);
+        self.controls |= self.scratch.bidi.walk(content, item, facts);
+        facts
     }
 }
 
@@ -660,12 +673,12 @@ impl ClusterWriter<'_> {
             // An annotation's content is an isolate of its own, so it adds
             // controls, as a box's `unicode-bidi` does.
             ItemKind::AnnotationOpen => {
-                self.controls |= self.scratch.bidi.walk(self.content, item);
+                self.bidi_edge(item);
                 self.ruby.annotation_open(self.pending, item.start);
                 self.stop_shaping();
             }
             ItemKind::AnnotationClose => {
-                self.controls |= self.scratch.bidi.walk(self.content, item);
+                self.bidi_edge(item);
                 self.ruby
                     .annotation_close(item.flags.contains(ItemFlags::ANNOTATION_FOLLOWS));
                 self.stop_shaping();
@@ -673,7 +686,7 @@ impl ClusterWriter<'_> {
             ItemKind::RubyOpen => {
                 // The container's `unicode-bidi` adds controls, as a box's
                 // does.
-                self.controls |= self.scratch.bidi.walk(self.content, item);
+                self.bidi_edge(item);
                 self.stop_shaping();
                 // A root container with no annotation is no column: its text
                 // is the line's, as a box's is. Its close finds no container
@@ -686,7 +699,7 @@ impl ClusterWriter<'_> {
                 self.ruby.open(item.start, id, follows);
             }
             ItemKind::RubyClose => {
-                self.controls |= self.scratch.bidi.walk(self.content, item);
+                self.bidi_edge(item);
                 self.ruby.close(self.pending, item.start);
                 self.stop_shaping();
             }
@@ -719,13 +732,9 @@ impl ClusterWriter<'_> {
     /// Handles a box's opening or closing edge, which stops shaping where its
     /// box facts say so (`BoxFacts::breaks_shaping`).
     fn edge(&mut self, item: &Item) {
-        self.controls |= self.scratch.bidi.walk(self.content, item);
-        let content = self.content;
-        let id = content
-            .nodes
-            .box_facts(item.node, FirstLineVariant::Standard);
+        let facts = self.bidi_edge(item);
         let opens = item.kind == ItemKind::Open;
-        if content.facts.box_facts(id).breaks_shaping(opens) {
+        if facts.breaks_shaping(opens) {
             self.stop_shaping();
         }
     }

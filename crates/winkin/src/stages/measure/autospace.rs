@@ -310,21 +310,44 @@ impl AutospaceRules {
     /// zero unless some style sets the property and the paragraph has text
     /// at another level. Otherwise it asks as [`gap_after`](Self::gap_after)
     /// does.
+    ///
+    /// The tests of the property and the text's levels are inlined, so a
+    /// reader of text that sets neither makes no call.
+    #[inline]
     pub(crate) fn room_before(
         self,
         stages: &LineStages<'_>,
         paragraph: &Paragraph,
         at: ClusterId,
     ) -> TextUnit {
-        let none = TextUnit::from_raw(0);
-        if !self.any
-            || !stages
+        if !self.may_have_room_before(stages) {
+            return TextUnit::from_raw(0);
+        }
+        self.mixed_room_before(stages, paragraph, at)
+    }
+
+    /// Returns whether [`room_before`](Self::room_before) may find room in
+    /// `stages`: some style sets the property and some paragraph reads right
+    /// to left.
+    #[inline]
+    pub(crate) fn may_have_room_before(self, stages: &LineStages<'_>) -> bool {
+        self.any
+            && stages
                 .analysis
                 .flags
                 .contains(ParagraphFlags::RIGHT_TO_LEFT)
-        {
-            return none;
-        }
+    }
+
+    /// Returns [`room_before`](Self::room_before)'s room where some style
+    /// sets the property and some paragraph reads right to left.
+    #[inline(never)]
+    fn mixed_room_before(
+        self,
+        stages: &LineStages<'_>,
+        paragraph: &Paragraph,
+        at: ClusterId,
+    ) -> TextUnit {
+        let none = TextUnit::from_raw(0);
         let Some(cluster) = at.get().checked_sub(1).map(ClusterId::new) else {
             return none;
         };

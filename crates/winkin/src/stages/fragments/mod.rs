@@ -845,7 +845,7 @@ impl Fragments {
     ///
     /// The line's item names the record. Nothing is read where no line is
     /// justified.
-    #[inline]
+    #[inline(always)]
     fn line_justification(&self, line: LineId) -> Option<JustifiedLine> {
         let justified = &self.rare.as_deref()?.justified;
         if justified.is_empty() {

@@ -1,5 +1,4 @@
-//! The builder's memo: the text facts each style in a build was lowered
-//! into.
+//! The builder's memo: the facts each style in a build was lowered into.
 //!
 //! Most styles are given again, box after box, and the memo keeps them from
 //! being lowered again.
@@ -20,11 +19,13 @@
 //! styles are not the few that repeat. Clearing keeps its capacity, so a
 //! warm build allocates nothing.
 //!
-//! Only the text facts are memoized. A box's facts also depend on its
-//! node's kind, so they are lowered at each call, comparing one row. The
-//! block's own styles are lowered once per build and are not held.
+//! A box's facts also depend on its node's kind, so an entry holds those
+//! of the last kind lowered in its style, and a node of another kind
+//! lowers them again. The block's own styles are lowered once per build
+//! and are not held.
 
-use super::facts::TextFactsId;
+use super::NodeKind;
+use super::facts::{BoxFactsId, TextFactsId};
 use super::lists::{
     FamilyListId, FeatureSettingsId, HyphenStringId, LanguageId, Lookup, VariationSettingsId,
 };
@@ -295,10 +296,14 @@ define_id! {
     struct MemoId(u16);
 }
 
-/// One style the memo holds, and the text facts it was lowered into.
+/// One style the memo holds, and the facts it was lowered into.
 struct MemoEntry {
     key: StyleKey,
     text: TextFactsId,
+    /// The kind of node its box facts were lowered for.
+    kind: NodeKind,
+    /// The box facts, or `None` where their table was full.
+    box_: Option<BoxFactsId>,
 }
 
 /// The builder's memo of lowered styles (see the module documentation).
@@ -327,15 +332,22 @@ impl StyleMemo {
         self.lookup.clear();
     }
 
-    /// Returns the text facts `key` was lowered into in this build.
+    /// Returns the facts `key` was lowered into in this build for a node of
+    /// `kind`: its text facts, and its box facts. Each is `None` where its
+    /// table was full.
     ///
-    /// Otherwise it calls `lower`, and holds a `Some` result for the next
-    /// time.
-    pub(super) fn text(
+    /// Otherwise it calls `lower_text` and `lower_box` with `cx`, and holds
+    /// what they give for the next time; a style whose text facts did not
+    /// fit is not held. A style held for another kind calls `lower_box`
+    /// only, and holds its box facts in place of the other kind's.
+    pub(super) fn facts<C>(
         &mut self,
+        cx: &mut C,
         key: &StyleKey,
-        lower: impl FnOnce() -> Option<TextFactsId>,
-    ) -> Option<TextFactsId> {
+        kind: NodeKind,
+        lower_text: impl FnOnce(&mut C) -> Option<TextFactsId>,
+        lower_box: impl FnOnce(&mut C) -> Option<BoxFactsId>,
+    ) -> (Option<TextFactsId>, Option<BoxFactsId>) {
         let entries = &self.entries;
         let found = self.lookup.find(
             entries.len(),
@@ -343,21 +355,39 @@ impl StyleMemo {
             |id: MemoId| entries.get(id).is_some_and(|entry| entry.key == *key),
         );
         let hash = match found {
-            Ok(id) => return entries.get(id).map(|entry| entry.text),
+            Ok(id) => {
+                let Some(entry) = self.entries.get_mut(id) else {
+                    return (lower_text(cx), lower_box(cx));
+                };
+                if entry.kind != kind {
+                    entry.kind = kind;
+                    entry.box_ = lower_box(cx);
+                }
+                return (Some(entry.text), entry.box_);
+            }
             Err(hash) => hash,
         };
-        let text = lower()?;
+        let text = lower_text(cx);
+        let box_ = lower_box(cx);
+        let Some(text) = text else {
+            return (None, box_);
+        };
         if self.entries.len() >= MOST {
             self.clear();
         }
-        let entry = MemoEntry { key: *key, text };
+        let entry = MemoEntry {
+            key: *key,
+            text,
+            kind,
+            box_,
+        };
         if let Some(id) = self.entries.push(entry) {
             let Self { entries, lookup } = self;
             lookup.add(id, hash, |held| {
                 entries.get(held).map_or(0, |entry| hash_one(&entry.key))
             });
         }
-        Some(text)
+        (Some(text), box_)
     }
 }
 
