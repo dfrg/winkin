@@ -1,7 +1,6 @@
 //! Encodes shaped glyphs into cluster words, sidecar glyphs and advances.
 
 use alloc::vec::Vec;
-use core::marker::PhantomData;
 use core::slice;
 
 use harfrust::{GlyphInfo, GlyphPosition};
@@ -9,57 +8,34 @@ use harfrust::{GlyphInfo, GlyphPosition};
 use super::{ClusterGlyphs, CombineFit, GlyphStore, GlyphWord, SidecarGlyph, SidecarGlyphId};
 use crate::data::{Id, Table, heap_bytes, index_to_u32, u32_to_index};
 use crate::stages::analysis::ClusterId;
-use crate::unit::{InlineLayoutUnit, LayoutUnit, TextUnit};
+use crate::unit::{LayoutUnit, TextUnit};
 use crate::work;
-
-/// A cluster's advance along the line as a [`GlyphSink`] keeps it.
-///
-/// The paragraph's advances are in 48.16, [`InlineLayoutUnit`], the type of
-/// the prefix sums they become. Measurement sums them in place with no
-/// conversion, and nothing saturates. A line's reshaped edges keep theirs
-/// in 16.16, [`TextUnit`].
-pub(crate) trait AdvanceUnit: Copy {
-    /// The advance of a cluster whose glyphs' advances along the line sum to
-    /// `sum` 1/65536 px.
-    fn from_glyph_sum(sum: i64) -> Self;
-}
-
-impl AdvanceUnit for InlineLayoutUnit {
-    /// Exactly the sum.
-    fn from_glyph_sum(sum: i64) -> Self {
-        InlineLayoutUnit::from_raw(sum)
-    }
-}
-
-impl AdvanceUnit for TextUnit {
-    /// The sum, saturating. A cluster wider than 32,767 px, which a few
-    /// glyphs at ten thousand pixels can be, measures as wide as it can.
-    fn from_glyph_sum(sum: i64) -> Self {
-        TextUnit::from_raw(saturate(sum))
-    }
-}
 
 /// Where a [`GlyphSink`] appends its advances, one for each word it keeps.
 ///
-/// The shaping pass uses a list, which measurement turns into prefix sums in
-/// place. A line's reshaped edges use a table indexed like the words.
-pub(crate) trait AdvanceStore<A> {
+/// Each advance is the sum of the cluster's glyph advances along the line,
+/// in 16.16, saturating. A cluster wider than 32,767 px, which a few glyphs
+/// at ten thousand pixels can be, measures as wide as it can.
+///
+/// The shaping pass uses a list, which measurement sums into 48.16 prefix
+/// sums. A line's reshaped edges use a table indexed like the words.
+pub(crate) trait AdvanceStore {
     /// Appends the advance of the word just kept.
-    fn push_advance(&mut self, advance: A);
+    fn push_advance(&mut self, advance: TextUnit);
 }
 
-impl<A> AdvanceStore<A> for Vec<A> {
+impl AdvanceStore for Vec<TextUnit> {
     #[inline]
-    fn push_advance(&mut self, advance: A) {
+    fn push_advance(&mut self, advance: TextUnit) {
         self.push(advance);
     }
 }
 
-impl<I: Id, A> AdvanceStore<A> for Table<I, A> {
+impl<I: Id> AdvanceStore for Table<I, TextUnit> {
     /// Kept in step with the words' table, which has the same id and has
     /// just taken the word. This table is never longer, so it has room too.
     #[inline]
-    fn push_advance(&mut self, advance: A) {
+    fn push_advance(&mut self, advance: TextUnit) {
         let kept = self.push(advance);
         debug_assert!(kept.is_some(), "an advance a word, which the words took");
     }
@@ -70,18 +46,15 @@ impl<I: Id, A> AdvanceStore<A> for Table<I, A> {
 /// It writes a word and an advance per cluster, and the glyphs of expanded
 /// clusters. The tables are the caller's: the shaped text's for the shaping
 /// pass, or a line's for the breaker's reshaped edges. Each has its own id
-/// type, advance type ([`AdvanceUnit`]) and advance store
-/// ([`AdvanceStore`]). Each call appends exactly one word and one advance
-/// per cluster shaped.
-pub(crate) struct GlyphSink<'a, I: Id, A: AdvanceUnit, S: AdvanceStore<A> = Vec<A>> {
+/// type and advance store ([`AdvanceStore`]). Each call appends exactly one
+/// word and one advance per cluster shaped.
+pub(crate) struct GlyphSink<'a, I: Id, S: AdvanceStore = Vec<TextUnit>> {
     words: &'a mut Table<I, GlyphWord>,
     /// The first word this sink writes.
     first: I,
     sidecar: &'a mut Table<SidecarGlyphId, SidecarGlyph>,
     /// Along the line.
     advances: &'a mut S,
-    /// What each advance is kept as, which `advances` holds.
-    advance: PhantomData<fn(A) -> A>,
     unsafe_seen: bool,
     dropped: usize,
     /// Every cluster is written expanded, its glyphs' advances kept in the
@@ -150,7 +123,7 @@ heap_bytes! {
     SharedGlyphs { slots }
 }
 
-impl<'a, I: Id, A: AdvanceUnit, S: AdvanceStore<A>> GlyphSink<'a, I, A, S> {
+impl<'a, I: Id, S: AdvanceStore> GlyphSink<'a, I, S> {
     /// A sink appending to these.
     pub(crate) fn new(
         words: &'a mut Table<I, GlyphWord>,
@@ -162,7 +135,6 @@ impl<'a, I: Id, A: AdvanceUnit, S: AdvanceStore<A>> GlyphSink<'a, I, A, S> {
             words,
             sidecar,
             advances,
-            advance: PhantomData,
             unsafe_seen: false,
             dropped: 0,
             keep_advances: false,
@@ -259,7 +231,8 @@ impl<'a, I: Id, A: AdvanceUnit, S: AdvanceStore<A>> GlyphSink<'a, I, A, S> {
 
     fn push(&mut self, word: GlyphWord, advance: i64) {
         if self.words.push(word).is_some() {
-            self.advances.push_advance(A::from_glyph_sum(advance));
+            self.advances
+                .push_advance(TextUnit::from_raw(saturate(advance)));
             self.unsafe_seen |= word.is_unsafe_to_break();
         } else {
             self.dropped = self.dropped.saturating_add(1);
@@ -362,7 +335,7 @@ impl<'a, I: Id, A: AdvanceUnit, S: AdvanceStore<A>> GlyphSink<'a, I, A, S> {
     }
 }
 
-impl<I: Id, A: AdvanceUnit, S: AdvanceStore<A>> GlyphSink<'_, I, A, S> {
+impl<I: Id, S: AdvanceStore> GlyphSink<'_, I, S> {
     /// Writes a cluster of one glyph, `glyph` at `position`, as
     /// [`expand`](Self::expand) does.
     ///
@@ -470,7 +443,7 @@ pub(super) struct SinkMark {
     dropped: usize,
 }
 
-impl GlyphSink<'_, ClusterId, InlineLayoutUnit> {
+impl GlyphSink<'_, ClusterId> {
     /// Where the tables stand.
     pub(super) fn mark(&self) -> SinkMark {
         SinkMark {
@@ -566,9 +539,9 @@ impl GlyphSink<'_, ClusterId, InlineLayoutUnit> {
         for (at, advance) in unit.iter_mut().enumerate() {
             work::step();
             *advance = if Some(at) == carrier {
-                InlineLayoutUnit::from_layout(em)
+                em_along
             } else {
-                InlineLayoutUnit::ZERO
+                TextUnit::from_raw(0)
             };
         }
     }

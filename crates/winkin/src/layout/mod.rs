@@ -921,7 +921,9 @@ impl Layout {
             .shaped
             .text(FirstLineVariant::Standard)
             .advances
-            .clone()
+            .iter()
+            .map(|&advance| InlineLayoutUnit::from_text(advance))
+            .collect()
     }
 }
 

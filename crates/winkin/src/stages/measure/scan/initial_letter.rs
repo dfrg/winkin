@@ -11,7 +11,7 @@ use crate::stages::measure::tabs::tab_advance;
 use crate::stages::measure::{Extent, InitialLetter};
 use crate::stages::shape::ClusterGlyphs;
 use crate::style::{InitialLetterAlign, WritingMode};
-use crate::unit::{InlineLayoutUnit, LayoutUnit};
+use crate::unit::{InlineLayoutUnit, LayoutUnit, TextUnit};
 use crate::{unit, work};
 
 /// Measures the block's initial letter in `scan`'s variant, as Chrome's
@@ -43,7 +43,7 @@ use crate::{unit, work};
 pub(super) fn initial_letter(
     scan: &Scan<'_>,
     provider: Option<&dyn FontMetricsProvider>,
-    advances: &[InlineLayoutUnit],
+    advances: &[TextUnit],
     strut: Extent,
 ) -> Option<InitialLetter> {
     let (content, input, variant) = (scan.input.content, scan.input, scan.variant);
@@ -116,7 +116,8 @@ pub(super) fn initial_letter(
                 }
             }
         }
-        let advance = advances.get(at.get()).copied().unwrap_or_default();
+        let advance =
+            InlineLayoutUnit::from_text(advances.get(at.get()).copied().unwrap_or_default());
         pen += look.step(scan, class, advance, at);
     }
     // Round the ink out onto the grid (`LogicalRect::EnclosingRect`). It is

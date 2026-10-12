@@ -370,7 +370,7 @@ fn shape_run<'f>(
     input: &ShapeInput<'f>,
     source: &ShapingSource<'_>,
     cx: &mut ShapeSession<'_, 'f>,
-    sink: &mut GlyphSink<'_, ClusterId, InlineLayoutUnit>,
+    sink: &mut GlyphSink<'_, ClusterId>,
     run: &ShapedRun,
     range: Range<ClusterId>,
     paragraph: Range<TextOffset>,
@@ -469,7 +469,7 @@ impl<'a, 'f> CombinedUnits<'a, 'f> {
         &mut self,
         cx: &mut ShapeSession<'_, 'f>,
         runs: &ShapedRuns,
-        sink: &mut GlyphSink<'_, ClusterId, InlineLayoutUnit>,
+        sink: &mut GlyphSink<'_, ClusterId>,
         fits: &mut CombineFits,
         run: &ShapedRun,
         paragraph: ParagraphId,
@@ -524,7 +524,7 @@ impl<'a, 'f> CombinedUnits<'a, 'f> {
         &mut self,
         cx: &mut ShapeSession<'_, 'f>,
         runs: &ShapedRuns,
-        sink: &mut GlyphSink<'_, ClusterId, InlineLayoutUnit>,
+        sink: &mut GlyphSink<'_, ClusterId>,
         fits: &mut CombineFits,
     ) {
         let Some(open) = self.open.take() else {
@@ -575,7 +575,7 @@ impl<'a, 'f> CombinedUnits<'a, 'f> {
         &self,
         cx: &mut ShapeSession<'_, 'f>,
         runs: &ShapedRuns,
-        sink: &mut GlyphSink<'_, ClusterId, InlineLayoutUnit>,
+        sink: &mut GlyphSink<'_, ClusterId>,
         open: OpenUnit,
         narrow: Option<CombineWidth>,
     ) {

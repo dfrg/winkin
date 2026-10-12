@@ -40,7 +40,7 @@ use crate::stages::fonts::{Fonts, UsedFontId};
 use crate::style::FirstLine;
 use crate::style::FirstLineState;
 use crate::style::FirstLineVariant;
-use crate::unit::{InlineLayoutUnit, LayoutUnit, TextUnit};
+use crate::unit::{LayoutUnit, TextUnit};
 use crate::work;
 
 pub(crate) use context::{ShapeContext, ShapeSession};
@@ -666,9 +666,9 @@ pub(crate) struct ShapedText {
     /// Each unit is one script run. Font fallback may split it into several
     /// shaping runs, which share the fit.
     combined: CombineFits,
-    /// Each cluster's advance along the line, in 48.16, which measurement
-    /// sums.
-    pub(crate) advances: Vec<InlineLayoutUnit>,
+    /// Each cluster's advance along the line, in 16.16, saturating, which
+    /// measurement sums into 48.16 prefix sums.
+    pub(crate) advances: Vec<TextUnit>,
 }
 
 impl ShapedText {

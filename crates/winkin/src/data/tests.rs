@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 use core::hash::Hasher;
 
 use super::IdRange;
-use super::table::LARGE_RECORD;
+use super::table::NARROW_RECORD;
 use super::*;
 
 define_id! {
@@ -66,21 +66,27 @@ fn a_table_makes_room_exactly_where_it_never_held_any() {
     assert_eq!(bits.heap_bytes(), 2 * 8);
 }
 
-/// A table of large records makes room for one at its first push, and
-/// grows from there as any does.
+/// A table of records wider than [`NARROW_RECORD`] makes room for one at
+/// its first push, and doubles from there, never past what its ids name.
+/// A narrower one grows as a vector does.
 #[test]
-fn a_table_of_large_records_starts_with_room_for_one() {
-    let mut table = Table::<WideId, [u8; LARGE_RECORD]>::new();
-    assert!(table.push([0; LARGE_RECORD]).is_some());
-    assert_eq!(table.heap_bytes(), LARGE_RECORD);
-    assert!(table.push([1; LARGE_RECORD]).is_some());
-    assert_eq!(table.heap_bytes(), 4 * LARGE_RECORD);
-    let mut small = Table::<WideId, [u8; 8]>::new();
-    assert!(small.push([0; 8]).is_some());
+fn a_table_starts_with_room_for_one_and_doubles() {
+    let mut table = Table::<WideId, [u8; 8]>::new();
+    for (pushed, room) in [(1, 1), (2, 2), (3, 4), (4, 4), (5, 8)] {
+        while table.len() < pushed {
+            assert!(table.push([0; 8]).is_some());
+        }
+        assert_eq!(table.heap_bytes(), room * 8, "{pushed} pushed");
+    }
+    let mut tiny = Table::<TinyId, [u8; NARROW_RECORD + 1]>::new();
+    while tiny.push([0; NARROW_RECORD + 1]).is_some() {}
+    assert_eq!(tiny.heap_bytes(), 255 * (NARROW_RECORD + 1));
+    let mut narrow = Table::<WideId, u32>::new();
+    assert!(narrow.push(0).is_some());
     assert_eq!(
-        small.heap_bytes(),
-        4 * 8,
-        "a small record's table as a vector's"
+        narrow.heap_bytes(),
+        4 * 4,
+        "a narrow record's table as a vector's"
     );
 }
 

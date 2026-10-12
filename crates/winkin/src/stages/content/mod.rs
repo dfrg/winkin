@@ -53,15 +53,8 @@ use core::ops::Range;
 use crate::build::BoxSize;
 use crate::data::{
     Id, Keyed, SortedTable, Table, TextOffset, define_flags, define_id, find_sorted, heap_bytes,
-    make_text_room,
 };
 use crate::style::FirstLineVariant;
-
-/// The text bytes a fresh layout's content starts with room for.
-const FRESH_TEXT: usize = 128;
-
-/// The nodes, and the items, a fresh layout's content starts with room for.
-const FRESH_NODES: usize = 16;
 
 pub(crate) use extras::{Absolute, Atomic, BreakClearance, Float, KeyedAtomics, SizeChange};
 use extras::{ContentExtras, NO_EXTRAS};
@@ -721,11 +714,6 @@ impl Content {
         self.items.clear();
         self.languages.clear();
         self.facts.clear();
-        // A fresh layout's tables start with room for a short paragraph, so
-        // that the first build does not grow them by doubling from one.
-        make_text_room(&mut self.text, FRESH_TEXT);
-        self.nodes.nodes.reserve(FRESH_NODES);
-        self.items.reserve(FRESH_NODES);
         if map {
             self.extras.get_or_insert_with(Box::default);
         }

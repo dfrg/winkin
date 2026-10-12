@@ -636,7 +636,7 @@ impl ReshapedEdges {
     }
 
     /// Returns the shaping sink that writes into these tables.
-    fn sink(&mut self) -> GlyphSink<'_, EdgeClusterId, TextUnit, Table<EdgeClusterId, TextUnit>> {
+    fn sink(&mut self) -> GlyphSink<'_, EdgeClusterId, Table<EdgeClusterId, TextUnit>> {
         GlyphSink::new(&mut self.words, &mut self.glyphs, &mut self.advances)
     }
 }

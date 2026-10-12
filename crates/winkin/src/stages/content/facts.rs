@@ -1089,10 +1089,19 @@ pub(crate) struct Facts {
     texts: Table<TextFactsId, TextFacts>,
     shapings: Table<ShapingFactsId, ShapingFacts>,
     requests: Table<FontRequestId, FontRequest>,
+    /// The box facts and edges, boxed: content with no box makes no table.
+    boxes: Option<Box<BoxTables>>,
+}
+
+/// The tables of [`Facts`] that only content with boxes fills.
+#[derive(Default)]
+struct BoxTables {
+    /// Each distinct box's facts, [`BoxFacts::INITIAL`] first once another
+    /// row is stored.
     boxes: Table<BoxFactsId, BoxFacts>,
-    /// The edges of boxes with percentage margins or padding, boxed: a
-    /// layout with none makes no table.
-    edges: Option<Box<Table<EdgesId, EdgesGroup>>>,
+    /// The edges of boxes with percentage margins or padding, row 0 standing
+    /// for none.
+    edges: Table<EdgesId, EdgesGroup>,
 }
 
 /// The result of lowering a style: the id, or none if a table was full,
@@ -1111,8 +1120,7 @@ impl Facts {
             texts: Table::new(),
             shapings: Table::new(),
             requests: Table::new(),
-            boxes: Table::new(),
-            edges: None,
+            boxes: None,
         }
     }
 
@@ -1126,9 +1134,9 @@ impl Facts {
         self.texts.clear();
         self.shapings.clear();
         self.requests.clear();
-        self.boxes.clear();
-        if let Some(edges) = &mut self.edges {
-            edges.clear();
+        if let Some(tables) = &mut self.boxes {
+            tables.boxes.clear();
+            tables.edges.clear();
         }
     }
 
@@ -1176,7 +1184,7 @@ impl Facts {
         // A container's edges with a percentage, kept for the next basis.
         // Where their table is full, the box keeps the lengths it has now.
         let edges = if kind.is_container() && style.edges.has_percentage() {
-            let table = self.edges.get_or_insert_with(Box::default);
+            let table = &mut self.boxes.get_or_insert_with(Box::default).edges;
             if table.is_empty() {
                 table.push_bounded(EdgesGroup::INITIAL, "an empty table has room");
             }
@@ -1194,11 +1202,11 @@ impl Facts {
         // Stores the initial row before the first other row. It is then
         // found among the few rows compared, and `Lookup` indexes it with
         // them once the table holds more.
-        if self.boxes.is_empty() {
-            self.boxes
-                .push_bounded(BoxFacts::INITIAL, "an empty table has room");
+        let boxes = &mut self.boxes.get_or_insert_with(Box::default).boxes;
+        if boxes.is_empty() {
+            boxes.push_bounded(BoxFacts::INITIAL, "an empty table has room");
         }
-        let id = intern(lookup, &mut self.boxes, facts, &mut flags);
+        let id = intern(lookup, boxes, facts, &mut flags);
         Lowered { id, flags }
     }
 
@@ -1208,10 +1216,14 @@ impl Facts {
     /// Rows keep their ids: a row with percentage edges names them, so two
     /// rows that resolve alike at one basis stay apart at another.
     pub(super) fn resolve_boxes(&mut self, writing_mode: WritingMode, basis: f32) {
-        let Some(table) = self.edges.as_deref() else {
+        let Some(BoxTables {
+            boxes,
+            edges: table,
+        }) = self.boxes.as_deref_mut()
+        else {
             return;
         };
-        for facts in self.boxes.as_mut_slice() {
+        for facts in boxes.as_mut_slice() {
             if facts.edges == EdgesId::NONE {
                 continue;
             }
@@ -1254,7 +1266,11 @@ impl Facts {
     /// The box facts `id` names.
     #[inline]
     pub(crate) fn box_facts(&self, id: BoxFactsId) -> &BoxFacts {
-        self.boxes.get(id).unwrap_or_else(|| {
+        let found = self
+            .boxes
+            .as_deref()
+            .and_then(|tables| tables.boxes.get(id));
+        found.unwrap_or_else(|| {
             debug_assert!(id == BoxFactsId::INITIAL, "{id:?} is not in the table");
             &BoxFacts::INITIAL
         })
@@ -1296,7 +1312,7 @@ impl Facts {
     /// once it is stored, which the tests count.
     #[cfg(test)]
     pub(crate) fn box_count(&self) -> usize {
-        self.boxes.len()
+        self.boxes.as_deref().map_or(0, |tables| tables.boxes.len())
     }
 }
 
@@ -1338,5 +1354,9 @@ impl HoldsFlags for EdgesGroup {
 }
 
 heap_bytes! {
-    Facts { texts, shapings, requests, boxes, edges }
+    Facts { texts, shapings, requests, boxes }
+}
+
+heap_bytes! {
+    BoxTables { boxes, edges }
 }

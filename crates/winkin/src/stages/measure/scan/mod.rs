@@ -49,7 +49,7 @@ use crate::stages::fonts::{LineBaseline, UsedFontId};
 use crate::stages::shape::{ShapeSession, ShapedText};
 use crate::stages::{Segment, Segments, Step};
 use crate::style::{FirstLineVariant, WritingMode};
-use crate::unit::InlineLayoutUnit;
+use crate::unit::{InlineLayoutUnit, TextUnit};
 use crate::work;
 use em_boxes::ItemEmScan;
 use ends::{AnchoredFloats, LineEndState};
@@ -74,7 +74,7 @@ pub(super) struct Scan<'a> {
     /// a ligature, and the shaping runs the walk holds.
     shaped: &'a ShapedText,
     /// Each cluster's shaped advance, up to `end`.
-    advances: &'a [InlineLayoutUnit],
+    advances: &'a [TextUnit],
     /// The text its clusters are read in.
     source: VariantText<'a>,
     /// Where the scan stops: the text's end, or the first paragraph's.
@@ -305,6 +305,13 @@ impl BoundaryRoom {
 }
 
 impl Scan<'_> {
+    /// Returns cluster `at`'s shaped advance, widened to the prefix's 48.16:
+    /// zero past `end`, or where shaping wrote none, which is a bug in it.
+    #[inline]
+    fn advance(&self, at: ClusterId) -> InlineLayoutUnit {
+        InlineLayoutUnit::from_text(self.advances.get(at.get()).copied().unwrap_or_default())
+    }
+
     /// Measures one variant into `out`, and returns its intrinsic widths.
     ///
     /// It measures the initial letter and the fixed box shifts first, so a
@@ -608,7 +615,7 @@ impl<'w, 'a> Walking<'w, 'a> {
             InlineLayoutUnit::ZERO
         };
         let step = if at < end {
-            let advance = scan.advances.get(at.get()).copied().unwrap_or_default();
+            let advance = scan.advance(at);
             self.walk.step(scan, class, advance, at) + gap
         } else {
             InlineLayoutUnit::ZERO
@@ -836,7 +843,7 @@ impl<'w, 'a> Walking<'w, 'a> {
                     flags.insert(MeasureFlags::NONMONOTONE);
                 }
                 widths.boundary(writer.sum, pay);
-                let advance = scan.advances.get(at.get()).copied().unwrap_or_default();
+                let advance = scan.advance(at);
                 writer.write(sums);
                 writer.sum += advance;
                 widths.cluster(attrs, advance, Tab::NONE, text);
@@ -917,7 +924,7 @@ pub(super) struct ScanPrefix<'s> {
     /// The sums written, one before each boundary the scan passed.
     sums: &'s [InlineLayoutUnit],
     /// Each cluster's shaped advance, up to `end`.
-    advances: &'s [InlineLayoutUnit],
+    advances: &'s [TextUnit],
     /// Where the scan stops.
     end: ClusterId,
 }
@@ -930,7 +937,8 @@ impl ScanPrefix<'_> {
         match self.sums.get(at.get()) {
             Some(&sum) => Some(sum),
             None if at <= self.end => {
-                Some(self.advances.get(at.get()).copied().unwrap_or_default())
+                let advance = self.advances.get(at.get()).copied().unwrap_or_default();
+                Some(InlineLayoutUnit::from_text(advance))
             }
             None => None,
         }

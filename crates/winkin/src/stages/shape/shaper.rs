@@ -38,7 +38,7 @@
 //! no `halt` and the config asks for it, the mark's advance is halved
 //! instead, which Chrome does not do.
 
-use super::sink::{AdvanceStore, AdvanceUnit, Flags, GlyphSink, Halved, along, sidecar_glyph};
+use super::sink::{AdvanceStore, Flags, GlyphSink, Halved, along, sidecar_glyph};
 #[cfg(test)]
 use core::cell::Cell;
 use core::iter::Peekable;
@@ -411,7 +411,7 @@ impl<'a> NeighbourFonts<'a> {
 /// is the paragraph's, as Chrome gives HarfBuzz the whole text around the
 /// range, so a word broken across lines keeps its joining forms.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn shape_range<'f, I: Id, A: AdvanceUnit, S: AdvanceStore<A>>(
+pub(crate) fn shape_range<'f, I: Id, S: AdvanceStore>(
     cx: &mut ShapeSession<'_, 'f>,
     source: &ShapingSource<'_>,
     paragraph: Range<TextOffset>,
@@ -419,7 +419,7 @@ pub(crate) fn shape_range<'f, I: Id, A: AdvanceUnit, S: AdvanceStore<A>>(
     key: &ShapingKey<'f>,
     edges: ShapingEdges,
     neighbours: NeighbourFonts<'_>,
-    out: &mut GlyphSink<'_, I, A, S>,
+    out: &mut GlyphSink<'_, I, S>,
 ) -> bool {
     let count = range.end.get().saturating_sub(range.start.get());
     if count == 0 {
@@ -678,13 +678,13 @@ struct CallMarks<'a> {
 /// mark and comes back in the text's order along a horizontal line. That
 /// text takes the plain path, [`sink_clusters`] with `MARKED` unset, which
 /// skips the per-cluster mark checks.
-fn sink_output<I: Id, A: AdvanceUnit, S: AdvanceStore<A>>(
+fn sink_output<I: Id, S: AdvanceStore>(
     output: &Buffer,
     source: &ShapingSource<'_>,
     range: Range<ClusterId>,
     direction: Direction,
     marks: &CallMarks<'_>,
-    out: &mut GlyphSink<'_, I, A, S>,
+    out: &mut GlyphSink<'_, I, S>,
 ) -> bool {
     let infos = output.glyph_infos();
     let positions = output.glyph_positions();
@@ -696,9 +696,9 @@ fn sink_output<I: Id, A: AdvanceUnit, S: AdvanceStore<A>>(
         && marks.halving.is_none()
         && plain_paths()
     {
-        sink_clusters::<false, I, A, S>(infos, positions, source, range, direction, marks, out)
+        sink_clusters::<false, I, S>(infos, positions, source, range, direction, marks, out)
     } else {
-        sink_clusters::<true, I, A, S>(infos, positions, source, range, direction, marks, out)
+        sink_clusters::<true, I, S>(infos, positions, source, range, direction, marks, out)
     }
 }
 
@@ -716,14 +716,14 @@ fn sink_output<I: Id, A: AdvanceUnit, S: AdvanceStore<A>>(
 /// - The plain path is for horizontal glyphs in the text's order with empty
 ///   `marks`. It skips those checks, and writes a one-glyph cluster compact
 ///   where it can without further checks.
-fn sink_clusters<const MARKED: bool, I: Id, A: AdvanceUnit, S: AdvanceStore<A>>(
+fn sink_clusters<const MARKED: bool, I: Id, S: AdvanceStore>(
     infos: &[GlyphInfo],
     positions: &[GlyphPosition],
     source: &ShapingSource<'_>,
     range: Range<ClusterId>,
     direction: Direction,
     marks: &CallMarks<'_>,
-    out: &mut GlyphSink<'_, I, A, S>,
+    out: &mut GlyphSink<'_, I, S>,
 ) -> bool {
     let count = infos.len();
     let backward = MARKED && matches!(direction, Direction::RightToLeft | Direction::BottomToTop);
@@ -831,13 +831,13 @@ impl<'a, const MARKED: bool> ClusterWriter<'a, MARKED> {
 
     /// Writes `cluster`, which starts at `start` and is drawn by `glyphs`
     /// placed at `placed`, after the empty clusters before it.
-    fn write<I: Id, A: AdvanceUnit, S: AdvanceStore<A>>(
+    fn write<I: Id, S: AdvanceStore>(
         &mut self,
         cluster: ClusterId,
         start: TextOffset,
         glyphs: &[GlyphInfo],
         placed: &[GlyphPosition],
-        out: &mut GlyphSink<'_, I, A, S>,
+        out: &mut GlyphSink<'_, I, S>,
     ) {
         self.fill_empty(cluster, out);
         let moved = self.halve(start, placed);
@@ -859,12 +859,12 @@ impl<'a, const MARKED: bool> ClusterWriter<'a, MARKED> {
     /// cluster is written once the next glyph shows it ends, so the cluster
     /// before a glyph that breaks the pattern is left to the general walk.
     #[inline]
-    fn write_one_to_one<I: Id, A: AdvanceUnit, S: AdvanceStore<A>>(
+    fn write_one_to_one<I: Id, S: AdvanceStore>(
         &mut self,
         infos: &[GlyphInfo],
         positions: &[GlyphPosition],
         end: ClusterId,
-        out: &mut GlyphSink<'_, I, A, S>,
+        out: &mut GlyphSink<'_, I, S>,
     ) -> usize {
         let first = self.range_start.get();
         let clusters = end.get().saturating_sub(first);
@@ -896,11 +896,11 @@ impl<'a, const MARKED: bool> ClusterWriter<'a, MARKED> {
     /// Writes the next cluster, drawn by `glyph` alone, labelled at its
     /// start, at `placed`.
     #[inline]
-    fn write_single<I: Id, A: AdvanceUnit, S: AdvanceStore<A>>(
+    fn write_single<I: Id, S: AdvanceStore>(
         &mut self,
         glyph: &GlyphInfo,
         placed: &GlyphPosition,
-        out: &mut GlyphSink<'_, I, A, S>,
+        out: &mut GlyphSink<'_, I, S>,
     ) {
         work::step();
         let mut unsafe_to_break = glyph.unsafe_to_break();
@@ -920,10 +920,10 @@ impl<'a, const MARKED: bool> ClusterWriter<'a, MARKED> {
     /// Writes the clusters from the next one up to `end` with no glyphs:
     /// unsafe, since they lie inside something merged, and continuations
     /// once a cluster of the range has drawn.
-    fn fill_empty<I: Id, A: AdvanceUnit, S: AdvanceStore<A>>(
+    fn fill_empty<I: Id, S: AdvanceStore>(
         &mut self,
         end: ClusterId,
-        out: &mut GlyphSink<'_, I, A, S>,
+        out: &mut GlyphSink<'_, I, S>,
     ) {
         while self.next < end {
             let next = self.next;

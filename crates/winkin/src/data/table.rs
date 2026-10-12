@@ -11,12 +11,9 @@ use core::ops::Range;
 use super::{HeapBytes, Id, IdRange};
 use crate::work;
 
-/// The record size from which a table makes room for only one record at its
-/// first push.
-///
-/// A plain vector makes room for four of anything up to a kilobyte. See
+/// The widest record whose table grows as a plain vector does: see
 /// [`Table::push`].
-pub(super) const LARGE_RECORD: usize = 64;
+pub(super) const NARROW_RECORD: usize = 4;
 
 /// Makes room in `items` for `count` in all, as [`Table::reserve`] does.
 ///
@@ -38,8 +35,7 @@ pub(crate) fn make_room<T>(items: &mut Vec<T>, count: usize) {
 
 /// Makes room in `text` for `bytes` more, as [`make_room`] does in a vector.
 ///
-/// The content's text uses it as a call hands text in, and so does a family
-/// list as it interns names.
+/// The content's text uses it as a call hands text in.
 pub(crate) fn make_text_room(text: &mut String, bytes: usize) {
     let _refused = if text.capacity() == 0 {
         text.try_reserve_exact(bytes)
@@ -83,12 +79,15 @@ impl<I: Id, T> Table<I, T> {
     /// once collapsed and transformed, crosses a limit. So crossing one is
     /// never fatal, and this returns an `Option` rather than asserting.
     ///
-    /// A table of large records makes room for one at its first push, where
-    /// a vector's first growth makes room for four. Styles, used fonts,
-    /// lines, font instances and shape plans are such records. A small
-    /// layout, or a context that has set text in one font, most often holds
-    /// one, and keeps its room for good. A table that goes on to hold more
-    /// grows to four from there, one allocation more.
+    /// A full table of records wider than 4 bytes doubles its room, from one
+    /// at its first push, where a vector's first growth makes room for four.
+    /// A small layout most often holds one style, one font and one
+    /// paragraph, and keeps the room it grew to for good. A table that goes
+    /// on to hold more takes one or two more allocations to reach four.
+    ///
+    /// Narrower records, the per-cluster tables among them, grow as a vector
+    /// does: the size test is a constant, so their pushes test nothing more.
+    /// Testing every push slows a warm rebuild by about 4%.
     #[inline]
     #[must_use]
     pub(crate) fn push(&mut self, item: T) -> Option<I> {
@@ -96,11 +95,23 @@ impl<I: Id, T> Table<I, T> {
         if len >= I::MAX {
             return None;
         }
-        if size_of::<T>() >= LARGE_RECORD && self.items.capacity() == 0 {
-            let _refused = self.items.try_reserve_exact(1);
+        if size_of::<T>() > NARROW_RECORD && len == self.items.capacity() {
+            self.grow();
         }
         self.items.push(item);
         Some(I::new(len))
+    }
+
+    /// Doubles the room of a full table, from one, never past what the
+    /// table can hold. Where the allocator refuses, the push grows the table
+    /// as a vector would.
+    #[cold]
+    #[inline(never)]
+    fn grow(&mut self) {
+        let len = self.items.len();
+        let _refused = self
+            .items
+            .try_reserve_exact(len.max(1).min(I::MAX.saturating_sub(len)));
     }
 
     /// Appends `item`, which the pushing code knows fits.

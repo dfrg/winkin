@@ -170,11 +170,7 @@ fn the_plain_path_writes_what_asking_every_cluster_does() {
             if let Some(first) = layout.shaped().first_line() {
                 let words: Vec<(ClusterId, GlyphWord)> =
                     first.glyphs.iter().map(|(c, &w)| (c, w)).collect();
-                let advances: Vec<i32> = first
-                    .advances
-                    .iter()
-                    .map(|a| i32::try_from(a.raw()).unwrap_or(i32::MAX))
-                    .collect();
+                let advances: Vec<i32> = first.advances.iter().map(|a| a.raw()).collect();
                 said.push(format!(
                     "first line {:?}",
                     written(&words, &first.glyphs.sidecar, &advances)
