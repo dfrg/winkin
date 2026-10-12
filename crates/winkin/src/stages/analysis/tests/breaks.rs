@@ -753,12 +753,13 @@ fn text_with_kana(small_kana: SmallKana, root: &ComputedStyle<'_>, text: &str) -
     cx.set_config(config);
     let mut layout = Layout::new();
     let mut builder = layout.builder(
+        &mut cx,
         NodeKey(0),
         &ComputedBlockStyle::new(root),
         BuildOptions::default(),
     );
     builder.text(key(1), text);
-    builder.finish(&mut cx);
+    builder.finish();
     check(&layout);
     layout
 }

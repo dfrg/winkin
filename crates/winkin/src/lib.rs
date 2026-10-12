@@ -35,9 +35,9 @@
 //! let mut layout = Layout::new();
 //! let style = ComputedStyle::initial();
 //! let block = ComputedBlockStyle::new(&style);
-//! let mut builder = layout.builder(NodeKey(0), &block, BuildOptions::default());
+//! let mut builder = layout.builder(&mut cx, NodeKey(0), &block, BuildOptions::default());
 //! builder.text(NodeKey(1), "Hello, world");
-//! assert!(builder.finish(&mut cx).is_complete());
+//! assert!(builder.finish().is_complete());
 //!
 //! // Relayout at another width without repeating preparation.
 //! layout.break_lines(&mut cx, Area::new(400.0), &mut NoExclusions);

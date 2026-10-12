@@ -388,6 +388,7 @@ fn a_cluster_that_draws_nothing_keeps_the_font_before_it() {
     let ahem = [FontFamilyName::named("Ahem")];
     let style = families_style(&ahem);
     let mut b = layout.builder(
+        &mut fixture.cx,
         NodeKey(0),
         &ComputedBlockStyle::new(&style),
         BuildOptions::default(),
@@ -397,8 +398,8 @@ fn a_cluster_that_draws_nothing_keeps_the_font_before_it() {
     b.text(NodeKey(3), "\u{2060}字");
     b.line_break(NodeKey(4));
     b.text(NodeKey(5), "A");
-    b.finish(&mut fixture.cx);
-    check(&layout);
+    b.finish();
+    check(&layout, &fixture.cx);
     assert_eq!(
         fixture.families(&layout),
         [

@@ -73,7 +73,7 @@ fn document(layout: &mut Layout, cx: &mut Context, how: How, paragraphs: u64) {
         block,
         baseline: None,
     };
-    let mut b = layout.builder(NodeKey(0), &block, BuildOptions::default());
+    let mut b = layout.builder(cx, NodeKey(0), &block, BuildOptions::default());
     if matches!(how, How::BalancedFirstLine) {
         b.open_box(NodeKey(1), &letter, None);
         b.text(NodeKey(2), "O");
@@ -94,7 +94,7 @@ fn document(layout: &mut Layout, cx: &mut Context, how: How, paragraphs: u64) {
         b.text(NodeKey(key + 8), " a");
         b.line_break(NodeKey(key + 9));
     }
-    assert!(b.finish(cx).is_complete());
+    assert!(b.finish().is_complete());
 }
 
 /// Balanced and pretty text, under either rule for pretty, breaks again

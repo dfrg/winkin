@@ -72,6 +72,11 @@ pub(crate) struct AnalysisScratch {
     /// A ruby column's base and what follows the column, which a break
     /// after the column is decided by.
     column_text: String,
+    /// The nodes whose text holds a soft hyphen a line may break after, in
+    /// text order, each with the first such cluster. A node is listed again
+    /// only where another node's text comes between. Font selection reads
+    /// them as the build finishes.
+    hyphen_nodes: Vec<(NodeId, ClusterId)>,
 }
 
 impl AnalysisScratch {
@@ -81,12 +86,31 @@ impl AnalysisScratch {
             pending_runs: Vec::new(),
             bidi: bidi::BidiInput::new(),
             column_text: String::new(),
+            hyphen_nodes: Vec::new(),
+        }
+    }
+
+    /// Returns the nodes whose text holds a soft hyphen a line may break
+    /// after, in text order, each with the first such cluster, as the last
+    /// analysis found them.
+    ///
+    /// A node is listed again only where another node's text comes between.
+    pub(crate) fn hyphen_nodes(&self) -> &[(NodeId, ClusterId)] {
+        &self.hyphen_nodes
+    }
+
+    /// Records that `cluster`, in `node`'s text, is a soft hyphen a line may
+    /// break after, unless the last node recorded is `node`.
+    fn push_hyphen_node(&mut self, node: NodeId, cluster: ClusterId) {
+        let nodes = &mut self.hyphen_nodes;
+        if nodes.last().is_none_or(|&(last, _)| last != node) {
+            nodes.push((node, cluster));
         }
     }
 }
 
 heap_bytes! {
-    AnalysisScratch { pending_runs, bidi, column_text }
+    AnalysisScratch { pending_runs, bidi, column_text, hyphen_nodes }
 }
 
 impl Default for AnalysisScratch {
@@ -137,6 +161,7 @@ pub(crate) fn analyze(
     let content = input.content;
     out.clear();
     scratch.pending_runs.clear();
+    scratch.hyphen_nodes.clear();
     scratch.bidi.begin();
     // Room for every item's first cluster, and for the clusters: at most one
     // a character, which in Latin and CJK is one a character exactly.
@@ -215,7 +240,6 @@ impl Analysis {
         self.runs.clear();
         if let Some(extras) = &mut self.extras {
             extras.control_levels.clear();
-            extras.hyphen_nodes.clear();
         }
         self.flags = ParagraphFlags::NONE;
     }
@@ -237,25 +261,6 @@ impl Analysis {
         let kept = &mut self.extras.get_or_insert_default().control_levels;
         kept.clear();
         kept.extend_from_slice(levels);
-    }
-
-    /// Returns the nodes whose text holds a soft hyphen a line may break
-    /// after, in text order, each with the first such cluster.
-    ///
-    /// A node is listed again only where another node's text comes between.
-    pub(crate) fn hyphen_nodes(&self) -> &[(NodeId, ClusterId)] {
-        self.extras
-            .as_deref()
-            .map_or(&[], |extras| extras.hyphen_nodes.as_slice())
-    }
-
-    /// Records that `cluster`, in `node`'s text, is a soft hyphen a line may
-    /// break after, unless the last node recorded is `node`.
-    fn push_hyphen_node(&mut self, node: NodeId, cluster: ClusterId) {
-        let nodes = &mut self.extras.get_or_insert_default().hyphen_nodes;
-        if nodes.last().is_none_or(|&(last, _)| last != node) {
-            nodes.push((node, cluster));
-        }
     }
 
     /// Returns the clusters the block's first line can reach, if `content`
@@ -289,14 +294,10 @@ struct AnalysisExtras {
     /// item order: those below the clusters on both sides. Only isolates
     /// beside right-to-left text keep any.
     control_levels: Vec<ControlLevel>,
-    /// The nodes whose text holds a soft hyphen a line may break after, in
-    /// text order, each with the first such cluster. A node is listed again
-    /// only where another node's text comes between.
-    hyphen_nodes: Vec<(NodeId, ClusterId)>,
 }
 
 heap_bytes! {
-    AnalysisExtras { control_levels, hyphen_nodes }
+    AnalysisExtras { control_levels }
 }
 
 impl Default for Analysis {

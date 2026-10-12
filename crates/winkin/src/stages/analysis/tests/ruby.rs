@@ -322,6 +322,7 @@ fn ruby_inner_opportunities_clear_on_rebuild() {
     let mut cx = no_fonts();
     for text in ["abcdef", "ab", "abcdef"] {
         let mut b = layout.builder(
+            &mut cx,
             key(0),
             &ComputedBlockStyle::new(&style),
             BuildOptions::default(),
@@ -329,7 +330,7 @@ fn ruby_inner_opportunities_clear_on_rebuild() {
         b.open_ruby(key(1), &style, None);
         b.text(key(2), text);
         b.close_ruby();
-        b.finish(&mut cx);
+        b.finish();
         check(&layout);
         let clusters = &layout.analysis().clusters;
         assert_eq!(
@@ -338,12 +339,13 @@ fn ruby_inner_opportunities_clear_on_rebuild() {
         );
     }
     let mut b = layout.builder(
+        &mut cx,
         key(0),
         &ComputedBlockStyle::new(&style),
         BuildOptions::default(),
     );
     b.text(key(1), "abcdef");
-    b.finish(&mut cx);
+    b.finish();
     check(&layout);
     assert_eq!(breaks(&layout), [1, 2, 3, 4, 5]);
 }

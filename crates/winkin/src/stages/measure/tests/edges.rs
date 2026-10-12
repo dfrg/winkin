@@ -583,11 +583,11 @@ fn a_remeasure_keeps_the_generated_texts_without_shaping_them() {
     };
     let provider = Counting::default();
     let build = |fixture: &mut Fixture, layout: &mut Layout, inline| {
-        let mut b = layout.builder(NodeKey(0), &block, BuildOptions::default());
+        let mut b = layout.builder(&mut fixture.cx, NodeKey(0), &block, BuildOptions::default());
         b.text(NodeKey(1), "co\u{AD}op ");
         b.atomic(NodeKey(2), &latin, None, size(inline));
         b.text(NodeKey(3), " re\u{AD}do");
-        b.finish_with_metrics(&mut fixture.cx, &provider);
+        b.finish_with_metrics(&provider);
     };
     let generated = |layout: &Layout| -> Vec<(ShapedGenerated, Vec<SidecarGlyph>)> {
         let generated = layout.measured().generated();

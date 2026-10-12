@@ -58,7 +58,7 @@ pub(super) use autospace::AutospaceRules;
 pub(crate) use edges::{BoundarySplit, edge_room, items_after_break};
 pub(crate) use extent::Extent;
 use generated::GeneratedTexts;
-pub(crate) use generated::{GeneratedItems, ShapedGenerated};
+pub(crate) use generated::{GeneratedInput, GeneratedItems, ShapedGenerated};
 pub(crate) use items::KeptBoxes;
 use items::{ItemEmBoxes, ItemExtents};
 pub(crate) use justify::{JustifyOpportunities, JustifySummary};
@@ -132,11 +132,11 @@ impl<'a> MeasureInput<'a> {
 /// Measures the text of `input` into `out`, summing shaping's advances into
 /// prefix sums.
 ///
-/// Where `new_fonts` says the fonts and text facts are new, as after a build,
-/// it first writes each text's primary-font metrics, once for both variants.
-/// Then it shapes the hyphens and ellipses font selection chose fonts for,
-/// with the shaping caches in `cx`, so that a line ending at a soft hyphen is
-/// charged its hyphen's width. Otherwise it keeps both, which depend only on
+/// Where the fonts and text facts are new, as after a build, it first writes
+/// each text's primary-font metrics, once for both variants. Then it shapes
+/// the hyphens and ellipses font selection chose fonts for, which
+/// `new_fonts` holds, with the shaping caches in `cx`, so that a line
+/// ending at a soft hyphen is charged its hyphen's width. Otherwise it keeps both, which depend only on
 /// the fonts and the text facts. Where `::first-line` restyles something, it
 /// measures the first paragraph again in its first-line styles, from the
 /// first line's advances or the text's.
@@ -148,11 +148,11 @@ pub(crate) fn measure_text<'f>(
     cx: &mut ShapeSession<'_, 'f>,
     scratch: &mut MeasureScratch,
     out: &mut Measured,
-    new_fonts: bool,
+    new_fonts: Option<GeneratedInput<'_>>,
 ) {
     out.clear_text();
     out.word_spacing_rule = WordSpacingRule::new(input.word_spacing, input.content);
-    if new_fonts {
+    if let Some(generated_input) = new_fonts {
         out.text_metrics.clear();
         text_metrics(input, &mut out.text_metrics);
         if let Some(generated) = &mut out.generated {
@@ -160,8 +160,8 @@ pub(crate) fn measure_text<'f>(
         }
         // The generated texts, whichever line they are on, where the font
         // stage chose fonts for one.
-        if input.fonts.generated().iter().next().is_some() {
-            out.generated_mut().fill(input, cx);
+        if generated_input.fonts.iter().next().is_some() {
+            out.generated_mut().fill(input, cx, generated_input);
         }
     }
     let first = input.analysis.first_line_reach(input.content);

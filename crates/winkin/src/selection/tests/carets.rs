@@ -66,12 +66,13 @@ fn a_position_holds_across_relayouts() {
     let mut cx = context();
     let mut layout = Layout::new();
     let mut b = layout.builder(
+        &mut cx,
         NodeKey(0),
         &ComputedBlockStyle::new(&ahem()),
         BuildOptions::default(),
     );
     b.text(NodeKey(1), "abcd efgh ijkl");
-    b.finish(&mut cx);
+    b.finish();
     let position = Position::from(7);
     layout.break_lines(&mut cx, Area::new(400.0), &mut NoExclusions);
     assert_eq!(position_caret(&layout, position), (0, 140.0));

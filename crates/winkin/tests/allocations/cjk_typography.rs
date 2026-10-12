@@ -73,6 +73,7 @@ fn document(layout: &mut Layout, cx: &mut Context, repeat: usize) {
         ..styled(n)
     };
     let mut b = layout.builder(
+        cx,
         NodeKey(0),
         &ComputedBlockStyle::new(&root),
         BuildOptions::default(),
@@ -94,7 +95,7 @@ fn document(layout: &mut Layout, cx: &mut Context, repeat: usize) {
             b.line_break(next());
         }
     }
-    assert!(b.finish(cx).is_complete());
+    assert!(b.finish().is_complete());
 }
 
 /// Reads every line back: every item's place and every glyph's.

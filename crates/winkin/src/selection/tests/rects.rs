@@ -175,9 +175,9 @@ fn copy_keeps_the_authors_case_and_order() {
         first_line: Some(&first_line),
         ..ComputedBlockStyle::new(&style)
     };
-    let mut b = layout.builder(NodeKey(0), &block, BuildOptions::default());
+    let mut b = layout.builder(&mut cx, NodeKey(0), &block, BuildOptions::default());
     b.text(NodeKey(1), long);
-    b.finish(&mut cx);
+    b.finish();
     layout.break_lines(&mut cx, Area::new(200.0), &mut NoExclusions);
     assert_eq!(copied(&layout, CopyKind::Text), long);
 }

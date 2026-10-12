@@ -48,7 +48,7 @@ fn selection(fixture: &Fixture, layout: &Layout) -> Vec<String> {
         let primary = primary_id(layout, text);
         said.push(format!("primary {text:?} {primary:?}"));
     }
-    for generated in fonts.generated().iter() {
+    for generated in fixture.cx.generated_fonts().iter() {
         said.push(format!("generated {generated:?}"));
     }
     said.push(format!("wanted {:?}", fonts.wanted));

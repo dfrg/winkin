@@ -79,6 +79,7 @@ fn a_full_table_of_used_fonts_falls_back_and_says_so() {
         })
         .collect();
     let mut b = layout.builder(
+        &mut fixture.cx,
         NodeKey(0),
         &ComputedBlockStyle::new(&root),
         BuildOptions::default(),
@@ -88,8 +89,8 @@ fn a_full_table_of_used_fonts_falls_back_and_says_so() {
         b.text(NodeKey(2 * at + 2), "a");
         b.close_box();
     }
-    let built = b.finish(&mut fixture.cx);
-    check(&layout);
+    let built = b.finish();
+    check(&layout, &fixture.cx);
     assert_eq!(layout.fonts().used.len(), UsedFontId::MAX);
     assert!(built.replaced_fonts > 0);
     assert_eq!(built.replaced_styles, 0);

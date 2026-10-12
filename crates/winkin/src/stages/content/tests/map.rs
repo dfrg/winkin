@@ -191,9 +191,10 @@ fn a_transformed_piece_near_the_text_limit_maps_as_one_far_from_it() {
     let built = |limits: ContentLimits| {
         let mut layout = Layout::new();
         let block = ComputedBlockStyle::new(&upper);
-        let mut b = layout.builder_within(key(0), &block, options, limits);
+        let mut cx = no_fonts();
+        let mut b = layout.builder_within(&mut cx, key(0), &block, options, limits);
         b.text(key(1), "a\u{DF}b");
-        b.finish(&mut no_fonts());
+        b.finish();
         layout
     };
     // Four bytes, which a transform may grow to twelve: a limit of eleven

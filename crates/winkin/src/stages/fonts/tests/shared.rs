@@ -39,13 +39,13 @@ fn set(cx: &mut Context) -> Glyphs {
     ];
     let mut layout = Layout::new();
     let block = ComputedBlockStyle::new(&root);
-    let mut b = layout.builder(NodeKey(0), &block, BuildOptions::default());
+    let mut b = layout.builder(cx, NodeKey(0), &block, BuildOptions::default());
     for (at, (style, text)) in (0u64..).zip(spans) {
         b.open_box(NodeKey(2 * at + 1), style, None);
         b.text(NodeKey(2 * at + 2), text);
         b.close_box();
     }
-    assert!(b.finish(cx).is_complete());
+    assert!(b.finish().is_complete());
     layout.break_lines(cx, Area::new(120.0), &mut NoExclusions);
     let mut glyphs = Vec::new();
     for line in layout.lines() {

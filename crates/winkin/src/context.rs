@@ -1,25 +1,30 @@
 //! The context every layout is built and broken with, and what it keeps on the heap.
 //!
 //! It holds the fonts, the config, the caches that outlive one layout, and
-//! every stage's scratch except the content's, which the layout owns. The
-//! stages borrow one cache and scratch at a time ([`Context::analyzing`] and
-//! the rest).
+//! every stage's scratch, the content writer's included. The stages borrow
+//! one cache and scratch at a time ([`Context::analyzing`] and the rest).
 //!
 //! Every cache keeps at most its capacity ([`CacheLimits`]).
 //! [`Context::start_build`] and [`Context::start_break`] trim the caches to
 //! it before every build and break, when no id into a cache is held: a
-//! layout holds none, and a call holds its ids only while it runs. They also
-//! release scratch far bigger than the last calls needed.
+//! layout reads none after its build, and a call holds its ids only while
+//! it runs. [`Context::finish_build`] and [`Context::start_break`] release
+//! scratch far bigger than the last calls needed.
+
+use core::mem;
 
 use fontwich::Collection;
 
 use crate::config::Config;
 use crate::data::HeapBytes;
-use crate::stages::analysis::{AnalysisContext, AnalysisScratch};
+use crate::stages::analysis::{AnalysisContext, AnalysisScratch, ClusterId};
+use crate::stages::content::{ContentScratch, Lists, NodeId};
+#[cfg(test)]
+use crate::stages::fonts::GeneratedFonts;
 use crate::stages::fonts::{FontContext, FontScratch, SharedFonts};
 use crate::stages::fragments::PlaceScratch;
 use crate::stages::lines::{BreakScratch, LinePlacements};
-use crate::stages::measure::MeasureScratch;
+use crate::stages::measure::{GeneratedInput, MeasureScratch};
 use crate::stages::shape::ShapeContext;
 
 /// Fonts, configuration, caches and working memory for layout.
@@ -51,9 +56,9 @@ use crate::stages::shape::ShapeContext;
 /// let mut layout = Layout::new();
 /// let style = ComputedStyle::initial();
 /// let block = ComputedBlockStyle::new(&style);
-/// let mut builder = layout.builder(NodeKey(0), &block, BuildOptions::default());
+/// let mut builder = layout.builder(&mut cx, NodeKey(0), &block, BuildOptions::default());
 /// builder.text(NodeKey(1), "Hello, world");
-/// builder.finish(&mut cx);
+/// builder.finish();
 ///
 /// // Every cache dropped, the fonts and the config kept.
 /// cx.clear_caches();
@@ -71,6 +76,9 @@ pub struct Context {
     /// The fonts, and font selection's caches: family lists, fallback lists
     /// and font instances.
     fonts: FontContext,
+    /// The content writer's working memory, which a builder takes while it
+    /// writes, and the build's lists, which font selection reads.
+    content_scratch: ContentScratch,
     /// Font selection's working memory.
     font_scratch: FontScratch,
     /// The analysis cache: the segmenters analysis runs.
@@ -120,6 +128,7 @@ impl Context {
         Self {
             config: Config::platform(),
             fonts: FontContext::new(fonts, &limits, shared),
+            content_scratch: ContentScratch::new(),
             font_scratch: FontScratch::new(),
             analysis: AnalysisContext::new(),
             analysis_scratch: AnalysisScratch::new(),
@@ -211,6 +220,7 @@ impl Context {
             config: _,
             limits: _,
             fonts,
+            content_scratch,
             font_scratch,
             analysis: _,
             analysis_scratch,
@@ -224,7 +234,8 @@ impl Context {
         ContextHeap {
             fonts: fonts.heap_bytes(),
             shaping: shaping.heap_bytes().saturating_sub(shaping_scratch),
-            scratch: analysis_scratch.heap_bytes()
+            scratch: content_scratch.heap_bytes()
+                + analysis_scratch.heap_bytes()
                 + font_scratch.heap_bytes()
                 + shaping_scratch
                 + measure_scratch.heap_bytes()
@@ -234,15 +245,25 @@ impl Context {
         }
     }
 
-    /// Readies the context for a build of content `size` long.
+    /// Readies the context for a build, as its builder starts.
     ///
     /// Trims every cache to its limit, as no call holds an id into one now.
-    /// Releases the scratch where the calls before it grew it far past what
-    /// the last calls need. `size` is the content's text bytes and items,
-    /// which every scratch grows with.
-    pub(crate) fn start_build(&mut self, size: usize) {
-        self.fonts.trim();
-        self.start_break(size);
+    /// The builder then holds the context until it finishes, so nothing
+    /// trims the family lists it names.
+    pub(crate) fn start_build(&mut self) {
+        self.trim_caches();
+    }
+
+    /// Notes a finished build of content `size` long, and releases the
+    /// scratch where the calls before it grew it far past what the last
+    /// calls need.
+    ///
+    /// `size` is the content's text bytes and items, which every scratch
+    /// grows with.
+    pub(crate) fn finish_build(&mut self, size: usize) {
+        if self.scratch_sizes.note(size) {
+            self.release_scratch();
+        }
     }
 
     /// Readies the context for a break of content `size` long.
@@ -264,6 +285,7 @@ impl Context {
 
     /// Replaces every scratch with empty scratch, releasing its capacity.
     fn release_scratch(&mut self) {
+        self.content_scratch = ContentScratch::new();
         self.font_scratch = FontScratch::new();
         self.analysis_scratch = AnalysisScratch::new();
         self.shaping.release_scratch();
@@ -277,14 +299,39 @@ impl Context {
         (&self.analysis, &mut self.analysis_scratch)
     }
 
-    /// Returns what font selection runs with: its caches and its scratch.
-    pub(crate) fn selecting_fonts(&mut self) -> (&mut FontContext, &mut FontScratch) {
-        (&mut self.fonts, &mut self.font_scratch)
+    /// Takes the content writer's working memory, leaving empty scratch
+    /// that holds nothing.
+    pub(crate) fn take_content_scratch(&mut self) -> ContentScratch {
+        mem::take(&mut self.content_scratch)
     }
 
-    /// Returns measurement's shaping caches and reusable level cursors.
-    pub(crate) fn measuring(&mut self) -> (&mut ShapeContext, &mut MeasureScratch) {
-        (&mut self.shaping, &mut self.measure_scratch)
+    /// Gives back the content writer's working memory, `scratch`.
+    pub(crate) fn put_content_scratch(&mut self, scratch: ContentScratch) {
+        self.content_scratch = scratch;
+    }
+
+    /// Returns what font selection runs with: its caches, its scratch, the
+    /// build's lists, and the nodes the analysis found soft hyphens in.
+    pub(crate) fn selecting_fonts(&mut self) -> FontSelection<'_> {
+        (
+            &mut self.fonts,
+            &mut self.font_scratch,
+            self.content_scratch.lists(),
+            self.analysis_scratch.hyphen_nodes(),
+        )
+    }
+
+    /// Returns measurement's shaping caches, its reusable level cursors,
+    /// and the generated texts the last build chose fonts for, which it
+    /// shapes after a build.
+    pub(crate) fn measuring(
+        &mut self,
+    ) -> (&mut ShapeContext, &mut MeasureScratch, GeneratedInput<'_>) {
+        let generated = GeneratedInput {
+            fonts: self.font_scratch.generated(),
+            strings: self.content_scratch.lists().hyphen_strings(),
+        };
+        (&mut self.shaping, &mut self.measure_scratch, generated)
     }
 
     /// Returns the shaping caches, also used for generated text and tests.
@@ -302,12 +349,33 @@ impl Context {
         (&mut self.break_scratch.placements, &mut self.place_scratch)
     }
 
+    /// Returns the last build's lists, for tests to inspect.
+    #[cfg(test)]
+    pub(crate) fn content_lists(&self) -> &Lists {
+        self.content_scratch.lists()
+    }
+
+    /// Returns the fonts of the last build's generated texts, for tests to
+    /// inspect.
+    #[cfg(test)]
+    pub(crate) fn generated_fonts(&self) -> &GeneratedFonts {
+        self.font_scratch.generated()
+    }
+
     /// Returns font selection's caches, for tests to inspect.
     #[cfg(test)]
     pub(crate) fn font_context(&self) -> &FontContext {
         &self.fonts
     }
 }
+
+/// What font selection runs with: see [`Context::selecting_fonts`].
+type FontSelection<'a> = (
+    &'a mut FontContext,
+    &'a mut FontScratch,
+    &'a Lists,
+    &'a [(NodeId, ClusterId)],
+);
 
 /// How many scratch sizes [`ScratchSizes`] remembers.
 const SCRATCH_CALLS: usize = 8;
@@ -389,6 +457,9 @@ impl ScratchSizes {
 #[non_exhaustive]
 pub struct CacheLimits {
     /// Distinct `font-family` lists. Default 64.
+    ///
+    /// A build keeps every list it names until it finishes, however many;
+    /// the next build trims the cache back to this limit when it starts.
     pub family_lists: usize,
     /// Fallback lists: the fonts to try for one family list, script,
     /// language, weight, width and style. Default 128.

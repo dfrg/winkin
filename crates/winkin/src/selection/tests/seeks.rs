@@ -75,9 +75,9 @@ fn unmapped(width: f32, calls: impl FnOnce(&mut LayoutBuilder<'_>)) -> Layout {
     let mut layout = Layout::new();
     let style = ahem();
     let block = ComputedBlockStyle::new(&style);
-    let mut builder = layout.builder(NodeKey(0), &block, BuildOptions::default());
+    let mut builder = layout.builder(&mut cx, NodeKey(0), &block, BuildOptions::default());
     calls(&mut builder);
-    builder.finish(&mut cx);
+    builder.finish();
     layout.break_lines(&mut cx, Area::new(width), &mut NoExclusions);
     layout
 }

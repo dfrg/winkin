@@ -66,12 +66,13 @@ fn clusters_follow_the_grapheme_break_test() {
             continue;
         }
         let mut builder = layout.builder(
+            &mut cx,
             NodeKey(0),
             &ComputedBlockStyle::new(&root),
             BuildOptions::default(),
         );
         builder.text(key(1), &text);
-        builder.finish(&mut cx);
+        builder.finish();
         assert_eq!(layout.content().text, text, "preserved as written");
         let mut found = vec![0];
         let clusters = &analysis(&layout).clusters;

@@ -20,11 +20,12 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use super::facts::{ShapingFacts, TextFacts};
-use super::lists::{FamilyName, FeatureSettingsId, VariationSettingsId};
+use super::lists::{FeatureSettingsId, Languages, VariationSettingsId};
 use super::memo::StyleKey;
 use super::writer::ContentLimits;
 use super::*;
 use crate::data::{HeapBytes, Id};
+use crate::stages::fonts::NamedListId;
 use crate::style::LengthPercentage;
 use crate::style::{
     ComputedStyle, EdgesGroup, FirstLineVariant, FontFamilyName, FontFeature, FontGroup,
@@ -34,7 +35,7 @@ use crate::style::{
 };
 use crate::tests::{key, no_fonts, nowrap, styled, white_space};
 use crate::unit::TextUnit;
-use crate::{BuildOptions, BuildReport, ComputedBlockStyle, Layout, LayoutBuilder};
+use crate::{BuildOptions, BuildReport, ComputedBlockStyle, Context, Layout, LayoutBuilder};
 // Read only by the step-count tests, which run in debug builds.
 #[cfg(debug_assertions)]
 use crate::work;
@@ -61,10 +62,22 @@ fn build_with(
     calls: impl FnOnce(&mut LayoutBuilder<'_>),
 ) -> (Layout, BuildReport) {
     let mut layout = Layout::new();
-    let mut builder = layout.builder(key(0), block, options);
+    let mut cx = no_fonts();
+    let mut builder = layout.builder(&mut cx, key(0), block, options);
     calls(&mut builder);
-    let report = builder.finish(&mut no_fonts());
+    let report = builder.finish();
     (layout, report)
+}
+
+/// Builds a layout by `calls` under the initial style with `cx`, whose
+/// content scratch keeps the build's lists after it.
+fn build_in(cx: &mut Context, calls: impl FnOnce(&mut LayoutBuilder<'_>)) -> Layout {
+    let mut layout = Layout::new();
+    let block = ComputedBlockStyle::default();
+    let mut builder = layout.builder(cx, key(0), &block, BuildOptions::default());
+    calls(&mut builder);
+    builder.finish();
+    layout
 }
 
 /// Builds a layout by `calls` within `limits`.
@@ -74,9 +87,11 @@ fn build_limited(
 ) -> (Layout, BuildReport) {
     let mut layout = Layout::new();
     let block = ComputedBlockStyle::default();
-    let mut builder = layout.builder_within(key(0), &block, BuildOptions::default(), limits);
+    let mut cx = no_fonts();
+    let mut builder =
+        layout.builder_within(&mut cx, key(0), &block, BuildOptions::default(), limits);
     calls(&mut builder);
-    let report = builder.finish(&mut no_fonts());
+    let report = builder.finish();
     (layout, report)
 }
 
@@ -822,7 +837,9 @@ fn finishing_closes_what_is_open() {
 #[test]
 fn a_dropped_builder_leaves_whole_content() {
     let mut layout = Layout::new();
+    let mut cx = no_fonts();
     let mut builder = layout.builder(
+        &mut cx,
         NodeKey(0),
         &ComputedBlockStyle::new(&ComputedStyle::initial()),
         BuildOptions::default(),
@@ -1205,7 +1222,8 @@ fn styles_are_interned_once() {
         },
         ..ComputedStyle::initial()
     };
-    let layout = build(|b| {
+    let mut cx = no_fonts();
+    let layout = build_in(&mut cx, |b| {
         b.open_box(key(1), &one, None);
         b.close_box();
         b.open_box(key(2), &two, None);
@@ -1229,24 +1247,13 @@ fn styles_are_interned_once() {
     assert_eq!(facts(1), facts(2), "equal styles, the same facts");
     assert_ne!(facts(2), facts(3), "a feature tells them apart");
     assert_eq!(content.facts.text_count(), 3, "the block's and two");
-    let families: Vec<_> = content
-        .lists
-        .family_lists
-        .get(request(1).font.families)
-        .collect();
-    assert_eq!(
-        families,
-        [
-            FamilyName::Named("Inter"),
-            FamilyName::Generic(GenericFamily::SansSerif)
-        ]
-    );
+    let fonts = cx.font_context();
+    assert!(fonts.is_named(request(1).font.families, &SANS));
     let block = request(0);
-    assert_eq!(block.font.families, FamilyListId::INITIAL);
+    assert_eq!(block.font.families, NamedListId::INITIAL);
     assert_eq!(block.language, LanguageId::UNDETERMINED);
     assert_eq!(
-        content
-            .lists
+        cx.content_lists()
             .feature_settings()
             .get(request(3).font.features),
         features
@@ -1264,7 +1271,7 @@ fn styles_are_interned_once() {
 fn many_styles_and_lists_intern_once_past_a_few() {
     const MANY: usize = 20;
     let names: Vec<String> = (0..MANY).map(|n| format!("Family {n}")).collect();
-    let lists: Vec<[FontFamilyName<'_>; 2]> = names
+    let lists_named: Vec<[FontFamilyName<'_>; 2]> = names
         .iter()
         .map(|name| {
             [
@@ -1284,7 +1291,7 @@ fn many_styles_and_lists_intern_once_past_a_few() {
     let hyphens: Vec<String> = (0..MANY).map(|n| format!("-{n}")).collect();
     let style = |n: usize| ComputedStyle {
         font: FontGroup {
-            families: &lists[n],
+            families: &lists_named[n],
             features: &features[n],
             ..FontGroup::INITIAL
         },
@@ -1295,7 +1302,8 @@ fn many_styles_and_lists_intern_once_past_a_few() {
         },
         ..ComputedStyle::initial()
     };
-    let layout = build(|b| {
+    let mut cx = no_fonts();
+    let layout = build_in(&mut cx, |b| {
         for (n, node) in (0..MANY).zip(1..) {
             b.open_box(key(node), &style(n), None);
             b.close_box();
@@ -1306,30 +1314,25 @@ fn many_styles_and_lists_intern_once_past_a_few() {
         }
     });
     let content = layout.content();
-    let lists = &content.lists;
-    // The block's and twenty, and each list once besides the initial.
+    let lists = cx.content_lists();
+    let fonts = cx.font_context();
+    // The block's and twenty, and each family list once, the initial one
+    // never stored.
     assert_eq!(content.facts.text_count(), MANY + 1);
-    assert_eq!(lists.family_lists.ids().len(), MANY + 1);
+    assert_eq!(fonts.counts()[0], MANY);
     for n in 0..MANY {
         let first = NodeId::new(1 + n);
         let again = NodeId::new(1 + MANY + (MANY - 1 - n));
         let id = node_facts(content, first);
         assert_eq!(id, node_facts(content, again), "style {n} lowered twice");
         let held = node_request(content, first, FirstLineVariant::Standard);
-        let families: Vec<_> = lists.family_lists.get(held.font.families).collect();
-        assert_eq!(
-            families,
-            [
-                FamilyName::Named(names[n].as_str()),
-                FamilyName::Generic(GenericFamily::SansSerif)
-            ]
-        );
+        assert!(fonts.is_named(held.font.families, &lists_named[n]));
         assert_eq!(
             lists.feature_settings().get(held.font.features),
             features[n]
         );
         assert_eq!(
-            Some(lists.languages.get(held.language)),
+            Some(content.languages.get(held.language)),
             Language::parse(tags[n]).ok()
         );
         let hyphen = node_text_facts(content, first, FirstLineVariant::Standard)
@@ -1348,9 +1351,13 @@ fn a_style_compares_its_floats_by_bits() {
     let nan = styled(|style| style.text.letter_spacing = LengthPercentage::from_px(f32::NAN));
     let negative_zero = styled(|style| style.text.letter_spacing = LengthPercentage::from_px(-0.0));
     let mut lists = Lists::new();
-    lists.clear();
+    let mut languages = Languages::new();
+    let mut cx = no_fonts();
+    let (fonts, ..) = cx.selecting_fonts();
     let mut replaced = 0;
-    let mut keyed = |style: &ComputedStyle<'_>| -> StyleKey { lists.key(style, &mut replaced) };
+    let mut keyed = |style: &ComputedStyle<'_>| -> StyleKey {
+        lists.key(style, &mut languages, fonts, &mut replaced)
+    };
     assert_eq!(keyed(&nan), keyed(&nan));
     assert_ne!(keyed(&negative_zero), keyed(&ComputedStyle::initial()));
     let layout = build(|b| {
@@ -1374,7 +1381,8 @@ fn a_style_compares_its_floats_by_bits() {
 #[test]
 fn languages_and_hyphenation_strings_are_interned() {
     let japanese = Language::parse("ja").ok();
-    let layout = build(|b| {
+    let mut cx = no_fonts();
+    let layout = build_in(&mut cx, |b| {
         b.open_box(
             key(1),
             &styled(|style| {
@@ -1388,13 +1396,10 @@ fn languages_and_hyphenation_strings_are_interned() {
     let content = layout.content();
     let node = NodeId::new(1);
     let request = node_request(content, node, FirstLineVariant::Standard);
-    assert_eq!(
-        Some(content.lists.languages.get(request.language)),
-        japanese
-    );
+    assert_eq!(Some(content.languages.get(request.language)), japanese);
     let hyphen = node_text_facts(content, node, FirstLineVariant::Standard)
         .hyphen
-        .map(|id| content.lists.hyphen_strings().get(id));
+        .map(|id| cx.content_lists().hyphen_strings().get(id));
     assert_eq!(hyphen, Some("‐"));
 }
 
@@ -1404,8 +1409,10 @@ fn languages_and_hyphenation_strings_are_interned() {
 /// answers the initial ids.
 #[test]
 fn the_empty_lists_and_und_are_stored_only_before_another() {
-    let plain = build(|b| b.text(key(1), "plain"));
-    let styles = &plain.content().lists;
+    let mut cx = no_fonts();
+    let plain = build_in(&mut cx, |b| b.text(key(1), "plain"));
+    let styles = cx.content_lists();
+    let languages = &plain.content().languages;
     let block = node_request(plain.content(), NodeId::BLOCK, FirstLineVariant::Standard);
     assert_eq!(
         (block.font.features, block.font.variations, block.language),
@@ -1416,14 +1423,15 @@ fn the_empty_lists_and_und_are_stored_only_before_another() {
         )
     );
     assert_eq!(styles.feature_settings().get(block.font.features), []);
-    assert_eq!(styles.languages.get(block.language), Language::UND);
+    assert_eq!(languages.get(block.language), Language::UND);
     let kept = styles.feature_settings().heap_bytes()
         + styles.variation_settings().heap_bytes()
-        + styles.languages.heap_bytes();
+        + languages.heap_bytes();
     assert_eq!(kept, 0, "nothing stored for the initial lists");
     let features = [FontFeature::new(Tag::new(b"liga"), 0)];
     let japanese = Language::parse("ja").ok();
-    let set = build(|b| {
+    let mut cx = no_fonts();
+    let set = build_in(&mut cx, |b| {
         b.open_box(
             key(1),
             &ComputedStyle {
@@ -1441,7 +1449,8 @@ fn the_empty_lists_and_und_are_stored_only_before_another() {
         );
         b.close_box();
     });
-    let styles = &set.content().lists;
+    let styles = cx.content_lists();
+    let languages = &set.content().languages;
     let block = node_request(set.content(), NodeId::BLOCK, FirstLineVariant::Standard);
     let boxed = node_request(set.content(), NodeId::new(1), FirstLineVariant::Standard);
     assert_eq!(block.font.features, FeatureSettingsId::new(0));
@@ -1449,8 +1458,8 @@ fn the_empty_lists_and_und_are_stored_only_before_another() {
     assert_eq!(styles.feature_settings().get(block.font.features), []);
     assert_eq!(styles.feature_settings().get(boxed.font.features), features);
     assert_eq!(block.language, LanguageId::UNDETERMINED);
-    assert_eq!(styles.languages.get(block.language), Language::UND);
-    assert_eq!(Some(styles.languages.get(boxed.language)), japanese);
+    assert_eq!(languages.get(block.language), Language::UND);
+    assert_eq!(Some(languages.get(boxed.language)), japanese);
 }
 
 /// The one initial style is CSS's, with Chrome's values where Chrome computes
@@ -1940,7 +1949,9 @@ fn any_calls_in_any_order_leave_whole_content() {
             ..BuildOptions::default()
         };
         let mut layout = Layout::new();
+        let mut cx = no_fonts();
         let mut b = layout.builder_within(
+            &mut cx,
             NodeKey(0),
             &ComputedBlockStyle {
                 first_line: round.is_multiple_of(3).then_some(&first_line),
@@ -1981,7 +1992,7 @@ fn any_calls_in_any_order_leave_whole_content() {
         if round.is_multiple_of(5) {
             drop(b);
         } else {
-            b.finish(&mut no_fonts());
+            b.finish();
         }
         let content = layout.content();
         assert!(content.text.len() <= limits.text);
@@ -2035,7 +2046,9 @@ fn ruby_calls_look_past_no_box() {
     let depth = 1000;
     for in_ruby in [true, false] {
         let mut layout = Layout::new();
+        let mut cx = no_fonts();
         let mut b = layout.builder(
+            &mut cx,
             NodeKey(0),
             &ComputedBlockStyle::new(&plain),
             BuildOptions::default(),
@@ -2064,7 +2077,7 @@ fn ruby_calls_look_past_no_box() {
         let per_call = if in_ruby { 3 } else { 6 };
         #[cfg(debug_assertions)]
         assert!(steps <= per_call * depth, "{in_ruby}: {steps} steps");
-        b.finish(&mut no_fonts());
+        b.finish();
         let boxes = nodes(&layout)
             .iter()
             .filter(|&&(kind, _)| kind == NodeKind::Box)
@@ -2230,19 +2243,23 @@ fn math_auto_stops_at_the_text_limit() {
     let math = styled(|s| s.text.transform = TextTransform::MATH_AUTO);
     for (limit, expected, dropped) in [(3, "", 1), (4, "𝑖", 0)] {
         let mut layout = Layout::new();
+        let mut cx = no_fonts();
         let mut b = layout.builder_within(
+            &mut cx,
             key(0),
             &ComputedBlockStyle::new(&math),
             BuildOptions::default(),
             ContentLimits::MAX.with_text(limit),
         );
         b.text(key(1), "i");
-        let report = b.finish(&mut no_fonts());
+        let report = b.finish();
         assert_eq!(text(&layout), expected);
         assert_eq!(report.dropped_bytes, dropped);
     }
     let mut layout = Layout::new();
+    let mut cx = no_fonts();
     let mut b = layout.builder_within(
+        &mut cx,
         key(0),
         &ComputedBlockStyle::new(&math),
         BuildOptions::default(),
@@ -2250,7 +2267,7 @@ fn math_auto_stops_at_the_text_limit() {
     );
     b.text(key(1), "i");
     b.text(key(1), "j");
-    let report = b.finish(&mut no_fonts());
+    let report = b.finish();
     assert_eq!(text(&layout), "i");
     assert_eq!(report.dropped_bytes, 1);
 }
@@ -2262,14 +2279,16 @@ fn masked_text_stops_at_the_text_limit() {
     let masked = styled(|s| s.text.security = TextSecurity::Disc);
     for (limit, expected, dropped) in [(2, "", 3), (3, "\u{2022}", 2), (8, "\u{2022}\u{2022}", 1)] {
         let mut layout = Layout::new();
+        let mut cx = no_fonts();
         let mut b = layout.builder_within(
+            &mut cx,
             key(0),
             &ComputedBlockStyle::new(&masked),
             BuildOptions::default(),
             ContentLimits::MAX.with_text(limit),
         );
         b.text(key(1), "abc");
-        let report = b.finish(&mut no_fonts());
+        let report = b.finish();
         assert_eq!(text(&layout), expected, "{limit}");
         assert_eq!(report.dropped_bytes, dropped, "{limit}");
     }
@@ -2283,14 +2302,16 @@ fn masked_text_stops_at_the_text_limit() {
 fn a_case_transform_at_the_text_limit_is_written_whole() {
     let within = |block: &ComputedBlockStyle<'_>, limit: usize, text_: &str| {
         let mut layout = Layout::new();
+        let mut cx = no_fonts();
         let mut b = layout.builder_within(
+            &mut cx,
             key(0),
             block,
             BuildOptions::default(),
             ContentLimits::MAX.with_text(limit),
         );
         b.text(key(1), text_);
-        let report = b.finish(&mut no_fonts());
+        let report = b.finish();
         assert_eq!(report.dropped_bytes, 0);
         layout
     };
@@ -2488,7 +2509,9 @@ fn a_transform_that_grows_the_text_stops_at_its_limit() {
     let limits = ContentLimits::MAX.with_text(10);
     let wide = styled(|style| style.text.transform.full_width = true);
     let mut layout = Layout::new();
+    let mut cx = no_fonts();
     let mut b = layout.builder_within(
+        &mut cx,
         key(0),
         &ComputedBlockStyle::new(&wide),
         BuildOptions::default(),
@@ -2496,21 +2519,23 @@ fn a_transform_that_grows_the_text_stops_at_its_limit() {
     );
     // Three bytes each: three fit, and a fourth would reach 12.
     b.text(key(1), "abcdef");
-    let built = b.finish(&mut no_fonts());
+    let built = b.finish();
     assert_eq!(text(&layout), "ａｂｃ");
     assert_eq!(built.dropped_bytes, 3);
 
     // `ß` in bulk: two capitals of its two bytes, cut at the limit.
     let upper = cased(TextCase::Uppercase, "de");
     let mut layout = Layout::new();
+    let mut cx = no_fonts();
     let mut b = layout.builder_within(
+        &mut cx,
         key(0),
         &ComputedBlockStyle::new(&upper),
         BuildOptions::default(),
         limits,
     );
     b.text(key(1), &"ß".repeat(100));
-    let built = b.finish(&mut no_fonts());
+    let built = b.finish();
     assert_eq!(text(&layout), "SSSSSSSSSS");
     assert_eq!(built.dropped_bytes, 190);
 }

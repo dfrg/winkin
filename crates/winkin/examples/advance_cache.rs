@@ -150,6 +150,7 @@ fn main() {
     };
     let mut layout = Layout::new();
     let mut builder = layout.builder(
+        &mut context,
         NodeKey(0),
         &ComputedBlockStyle::new(&style),
         BuildOptions::default(),
@@ -160,7 +161,7 @@ fn main() {
         device_scale: 1.25,
         held: RefCell::default(),
     };
-    builder.finish_with_metrics(&mut context, &cache);
+    builder.finish_with_metrics(&cache);
     let build_misses = cache.held.borrow().misses;
     layout.break_lines_with_metrics(&mut context, Area::new(80.0), &mut NoExclusions, &cache);
     layout.break_lines_with_metrics(&mut context, Area::new(48.0), &mut NoExclusions, &cache);

@@ -629,9 +629,9 @@ fn measures_as_built(
     let mut cx = context();
     let block = ComputedBlockStyle::new(root);
     let mut layout = Layout::new();
-    let mut b = layout.builder(NodeKey(0), &block, BuildOptions::default());
+    let mut b = layout.builder(&mut cx, NodeKey(0), &block, BuildOptions::default());
     calls(&mut b, &built);
-    b.finish(&mut cx);
+    b.finish();
     layout.break_lines(&mut cx, Area::new(widths[0]), &mut NoExclusions);
     let pairs: Vec<_> = keys.iter().map(|&key| (NodeKey(key), sizes(key))).collect();
     layout.measure(&mut cx, basis, pairs.iter().copied());
@@ -640,9 +640,9 @@ fn measures_as_built(
         percentage_basis: basis,
         ..BuildOptions::default()
     };
-    let mut b = fresh.builder(NodeKey(0), &block, options);
+    let mut b = fresh.builder(&mut cx, NodeKey(0), &block, options);
     calls(&mut b, &sizes);
-    b.finish(&mut cx);
+    b.finish();
     assert_eq!(layout.intrinsic_sizes(), fresh.intrinsic_sizes());
     for &width in widths {
         layout.break_lines(&mut cx, Area::new(width), &mut NoExclusions);

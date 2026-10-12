@@ -416,7 +416,12 @@ impl ContentWriter<'_> {
             // in its context, and each of the caller's characters mapped to
             // what it became.
             Some(transformer) if content.len().saturating_mul(transformer.max_growth()) <= room => {
-                transformer.write(content, before, self.words, &mut self.content.text);
+                transformer.write(
+                    content,
+                    before,
+                    &mut self.scratch.words,
+                    &mut self.content.text,
+                );
                 self.extend(item);
                 if stands.is_none() {
                     self.transformed(mark, content, transformer, before);
@@ -434,7 +439,12 @@ impl ContentWriter<'_> {
                 for ch in content.chars() {
                     let back_to = self.content.text.len();
                     let alone = ch.encode_utf8(&mut one);
-                    transformer.write(alone, previous, self.words, &mut self.content.text);
+                    transformer.write(
+                        alone,
+                        previous,
+                        &mut self.scratch.words,
+                        &mut self.content.text,
+                    );
                     if self.content.text.len() > self.room.limits.text {
                         self.content.text.truncate(back_to);
                         break;
@@ -536,7 +546,12 @@ impl ContentWriter<'_> {
         if !self.has_text_room(grapheme.len().saturating_mul(transformer.max_growth())) {
             return 1;
         }
-        transformer.write(grapheme, before, self.words, &mut self.content.text);
+        transformer.write(
+            grapheme,
+            before,
+            &mut self.scratch.words,
+            &mut self.content.text,
+        );
         let written = self.content.text.get(mark..).unwrap_or_default();
         // The segmenter says 0 first, and nothing more for no text.
         let count = GraphemeClusterSegmenter::new()
@@ -709,7 +724,7 @@ impl ContentWriter<'_> {
         // transform made of it alone. Where those do not add up to what the
         // piece made in its context, its units are taken back.
         let own = Transforms::new(Some(transformer), None);
-        let words = &mut *self.words;
+        let words = &mut self.scratch.words;
         let back = map.mark();
         let whole = align_counts(
             written,
@@ -801,8 +816,14 @@ impl ContentWriter<'_> {
         let first_line_source = &mut extras.get_or_insert_with(Box::default).first_line_source;
         let written = text.get(mark.get()..).unwrap_or_default();
         if transforms.first_line_differs() && kept == content.len() {
-            first_line_source
-                .push_transformed(mark, written, content, before, transforms, self.words);
+            first_line_source.push_transformed(
+                mark,
+                written,
+                content,
+                before,
+                transforms,
+                &mut self.scratch.words,
+            );
         } else {
             first_line_source.push_same(mark, written);
         }

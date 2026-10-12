@@ -49,6 +49,7 @@ fn prose(layout: &mut Layout, cx: &mut Context, (family, language): (&str, &str)
         ..root
     };
     let mut b = layout.builder(
+        cx,
         NodeKey(0),
         &ComputedBlockStyle::new(&root),
         BuildOptions::default(),
@@ -63,7 +64,7 @@ fn prose(layout: &mut Layout, cx: &mut Context, (family, language): (&str, &str)
         b.close_box();
         b.line_break(NodeKey(8 * at + 5));
     }
-    assert!(b.finish(cx).is_complete());
+    assert!(b.finish().is_complete());
 }
 
 /// Latin with kerning and ligatures, Arabic in a left-to-right
@@ -201,6 +202,7 @@ fn breaking_around_floats_allocates_nothing_warm() {
             baseline: None,
         };
         let mut b = layout.builder(
+            cx,
             NodeKey(0),
             &ComputedBlockStyle::new(&root),
             BuildOptions::default(),
@@ -237,7 +239,7 @@ fn breaking_around_floats_allocates_nothing_warm() {
             b.text(NodeKey(8 * at + 4), rest);
             b.line_break(NodeKey(8 * at + 5));
         }
-        assert!(b.finish(cx).is_complete());
+        assert!(b.finish().is_complete());
     };
     let mut host = Floats {
         width: 0.0,

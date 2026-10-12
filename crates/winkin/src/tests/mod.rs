@@ -81,6 +81,9 @@ pub(crate) struct Fixture {
 pub(crate) enum StageCheck {
     /// Each layout once it is built.
     Built(fn(&Layout)),
+    /// Each layout once it is built, with the context that built it, whose
+    /// content scratch keeps the build's lists.
+    BuiltWithContext(fn(&Layout, &Context)),
     /// Each layout once it is broken into lines.
     Placed(fn(&Layout)),
 }
@@ -123,11 +126,13 @@ impl Fixture {
         block: &ComputedBlockStyle<'_>,
         calls: impl FnOnce(&mut LayoutBuilder<'_>),
     ) -> BuildReport {
-        let mut b = layout.builder(NodeKey(0), block, BuildOptions::default());
+        let mut b = layout.builder(&mut self.cx, NodeKey(0), block, BuildOptions::default());
         calls(&mut b);
-        let built = b.finish(&mut self.cx);
-        if let StageCheck::Built(check) = self.check {
-            check(layout);
+        let built = b.finish();
+        match self.check {
+            StageCheck::Built(check) => check(layout),
+            StageCheck::BuiltWithContext(check) => check(layout, &self.cx),
+            StageCheck::Placed(_) => {}
         }
         built
     }

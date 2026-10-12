@@ -37,7 +37,7 @@ fn document(layout: &mut Layout, cx: &mut Context, mode: WritingMode, repeat: us
         text_align: TextAlign::Justify,
         ..ComputedBlockStyle::new(&root)
     };
-    let mut b = layout.builder(NodeKey(0), &block, BuildOptions::default());
+    let mut b = layout.builder(cx, NodeKey(0), &block, BuildOptions::default());
     let mut key = 0;
     let mut next = || {
         key += 1;
@@ -59,7 +59,7 @@ fn document(layout: &mut Layout, cx: &mut Context, mode: WritingMode, repeat: us
             " and on e\u{301}\u{302}\u{303}\u{304}\u{308} again ",
         );
     }
-    assert!(b.finish(cx).is_complete());
+    assert!(b.finish().is_complete());
 }
 
 /// Reads every line along its path, and every item it paints there.

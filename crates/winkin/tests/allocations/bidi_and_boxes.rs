@@ -81,7 +81,7 @@ fn document(layout: &mut Layout, cx: &mut Context, direction: BaseDirection, rep
         direction,
         ..ComputedBlockStyle::new(&root)
     };
-    let mut b = layout.builder(NodeKey(0), &block, BuildOptions::default());
+    let mut b = layout.builder(cx, NodeKey(0), &block, BuildOptions::default());
     let mut key = 0;
     let mut next = || {
         key += 1;
@@ -108,7 +108,7 @@ fn document(layout: &mut Layout, cx: &mut Context, direction: BaseDirection, rep
         b.close_box();
         b.text(next(), "end. ");
     }
-    assert!(b.finish(cx).is_complete());
+    assert!(b.finish().is_complete());
 }
 
 /// Reads every line back as a host does: items, glyphs, clusters, the
@@ -257,6 +257,7 @@ fn nested(layout: &mut Layout, cx: &mut Context, depth: u64) {
         root,
     ];
     let mut b = layout.builder(
+        cx,
         NodeKey(0),
         &ComputedBlockStyle::new(&root),
         BuildOptions::default(),
@@ -271,7 +272,7 @@ fn nested(layout: &mut Layout, cx: &mut Context, depth: u64) {
     for _ in 0..depth {
         b.close_box();
     }
-    assert!(b.finish(cx).is_complete());
+    assert!(b.finish().is_complete());
 }
 
 /// A warm rebuild of boxes nested hundreds deep allocates nothing, nor

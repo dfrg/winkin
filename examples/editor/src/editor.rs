@@ -180,7 +180,9 @@ impl Editor {
         let block = ComputedBlockStyle::new(&style);
         let mut options = BuildOptions::default();
         options.map_source = true;
-        let mut builder = self.layout.builder(NodeKey(0), &block, options);
+        let mut builder = self
+            .layout
+            .builder(&mut self.cx, NodeKey(0), &block, options);
         // The text between brackets goes in segments, each a node of its own.
         // The brackets stay in the buffer and take no text in the layout. A
         // closing bracket closes only the innermost open one of its kind.
@@ -224,7 +226,7 @@ impl Editor {
         if self.text.is_empty() || self.text.ends_with('\n') {
             builder.line_break(NodeKey(20_000));
         }
-        assert!(builder.finish(&mut self.cx).is_complete());
+        assert!(builder.finish().is_complete());
         self.segments = segments;
         self.layout
             .break_lines(&mut self.cx, Area::new(self.width), &mut NoExclusions);

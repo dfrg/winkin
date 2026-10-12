@@ -72,6 +72,7 @@ fn prose(layout: &mut Layout, cx: &mut Context, (family, language): (&str, &str)
         baseline: Some(14.0),
     };
     let mut b = layout.builder(
+        cx,
         NodeKey(0),
         &ComputedBlockStyle::new(&root),
         BuildOptions::default(),
@@ -87,7 +88,7 @@ fn prose(layout: &mut Layout, cx: &mut Context, (family, language): (&str, &str)
         b.close_box();
         b.line_break(NodeKey(8 * at + 6));
     }
-    assert!(b.finish(cx).is_complete());
+    assert!(b.finish().is_complete());
     assert!(layout.intrinsic_sizes().max_content > 0.0);
 }
 

@@ -92,7 +92,7 @@ fn document(layout: &mut Layout, cx: &mut Context, repeat: usize) {
         },
         ..ComputedBlockStyle::new(&root)
     };
-    let mut b = layout.builder(NodeKey(0), &block, BuildOptions::default());
+    let mut b = layout.builder(cx, NodeKey(0), &block, BuildOptions::default());
     let mut key = 0;
     let mut next = || {
         key += 1;
@@ -131,7 +131,7 @@ fn document(layout: &mut Layout, cx: &mut Context, repeat: usize) {
             b.line_break(next());
         }
     }
-    assert!(b.finish(cx).is_complete());
+    assert!(b.finish().is_complete());
 }
 
 /// Reads every line back: its metrics, and every item's place across it.

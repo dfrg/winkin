@@ -2,6 +2,7 @@
 //! keeps, caches across layouts and collections, rebuilds and dropped
 //! builders.
 
+use alloc::format;
 use core::iter;
 
 use super::*;
@@ -234,6 +235,7 @@ fn a_dropped_builder_leaves_no_fonts() {
     fixture.span(&mut layout, &ComputedStyle::initial(), "abc");
     assert!(!text_runs(&layout).is_empty());
     let mut b = layout.builder(
+        &mut fixture.cx,
         NodeKey(0),
         &ComputedBlockStyle::new(&ComputedStyle::initial()),
         BuildOptions::default(),
@@ -242,4 +244,41 @@ fn a_dropped_builder_leaves_no_fonts() {
     drop(b);
     assert!(text_runs(&layout).is_empty());
     assert!(layout.fonts().used.is_empty());
+}
+
+/// One build naming far more `font-family` lists than the context keeps sets
+/// each span in its own list's font: a build only adds lists, and the lists
+/// go back to their limit when the next build starts.
+#[test]
+fn a_build_naming_more_family_lists_than_the_limit_sets_each_in_its_own() {
+    const LISTS: usize = 100;
+    let latin = TestFont::new("Test Plain Latin", &[(0x20, 0x7E)]);
+    let mut fixture = fixture_with(&[latin]);
+    let limit = fixture.cx.cache_limits().family_lists;
+    assert!(LISTS > limit);
+    let names: Vec<String> = (0..LISTS).map(|n| format!("Missing {n}")).collect();
+    let lists: Vec<[FontFamilyName<'_>; 2]> = names
+        .iter()
+        .zip(["Ahem", "Test Plain Latin"].into_iter().cycle())
+        .map(|(name, found)| [FontFamilyName::named(name), FontFamilyName::named(found)])
+        .collect();
+    let styles: Vec<ComputedStyle<'_>> = lists.iter().map(|list| families_style(list)).collect();
+    let spans: Vec<(&ComputedStyle<'_>, &str)> = styles.iter().map(|style| (style, "a")).collect();
+    let mut layout = Layout::new();
+    let built = fixture.spans(&mut layout, &ComputedStyle::initial(), &spans);
+    assert!(built.is_complete());
+    let families = fixture.families(&layout);
+    assert_eq!(families.len(), LISTS);
+    for (n, family) in families.iter().enumerate() {
+        let listed = if n % 2 == 0 {
+            "Ahem"
+        } else {
+            "Test Plain Latin"
+        };
+        assert_eq!(*family, listed, "span {n}");
+    }
+    assert!(fixture.cx.font_context().counts()[0] >= LISTS);
+    // The initial list is never stored, so this build adds none.
+    fixture.text(&mut layout, &ComputedStyle::initial(), "a");
+    assert_eq!(fixture.cx.font_context().counts()[0], limit);
 }

@@ -280,7 +280,7 @@ fn text_is(
     } else {
         TextCombineUpright::None
     };
-    let language = content.lists.languages.get(style.text.language);
+    let language = content.languages.get(style.text.language);
     let flag = |flag: TextFlags| text.has(flag);
     assert!(
         text.line_break == text_group.line_break

@@ -21,11 +21,11 @@ fn math_auto_allocates_nothing_warm() {
             let mut build = || {
                 let mut options = BuildOptions::default();
                 options.map_source = map_source;
-                let mut b = layout.builder(NodeKey(0), &block, options);
+                let mut b = layout.builder(&mut cx, NodeKey(0), &block, options);
                 for key in 1..100 {
                     b.text(NodeKey(key), source);
                 }
-                assert!(b.finish(&mut cx).is_complete());
+                assert!(b.finish().is_complete());
             };
             build();
             let warm = count_allocations(build);
@@ -67,9 +67,9 @@ fn masked_text_allocates_nothing_warm() {
                 }
                 let mut options = BuildOptions::default();
                 options.map_source = map_source;
-                let mut b = layout.builder(NodeKey(0), &block, options);
+                let mut b = layout.builder(&mut cx, NodeKey(0), &block, options);
                 b.text(NodeKey(1), &password[..typed]);
-                assert!(b.finish(&mut cx).is_complete());
+                assert!(b.finish().is_complete());
                 super::relayout(&mut layout, &mut cx, &[400.0, 60.0]);
                 let mut caret = Selection::from(Position::from(0));
                 for _ in 0..4 {
@@ -214,7 +214,7 @@ fn document(layout: &mut winkin::Layout, cx: &mut Context, styles: &Styles, word
         first_line: Some(&first_line),
         ..ComputedBlockStyle::new(&root)
     };
-    let mut b = layout.builder(NodeKey(0), &block, BuildOptions::default());
+    let mut b = layout.builder(cx, NodeKey(0), &block, BuildOptions::default());
     let mut key = 0;
     let mut next = || {
         key += 1;
@@ -296,7 +296,7 @@ fn document(layout: &mut winkin::Layout, cx: &mut Context, styles: &Styles, word
     }
     // One left open, for finishing to close.
     b.open_box(next(), &boxed, None);
-    let built = b.finish(cx);
+    let built = b.finish();
     assert!(built.is_complete());
 }
 

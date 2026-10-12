@@ -155,6 +155,7 @@ fn prose(layout: &mut Layout, cx: &mut Context, text: &str) {
         adjusted,
     ];
     let mut b = layout.builder(
+        cx,
         NodeKey(0),
         &ComputedBlockStyle::new(&root),
         BuildOptions::default(),
@@ -175,7 +176,7 @@ fn prose(layout: &mut Layout, cx: &mut Context, text: &str) {
         b.close_box();
         b.line_break(next());
     }
-    assert!(b.finish(cx).is_complete());
+    assert!(b.finish().is_complete());
 }
 
 /// Building again, and breaking again, allocates nothing with variable

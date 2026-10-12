@@ -173,7 +173,7 @@ fn build(layout: &mut Layout, cx: &mut Context, document: Document, paragraphs: 
     };
     let mut options = BuildOptions::default();
     options.map_source = matches!(document, Document::Mapped);
-    let mut b = layout.builder(NodeKey(0), &block, options);
+    let mut b = layout.builder(cx, NodeKey(0), &block, options);
     let mut key = 0;
     let mut next = || {
         key += 1;
@@ -204,7 +204,7 @@ fn build(layout: &mut Layout, cx: &mut Context, document: Document, paragraphs: 
         b.text(next(), " and the flat end of it all.");
         b.line_break(next());
     }
-    assert!(b.finish(cx).is_complete());
+    assert!(b.finish().is_complete());
 }
 
 /// Breaks `layout` at each of `widths` in turn.
@@ -224,17 +224,16 @@ const DOCUMENTS: [Document; 4] = [
 const WIDTHS: [f32; 3] = [240.0, 97.5, 600.0];
 
 /// A layout's record, what it takes beside what it keeps on the heap, is
-/// 1,336 bytes at most on a 64-bit target.
+/// 1,152 bytes at most on a 64-bit target.
 ///
 /// - The stages' first-line variants are boxed, made only where a layout
 ///   has one.
 /// - The tables a plain label, article or sample never fills are boxed too,
 ///   one box a type, made only where a layout has any: the content's offset
 ///   map, side text, atomic inlines, floats and absolutely positioned boxes;
-///   the feature, variation and hyphen lists; the generated text's fonts;
-///   the measured text's edge costs, shifts, em boxes, ruby and letter; line
-///   layout's justified lines and static positions. So a small layout, whose
-///   record is most of it, holds their pointers alone.
+///   the measured text's edge costs, shifts, em boxes, ruby and letter;
+///   line layout's justified lines and static positions. So a small layout,
+///   whose record is most of it, holds their pointers alone.
 /// - The used fonts are one table, each sharing its instance's record.
 /// - The analysis keeps no table of levels, which its runs hold. The levels
 ///   of the bidi controls that split a line's runs take 8, boxed.
@@ -242,8 +241,11 @@ const WIDTHS: [f32; 3] = [240.0, 97.5, 600.0];
 ///   the styles into, the boxed table of percentage edges, and the block's
 ///   own facts. The measure stage's text
 ///   metrics take 24, their table's.
-/// - The layout keeps no style table. The builder's memo of the styles it
-///   lowered takes 8, boxed, and its index of atomic inline keys 8, boxed.
+/// - The layout keeps no style table, no family names and no lookup
+///   state. The builder's memo, lookup and stack, the build's feature,
+///   variation and hyphen lists, and the generated texts' fonts live in the
+///   context. The content keeps its languages, 24 bytes, which shaping
+///   reads at break time.
 /// - The shaped text keeps each cluster's advance, 24 bytes, so that new
 ///   box sizes are measured without shaping again. Its fits of combined
 ///   upright text are boxed.
@@ -254,9 +256,9 @@ const WIDTHS: [f32; 3] = [240.0, 97.5, 600.0];
 /// The whole of a layout is this and its heap.
 #[test]
 #[cfg(target_pointer_width = "64")]
-fn a_layout_record_is_1336_bytes_at_most() {
+fn a_layout_record_is_1152_bytes_at_most() {
     let record = size_of::<Layout>();
-    assert!(record <= 1336, "a layout's record is {record} bytes");
+    assert!(record <= 1152, "a layout's record is {record} bytes");
 }
 
 /// A layout never built keeps nothing.
@@ -290,8 +292,7 @@ fn a_layout_keeps_what_it_says_it_keeps() {
             Some(kept),
             "{document:?}: {heap:?}"
         );
-        // Every stage the document reaches holds something; the builder's
-        // containers were open while it ran.
+        // Every stage the document reaches holds something.
         for (stage, bytes) in [
             ("content", heap.content),
             ("analysis", heap.analysis),
@@ -299,7 +300,6 @@ fn a_layout_keeps_what_it_says_it_keeps() {
             ("shaped", heap.shaped),
             ("measured", heap.measured),
             ("lines", heap.lines),
-            ("builder", heap.builder),
         ] {
             assert!(bytes > 0, "{document:?}: {stage} keeps nothing");
         }

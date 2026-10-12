@@ -364,6 +364,7 @@ fn no_font_at_all_draws_nothing() {
     let mut cx = Context::new(Collection::new());
     let mut layout = Layout::new();
     let mut b = layout.builder(
+        &mut cx,
         NodeKey(0),
         &ComputedBlockStyle::new(&ComputedStyle::initial()),
         BuildOptions::default(),
@@ -371,7 +372,7 @@ fn no_font_at_all_draws_nothing() {
     b.text(NodeKey(1), "Nothing\tto draw\u{200B} with");
     b.line_break(NodeKey(2));
     b.text(NodeKey(3), "at all");
-    assert!(b.finish(&mut cx).is_complete());
+    assert!(b.finish().is_complete());
     check(&layout);
     let shaped = layout.shaped().text(FirstLineVariant::Standard);
     assert!(shaped.glyphs.iter().all(|(_, &w)| w == GlyphWord::EMPTY));

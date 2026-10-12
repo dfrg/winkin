@@ -71,7 +71,7 @@ use crate::selection::{
 use crate::stages::Stages;
 use crate::stages::analysis::{self, Analysis, AnalysisInput};
 use crate::stages::content::{AtomicId, Content, FloatId, NodeKey, SizeChange};
-use crate::stages::content::{ContentLimits, ContentScratch, ContentWriter};
+use crate::stages::content::{ContentLimits, ContentWriter};
 use crate::stages::fonts::{self, FontInput, Fonts};
 use crate::stages::fragments::{self, Fragments, PlaceInput, ReadInput};
 use crate::stages::lines::{self, Area, BreakInput, Exclusions, LineId};
@@ -115,13 +115,6 @@ pub struct Layout {
     lines: lines::Lines,
     /// The fragment items, with their final positions.
     fragments: Fragments,
-    /// The builder's working memory: the boxes open while it runs, and where
-    /// capitalize reads the text before a call.
-    ///
-    /// It lives here, not in the context, because building takes no context.
-    /// So a host can build a nested layout, an inline-block's, while this
-    /// one's builder is open.
-    content_scratch: ContentScratch,
 }
 
 /// The stages preparing makes after the content, from analysis to
@@ -178,7 +171,6 @@ impl PreparedStages {
         provider: Option<&dyn FontMetricsProvider>,
         report: &mut BuildReport,
     ) {
-        cx.start_build(content.size());
         let config = *cx.config();
         let input = AnalysisInput {
             content,
@@ -186,15 +178,17 @@ impl PreparedStages {
         };
         let (segmenters, scratch) = cx.analyzing();
         analysis::analyze(&input, segmenters, scratch, &mut self.analysis);
+        let (caches, scratch, lists, hyphen_nodes) = cx.selecting_fonts();
         let input = FontInput {
             content,
+            lists,
+            hyphen_nodes,
             analysis: &self.analysis,
             default_language: config.default_language,
             line_metrics: config.line_metrics,
             platform_font_variations: config.platform_font_variations,
             position_synthesis: config.position_synthesis,
         };
-        let (caches, scratch) = cx.selecting_fonts();
         report.replaced_fonts = fonts::select_fonts(&input, caches, scratch, &mut self.fonts);
         let input = ShapeInput {
             content,
@@ -208,6 +202,7 @@ impl PreparedStages {
             &mut self.shaped,
         );
         self.measure_stage(content, cx, provider, true);
+        cx.finish_build(content.size());
     }
 
     /// Runs measurement again from the shaped advances, with the boxes'
@@ -246,13 +241,13 @@ impl PreparedStages {
             ruby_overhang: config.ruby_overhang,
             ruby_break_within: config.ruby_break_within,
         };
-        let (shaping, scratch) = cx.measuring();
+        let (shaping, scratch, generated) = cx.measuring();
         measure::measure_text(
             &input,
             &mut ShapeSession::new(shaping, provider),
             scratch,
             &mut self.measured,
-            new_fonts,
+            new_fonts.then_some(generated),
         );
     }
 
@@ -275,25 +270,28 @@ impl Layout {
             stages: PreparedStages::new(),
             lines: lines::Lines::new(),
             fragments: Fragments::new(),
-            content_scratch: ContentScratch::new(),
         }
     }
 
-    /// Starts building a block identified by `key` with style `block`.
+    /// Starts building a block identified by `key` with style `block`, using
+    /// `cx`.
     ///
     /// `key` identifies the block in layout views and for break opportunities
     /// between source nodes. `block` supplies the inherited text style,
-    /// first-line style and block-container properties.
+    /// first-line style and block-container properties. The builder borrows
+    /// `cx` until it finishes or is dropped, and keeps its working memory
+    /// there.
     ///
     /// Clears previous content and results, retaining allocations.
     /// Call [`finish`](LayoutBuilder::finish) to prepare the new content.
     pub fn builder<'a>(
         &'a mut self,
+        cx: &'a mut Context,
         key: NodeKey,
         block: &ComputedBlockStyle<'_>,
         options: BuildOptions,
     ) -> LayoutBuilder<'a> {
-        self.builder_within(key, block, options, ContentLimits::MAX)
+        self.builder_within(cx, key, block, options, ContentLimits::MAX)
     }
 
     /// Measures the content again with new box geometry, keeping its
@@ -764,7 +762,6 @@ impl Layout {
             stages,
             lines,
             fragments,
-            content_scratch,
         } = self;
         let PreparedStages {
             analysis,
@@ -785,7 +782,6 @@ impl Layout {
             measured: measured.heap_bytes().saturating_sub(first_measured),
             first_line: first_fonts + first_shaped + first_measured,
             lines: lines.heap_bytes() + fragments.heap_bytes(),
-            builder: content_scratch.heap_bytes(),
         }
     }
 }
@@ -799,6 +795,7 @@ impl Layout {
     /// every limit.
     pub(crate) fn builder_within<'a>(
         &'a mut self,
+        cx: &'a mut Context,
         key: NodeKey,
         block: &ComputedBlockStyle<'_>,
         options: BuildOptions,
@@ -806,15 +803,9 @@ impl Layout {
     ) -> LayoutBuilder<'a> {
         // Lines broken from the content before would name its clusters.
         self.clear_lines();
+        cx.start_build();
         LayoutBuilder::new(
-            ContentWriter::new(
-                &mut self.content,
-                &mut self.content_scratch,
-                key,
-                block,
-                options,
-                limits,
-            ),
+            ContentWriter::new(&mut self.content, cx, key, block, options, limits),
             &mut self.stages,
         )
     }
@@ -1009,8 +1000,6 @@ pub struct LayoutHeap {
     /// line headers and justification records. Temporary working memory
     /// is counted in [`ContextHeap::scratch`](crate::ContextHeap::scratch).
     pub lines: usize,
-    /// The builder's working state: the containers open while it runs.
-    pub builder: usize,
 }
 
 impl LayoutHeap {
@@ -1024,8 +1013,7 @@ impl LayoutHeap {
             measured,
             first_line,
             lines,
-            builder,
         } = *self;
-        content + analysis + fonts + shaped + measured + first_line + lines + builder
+        content + analysis + fonts + shaped + measured + first_line + lines
     }
 }

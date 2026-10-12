@@ -76,7 +76,6 @@ const ALLOWED_USIZE_RANGES: &[Entry] = &[
     ("src/selection/mod.rs", "pub fn range", "public API: a selection's text as a byte range into the caller's `Layout::text`"),
     ("src/layout/mod.rs", "pub fn selection_rects", "public API: the text a selection paints, a byte range into the caller's `Layout::text`"),
     ("src/layout/mod.rs", "        range: Range<usize>,", "public API: `selected_text`'s range, the text a selection copies, a byte range into the caller's `Layout::text`, its parameter on a line of its own"),
-    ("src/stages/content/lists.rs", "fn range(self)", "a byte range into the string the interned family lists keep their names in, to slice a `str` with"),
     ("src/stages/analysis/bidi/resolver.rs", "fn range(&self)", "the bidi algorithm: a level run's positions among its paragraph's units"),
     ("src/stages/analysis/bidi/resolver.rs", "range: Range<usize>,", "the bidi algorithm: positions among a paragraph's units, or in the resolver's working copy of their classes"),
 ];

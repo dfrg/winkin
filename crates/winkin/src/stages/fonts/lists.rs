@@ -1,8 +1,9 @@
 //! The context's family lists: two tables, each with a hash index over it.
 //!
 //! - [`NamedLists`] holds each distinct `font-family` list by its names, so
-//!   a list keeps one id across layouts. It holds names, not families, so it
-//!   survives a new collection.
+//!   a list keeps one id across layouts. The builder names each style's list
+//!   here as it keys the style, so no layout holds a name. It holds names,
+//!   not families, so it survives a new collection.
 //! - [`CandidateLists`] holds the families to try in CSS's order, per list,
 //!   script, language, matching request and presentation. Their fonts are
 //!   matched a family at a time as the walk reaches each, so no family loads
@@ -24,14 +25,26 @@ use parlance::{Language, Script};
 
 use crate::data::{FxHasher, HeapBytes, LruCache, Table, define_id, hash_one, heap_bytes};
 use crate::stages::content::FontRequest;
-use crate::stages::content::{FamilyListId, FamilyLists, FamilyName};
-use crate::style::style_struct;
+use crate::style::{same_by_value, style_struct};
 
 define_id! {
     /// Names a distinct `font-family` list in the context's
     /// [`NamedLists`], across layouts.
-    pub(super) struct NamedListId(u32);
+    ///
+    /// A font request names its list by it. Only font selection reads it,
+    /// during the build, while no trim can drop the list.
+    pub(crate) struct NamedListId(u16);
 }
+
+impl NamedListId {
+    /// The initial `font-family`, the empty list: the Standard font alone.
+    ///
+    /// The table never stores it, and never hands out its id, the one past
+    /// the most it holds.
+    pub(crate) const INITIAL: Self = Self(u16::MAX);
+}
+
+same_by_value!(NamedListId);
 
 define_id! {
     /// Names a list of fonts to try in the context's table of
@@ -53,17 +66,14 @@ enum StoredName {
 }
 
 /// Whether `stored` was given as `names`.
-fn is_named<'a>(
-    stored: &[StoredName],
-    names: impl ExactSizeIterator<Item = FamilyName<'a>>,
-) -> bool {
+fn is_named(stored: &[StoredName], names: &[FontFamilyName<'_>]) -> bool {
     stored.len() == names.len()
         && stored
             .iter()
             .zip(names)
             .all(|(stored, name)| match (stored, name) {
-                (StoredName::Generic(a), FamilyName::Generic(b)) => *a == b,
-                (StoredName::Named(a), FamilyName::Named(b)) => **a == *b,
+                (StoredName::Generic(a), FontFamilyName::Generic(b)) => a == b,
+                (StoredName::Named(a), FontFamilyName::Named(b)) => **a == **b,
                 _ => false,
             })
 }
@@ -71,9 +81,11 @@ fn is_named<'a>(
 /// Each distinct `font-family` list the context has met, by its names.
 ///
 /// A [`CandidateList`] is keyed by it, so every layout naming a list shares
-/// its fonts. An empty list is the initial `font-family`: the Standard font
-/// alone. It is trimmed between builds to the lists used last, and the
-/// candidate lists keyed by a list it drops go with it.
+/// its fonts. The empty list, the initial `font-family`, is never stored:
+/// it is [`NamedListId::INITIAL`]. The table is trimmed when a build starts
+/// to the lists used last, and the candidate lists keyed by a list it drops
+/// go with it. A build only adds, so every id it hands out holds until it
+/// ends.
 pub(super) struct NamedLists {
     lists: LruCache<NamedListId, Box<[StoredName]>>,
 }
@@ -84,11 +96,6 @@ impl NamedLists {
         Self {
             lists: LruCache::new(capacity),
         }
-    }
-
-    /// Drops every list, keeping the table's capacity.
-    pub(super) fn clear(&mut self) {
-        self.lists.clear();
     }
 
     /// Sets how many lists a trim keeps.
@@ -104,63 +111,65 @@ impl NamedLists {
         dropped
     }
 
+    /// Whether list `id` is `names`, for tests.
+    #[cfg(test)]
+    pub(super) fn is_named(&self, id: NamedListId, names: &[FontFamilyName<'_>]) -> bool {
+        is_named(self.get(id), names)
+    }
+
     /// How many lists are held, for tests to see them bounded.
     #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.lists.len()
     }
 
-    /// Whether list `id` is held.
+    /// Whether list `id` is held. The initial list always is.
     fn contains(&self, id: NamedListId) -> bool {
-        self.lists.get(id).is_some()
+        id == NamedListId::INITIAL || self.lists.get(id).is_some()
     }
 
-    /// Returns the names of list `id`, or none for an id this cache did not
-    /// hand out.
+    /// Returns the names of list `id`, or none for the initial list or an
+    /// id this cache did not hand out.
     fn get(&self, id: NamedListId) -> &[StoredName] {
         self.lists.get(id).map_or(&[], |names| names)
     }
 
-    /// Returns the id of the content's family list `id`, which `lists` holds.
+    /// Returns the id of the list `names`, storing its names if it is new.
     ///
-    /// Stores its names if it is new. Returns `None` if it does not fit.
-    pub(super) fn find_or_make(
-        &mut self,
-        lists: &FamilyLists,
-        id: FamilyListId,
-    ) -> Option<NamedListId> {
+    /// Returns `None` if it does not fit.
+    pub(super) fn find_or_make(&mut self, names: &[FontFamilyName<'_>]) -> Option<NamedListId> {
+        if names.is_empty() {
+            return Some(NamedListId::INITIAL);
+        }
         let mut fx = FxHasher::new();
-        fx.write_usize(lists.get(id).len());
-        for name in lists.get(id) {
+        fx.write_usize(names.len());
+        for name in names {
             match name {
-                FamilyName::Generic(generic) => {
+                FontFamilyName::Generic(generic) => {
                     fx.write_u8(0);
                     generic.hash(&mut fx);
                 }
-                FamilyName::Named(name) => {
+                FontFamilyName::Named(name) => {
                     fx.write_u8(1);
                     name.hash(&mut fx);
                 }
             }
         }
         let hash = fx.finish();
-        if let Some(found) = self
-            .lists
-            .find(hash, |stored| is_named(stored, lists.get(id)))
-        {
+        if let Some(found) = self.lists.find(hash, |stored| is_named(stored, names)) {
             return Some(found);
         }
         if self.lists.is_full() {
             return None;
         }
-        let names = lists
-            .get(id)
+        let stored = names
+            .iter()
             .map(|name| match name {
-                FamilyName::Generic(generic) => StoredName::Generic(generic),
-                FamilyName::Named(name) => StoredName::Named(Box::from(name)),
+                FontFamilyName::Generic(generic) => StoredName::Generic(*generic),
+                FontFamilyName::Named(name) => StoredName::Named(Box::from(&**name)),
             })
             .collect();
-        self.lists.insert(hash, names)
+        self.lists.insert(hash, stored)
     }
 }
 

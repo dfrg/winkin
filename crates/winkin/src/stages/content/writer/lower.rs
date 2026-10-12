@@ -1,9 +1,7 @@
 //! Lowering each node's styles into facts, and the writer's reads of the
 //! facts it lowered.
 
-use alloc::boxed::Box;
-
-use super::{ContentWriter, InitialLetterUse, LoweredNode, NodeFacts};
+use super::{ContentScratch, ContentWriter, InitialLetterUse, LoweredNode, NodeFacts};
 #[cfg(any(debug_assertions, test))]
 use crate::stages::content::facts_check;
 use crate::stages::content::lists::Lookup;
@@ -24,9 +22,13 @@ impl ContentWriter<'_> {
     /// Returns `style` keyed for the writer, its lists interned. Lists that
     /// do not fit are replaced and counted.
     pub(super) fn key(&mut self, style: &ComputedStyle<'_>) -> StyleKey {
-        self.content
-            .lists
-            .key(style, &mut self.room.report.replaced_styles)
+        let (fonts, ..) = self.cx.selecting_fonts();
+        self.scratch.lists.key(
+            style,
+            &mut self.content.languages,
+            fonts,
+            &mut self.room.report.replaced_styles,
+        )
     }
 
     /// Returns a node's style keyed with `initial-letter` as `letter` uses
@@ -110,8 +112,7 @@ impl ContentWriter<'_> {
     ///
     /// The facts come from the memo, or are lowered and held there.
     /// Each new row is interned, and the content's flags are set for what
-    /// it holds. The block's styles are lowered once a build and not held,
-    /// so a layout with no box makes no memo.
+    /// it holds. The block's styles are lowered once a build and not held.
     ///
     /// Where a fact table is full, the node's text facts are `stand_in`,
     /// its parent's, since text facts inherit. Its box facts are the
@@ -120,14 +121,16 @@ impl ContentWriter<'_> {
     fn lower(&mut self, style: &StyleKey, kind: NodeKind, stand_in: TextFactsId) -> NodeFacts {
         let basis = self.content.basis();
         let Content {
-            lists,
+            languages,
             facts,
             block,
             flags,
             ..
         } = &mut *self.content;
         let writing_mode = block.writing_mode;
-        let (languages, lookup) = lists.lowering();
+        let ContentScratch { memo, lists, .. } = &mut self.scratch;
+        let languages = &*languages;
+        let lookup = lists.lookup();
         if style.text.transform.is_math_auto() {
             flags.insert(ContentFlags::MATH_AUTO);
         }
@@ -145,10 +148,7 @@ impl ContentWriter<'_> {
         let cx = &mut (facts, lookup, flags);
         let (text, box_) = match kind {
             NodeKind::Block => (lower_text(cx), lower_box(cx)),
-            _ => self
-                .memo
-                .get_or_insert_with(Box::default)
-                .facts(cx, style, kind, lower_text, lower_box),
+            _ => memo.facts(cx, style, kind, lower_text, lower_box),
         };
         #[cfg(any(debug_assertions, test))]
         facts_check::lowered(self.content, style, kind, text, box_);
@@ -193,13 +193,12 @@ impl ContentWriter<'_> {
         };
         let basis = self.content.basis();
         let Content {
-            lists,
             facts,
             block,
             flags,
             ..
         } = &mut *self.content;
-        let (_, lookup) = lists.lowering();
+        let lookup = self.scratch.lists.lookup();
         let box_ = facts.lower_box(lookup, &style, kind, block.writing_mode, basis);
         flags.insert(box_.flags);
         #[cfg(any(debug_assertions, test))]
@@ -267,7 +266,7 @@ impl ContentWriter<'_> {
         }
         Some(TextTransformer::new(
             transform,
-            case_langid(&self.content.lists.languages.get(style.text.language)),
+            case_langid(&self.content.languages.get(style.text.language)),
             style.text.white_space_collapse.keeps_spaces(),
         ))
     }
@@ -286,7 +285,8 @@ impl ContentWriter<'_> {
     /// How the text written in the innermost container open, or the
     /// block, is transformed.
     pub(super) fn container_transforms(&self) -> Transforms {
-        self.stack
+        self.scratch
+            .open
             .last()
             .map_or(self.block_transforms, |open| open.transforms)
     }

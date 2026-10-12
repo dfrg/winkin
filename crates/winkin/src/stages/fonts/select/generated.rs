@@ -48,18 +48,13 @@ pub(crate) fn select_generated(
     out: &mut GeneratedFonts,
 ) {
     let content = input.stage.content;
-    let lists = &content.lists;
     let request_id = input.request(text);
     let request = content.facts.request(request_id);
     let primary = input.primary(request_id);
-    let list = input
-        .lists
-        .get(request.font.families)
-        .copied()
-        .unwrap_or_default();
+    let list = request.font.families;
     let language = input
         .default_language
-        .fonts_language(lists.languages.get(request.language));
+        .fonts_language(content.languages.get(request.language));
     let primary_font = sel.cx.primary_font(list, request, language);
     let font = primary_font
         .as_ref()
@@ -67,7 +62,7 @@ pub(crate) fn select_generated(
     let maps = |ch: char| font.is_some_and(|font| font.charset().contains(ch));
     for kind in kinds {
         let string = generated_string(kind, content.facts.text(text).hyphen, maps);
-        let said = string.text(lists.hyphen_strings());
+        let said = string.text(input.stage.lists.hyphen_strings());
         let start = out.next_run();
         if said.chars().all(maps) {
             out.push_run(start, said.len(), primary);

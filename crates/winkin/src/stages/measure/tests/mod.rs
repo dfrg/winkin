@@ -118,7 +118,7 @@ fn fixture() -> Fixture {
     Fixture::new(
         &[metrics(), narrow(), latin(), han()],
         han_fallback("Test Han"),
-        StageCheck::Built(check),
+        StageCheck::BuiltWithContext(check),
     )
 }
 
@@ -131,7 +131,7 @@ fn fixture() -> Fixture {
 /// - a paragraph marked `NONMONOTONE` exactly where its prefix goes back;
 /// - shifts and kept boxes in node order;
 /// - intrinsic sizes that are neither negative nor out of order.
-fn check(layout: &Layout) {
+fn check(layout: &Layout, cx: &Context) {
     let measured = layout.measured();
     let text = measured.text(FirstLineVariant::Standard);
     let clusters = layout.analysis().clusters.len();
@@ -388,7 +388,7 @@ fn check(layout: &Layout) {
     // The generated texts: each the font stage chose, shaped a piece for
     // each of its runs, in the run's font, from the left as drawn.
     let generated = measured.generated();
-    let fonts = layout.fonts().generated();
+    let fonts = cx.generated_fonts();
     let chosen: Vec<_> = fonts.iter().collect();
     for &(facts, kind, text) in &chosen {
         let runs: Vec<_> = fonts.runs(text).iter().map(|run| run.font).collect();

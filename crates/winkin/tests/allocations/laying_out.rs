@@ -88,7 +88,7 @@ fn prose(layout: &mut Layout, cx: &mut Context, how: How, text: &str) {
         text_align_last: last,
         ..ComputedBlockStyle::new(&root)
     };
-    let mut b = layout.builder(NodeKey(0), &block, BuildOptions::default());
+    let mut b = layout.builder(cx, NodeKey(0), &block, BuildOptions::default());
     for (at, paragraph) in (0..).zip(text.split('\n')) {
         let key = |n: u64| NodeKey(16 * at + n);
         b.open_box(key(0), &roomy, None);
@@ -111,7 +111,7 @@ fn prose(layout: &mut Layout, cx: &mut Context, how: How, text: &str) {
         b.close_box();
         b.line_break(key(10));
     }
-    assert!(b.finish(cx).is_complete());
+    assert!(b.finish().is_complete());
 }
 
 /// Reads `layout` back as a host does, every part of it:
@@ -485,7 +485,7 @@ fn tabs_and_preserved_white_space_allocate_nothing_warm() {
             text_align: align,
             ..ComputedBlockStyle::new(&root)
         };
-        let mut b = layout.builder(NodeKey(0), &block, BuildOptions::default());
+        let mut b = layout.builder(cx, NodeKey(0), &block, BuildOptions::default());
         b.text(NodeKey(1), text);
         b.open_box(NodeKey(2), &spaces, None);
         b.text(NodeKey(3), text);
@@ -493,7 +493,7 @@ fn tabs_and_preserved_white_space_allocate_nothing_warm() {
         b.open_box(NodeKey(4), &pre, None);
         b.text(NodeKey(5), text);
         b.close_box();
-        assert!(b.finish(cx).is_complete());
+        assert!(b.finish().is_complete());
     };
     let widths = [37.0, 81.25, 12.0, 250.0, 600.0];
     let area = |width: f32| Area {
@@ -604,12 +604,12 @@ fn justified_spaced_and_indented_text_allocates_nothing_warm() {
                 },
                 ..ComputedBlockStyle::new(&root)
             };
-            let mut b = layout.builder(NodeKey(0), &block, BuildOptions::default());
+            let mut b = layout.builder(cx, NodeKey(0), &block, BuildOptions::default());
             b.text(NodeKey(1), text);
             b.open_box(NodeKey(2), &broken, None);
             b.text(NodeKey(3), text);
             b.close_box();
-            assert!(b.finish(cx).is_complete());
+            assert!(b.finish().is_complete());
         };
     let widths = [37.0, 81.25, 12.0, 250.0, 600.0];
     let relayout = |layout: &mut Layout, cx: &mut Context| {

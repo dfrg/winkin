@@ -21,7 +21,6 @@
 
 use core::hash::{Hash, Hasher};
 
-use crate::context::Context;
 use crate::font::FontMetricsProvider;
 use crate::layout::PreparedStages;
 use crate::stages::analysis::BidiLevel;
@@ -240,7 +239,9 @@ impl Hash for BuildOptions {
 /// Builds layout content in document order.
 ///
 /// Returned by [`Layout::builder`]. Text belongs to the innermost open box.
-/// Opening a container requires its computed style.
+/// Opening a container requires its computed style. The builder borrows the
+/// [`Context`](crate::Context) it was started with until it finishes or is
+/// dropped.
 ///
 /// [`Layout::builder`]: crate::Layout::builder
 pub struct LayoutBuilder<'a> {
@@ -478,33 +479,26 @@ impl<'a> LayoutBuilder<'a> {
     /// Prepares the layout and reports dropped or replaced content.
     ///
     /// Closes all open containers, then analyzes, selects fonts, shapes and
-    /// measures the content using `cx`. Intrinsic sizes are available after
-    /// this call; see [`Layout::intrinsic_sizes`](crate::Layout::intrinsic_sizes).
-    pub fn finish(self, cx: &mut Context) -> BuildReport {
-        self.finish_with_provider(cx, None)
+    /// measures the content using the builder's context. Intrinsic sizes are
+    /// available after this call; see
+    /// [`Layout::intrinsic_sizes`](crate::Layout::intrinsic_sizes).
+    pub fn finish(self) -> BuildReport {
+        self.finish_with_provider(None)
     }
 
     /// Prepares the layout with the host's glyph metrics.
     ///
     /// Pass the same provider, with stable strike settings, to
     /// [`Layout::break_lines_with_metrics`](crate::Layout::break_lines_with_metrics).
-    pub fn finish_with_metrics(
-        self,
-        cx: &mut Context,
-        provider: &dyn FontMetricsProvider,
-    ) -> BuildReport {
-        self.finish_with_provider(cx, Some(provider))
+    pub fn finish_with_metrics(self, provider: &dyn FontMetricsProvider) -> BuildReport {
+        self.finish_with_provider(Some(provider))
     }
 
-    fn finish_with_provider(
-        mut self,
-        cx: &mut Context,
-        provider: Option<&dyn FontMetricsProvider>,
-    ) -> BuildReport {
+    fn finish_with_provider(mut self, provider: Option<&dyn FontMetricsProvider>) -> BuildReport {
         let mut report = self.writer.finish();
         // `PreparedStages::prepare` in layout/mod.rs runs the preparation.
-        self.stages
-            .prepare(self.writer.content(), cx, provider, &mut report);
+        let (content, cx) = self.writer.parts();
+        self.stages.prepare(content, cx, provider, &mut report);
         self.prepared = true;
         report
     }
@@ -515,9 +509,8 @@ impl Drop for LayoutBuilder<'_> {
     /// [`finish`](LayoutBuilder::finish), so the layout is valid for what was
     /// built.
     ///
-    /// With no context the layout cannot be prepared. It holds no analysis,
-    /// fonts or glyphs until it is built again, rather than those of other
-    /// content.
+    /// The layout is not prepared. It holds no analysis, fonts or glyphs
+    /// until it is built again, rather than those of other content.
     fn drop(&mut self) {
         if !self.prepared {
             self.writer.finish();

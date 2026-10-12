@@ -950,7 +950,7 @@ impl ClusterWriter<'_> {
     fn write_soft_hyphen(&mut self, node: NodeId, id: ClusterId, breaks: bool) {
         self.paragraph.flags.insert(ParagraphFlags::HAS_SOFT_HYPHEN);
         if breaks {
-            self.out.push_hyphen_node(node, id);
+            self.scratch.push_hyphen_node(node, id);
         }
     }
 
@@ -1224,7 +1224,7 @@ impl ClusterWriter<'_> {
             return;
         };
         if class == ClusterClass::SoftHyphen && attrs.has(ClusterAttrs::BREAK_AFTER) {
-            self.out.push_hyphen_node(pending.item.node, id);
+            self.scratch.push_hyphen_node(pending.item.node, id);
         }
         let started = self.script_runs.cluster(
             &mut self.scratch.pending_runs,

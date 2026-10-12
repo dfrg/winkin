@@ -44,9 +44,9 @@
 //! let mut cx = Context::new(fonts);
 //! let mut layout = Layout::new();
 //! let style = ComputedStyle::initial();
-//! let mut builder = layout.builder(NodeKey(0), &ComputedBlockStyle::new(&style), BuildOptions::default());
+//! let mut builder = layout.builder(&mut cx, NodeKey(0), &ComputedBlockStyle::new(&style), BuildOptions::default());
 //! builder.text(NodeKey(1), "Up and over the hill");
-//! builder.finish(&mut cx);
+//! builder.finish();
 //!
 //! // Two paths, a roof and a flat line after it, measured into a buffer
 //! // each; each line is broken to its own path's length.

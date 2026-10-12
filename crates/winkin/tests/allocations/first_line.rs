@@ -76,6 +76,7 @@ fn document(layout: &mut Layout, cx: &mut Context, words: usize) {
     letter_first.font.size = 52.0;
     letter_first.line.initial_letter = dropped;
     let mut b = layout.builder(
+        cx,
         NodeKey(0),
         &ComputedBlockStyle {
             first_line: Some(&first),
@@ -97,7 +98,7 @@ fn document(layout: &mut Layout, cx: &mut Context, words: usize) {
         b.text(NodeKey(key + 6), "affluent waffles ");
         b.close_box();
     }
-    assert!(b.finish(cx).is_complete());
+    assert!(b.finish().is_complete());
 }
 
 /// Every line's glyphs and clusters, read back as a painter does.

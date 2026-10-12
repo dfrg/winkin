@@ -13,8 +13,8 @@
 //! here. The content never holds one; its stages read the facts.
 //!
 //! **In the builder's scratch, bounded.** The memo lives in the content
-//! scratch that the layout keeps for its builder, not in the content. It is
-//! cleared at each build, since it maps to that build's ids. It is also
+//! scratch that the context keeps for the builder, not in the content. It
+//! is cleared at each build, since it maps to that build's ids. It is also
 //! cleared once it holds [`MOST`] styles, since past that a document's
 //! styles are not the few that repeat. Clearing keeps its capacity, so a
 //! warm build allocates nothing.
@@ -26,10 +26,9 @@
 
 use super::NodeKind;
 use super::facts::{BoxFactsId, TextFactsId};
-use super::lists::{
-    FamilyListId, FeatureSettingsId, HyphenStringId, LanguageId, Lookup, VariationSettingsId,
-};
+use super::lists::{FeatureSettingsId, HyphenStringId, LanguageId, Lookup, VariationSettingsId};
 use crate::data::{Table, define_id, hash_one, heap_bytes};
+use crate::stages::fonts::NamedListId;
 use crate::style::style_struct;
 use crate::style::{
     BidiGroup, EdgesGroup, FontGroup, FontKerning, FontLanguageOverride, FontOpticalSizing,
@@ -48,7 +47,7 @@ style_struct! {
     /// and a font request holds it.
     pub(crate) struct FontKey {
         /// `font-family`.
-        pub(crate) families: FamilyListId,
+        pub(crate) families: NamedListId,
         pub(crate) size: f32,
         pub(crate) weight: FontWeight,
         pub(crate) width: FontWidth,
@@ -73,7 +72,7 @@ impl FontKey {
     /// Every font property at its initial value, naming the initial lists.
     pub(crate) const INITIAL: Self = Self::new(
         &FontGroup::INITIAL,
-        FamilyListId::INITIAL,
+        NamedListId::INITIAL,
         FeatureSettingsId::EMPTY,
         VariationSettingsId::EMPTY,
     );
@@ -81,7 +80,7 @@ impl FontKey {
     /// Keys `group`, whose lists the content's tables gave these ids.
     pub(super) const fn new(
         group: &FontGroup<'_>,
-        families: FamilyListId,
+        families: NamedListId,
         features: FeatureSettingsId,
         variations: VariationSettingsId,
     ) -> Self {
@@ -314,17 +313,15 @@ pub(super) struct StyleMemo {
     lookup: Lookup,
 }
 
-impl Default for StyleMemo {
+impl StyleMemo {
     /// Creates an empty memo, allocating nothing.
-    fn default() -> Self {
+    pub(super) const fn new() -> Self {
         Self {
             entries: Table::new(),
             lookup: Lookup::new(),
         }
     }
-}
 
-impl StyleMemo {
     /// Forgets every style, keeping the capacity. Each build calls it,
     /// since each build has its own text facts.
     pub(super) fn clear(&mut self) {

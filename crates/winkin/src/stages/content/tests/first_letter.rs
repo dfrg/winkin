@@ -472,10 +472,10 @@ fn letter_set(
     cx.set_config(Config::chrome_windows());
     let mut layout = Layout::new();
     let block = ComputedBlockStyle::new(root);
-    let mut b = layout.builder(key(0), &block, BuildOptions::default());
+    let mut b = layout.builder(&mut cx, key(0), &block, BuildOptions::default());
     b.set_first_letter(LETTER, letter, None);
     calls(&mut b);
-    assert!(b.finish(&mut cx).is_complete());
+    assert!(b.finish().is_complete());
     layout.break_lines(&mut cx, Area::new(100.0), &mut NoExclusions);
     let piece = layout.box_fragments(LETTER).next().map(|piece| {
         let (inline, block) = (piece.inline(), piece.block());

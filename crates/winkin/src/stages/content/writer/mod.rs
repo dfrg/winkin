@@ -45,9 +45,9 @@ mod lower;
 mod nodes;
 mod text;
 
-use alloc::boxed::Box;
 use alloc::string::String;
 
+use super::Lists;
 use super::collapse::Collapser;
 use super::map::MapUnitId;
 use super::memo::{StyleKey, StyleMemo};
@@ -57,6 +57,7 @@ use super::{
     TextFitFacts,
 };
 use crate::build::{BuildOptions, BuildReport};
+use crate::context::Context;
 use crate::data::{HashIndex, Id, Table, TextOffset, define_id, heap_bytes};
 use crate::style::{
     ComputedBlockStyle, ComputedStyle, InitialLetter, TextFitKind, VerticalAlign, WhiteSpaceTrim,
@@ -102,29 +103,26 @@ impl ContentLimits {
     }
 }
 
-/// The content writer's working memory, which the layout keeps from one
+/// The content writer's working memory, which the context keeps from one
 /// build to the next so that a warm build allocates nothing.
 ///
-/// It holds the open containers, and the text in which capitalize finds its
-/// words where the text before carries a word on (see `transform`).
+/// It holds the open containers, the text in which capitalize finds its
+/// words where the text before carries a word on (see `transform`), the
+/// memo of lowered styles (see `memo`), the atomic inlines by key, and the
+/// build's lists with the lookup every interned table finds its rows by.
+/// Font selection reads the lists as the build finishes; nothing reads any
+/// of it after.
 ///
-/// The context holds every other stage's scratch, but not this one. The
-/// writer is not a pass: the builder feeds it one call at a time, and
-/// building takes no context. So a host can build a nested layout while
-/// this one's builder is open.
-///
-/// The writer's memo lives here too: the text facts each style given this
-/// build lowered into (see `memo`). It is boxed, and made the first time a
-/// build lowers a node's style past the block's, so a layout with no box
-/// holds only its pointer. Once made, it is cleared with each build and
-/// never dropped.
+/// The builder takes it from the context while it writes, and gives it back
+/// before preparing, whether it finishes or is dropped.
 pub(crate) struct ContentScratch {
     open: Table<OpenId, Open>,
     words: String,
-    memo: Option<Box<StyleMemo>>,
+    memo: StyleMemo,
     /// The atomic inlines written so far by the hash of their keys, to find
-    /// two that share one: made the first time a build writes one.
-    atomic_keys: Option<Box<HashIndex>>,
+    /// two that share one.
+    atomic_keys: HashIndex,
+    lists: Lists,
 }
 
 impl ContentScratch {
@@ -133,14 +131,35 @@ impl ContentScratch {
         Self {
             open: Table::new(),
             words: String::new(),
-            memo: None,
-            atomic_keys: None,
+            memo: StyleMemo::new(),
+            atomic_keys: HashIndex::new(),
+            lists: Lists::new(),
         }
+    }
+
+    /// The build's lists, which font selection reads.
+    pub(crate) fn lists(&self) -> &Lists {
+        &self.lists
+    }
+
+    /// Forgets everything, keeping the capacity.
+    fn clear(&mut self) {
+        self.open.clear();
+        self.words.clear();
+        self.memo.clear();
+        self.atomic_keys.clear();
+        self.lists.clear();
+    }
+}
+
+impl Default for ContentScratch {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 heap_bytes! {
-    ContentScratch { open, words, memo, atomic_keys }
+    ContentScratch { open, words, memo, atomic_keys, lists }
 }
 
 define_id! {
@@ -387,16 +406,12 @@ impl ContainerKind {
 /// text (`text`), and the room left (`nodes`).
 pub(crate) struct ContentWriter<'a> {
     content: &'a mut Content,
-    /// The containers open, innermost last. The block is not on it.
-    stack: &'a mut Table<OpenId, Open>,
-    /// Where capitalize joins the character before a text to it.
-    words: &'a mut String,
-    /// The text facts each style given this build was lowered into, where
-    /// a build has made it.
-    memo: &'a mut Option<Box<StyleMemo>>,
-    /// The atomic inlines written so far by the hash of their keys, until
-    /// two share one, where a build has made it.
-    atomic_keys: &'a mut Option<Box<HashIndex>>,
+    /// The context, whose font context names each style's family list.
+    cx: &'a mut Context,
+    /// The working memory, taken from the context while the writer writes.
+    /// Its `open` holds the containers open, innermost last; the block is
+    /// not on it.
+    scratch: ContentScratch,
     /// How the text written in the block, outside every container, is
     /// transformed.
     block_transforms: Transforms,
@@ -504,13 +519,14 @@ struct Room {
 }
 
 impl<'a> ContentWriter<'a> {
-    /// Clears `content` and starts it with the block's node, keyed `key`.
+    /// Clears `content` and starts it with the block's node, keyed `key`,
+    /// with the working memory and the font context of `cx`.
     ///
     /// The node is set in `block`'s style and its `::first-line` style. The
     /// build records the offset map where `options` ask.
     pub(crate) fn new(
         content: &'a mut Content,
-        scratch: &'a mut ContentScratch,
+        cx: &'a mut Context,
         key: NodeKey,
         block: &ComputedBlockStyle<'_>,
         options: BuildOptions,
@@ -534,25 +550,12 @@ impl<'a> ContentWriter<'a> {
         if block.text_fit.kind != TextFitKind::None {
             content.extras_mut().text_fit = TextFitFacts::new(block.text_fit);
         }
-        let ContentScratch {
-            open: stack,
-            words,
-            memo,
-            atomic_keys,
-        } = scratch;
-        stack.clear();
-        if let Some(atomic_keys) = atomic_keys {
-            atomic_keys.clear();
-        }
-        if let Some(memo) = memo {
-            memo.clear();
-        }
+        let mut scratch = cx.take_content_scratch();
+        scratch.clear();
         let mut writer = Self {
             content,
-            stack,
-            words,
-            memo,
-            atomic_keys,
+            cx,
+            scratch,
             block_transforms: Transforms::NONE,
             collapser: Collapser::new(),
             text_node: TextNode {

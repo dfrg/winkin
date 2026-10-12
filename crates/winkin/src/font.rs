@@ -197,12 +197,13 @@ mod tests {
         let style = ahem(16.0);
         if let Some(provider) = provider {
             let mut builder = layout.builder(
+                &mut fixture.cx,
                 NodeKey(0),
                 &ComputedBlockStyle::new(&style),
                 BuildOptions::default(),
             );
             builder.text(NodeKey(1), "AAA");
-            builder.finish_with_metrics(&mut fixture.cx, provider);
+            builder.finish_with_metrics(provider);
             layout.break_lines_with_metrics(
                 &mut fixture.cx,
                 Area::new(100.0),
@@ -236,9 +237,10 @@ mod tests {
             ..ComputedBlockStyle::new(&style)
         };
         if let Some(provider) = provider {
-            let mut builder = layout.builder(NodeKey(0), &block, BuildOptions::default());
+            let mut builder =
+                layout.builder(&mut fixture.cx, NodeKey(0), &block, BuildOptions::default());
             builder.text(NodeKey(1), "AAA");
-            builder.finish_with_metrics(&mut fixture.cx, provider);
+            builder.finish_with_metrics(provider);
             layout.break_lines_with_metrics(
                 &mut fixture.cx,
                 Area::new(100.0),
@@ -300,12 +302,13 @@ mod tests {
         style.text.word_break = WordBreak::BreakAll;
         let mut layout = Layout::new();
         let mut builder = layout.builder(
+            &mut fixture.cx,
             NodeKey(0),
             &ComputedBlockStyle::new(&style),
             BuildOptions::default(),
         );
         builder.text(NodeKey(1), "AVAVAVAV");
-        builder.finish_with_metrics(&mut fixture.cx, &provider);
+        builder.finish_with_metrics(&provider);
         let prepared_calls = provider.batches.get();
         assert!(prepared_calls > 0);
         let mut fresh_context = Context::new(fontwich::Collection::new());

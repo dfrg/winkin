@@ -74,10 +74,8 @@ pub(crate) use facts::{
 #[cfg(any(debug_assertions, test))]
 pub(crate) use facts_check::check;
 use first_line::FirstLineSource;
-use lists::Lists;
-pub(crate) use lists::{
-    FamilyListId, FamilyLists, FamilyName, HyphenStringId, HyphenStrings, LanguageId,
-};
+use lists::Languages;
+pub(crate) use lists::{HyphenStringId, HyphenStrings, LanguageId, Lists};
 pub(crate) use map::MapSide;
 use map::{Map, OffsetMap};
 pub(crate) use memo::FontKey;
@@ -668,9 +666,9 @@ pub(crate) struct Content {
     pub(crate) nodes: Nodes,
     /// The items, in reading order.
     pub(crate) items: Table<ItemId, Item>,
-    /// The lists the facts name: font families, settings, languages and
-    /// hyphen strings.
-    pub(super) lists: Lists,
+    /// The languages the facts and the analysis's script runs name, which
+    /// shaping reads at break time.
+    pub(crate) languages: Languages,
     /// The facts the writer lowers each style into.
     pub(crate) facts: Facts,
     /// The offset map, the first line's side text, the atomic inlines and
@@ -705,7 +703,7 @@ impl Content {
             text: String::new(),
             nodes: Nodes::new(),
             items: Table::new(),
-            lists: Lists::new(),
+            languages: Languages::new(),
             facts: Facts::new(),
             extras: None,
             block: BlockFacts::INITIAL,
@@ -721,7 +719,7 @@ impl Content {
         self.text.clear();
         self.nodes.clear();
         self.items.clear();
-        self.lists.clear();
+        self.languages.clear();
         self.facts.clear();
         // A fresh layout's tables start with room for a short paragraph, so
         // that the first build does not grow them by doubling from one.
@@ -980,5 +978,5 @@ impl Content {
 
 heap_bytes! {
     /// Its tables, and the extras' box and theirs where a build made it.
-    Content { text, nodes, items, lists, facts, extras; block, flags, basis }
+    Content { text, nodes, items, languages, facts, extras; block, flags, basis }
 }

@@ -45,11 +45,12 @@ fn positions_are_places_in_the_callers_text() {
     let mut cx = context();
     let mut plain = Layout::new();
     let mut b = plain.builder(
+        &mut cx,
         NodeKey(0),
         &ComputedBlockStyle::new(&ahem()),
         BuildOptions::default(),
     );
     b.text(NodeKey(1), "abc");
-    b.finish(&mut cx);
+    b.finish();
     assert_eq!(plain.node_position(Position::from(1)), None);
 }

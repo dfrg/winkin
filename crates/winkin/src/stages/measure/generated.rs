@@ -5,13 +5,21 @@ use core::ops::Range;
 use crate::data::IdRange;
 use crate::data::{Id, Table};
 use crate::stages::analysis::RunOrientation;
-use crate::stages::content::{TextFactsId, TextFlags};
-use crate::stages::fonts::{Generated, UsedFontId};
+use crate::stages::content::{HyphenStrings, TextFactsId, TextFlags};
+use crate::stages::fonts::{Generated, GeneratedFonts, UsedFontId};
 use crate::stages::shape::{self, ShapeSession, ShapingKey, SidecarGlyph, SidecarGlyphId};
 use crate::unit::{InlineLayoutUnit, LayoutUnit};
 use crate::work;
 
 use super::{MeasureInput, ShapedGeneratedId};
+
+/// What the build chose for its generated texts, which the context keeps
+/// until the next build: their fonts, and the hyphen strings they say.
+#[derive(Copy, Clone)]
+pub(crate) struct GeneratedInput<'a> {
+    pub(crate) fonts: &'a GeneratedFonts,
+    pub(crate) strings: &'a HyphenStrings,
+}
 
 /// The shaped items of one generated text, one per used font, from the left
 /// as drawn.
@@ -63,18 +71,20 @@ impl GeneratedTexts {
         self.glyphs.clear();
     }
 
-    /// Shapes every generated text that font selection chose in `input`.
+    /// Shapes every generated text that font selection chose, in
+    /// `generated`, for the content of `input`.
     ///
     /// It keeps their order, by style and then kind, and uses the shaping
-    /// caches in `shaping`. Each text is shaped once however many lines draw
-    /// it, and an ellipsis once for each direction its lines read in.
+    /// caches in `shaping`. Each text is shaped once however many lines
+    /// draw it, and an ellipsis once for each direction its lines read in.
     pub(super) fn fill<'f>(
         &mut self,
         input: &MeasureInput<'f>,
         shaping: &mut ShapeSession<'_, 'f>,
+        generated: GeneratedInput<'_>,
     ) {
         let (content, fonts) = (input.content, input.fonts);
-        let strings = content.lists.hyphen_strings();
+        let strings = generated.strings;
         // A hyphen is shaped in its style's direction, as Blink's
         // `HyphenResult::Shape` shapes it. An ellipsis is shaped in its
         // line's base direction, as Blink's `LineTruncator` shapes it. That
@@ -83,7 +93,7 @@ impl GeneratedTexts {
         // plaintext`). The paragraphs' directions are read only where there
         // is an ellipsis.
         let mut reads = None;
-        let generated = fonts.generated();
+        let generated = generated.fonts;
         'texts: for (facts, kind, text) in generated.iter() {
             work::step();
             let said = text.string.text(strings);

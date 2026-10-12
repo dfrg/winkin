@@ -50,7 +50,7 @@ fn prose(
         direction,
         ..ComputedBlockStyle::new(&root)
     };
-    let mut b = layout.builder(NodeKey(0), &block, BuildOptions::default());
+    let mut b = layout.builder(cx, NodeKey(0), &block, BuildOptions::default());
     for (at, paragraph) in (0..).zip(text.split('\n')) {
         b.text(NodeKey(4 * at), paragraph);
         b.open_box(NodeKey(4 * at + 1), &larger, None);
@@ -58,7 +58,7 @@ fn prose(
         b.close_box();
         b.line_break(NodeKey(4 * at + 3));
     }
-    assert!(b.finish(cx).is_complete());
+    assert!(b.finish().is_complete());
 }
 
 /// Shaping again allocates nothing: harfrust's data per font and per

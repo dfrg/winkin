@@ -1135,7 +1135,7 @@ impl Facts {
     /// Lowers `style` into its text facts, in a block of `writing_mode`.
     ///
     /// It interns the font request, the shaping facts and the text facts in
-    /// turn, each found through the content's `lookup`. `languages` holds
+    /// turn, each found through the build's `lookup`. `languages` holds
     /// the style's language. The id is `None` where a table is full.
     pub(super) fn lower_text(
         &mut self,

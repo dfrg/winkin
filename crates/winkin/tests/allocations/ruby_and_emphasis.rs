@@ -83,7 +83,7 @@ fn document(layout: &mut Layout, cx: &mut Context, repeat: usize) {
         text_align: TextAlign::Justify,
         ..ComputedBlockStyle::new(&root)
     };
-    let mut b = layout.builder(NodeKey(0), &block, BuildOptions::default());
+    let mut b = layout.builder(cx, NodeKey(0), &block, BuildOptions::default());
     let mut key = 0;
     let mut next = || {
         key += 1;
@@ -124,7 +124,7 @@ fn document(layout: &mut Layout, cx: &mut Context, repeat: usize) {
             b.line_break(next());
         }
     }
-    assert!(b.finish(cx).is_complete());
+    assert!(b.finish().is_complete());
 }
 
 /// Reads every line back: its items' glyphs and marks, its annotations'
@@ -244,6 +244,7 @@ fn split_ruby_continuations_allocate_nothing_warm() {
         ..ComputedStyle::initial()
     };
     let mut b = layout.builder(
+        &mut cx,
         NodeKey(0),
         &ComputedBlockStyle::new(&base),
         BuildOptions::default(),
@@ -255,7 +256,7 @@ fn split_ruby_continuations_allocate_nothing_warm() {
         b.text(NodeKey(n * 4 + 4), "aaaa bbbb cccc dddd");
         b.close_ruby();
     }
-    b.finish(&mut cx);
+    b.finish();
     let widths = [40.0, 120.0, 200.0, 400.0];
     for width in widths {
         layout.break_lines(&mut cx, Area::new(width), &mut NoExclusions);

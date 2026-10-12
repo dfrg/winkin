@@ -27,7 +27,7 @@
 //! used longest ago before every build, when no id is held.
 
 use core::ptr;
-use fontwich::{Collection, Family, Presentation};
+use fontwich::{Collection, Family, FontFamilyName, Presentation};
 use parlance::{Language, Script};
 
 use super::features::ScriptOffers;
@@ -40,7 +40,6 @@ use super::shared::SharedFonts;
 use crate::context::CacheLimits;
 use crate::data::heap_bytes;
 use crate::stages::content::FontRequest;
-use crate::stages::content::{FamilyListId, FamilyLists};
 
 /// The script a style's primary font is asked for where no language says.
 ///
@@ -208,6 +207,13 @@ impl FontContext {
         &self.instances
     }
 
+    /// Whether family list `id` is `families`, for tests to see a list
+    /// named once.
+    #[cfg(test)]
+    pub(crate) fn is_named(&self, id: NamedListId, families: &[FontFamilyName<'_>]) -> bool {
+        self.names.is_named(id, families)
+    }
+
     /// The candidate lists, for tests to see which a collection drops.
     #[cfg(test)]
     pub(super) fn candidate_lists(&self) -> &CandidateLists {
@@ -234,18 +240,14 @@ impl FontContext {
         ]
     }
 
-    /// Returns the context's id for the content's family list `id`, which
-    /// `lists` holds.
+    /// Returns the context's id for the `font-family` list `families`, or
+    /// `None` where every id is taken.
     ///
-    /// Where the cache is full, it starts again rather than refusing, and so
-    /// do the candidate lists keyed by it.
-    pub(super) fn named_list(&mut self, lists: &FamilyLists, id: FamilyListId) -> NamedListId {
-        if let Some(named) = self.names.find_or_make(lists, id) {
-            return named;
-        }
-        self.names.clear();
-        self.candidates.clear();
-        self.names.find_or_make(lists, id).unwrap_or_default()
+    /// The builder names each style's list as it keys the style. Nothing
+    /// trims the lists until the next build starts, so the id holds for
+    /// the whole build, however many lists it names.
+    pub(crate) fn family_list(&mut self, families: &[FontFamilyName<'_>]) -> Option<NamedListId> {
+        self.names.find_or_make(families)
     }
 
     /// Returns `request`'s first available font, as its family and its

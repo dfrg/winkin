@@ -206,7 +206,7 @@ pub(super) fn choose(
     let px = resolved.resolution.font_px(overrides);
     let size = used_size(px);
     let matching_only = variations_left_to_matching(family, stage.platform_font_variations);
-    let lists = &stage.content.lists;
+    let lists = stage.lists;
     let variations = lists.variation_settings().get(request.font.variations);
     let settings = lists.feature_settings().get(request.font.features);
     // The used font setting `side`: with the position's feature, or

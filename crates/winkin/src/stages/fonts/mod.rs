@@ -54,8 +54,7 @@ use crate::data::{
 };
 use crate::stages::analysis::{Analysis, ClusterId};
 use crate::stages::content::{
-    Content, FamilyListId, FontRequest, FontRequestId, HyphenStringId, HyphenStrings, NodeId,
-    TextFactsId,
+    Content, FontRequest, FontRequestId, HyphenStringId, HyphenStrings, Lists, NodeId, TextFactsId,
 };
 use crate::style::FirstLine;
 use crate::style::FirstLineState;
@@ -69,11 +68,11 @@ use features::{CapsPlan, OfferedFeatures};
 use instance::{
     FaceOverrides, InstanceId, InstanceRequest, Instances, variations_left_to_matching,
 };
-use lists::NamedListId;
 use metrics::UnscaledMetrics;
 use select::{RunScratch, Selecting};
 
 pub(crate) use context::FontContext;
+pub(crate) use lists::NamedListId;
 // Private to font selection: no layout holds one of the context's
 // instances, so nothing after this stage names one.
 use instance::Instance;
@@ -88,6 +87,12 @@ use used::{InitialLetterGrid, UsedFontInterner, adjusted_size, used_size};
 /// layout when it is next built.
 pub(crate) struct FontInput<'a> {
     pub(crate) content: &'a Content,
+    /// The build's feature and variation settings and hyphen strings, which
+    /// the content's facts name.
+    pub(crate) lists: &'a Lists,
+    /// The nodes whose text holds a soft hyphen a line may break after, in
+    /// text order, each with the first such cluster, as analysis found them.
+    pub(crate) hyphen_nodes: &'a [(NodeId, ClusterId)],
     pub(crate) analysis: &'a Analysis,
     /// The language text whose style names none chooses its fonts in
     /// (`Config::default_language`).
@@ -107,14 +112,15 @@ pub(crate) struct FontInput<'a> {
 ///
 /// It holds nothing between calls and keeps its capacity.
 pub(crate) struct FontScratch {
-    /// Each of the content's family lists, as the context names it.
-    lists: Table<FamilyListId, NamedListId>,
     /// The layout's used fonts by what they are: the instance each was made
     /// from, which only this build keeps, and its size and synthesis.
     used_index: HashTable<(u64, Option<InstanceId>, UsedFontId)>,
     /// The text facts of the text holding a soft hyphen a line may break
     /// after, each once, in order: those whose hyphen a font is chosen for.
     hyphenated: Vec<TextFactsId>,
+    /// The generated texts' fonts, which measurement shapes the generated
+    /// texts in as the build finishes. Nothing reads them after the build.
+    generated: GeneratedFonts,
     /// The run loop's.
     runs: RunScratch,
 }
@@ -123,24 +129,29 @@ impl FontScratch {
     /// Empty scratch, allocating nothing.
     pub(crate) const fn new() -> Self {
         Self {
-            lists: Table::new(),
             used_index: HashTable::new(),
             hyphenated: Vec::new(),
+            generated: GeneratedFonts::new(),
             runs: RunScratch::new(),
         }
     }
 
     /// Forgets everything, keeping the capacity.
     fn clear(&mut self) {
-        self.lists.clear();
         self.used_index.clear();
         self.hyphenated.clear();
+        self.generated.clear();
         self.runs.clear();
+    }
+
+    /// The fonts of the generated texts the last build may need.
+    pub(crate) fn generated(&self) -> &GeneratedFonts {
+        &self.generated
     }
 }
 
 heap_bytes! {
-    FontScratch { lists, used_index, hyphenated, runs }
+    FontScratch { used_index, hyphenated, generated, runs }
 }
 
 /// Selects fonts for the content of `input` into `out`.
@@ -168,20 +179,18 @@ pub(crate) fn select_fonts(
     // shaping stage and the breaker to shape in.
     let default_language = DefaultLanguage::new(input.default_language);
     out.default_language = default_language;
-    name_family_lists(content, cx, &mut scratch.lists);
-    hyphenated_texts(content, analysis, &mut scratch.hyphenated);
+    hyphenated_texts(input, &mut scratch.hyphenated);
     let ellipsis_texts = ellipsis_texts(content);
     let FontScratch {
-        lists,
         used_index,
         hyphenated,
+        generated,
         runs: run_scratch,
     } = scratch;
     let Fonts {
         used,
         runs,
         resolutions,
-        generated,
         wanted,
         ..
     } = out;
@@ -198,13 +207,12 @@ pub(crate) fn select_fonts(
         wanted,
     };
     let sel = &mut selecting;
-    resolve_requests(input, default_language, lists, sel, resolutions);
+    resolve_requests(input, default_language, sel, resolutions);
     let source = content.text(FirstLineVariant::Standard).cursor();
     let text_in = select::Input {
         stage: input,
         variant: FirstLineVariant::Standard,
         default_language,
-        lists,
         resolutions,
         source: &source,
     };
@@ -220,28 +228,10 @@ pub(crate) fn select_fonts(
     {
         select_first_line(&text_in, reach, sel, runs.first_line_mut());
     }
-    // The generated texts' table is made the first time a build has some.
     if !hyphenated.is_empty() || ellipsis_texts.is_some() {
-        let generated = generated.get_or_insert_with(Box::default);
         select_generated_texts(&text_in, hyphenated, ellipsis_texts, sel, generated);
     }
     selecting.used.replaced
-}
-
-/// Names each family list the content holds, as the context knows it, into
-/// `out`.
-///
-/// Each list is named once, so everything after is a lookup by id.
-fn name_family_lists(
-    content: &Content,
-    cx: &mut FontContext,
-    out: &mut Table<FamilyListId, NamedListId>,
-) {
-    let family_lists = &content.lists.family_lists;
-    for id in family_lists.ids() {
-        let named = cx.named_list(family_lists, id);
-        out.push_bounded(named, "one entry per family list, which an id names");
-    }
 }
 
 /// Returns the block's text facts, standard and first-line, where a line may
@@ -265,7 +255,6 @@ fn ellipsis_texts(content: &Content) -> Option<(TextFactsId, TextFactsId)> {
 fn resolve_requests(
     input: &FontInput<'_>,
     default_language: DefaultLanguage,
-    lists: &Table<FamilyListId, NamedListId>,
     sel: &mut Selecting<'_>,
     resolutions: &mut Table<FontRequestId, FontResolution>,
 ) {
@@ -274,7 +263,6 @@ fn resolve_requests(
     } = sel;
     let content = input.content;
     let facts = &content.facts;
-    let table = &content.lists;
     // The text an initial letter is sized against: the block's own, as its
     // first line has it. The builder lowers it before any node's, so its
     // request is resolved first.
@@ -287,12 +275,8 @@ fn resolve_requests(
     let mut grid: Option<InitialLetterGrid> = None;
     resolutions.reserve(facts.request_count());
     for (id, request) in facts.requests() {
-        let list = lists
-            .get(request.font.families)
-            .copied()
-            .unwrap_or_default();
-        let language = default_language.fonts_language(table.languages.get(request.language));
-        let primary = cx.primary_font(list, request, language);
+        let language = default_language.fonts_language(content.languages.get(request.language));
+        let primary = cx.primary_font(request.font.families, request, language);
         let mut caches = cx.font_caches();
         let mut resolution = FontResolution::new(request.font.computed_size(), request.upright);
         let instance = primary.and_then(|(family, index)| {
@@ -348,7 +332,7 @@ fn size_primary(
     grid: Option<&InitialLetterGrid>,
     resolution: &mut FontResolution,
 ) -> Option<(InstanceId, f32)> {
-    let table = &input.content.lists;
+    let table = input.lists;
     let line_metrics = input.line_metrics;
     let upright = request.upright;
     let computed = request.font.computed_size();
@@ -512,11 +496,12 @@ fn select_generated_texts(
 /// on a 40px `::first-line` is 40px wide. The analysis lists the nodes
 /// holding one, each with its first, which falls in the reach where any
 /// does, since the reach starts at the text's start.
-fn hyphenated_texts(content: &Content, analysis: &Analysis, out: &mut Vec<TextFactsId>) {
+fn hyphenated_texts(input: &FontInput<'_>, out: &mut Vec<TextFactsId>) {
     out.clear();
-    let reach = analysis.first_line_reach(content);
+    let content = input.content;
+    let reach = input.analysis.first_line_reach(content);
     let nodes = &content.nodes;
-    for &(node, cluster) in analysis.hyphen_nodes() {
+    for &(node, cluster) in input.hyphen_nodes {
         work::step();
         out.push(nodes.text_facts(node, FirstLineVariant::Standard));
         if reach.as_ref().is_some_and(|reach| reach.contains(&cluster)) {
@@ -1072,19 +1057,11 @@ impl GeneratedFonts {
     }
 }
 
-impl Default for GeneratedFonts {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// The generated fonts read where a layout has none.
-static NO_GENERATED_FONTS: GeneratedFonts = GeneratedFonts::new();
-
 /// The fonts: what font selection writes and later stages read.
 ///
-/// It holds the used fonts, the font runs, each request's resolution, the
-/// generated texts' fonts and the faces the content still wants.
+/// It holds the used fonts, the font runs, each request's resolution and
+/// the faces the content still wants. The generated texts' fonts stay in
+/// the font scratch, since only the build's measure reads them.
 pub(crate) struct Fonts {
     /// The used fonts.
     pub(crate) used: UsedFonts,
@@ -1099,11 +1076,6 @@ pub(crate) struct Fonts {
     /// it, and it draws clusters no font covers. The builder lowers the
     /// first line's requests beside the others.
     resolutions: Table<FontRequestId, FontResolution>,
-    /// The generated texts' fonts, where some style may need them.
-    ///
-    /// Made the first time a build needs one, then cleared and kept, never
-    /// dropped. Most layouts hold only the box's pointer.
-    generated: Option<Box<GeneratedFonts>>,
     /// The `@font-face` faces still downloading that some cluster wants,
     /// each once. The host fetches them, and lays out again when they land.
     pub(crate) wanted: Vec<FaceId>,
@@ -1119,7 +1091,6 @@ impl Fonts {
             used: UsedFonts::new(),
             runs: FirstLine::new(FontRuns::new()),
             resolutions: Table::new(),
-            generated: None,
             wanted: Vec::new(),
             default_language: DefaultLanguage::new(Language::UND),
         }
@@ -1131,18 +1102,8 @@ impl Fonts {
         self.used.clear();
         self.runs.clear();
         self.resolutions.clear();
-        if let Some(generated) = &mut self.generated {
-            generated.clear();
-        }
         self.wanted.clear();
         self.default_language = DefaultLanguage::new(Language::UND);
-    }
-
-    /// The used fonts of the generated text each style may need: none
-    /// where no style may.
-    #[inline]
-    pub(super) fn generated(&self) -> &GeneratedFonts {
-        self.generated.as_deref().unwrap_or(&NO_GENERATED_FONTS)
     }
 
     /// Returns the runs `variant` reads: the first line's where they were
@@ -1204,7 +1165,7 @@ impl Fonts {
 heap_bytes! {
     /// Its tables; not the fonts' bytes, each a count taken on the file
     /// the collection holds.
-    Fonts { used, runs, resolutions, generated, wanted; default_language }
+    Fonts { used, runs, resolutions, wanted; default_language }
 }
 
 heap_bytes! {

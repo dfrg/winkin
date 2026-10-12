@@ -73,15 +73,14 @@ use super::FontInput;
 use super::context::{CacheChange, FontContext};
 use super::coverage;
 use super::features;
-use super::lists::{CandidateId, CandidateListId, ListKey, MatchRequest, NamedListId};
+use super::lists::{CandidateId, CandidateListId, ListKey, MatchRequest};
 use super::used::UsedFontInterner;
 use super::{DefaultLanguage, FontResolution, FontRun, FontRuns, UsedFontId};
 use crate::config::PositionSynthesis;
 use crate::data::{HeapBytes, Id, IdRange, Table, TextOffset, heap_bytes};
 use crate::stages::analysis::{ClusterAttrs, ClusterEnd, ClusterId, ScriptRunId};
 use crate::stages::content::{
-    FamilyListId, FontRequest, FontRequestId, ItemId, ItemKind, NodeId, ShapingFactsId, TextCursor,
-    TextFactsId,
+    FontRequest, FontRequestId, ItemId, ItemKind, NodeId, ShapingFactsId, TextCursor, TextFactsId,
 };
 use crate::style::{FirstLineVariant, FontVariantEmoji, FontVariantPosition};
 use crate::unicode::{self, GraphemeClusterBreak};
@@ -108,8 +107,6 @@ pub(super) struct Input<'a> {
     pub(super) variant: FirstLineVariant,
     /// The language text whose style names none chooses its fonts in.
     pub(super) default_language: DefaultLanguage,
-    /// Each of the content's family lists, as the context names it.
-    pub(super) lists: &'a Table<FamilyListId, NamedListId>,
     /// What each font request resolves to.
     pub(super) resolutions: &'a Table<FontRequestId, FontResolution>,
     /// The text the clusters are chosen for in the variant, read in order
@@ -514,11 +511,7 @@ pub(super) fn select_runs(
         } else {
             out.close_position();
         }
-        let list = input
-            .lists
-            .get(request.font.families)
-            .copied()
-            .unwrap_or_default();
+        let list = request.font.families;
         let matching = MatchRequest::from(request);
         let Some(&resolution) = input.resolutions.get(request_id) else {
             out.push_missing_range(start..end, primary);
@@ -530,8 +523,7 @@ pub(super) fn select_runs(
             script_runs.step_to(&mut script, at, text_end);
             let run_end = script.end().min(end).max(ClusterId::new(at.get() + 1));
             let span = script_runs.get(script.id()).and_then(|run| {
-                let language =
-                    default_language.fonts_language(content.lists.languages.get(run.language));
+                let language = default_language.fonts_language(content.languages.get(run.language));
                 let key = ListKey {
                     list,
                     script: run.script,

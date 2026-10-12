@@ -20,6 +20,7 @@ fn prose(layout: &mut Layout, cx: &mut Context, language: &str, text: &str) {
     let mut other = root;
     other.text.word_break = WordBreak::BreakAll;
     let mut b = layout.builder(
+        cx,
         NodeKey(0),
         &ComputedBlockStyle::new(&root),
         BuildOptions::default(),
@@ -31,7 +32,7 @@ fn prose(layout: &mut Layout, cx: &mut Context, language: &str, text: &str) {
         b.close_box();
         b.line_break(NodeKey(4 * at + 3));
     }
-    assert!(b.finish(cx).is_complete());
+    assert!(b.finish().is_complete());
 }
 
 /// Analyzing again allocates nothing: every table of the analysis and its

@@ -25,7 +25,7 @@ impl ContentWriter<'_> {
         if links {
             open.outer = self.ruby.innermost;
         }
-        match self.stack.push(open) {
+        match self.scratch.open.push(open) {
             Some(id) if links => self.ruby.innermost = Some(id),
             Some(_) => {}
             None => debug_assert!(false, "no caller opens 2^32 containers at once"),
@@ -42,7 +42,7 @@ impl ContentWriter<'_> {
         iter::from_fn(move || {
             work::step();
             let id = at?;
-            let open = *self.stack.get(id)?;
+            let open = *self.scratch.open.get(id)?;
             at = open.outer;
             Some((id, open))
         })
@@ -54,7 +54,7 @@ impl ContentWriter<'_> {
         if matches!(self.text_node.math, MathText::Held(..)) {
             self.end_text();
         }
-        let Some(open) = self.stack.pop() else {
+        let Some(open) = self.scratch.open.pop() else {
             return;
         };
         if open.kind.is_ruby() {
@@ -75,7 +75,9 @@ impl ContentWriter<'_> {
         }
         // The container's next annotation flags this one's close.
         if open.kind == ContainerKind::Annotation
-            && let Some(ruby) = open.outer.and_then(|outer| self.stack.get_mut(outer))
+            && let Some(ruby) = open
+                .outer
+                .and_then(|outer| self.scratch.open.get_mut(outer))
             && ruby.kind == ContainerKind::Ruby
         {
             ruby.annotation_close = close;
@@ -127,7 +129,8 @@ impl ContentWriter<'_> {
     /// Each stack entry keeps it, so containers dropped at a limit cost
     /// nothing to look past.
     pub(super) fn container(&self) -> NodeId {
-        self.stack
+        self.scratch
+            .open
             .last()
             .map_or(NodeId::BLOCK, |open| open.container)
     }
@@ -233,10 +236,10 @@ impl ContentWriter<'_> {
     /// The annotation opens in the innermost ruby container, everything
     /// inside it closed, so its link out names that container.
     fn flag_annotation_follows(&mut self) {
-        let Some(ruby) = self.stack.last().and_then(|open| open.outer) else {
+        let Some(ruby) = self.scratch.open.last().and_then(|open| open.outer) else {
             return;
         };
-        let Some(container) = self.stack.get(ruby).copied() else {
+        let Some(container) = self.scratch.open.get(ruby).copied() else {
             return;
         };
         if container.kind != ContainerKind::Ruby || container.node.is_none() {

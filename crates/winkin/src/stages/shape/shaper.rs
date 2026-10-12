@@ -200,9 +200,7 @@ impl<'a> ShapingKey<'a> {
         halving: bool,
     ) -> Self {
         let script_run = analysis.runs.get(run.script_run);
-        let language = script_run.map_or(Language::UND, |run| {
-            content.lists.languages.get(run.language)
-        });
+        let language = script_run.map_or(Language::UND, |run| content.languages.get(run.language));
         let facts = &content.facts;
         let shaping = facts.shaping(run.shaping);
         let request = facts.request(shaping.font);
@@ -234,7 +232,7 @@ impl<'a> ShapingKey<'a> {
     ) -> Self {
         let facts = &content.facts;
         let request = facts.request(facts.text_request(text));
-        let language = content.lists.languages.get(request.language);
+        let language = content.languages.get(request.language);
         Self {
             level: BidiLevel::new(u8::from(rtl)),
             orientation,

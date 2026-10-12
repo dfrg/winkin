@@ -61,9 +61,10 @@ fn build_with(
     calls: impl FnOnce(&mut LayoutBuilder<'_>),
 ) -> Layout {
     let mut layout = Layout::new();
-    let mut builder = layout.builder(key(0), block, BuildOptions::default());
+    let mut cx = no_fonts();
+    let mut builder = layout.builder(&mut cx, key(0), block, BuildOptions::default());
     calls(&mut builder);
-    builder.finish(&mut no_fonts());
+    builder.finish();
     check(&layout);
     layout
 }
@@ -208,7 +209,7 @@ fn runs(layout: &Layout) -> Vec<(&str, String, String)> {
             let end = runs
                 .get(at + 1)
                 .map_or(ClusterId::new(analysis.clusters.len()), ScriptRun::start);
-            let language = layout.content().lists.languages.get(run.language);
+            let language = layout.content().languages.get(run.language);
             (
                 cluster_text(layout, run.start()..end),
                 String::from(run.script.as_str()),

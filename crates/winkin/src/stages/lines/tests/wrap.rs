@@ -454,6 +454,7 @@ fn a_restyled_first_line_is_balanced_by_halving_the_room() {
     let mut layout = Layout::new();
     let first = ahem(12.0);
     let mut b = layout.builder(
+        &mut fixture.cx,
         NodeKey(0),
         &ComputedBlockStyle {
             style: &ahem(10.0),
@@ -463,7 +464,7 @@ fn a_restyled_first_line_is_balanced_by_halving_the_room() {
         BuildOptions::default(),
     );
     b.text(NodeKey(1), NINE);
-    b.finish(&mut fixture.cx);
+    b.finish();
     fixture.lay_out(&mut layout, 180.0);
     assert_eq!(
         rows(&layout),
@@ -807,6 +808,7 @@ fn a_relayout_of_balanced_and_pretty_text_equals_a_fresh_layout() {
             let block = wrapping(wrap);
             let build = |fixture: &mut Fixture, layout: &mut Layout| {
                 let mut b = layout.builder(
+                    &mut fixture.cx,
                     NodeKey(0),
                     &ComputedBlockStyle {
                         style: &style,
@@ -841,7 +843,7 @@ fn a_relayout_of_balanced_and_pretty_text_equals_a_fresh_layout() {
                     b.line_break(NodeKey(18));
                 }
                 b.text(NodeKey(6), NINE);
-                b.finish(&mut fixture.cx);
+                b.finish();
             };
             let mut layout = Layout::new();
             build(&mut fixture, &mut layout);

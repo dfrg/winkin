@@ -218,7 +218,7 @@ fn fixture_with(fonts: &[TestFont]) -> Fixture {
     Fixture::new(
         fonts,
         han_fallback("Test Han Acute"),
-        StageCheck::Built(check),
+        StageCheck::BuiltWithContext(check),
     )
 }
 
@@ -226,7 +226,7 @@ fn fixture_with(fonts: &[TestFont]) -> Fixture {
 ///
 /// It runs [`check`] on each build.
 fn fixture_over(collection: Collection, families: &[String]) -> Fixture {
-    Fixture::from_collection(collection, families, StageCheck::Built(check))
+    Fixture::from_collection(collection, families, StageCheck::BuiltWithContext(check))
 }
 
 impl Fixture {
@@ -362,7 +362,7 @@ fn near(bits: i16, fraction: f32) {
 ///   for them.
 /// - A hyphen or an ellipsis is generated only where the content may draw
 ///   one.
-fn check(layout: &Layout) {
+fn check(layout: &Layout, cx: &Context) {
     let fonts = layout.fonts();
     let used = fonts.used.len();
     for text in layout.content().facts.text_ids() {
@@ -400,13 +400,13 @@ fn check(layout: &Layout) {
         .contains(ParagraphFlags::HAS_SOFT_HYPHEN);
     let cuts = layout.content().block.may_cut_lines();
     let mut last = None;
-    for (style, kind, text) in fonts.generated().iter() {
+    for (style, kind, text) in cx.generated_fonts().iter() {
         match kind {
             Generated::Hyphen => assert!(soft_hyphens, "a hyphen with no soft hyphen"),
             Generated::Ellipsis => assert!(cuts, "an ellipsis with no cut"),
         }
-        let runs = fonts.generated().runs(text);
-        let said = text.string.text(layout.content().lists.hyphen_strings());
+        let runs = cx.generated_fonts().runs(text);
+        let said = text.string.text(cx.content_lists().hyphen_strings());
         assert_eq!(runs.last().map(|run| run.end()), Some(said.len()));
         for pair in runs.windows(2) {
             assert!(pair[0].end() < pair[1].end(), "each run takes some of it");

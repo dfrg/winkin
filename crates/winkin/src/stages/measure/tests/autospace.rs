@@ -17,7 +17,7 @@ fn cjk() -> Fixture {
             TestFont::new("Test ASCII", &[(0x20, 0x7E)]),
         ],
         han_fallback("Test Punct"),
-        StageCheck::Built(check),
+        StageCheck::BuiltWithContext(check),
     )
 }
 
@@ -353,7 +353,7 @@ fn a_seam_beside_a_right_to_left_run_takes_room_on_its_own_side() {
             TestFont::new("Test Hebrew", &[(0x5D0, 0x5EA)]),
         ],
         han_fallback("Test Punct"),
-        StageCheck::Built(check),
+        StageCheck::BuiltWithContext(check),
     );
     let on = spaced(&sized(&FAMILIES, 20.0), true, true);
     let drawn = |layout: &Layout| {

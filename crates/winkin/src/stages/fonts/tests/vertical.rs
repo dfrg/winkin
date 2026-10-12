@@ -17,10 +17,10 @@ fn ahem_lines(writing_mode: WritingMode, orientation: TextOrientation, size: f32
         writing_mode,
         ..ComputedBlockStyle::new(&style)
     };
-    let mut b = layout.builder(NodeKey(0), &block, BuildOptions::default());
+    let mut b = layout.builder(&mut fixture.cx, NodeKey(0), &block, BuildOptions::default());
     b.text(NodeKey(1), "X");
-    b.finish(&mut fixture.cx);
-    check(&layout);
+    b.finish();
+    check(&layout, &fixture.cx);
     let metrics = used_font(&layout, fixture.primary(&layout)).metrics;
     [
         metrics.ascent.to_px(),

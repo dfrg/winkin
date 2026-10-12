@@ -104,9 +104,9 @@ fn laid_with(
         map_source: true,
         ..BuildOptions::default()
     };
-    let mut builder = layout.builder(NodeKey(0), block, options);
+    let mut builder = layout.builder(&mut cx, NodeKey(0), block, options);
     calls(&mut builder);
-    builder.finish(&mut cx);
+    builder.finish();
     layout.break_lines(&mut cx, Area::new(width), &mut NoExclusions);
     layout
 }

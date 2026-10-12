@@ -238,12 +238,13 @@ fn a_space_is_its_primary_fonts_advance() {
     let mut empty = Context::new(Collection::new());
     let style = sized(&AHEM_FAMILY, 20.0);
     let mut b = layout.builder(
+        &mut empty,
         NodeKey(0),
         &ComputedBlockStyle::new(&style),
         BuildOptions::default(),
     );
     b.text(NodeKey(1), "a\tb");
-    b.finish(&mut empty);
+    b.finish();
     let space = space_of(&layout);
     assert_eq!(space.to_px(), 5.0);
 }
@@ -452,6 +453,7 @@ fn a_layout_with_no_content_asks_for_nothing() {
     fixture.text(&mut layout, &families_style(&AHEM_FAMILY), "Some text");
     assert!(layout.intrinsic_sizes().max_content > 0.0);
     let b = layout.builder(
+        &mut fixture.cx,
         NodeKey(0),
         &ComputedBlockStyle::new(&ComputedStyle::initial()),
         BuildOptions::default(),

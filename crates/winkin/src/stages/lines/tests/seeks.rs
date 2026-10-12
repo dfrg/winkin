@@ -306,6 +306,7 @@ fn first_line_seeks(fixture: &mut Fixture, text: &str) -> (u64, u64) {
     let mut layout = Layout::new();
     work::take_seeks();
     let mut b = layout.builder(
+        &mut fixture.cx,
         NodeKey(0),
         &ComputedBlockStyle {
             first_line: Some(&first),
@@ -314,7 +315,7 @@ fn first_line_seeks(fixture: &mut Fixture, text: &str) -> (u64, u64) {
         BuildOptions::default(),
     );
     b.text(NodeKey(1), text);
-    b.finish(&mut fixture.cx);
+    b.finish();
     let build = work::take_seeks();
     layout.break_lines(&mut fixture.cx, Area::new(180.0), &mut NoExclusions);
     (build, work::take_seeks())

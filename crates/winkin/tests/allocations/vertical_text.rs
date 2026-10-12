@@ -60,7 +60,7 @@ fn document(layout: &mut Layout, cx: &mut Context, mode: WritingMode, repeat: us
         text_align: TextAlign::Justify,
         ..ComputedBlockStyle::new(&root)
     };
-    let mut b = layout.builder(NodeKey(0), &block, BuildOptions::default());
+    let mut b = layout.builder(cx, NodeKey(0), &block, BuildOptions::default());
     let mut key = 0;
     let mut next = || {
         key += 1;
@@ -87,7 +87,7 @@ fn document(layout: &mut Layout, cx: &mut Context, mode: WritingMode, repeat: us
         b.text(next(), "\u{6C34}ab\u{6C34} ");
         b.close_box();
     }
-    assert!(b.finish(cx).is_complete());
+    assert!(b.finish().is_complete());
 }
 
 /// Ahem as a style of its own.

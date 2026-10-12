@@ -64,7 +64,7 @@ fn main() {
     // The content, in document order: `<p>A paragraph of text <b>with a bold
     // span</b>, broken into ...</p>`.
     let mut layout = Layout::new();
-    let mut builder = layout.builder(NodeKey(0), &block, BuildOptions::default());
+    let mut builder = layout.builder(&mut cx, NodeKey(0), &block, BuildOptions::default());
     builder.text(NodeKey(1), "A paragraph of text ");
     builder.open_box(NodeKey(2), &bold, None);
     builder.text(NodeKey(3), "with a bold span");
@@ -73,7 +73,7 @@ fn main() {
         NodeKey(4),
         ", broken into justified lines at the width asked for.",
     );
-    let report = builder.finish(&mut cx);
+    let report = builder.finish();
     assert!(report.is_complete());
 
     layout.break_lines(&mut cx, Area::new(width), &mut NoExclusions);

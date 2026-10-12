@@ -1,10 +1,13 @@
 //! The calls the builder makes on the writer, but text: containers, atomic
 //! inlines, floats, absolutely positioned boxes, breaks and `finish`.
 
+use core::mem;
+
 use super::OpenId;
 use super::{ContainerKind, ContentWriter, LoweredNode, Mirror, NodeFacts, OBJECT, Open};
 use crate::build::{BoxSize, BuildReport, Clear, FloatSide, OriginalDisplay};
-use crate::data::{HashIndex, TextOffset, hash_one};
+use crate::context::Context;
+use crate::data::{TextOffset, hash_one};
 #[cfg(debug_assertions)]
 use crate::stages::content::check;
 use crate::stages::content::collapse::{Event, ZWSP};
@@ -13,7 +16,6 @@ use crate::stages::content::{
     MAX_RUBY_DEPTH, NodeId, NodeKey, NodeKind,
 };
 use crate::style::{ComputedStyle, FirstLineVariant, RubyGroup, RubyPosition, WhiteSpaceTrim};
-use alloc::boxed::Box;
 
 impl ContentWriter<'_> {
     /// Opens a container, styled `style` and, where the block has
@@ -122,7 +124,8 @@ impl ContentWriter<'_> {
     /// unbalanced close is ignored.
     pub(crate) fn close(&mut self) {
         if self
-            .stack
+            .scratch
+            .open
             .last()
             .is_some_and(|open| open.kind == ContainerKind::Box)
         {
@@ -166,7 +169,7 @@ impl ContentWriter<'_> {
             .filter(|(_, open)| open.kind == kind);
         // It closes, and everything open inside it first.
         if let Some((id, _)) = found {
-            while id < self.stack.next_id() {
+            while id < self.scratch.open.next_id() {
                 self.pop();
             }
         }
@@ -208,7 +211,8 @@ impl ContentWriter<'_> {
         });
         // Everything open inside it closes.
         while self
-            .stack
+            .scratch
+            .open
             .ids()
             .next_back()
             .is_some_and(|innermost| innermost > ruby)
@@ -253,7 +257,7 @@ impl ContentWriter<'_> {
     /// the innermost ruby container. An anonymous container closes with it.
     pub(crate) fn end_annotation(&mut self) {
         self.close_through(ContainerKind::Annotation, Some(ContainerKind::Ruby));
-        if self.stack.last().is_some_and(|open| open.anonymous) {
+        if self.scratch.open.last().is_some_and(|open| open.anonymous) {
             self.pop();
         }
     }
@@ -324,9 +328,7 @@ impl ContentWriter<'_> {
         let hash = hash_one(&key);
         let content = &*self.content;
         let atomics = content.atomics();
-        let atomic_keys = self
-            .atomic_keys
-            .get_or_insert_with(|| Box::new(HashIndex::new()));
+        let atomic_keys = &mut self.scratch.atomic_keys;
         let shared = atomic_keys
             .find::<AtomicId>(hash, |earlier| {
                 atomics
@@ -507,7 +509,7 @@ impl ContentWriter<'_> {
         self.end_text();
         self.first_letter_ends();
         self.collapser.step(Event::End);
-        while !self.stack.is_empty() {
+        while !self.scratch.open.is_empty() {
             self.pop();
         }
         if self.trim.ends {
@@ -525,12 +527,13 @@ impl ContentWriter<'_> {
         self.debug_check();
         #[cfg(debug_assertions)]
         check(self.content);
+        self.cx.put_content_scratch(mem::take(&mut self.scratch));
         self.room.report
     }
 
-    /// Returns the content written, for the stages that read it once it is
-    /// finished.
-    pub(crate) fn content(&self) -> &Content {
-        self.content
+    /// Returns the content written and the context, for the stages that
+    /// read it once it is finished.
+    pub(crate) fn parts(&mut self) -> (&Content, &mut Context) {
+        (self.content, self.cx)
     }
 }

@@ -40,9 +40,9 @@ let mut cx = Context::new(Collection::new().with_layer(fonts.snapshot()));
 let mut layout = Layout::new();
 let style = ComputedStyle::initial();
 let block = ComputedBlockStyle::new(&style);
-let mut builder = layout.builder(NodeKey(0), &block, BuildOptions::default());
+let mut builder = layout.builder(&mut cx, NodeKey(0), &block, BuildOptions::default());
 builder.text(NodeKey(1), "Hello, world");
-builder.finish(&mut cx);
+builder.finish();
 
 layout.break_lines(&mut cx, Area::new(400.0), &mut NoExclusions);
 for line in layout.lines() {

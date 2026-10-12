@@ -17,12 +17,13 @@ fn the_first_line_style_changes_no_analysis() {
             first_line,
             ..ComputedBlockStyle::new(&initial)
         };
-        let mut b = layout.builder(key(0), &block, BuildOptions::default());
+        let mut cx = no_fonts();
+        let mut b = layout.builder(&mut cx, key(0), &block, BuildOptions::default());
         b.text(key(1), "The first line, and the rest: 日本語 text.");
         b.open_box(key(2), &ComputedStyle::initial(), first_line);
         b.text(key(3), " More words here.");
         b.close_box();
-        b.finish(&mut no_fonts());
+        b.finish();
         check(&layout);
         dump(analysis(&layout))
     };
@@ -53,12 +54,13 @@ fn a_second_build_replaces_the_first() {
     let root = white_space(WhiteSpaceCollapse::Preserve);
     for calls in [&first as &dyn Fn(&mut LayoutBuilder<'_>), &second, &first] {
         let mut b = layout.builder(
+            &mut cx,
             key(0),
             &ComputedBlockStyle::new(&root),
             BuildOptions::default(),
         );
         calls(&mut b);
-        b.finish(&mut cx);
+        b.finish();
         let fresh = build_with(&ComputedBlockStyle::new(&root), calls);
         assert_eq!(dump(analysis(&layout)), dump(analysis(&fresh)));
     }
@@ -71,11 +73,13 @@ fn a_dropped_builder_leaves_no_analysis() {
     let mut layout = Layout::new();
     let initial = ComputedStyle::initial();
     let block = ComputedBlockStyle::new(&initial);
-    let mut b = layout.builder(key(0), &block, BuildOptions::default());
+    let mut cx = no_fonts();
+    let mut b = layout.builder(&mut cx, key(0), &block, BuildOptions::default());
     b.text(key(1), "before");
-    b.finish(&mut no_fonts());
+    b.finish();
     assert_eq!(paragraphs(&layout), ["before"]);
-    let mut b = layout.builder(key(0), &block, BuildOptions::default());
+    let mut cx = no_fonts();
+    let mut b = layout.builder(&mut cx, key(0), &block, BuildOptions::default());
     b.text(key(1), "after");
     drop(b);
     assert_eq!(layout.content().text, "after");

@@ -82,9 +82,9 @@ fn build(
     block: &ComputedBlockStyle<'_>,
     calls: impl FnOnce(&mut LayoutBuilder<'_>),
 ) {
-    let mut b = layout.builder(NodeKey(0), block, BuildOptions::default());
+    let mut b = layout.builder(cx, NodeKey(0), block, BuildOptions::default());
     calls(&mut b);
-    assert!(b.finish(cx).is_complete());
+    assert!(b.finish().is_complete());
 }
 
 /// Every text run of line `n`.

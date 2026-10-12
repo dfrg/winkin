@@ -478,6 +478,7 @@ fn an_initial_letter_is_sized_to_the_lines_it_spans() {
         style.font.size = 13.0;
         style.line.initial_letter = letter;
         let mut b = layout.builder(
+            &mut fixture.cx,
             NodeKey(0),
             &ComputedBlockStyle {
                 first_line,
@@ -487,9 +488,9 @@ fn an_initial_letter_is_sized_to_the_lines_it_spans() {
         );
         b.set_first_letter(NodeKey(9), &style, first_line.map(|_| &style));
         b.text(NodeKey(1), "Once upon a time");
-        b.finish(&mut fixture.cx);
+        b.finish();
         if first_line.is_none() {
-            check(layout);
+            check(layout, &fixture.cx);
         }
         cluster_used_font(layout, 0).size.to_px()
     };
@@ -528,6 +529,7 @@ fn an_initial_letter_is_sized_to_the_lines_it_spans() {
     let mut span = ten;
     span.line.initial_letter = letter(3.0, alphabetic);
     let mut b = layout.builder(
+        &mut fixture.cx,
         NodeKey(0),
         &ComputedBlockStyle::new(&ten),
         BuildOptions::default(),
@@ -536,7 +538,7 @@ fn an_initial_letter_is_sized_to_the_lines_it_spans() {
     b.open_box(NodeKey(2), &span, None);
     b.text(NodeKey(3), "upon");
     b.close_box();
-    b.finish(&mut fixture.cx);
+    b.finish();
     assert_eq!(cluster_used_font(&layout, 6).size.to_px(), 10.0);
 }
 
@@ -650,14 +652,18 @@ fn generated_text_falls_back_as_the_text_does() {
     let arrows = TestFont::new("Test Arrow Block", &[(0x2190, 0x2193)]);
     let other = TestFont::new("Test Other Arrows", &[(0x2192, 0x2192)]);
     let fallback = ahem_fallback().family("Test Arrow Block");
-    let mut fixture = Fixture::new(&[ascii, arrows, other], fallback, StageCheck::Built(check));
+    let mut fixture = Fixture::new(
+        &[ascii, arrows, other],
+        fallback,
+        StageCheck::BuiltWithContext(check),
+    );
     let mut layout = Layout::new();
     let runs_of = |fixture: &Fixture, layout: &Layout, kind| -> Vec<(usize, String)> {
         let block = layout
             .content()
             .nodes
             .text_facts(NodeId::BLOCK, FirstLineVariant::Standard);
-        let generated = layout.fonts().generated();
+        let generated = fixture.cx.generated_fonts();
         let text = generated.text(block, kind).expect("chosen");
         generated
             .runs(text)
@@ -706,9 +712,9 @@ fn generated_text_falls_back_as_the_text_does() {
             text_overflow: TextOverflow::Ellipsis,
             ..ComputedBlockStyle::new(&style)
         };
-        let mut b = layout.builder(NodeKey(0), &cut, BuildOptions::default());
+        let mut b = layout.builder(&mut fixture.cx, NodeKey(0), &cut, BuildOptions::default());
         b.text(NodeKey(1), "soft\u{AD}hyphen");
-        assert!(b.finish(&mut fixture.cx).is_complete());
+        assert!(b.finish().is_complete());
         assert_eq!(
             runs_of(&fixture, &layout, Generated::Hyphen),
             want,
@@ -730,9 +736,9 @@ fn generated_text_falls_back_as_the_text_does() {
         text_overflow: TextOverflow::Ellipsis,
         ..ComputedBlockStyle::new(&style)
     };
-    let mut b = layout.builder(NodeKey(0), &cut, BuildOptions::default());
+    let mut b = layout.builder(&mut fixture.cx, NodeKey(0), &cut, BuildOptions::default());
     b.text(NodeKey(1), "soft\u{AD}hyphen");
-    assert!(b.finish(&mut fixture.cx).is_complete());
+    assert!(b.finish().is_complete());
     assert_eq!(
         runs_of(&fixture, &layout, Generated::Hyphen),
         named(&[(1, "Ahem")])
@@ -782,11 +788,11 @@ fn generated_text_says_what_the_primary_font_maps() {
             text_overflow: TextOverflow::Ellipsis,
             ..ComputedBlockStyle::new(&style)
         };
-        let mut b = layout.builder(NodeKey(0), &cut, BuildOptions::default());
+        let mut b = layout.builder(&mut fixture.cx, NodeKey(0), &cut, BuildOptions::default());
         b.text(NodeKey(1), "soft\u{AD}hyphen");
-        assert!(b.finish(&mut fixture.cx).is_complete());
-        check(&layout);
-        let generated = layout.fonts().generated();
+        assert!(b.finish().is_complete());
+        check(&layout, &fixture.cx);
+        let generated = fixture.cx.generated_fonts();
         let text = block_text(&layout);
         let primary = primary_id(&layout, text);
         let found = |kind| generated.text(text, kind).expect("chosen");
@@ -810,22 +816,27 @@ fn generated_text_says_what_the_primary_font_maps() {
         line_clamp: LineClamp::Lines(3),
         ..ComputedBlockStyle::new(&own)
     };
-    let mut b = layout.builder(NodeKey(0), &clamped, BuildOptions::default());
+    let mut b = layout.builder(
+        &mut fixture.cx,
+        NodeKey(0),
+        &clamped,
+        BuildOptions::default(),
+    );
     b.text(NodeKey(1), "soft\u{AD}hyphen");
-    assert!(b.finish(&mut fixture.cx).is_complete());
+    assert!(b.finish().is_complete());
     let text = block_text(&layout);
-    let generated = layout.fonts().generated();
+    let generated = fixture.cx.generated_fonts();
     let hyphen = generated.text(text, Generated::Hyphen).expect("chosen");
-    let strings = layout.content().lists.hyphen_strings();
+    let strings = fixture.cx.content_lists().hyphen_strings();
     assert_eq!(hyphen.string.text(strings), "~");
     assert!(generated.text(text, Generated::Ellipsis).is_some());
     // Nothing where nothing can need it: no soft hyphen and no cut, and a
     // soft hyphen `hyphens: none` declines.
     let plain_style = families_style(&families);
     fixture.span(&mut layout, &plain_style, "plain text");
-    assert_eq!(layout.fonts().generated().iter().count(), 0);
+    assert_eq!(fixture.cx.generated_fonts().iter().count(), 0);
     let mut none = families_style(&families);
     none.text.hyphens = Hyphens::None;
     fixture.span(&mut layout, &none, "soft\u{AD}hyphen");
-    assert_eq!(layout.fonts().generated().iter().count(), 0);
+    assert_eq!(fixture.cx.generated_fonts().iter().count(), 0);
 }

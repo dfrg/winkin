@@ -186,7 +186,7 @@ fn a_text_item_keeps_the_em_box_all_of_its_text_has() {
     let mut fixture = Fixture::new(
         &[punct, TestFont::new("Test ASCII", &[(0x20, 0x7E)])],
         han_fallback("Test Punct"),
-        StageCheck::Built(check),
+        StageCheck::BuiltWithContext(check),
     );
     let ascii = families_style(&ASCII_ONLY);
     let mut layout = Layout::new();

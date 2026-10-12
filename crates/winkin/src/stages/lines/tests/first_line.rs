@@ -26,6 +26,7 @@ fn first_line(
     width: f32,
 ) {
     let mut b = layout.builder(
+        &mut fixture.cx,
         NodeKey(0),
         &ComputedBlockStyle {
             first_line: Some(first),
@@ -34,7 +35,7 @@ fn first_line(
         BuildOptions::default(),
     );
     b.text(NodeKey(1), text);
-    b.finish(&mut fixture.cx);
+    b.finish();
     fixture.lay_out(layout, width);
 }
 

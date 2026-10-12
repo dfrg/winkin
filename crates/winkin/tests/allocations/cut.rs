@@ -105,7 +105,7 @@ fn document(layout: &mut Layout, cx: &mut Context, how: How, words: usize) {
         first_line: Some(&first),
         ..block
     };
-    let mut b = layout.builder(NodeKey(0), &block, BuildOptions::default());
+    let mut b = layout.builder(cx, NodeKey(0), &block, BuildOptions::default());
     for at in 0..words {
         let key = 8 * at as u64;
         b.text(NodeKey(key), "of\u{AD}fi\u{AD}cial waf\u{AD}fles ");
@@ -126,7 +126,7 @@ fn document(layout: &mut Layout, cx: &mut Context, how: How, words: usize) {
             },
         );
     }
-    assert!(b.finish(cx).is_complete());
+    assert!(b.finish().is_complete());
 }
 
 /// Every line's items, glyphs and paint, read back as a painter does,

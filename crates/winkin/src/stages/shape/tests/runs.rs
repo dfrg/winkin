@@ -140,6 +140,7 @@ fn clusters_not_shaped_are_runs_of_their_own() {
     // So the tab is kept.
     style.text.white_space_collapse = WhiteSpaceCollapse::Preserve;
     let mut b = layout.builder(
+        &mut fixture.cx,
         NodeKey(0),
         &ComputedBlockStyle::new(&style),
         BuildOptions::default(),
@@ -151,7 +152,7 @@ fn clusters_not_shaped_are_runs_of_their_own() {
     b.text(NodeKey(4), "f\u{2066}g");
     b.line_break(NodeKey(5));
     b.text(NodeKey(6), "h");
-    assert!(b.finish(&mut fixture.cx).is_complete());
+    assert!(b.finish().is_complete());
     check(&layout);
     let starts: Vec<usize> = layout
         .shaped()
@@ -217,6 +218,7 @@ fn a_kern_survives_a_default_ignorable_the_caller_wrote() {
         }
     }
     let mut b = layout.builder(
+        &mut fixture.cx,
         NodeKey(0),
         &ComputedBlockStyle::new(&style),
         BuildOptions::default(),
@@ -224,7 +226,7 @@ fn a_kern_survives_a_default_ignorable_the_caller_wrote() {
     b.text(NodeKey(1), "A");
     b.break_opportunity();
     b.text(NodeKey(1), "V");
-    b.finish(&mut fixture.cx);
+    b.finish();
     check(&layout);
     assert_eq!(fixture.advances(&layout)[0], apart, "a <wbr> parts them");
 }

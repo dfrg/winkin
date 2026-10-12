@@ -49,9 +49,9 @@
 //! let mut cx = Context::new(fonts);
 //! let mut layout = Layout::new();
 //! let style = ComputedStyle::initial();
-//! let mut builder = layout.builder(NodeKey(0), &ComputedBlockStyle::new(&style), BuildOptions::default());
+//! let mut builder = layout.builder(&mut cx, NodeKey(0), &ComputedBlockStyle::new(&style), BuildOptions::default());
 //! builder.text(NodeKey(1), "Hello big world");
-//! builder.finish(&mut cx);
+//! builder.finish();
 //! layout.break_lines(&mut cx, Area::new(400.0), &mut NoExclusions);
 //!
 //! // A click in the third letter's right half, and the caret after it.

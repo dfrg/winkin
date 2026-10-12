@@ -1027,6 +1027,7 @@ fn the_first_lines_hyphen_is_in_its_first_line_style() {
     let root = ahem(20.0);
     let first = ahem(40.0);
     let mut b = layout.builder(
+        &mut fixture.cx,
         NodeKey(0),
         &ComputedBlockStyle {
             first_line: Some(&first),
@@ -1035,7 +1036,7 @@ fn the_first_lines_hyphen_is_in_its_first_line_style() {
         BuildOptions::default(),
     );
     b.text(NodeKey(1), "XX\u{AD}XXXXXX XXXX\u{AD}XXXX");
-    b.finish(&mut fixture.cx);
+    b.finish();
     fixture.lay_out(&mut layout, 150.0);
     assert_eq!(
         texts(&layout),
