@@ -19,7 +19,9 @@ runs once per width, and a second width repeats none of the preparation.
 sizes for atomic inlines and floats, and a new width for percentage margins
 and padding. It keeps the analysis, fonts and shaping and measures again from
 the shaped advances, or, where only atomic inlines' block sizes and baselines
-change, measures again only their extents.
+change, measures again only their extents. `Layout::set_text_align` changes
+the block's alignment, which only breaking and placing read, so the next
+`break_lines` is all it costs.
 
 The host reads the result through views on [`Layout`](../src/layout/mod.rs):
 lines and the items on them, paint operations, box fragments, floats and

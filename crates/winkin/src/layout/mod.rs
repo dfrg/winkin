@@ -79,7 +79,7 @@ use crate::stages::measure::{self, IntrinsicSizes, MeasureInput, Measured};
 use crate::stages::shape::{self, ShapeInput, ShapeSession, Shaped};
 #[cfg(test)]
 use crate::style::FirstLineVariant;
-use crate::style::{ComputedBlockStyle, Direction};
+use crate::style::{ComputedBlockStyle, Direction, TextAlign, TextAlignLast};
 use crate::unit::LayoutUnit;
 
 use boxes::BoxFragments;
@@ -415,6 +415,31 @@ impl Layout {
             }
         }
         changed
+    }
+
+    /// Sets the block's `text-align` to `align` and its `text-align-last` to
+    /// `last`, and returns whether either changed.
+    ///
+    /// Alignment is read only as lines are broken and placed, so the content
+    /// keeps its analysis, fonts, shaping and measurements, and
+    /// [`intrinsic_sizes`](Self::intrinsic_sizes) does not change. Where
+    /// either value changes, the lines are cleared: lines, box fragments,
+    /// static positions, hit tests and paints see no lines until the next
+    /// [`break_lines`](Self::break_lines), which gives what a layout built
+    /// with this alignment gives. Where neither changes, it returns `false`
+    /// and keeps the lines.
+    ///
+    /// The next [`builder`](Self::builder) takes the alignment from its block
+    /// style. The call does not allocate.
+    pub fn set_text_align(&mut self, align: TextAlign, last: TextAlignLast) -> bool {
+        let block = &mut self.content.block;
+        if (block.text_align, block.text_align_last) == (align, last) {
+            return false;
+        }
+        block.text_align = align;
+        block.text_align_last = last;
+        self.clear_lines();
+        true
     }
 
     /// Breaks and positions the content in `area`.

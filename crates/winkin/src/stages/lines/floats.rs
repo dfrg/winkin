@@ -122,6 +122,10 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// annotations reach past it is cut by the clearance: Chrome moves what
     /// follows by the greater of the two, and lends back only the reach past
     /// the clearance (`AddAnyClearanceAfterLine`, `BlockLayoutAlgorithm`).
+    ///
+    /// The test for clearing breaks is inlined, so content with none makes
+    /// no call a line.
+    #[inline]
     pub(super) fn clear_floats(
         &mut self,
         out: &Lines,
@@ -129,10 +133,23 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         area: LineBand,
         cursor: &mut Cursor,
     ) {
-        let clearances = self.stages.content.clearances();
-        if clearances.is_empty() {
-            return;
+        if !self.stages.content.clearances().is_empty() {
+            self.clear_past_break(out, end, area, cursor);
         }
+    }
+
+    /// Moves `cursor` below the floats the clearing breaks before `end`
+    /// clear, as [`clear_floats`](Self::clear_floats) does where the content
+    /// has some.
+    #[inline(never)]
+    fn clear_past_break(
+        &mut self,
+        out: &Lines,
+        end: ClusterId,
+        area: LineBand,
+        cursor: &mut Cursor,
+    ) {
+        let clearances = self.stages.content.clearances();
         let Some(last) = end.get().checked_sub(1).map(ClusterId::new) else {
             return;
         };

@@ -105,7 +105,31 @@ impl LineStages<'_> {
     /// move, to the first item at `cluster`'s start: walked to from where it
     /// was, or sought the first time. So a walk costs one search, and a step
     /// per item it passes.
+    ///
+    /// Content with no box edge and no ruby reads the prefix sums inline;
+    /// the rest is out of line.
+    #[inline]
     pub(crate) fn cluster_advance_near(
+        &self,
+        cluster: ClusterId,
+        near: &mut Option<ItemId>,
+    ) -> InlineLayoutUnit {
+        let flags = self.content.flags;
+        if flags.contains(ContentFlags::BOXES_WITH_EDGES) || flags.contains(ContentFlags::RUBY) {
+            return self.edged_cluster_advance(cluster, near);
+        }
+        if cluster.get() >= self.analysis.clusters.len() {
+            return InlineLayoutUnit::ZERO;
+        }
+        let after = ClusterId::new(cluster.get() + 1);
+        self.measured.prefix.advance(cluster, after)
+    }
+
+    /// Returns what `cluster` adds along the line where some box has an
+    /// edge or some text is ruby, as
+    /// [`cluster_advance_near`](Self::cluster_advance_near) does.
+    #[inline(never)]
+    fn edged_cluster_advance(
         &self,
         cluster: ClusterId,
         near: &mut Option<ItemId>,

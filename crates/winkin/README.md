@@ -71,6 +71,8 @@ Additional APIs:
   host block measurements.
 - `Layout::measure`: new sizes for atomic inlines and floats, and a new
   basis for percentage margins and padding, without building again.
+- `Layout::set_text_align`: new `text-align` and `text-align-last`, without
+  building again.
 - `Layout::size_lines`: lines and block metrics for sizing a block, without
   positioning items.
 - `Layout::floats` and `static_positions`: where floats went, and each

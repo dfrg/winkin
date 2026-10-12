@@ -486,9 +486,14 @@ impl LineStages<'_> {
             return extent;
         };
         let shaped = &self.shaped.runs;
-        // The cursor's run starts at or before `reusable`.
+        // The cursor's run starts at or before `reusable`. One that ends
+        // before the line's text, as where the line before stopped early, is
+        // sought again: its count of starts finds the run at once, where
+        // stepping passes every run between.
         let cursor = match &mut fonts.runs {
-            Some((cursor, reusable)) if *reusable <= on_line.start => {
+            Some((cursor, reusable))
+                if *reusable <= on_line.start && cursor.end() > on_line.start =>
+            {
                 *reusable = on_line.end;
                 cursor
             }
@@ -623,7 +628,10 @@ pub(super) fn carried_struts(
 ///
 /// A line whose text `text-fit` scales by `scale` takes its items' extents
 /// and its boxes' shifts at that scale.
+///
+/// Out of line, so that a line with no shift keeps its extent's code small.
 #[allow(clippy::too_many_arguments)]
+#[inline(never)]
 pub(super) fn shifted(
     stages: &LineStages<'_>,
     boxes: &mut BoxStack,

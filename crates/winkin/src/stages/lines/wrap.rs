@@ -173,6 +173,9 @@ fn ends_differ(lines: &[LineRecord], plan: PlannedEnds) -> WrapDecision {
 impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// Lays out a paragraph's lines balanced or scored, as
     /// `text-wrap-style` asks, from where `cursor` stands.
+    ///
+    /// Out of line, so that a greedy paragraph's breaking stays compact.
+    #[inline(never)]
     pub(super) fn wrapped_paragraph<const FLOATS: bool>(
         &mut self,
         out: &mut Lines,

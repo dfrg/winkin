@@ -395,6 +395,10 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     ///
     /// Only the block's first line, `first`, hangs a mark under
     /// `hanging-punctuation: first`. The hung mark is its first cluster.
+    ///
+    /// Inlined into every line's fit: out of line, a relayout of content
+    /// with no line-edge cost runs about 1% more instructions.
+    #[inline(always)]
     pub(super) fn start_cost(
         &self,
         costs: &mut Option<SortedCursor<'_, LineEdgeCost>>,

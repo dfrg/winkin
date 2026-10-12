@@ -243,7 +243,7 @@ goal, and fontwich mirrors each platform's Chrome rules to reach it.
 
 | Property | Values | Status | Notes and caveats | Config |
 |---|---|---|---|---|
-| `text-align` | `start`, `end`, `left`, `right`, `center`, `justify` | Supported | Per paragraph direction. The host resolves `match-parent`, and maps `justify-all` to `justify` with `text-align-last: justify`. | — |
+| `text-align` | `start`, `end`, `left`, `right`, `center`, `justify` | Supported | Per paragraph direction. The host resolves `match-parent`, and maps `justify-all` to `justify` with `text-align-last: justify`. `Layout::set_text_align` changes it and `text-align-last` without building again; the next `break_lines` breaks the lines again. | — |
 | `text-align-last` | `auto`, `start`, `end`, `left`, `right`, `center`, `justify` | Supported | `auto` is `start` under `justify`, else `text-align`. | — |
 | `text-justify` | `auto`, `none`, `inter-word`, `inter-character` | Supported | Opportunities are counted as Chrome counts them: spaces, U+00A0, tabs and the gaps between CJK characters. The room is divided as Chrome divides it. The host maps `distribute` to `inter-character`. | `tab_justification` |
 | Tabs in justified lines | — | Supported | Chrome stretches a tab as it stretches a space, so tab stops drift. `KeepStops` keeps each tab at its stop. | `tab_justification` |

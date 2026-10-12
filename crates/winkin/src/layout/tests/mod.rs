@@ -12,7 +12,8 @@
 //! - `vertical`: vertical lines and combined text;
 //! - `positioned`: absolutely positioned boxes' static positions;
 //! - `seeks`: the searches painting and reading make;
-//! - `text_fit`: text scaled to fill its lines.
+//! - `text_fit`: text scaled to fill its lines;
+//! - `align`: alignment set on a built layout.
 
 use alloc::borrow::Cow;
 use alloc::format;
@@ -227,6 +228,7 @@ fn any_area_gives_valid_reads() {
     assert_eq!(layout.metrics().last_baseline, None);
 }
 
+mod align;
 mod boxes;
 mod emphasis;
 mod generated;

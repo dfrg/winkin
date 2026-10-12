@@ -309,6 +309,10 @@ impl<'a> AnnotationRoom<'a> {
     /// `natural` is the line's own extent, and `ems` what its em boxes and
     /// marks reach, gathered as its extent was measured. `continuation`
     /// carries what the line before left. The module doc gives the rules.
+    ///
+    /// Out of line, so that a line with no annotation keeps its extent's
+    /// code small.
+    #[inline(never)]
     pub(super) fn room(
         &self,
         stages: &LineStages<'_>,
