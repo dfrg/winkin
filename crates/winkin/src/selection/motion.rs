@@ -9,31 +9,37 @@
 //! - By character: a stop at each grapheme cluster boundary. A grapheme split
 //!   by a style boundary is one, unless a box's edge parts it. A builder
 //!   break opportunity's two sides are one stop, as Chrome skips a `<wbr>`.
-//!   At a wrap after a space, a caret stops at the line end before the space
-//!   and the next line's start after it. At a wrap inside a word, it stops
-//!   only at the next line's start.
+//! - An offset drawn at two places is a stop at each, where Chrome stops
+//!   once. At a wrap they are the line's end, upstream, and the next line's
+//!   start, downstream, with any builder break opportunity there between
+//!   them. Where the text changes direction they are the edges of the text
+//!   on each side. Forward reaches the upstream place first and backward the
+//!   downstream one. A box edge with room is one stop each way.
 //! - A stop keeps the side it is reached from. Going forward the caret lands
 //!   upstream, with the text it passed; going backward, downstream. A line's
-//!   start is downstream either way. So at a box edge with room the caret is
-//!   drawn on the side it came from, and at any node boundary typed text
-//!   goes into the node it came from. Chrome lands downstream everywhere.
+//!   start after a forced break is downstream either way. So at a box edge
+//!   with room the caret is drawn on the side it came from, and at any node
+//!   boundary typed text goes into the node it came from. Chrome lands
+//!   downstream everywhere.
 //! - By word: forward to the next word's start past the spaces (Windows) or
 //!   to its end (macOS and Linux), backward to a word's start everywhere, as
 //!   Blink's `NextWordPositionForPlatform`. Words are UAX #29's over each
 //!   whole paragraph. The motion steps character stops until one starts or
 //!   ends a word, asking `words` in place, so it costs the distance it moves.
-//!   A forced break is a stop of its own.
+//!   A forced break is a stop of its own. A word starting a line after a
+//!   wrap stops at that line's start, downstream.
 //! - By line: to the position the next line hits at the starting column,
 //!   which the selection keeps across short lines, as Blink's
 //!   `x_pos_for_vertical_arrow_navigation`. Past the last line it goes to the
 //!   text's end; before the first, to its start.
 //! - To a line's ends, logically, as Chrome's Home and End go. Home goes to
-//!   the line's first offset. End goes to the end of what the line placed,
-//!   before white space a wrap removed, or after the first preserved space
-//!   hanging past it, as Blink's `AdjustForSoftLineWrap`. End reaches into
-//!   text an ellipsis hides, as in Chrome. An editable block's
-//!   `-webkit-line-break: after-white-space` is Chrome's editing, not CSS, and
-//!   is not matched.
+//!   the line's first offset. At a wrap after white space, removed or
+//!   hanging, End goes past all of it to the wrap, upstream, so text typed
+//!   there follows the space. Chrome's End stops before removed white space
+//!   and after the first preserved space hanging, as Blink's
+//!   `AdjustForSoftLineWrap` puts it. Elsewhere End goes to the end of what
+//!   the line placed, after the first preserved space hanging past it, as
+//!   Chrome's does. End reaches into text an ellipsis hides, as in Chrome.
 
 use super::place::ClusteredPosition;
 use super::words::Words;
@@ -44,7 +50,7 @@ use super::{
 use crate::data::Id;
 use crate::layout::Layout;
 use crate::layout::Line;
-use crate::stages::analysis::{BidiLevel, ClusterClass, ClusterId};
+use crate::stages::analysis::{BidiLevel, ClusterClass, ClusterId, ScriptRunId};
 use crate::stages::lines::LineId;
 use crate::work;
 
@@ -92,7 +98,7 @@ pub(super) fn modify(layout: &Layout, selection: Selection, motion: Motion) -> S
     // where they are. What the other motions find is snapped.
     let to = match (motion.granularity, screen) {
         (Granularity::Character, Some(right)) => visual::by_character(layout, focus, right, rtl),
-        (Granularity::Character, None) => by_character(layout, focus.cluster, forward),
+        (Granularity::Character, None) => by_character(layout, focus, forward),
         (Granularity::Word, Some(right)) => {
             visual::by_word(layout, focus, right, rtl, motion.word_motion)
         }
@@ -140,13 +146,95 @@ pub(super) fn paragraph_level(layout: &Layout, located: ClusteredPosition) -> Bi
         .map_or(BidiLevel::LTR, |paragraph| paragraph.level)
 }
 
-/// Returns the next caret stop from the start of `from`, forward or backward, on the side it is reached from.
+/// Returns the next caret stop from `from`, a snapped position, forward or backward, on the side it is reached from.
 ///
-/// It skips past a builder break opportunity that `from` starts the near
-/// side of. Where there is no stop, it returns the text's end. The affinity
-/// is the side the motion comes from ([`arrived`]).
-pub(super) fn by_character(layout: &Layout, from: ClusterId, forward: bool) -> ClusteredPosition {
-    arrived(layout, next_stop(layout, from, forward), forward)
+/// Where `from`'s offset has a second place the motion reaches next
+/// ([`other_place`]), that is the stop. Elsewhere it skips past a builder
+/// break opportunity that `from` starts the near side of, and where there is
+/// no stop, it returns the text's end. The affinity is the side the motion
+/// comes from ([`arrived`]).
+pub(super) fn by_character(
+    layout: &Layout,
+    from: ClusteredPosition,
+    forward: bool,
+) -> ClusteredPosition {
+    if let Some(other) = other_place(layout, from, forward) {
+        return other;
+    }
+    arrived(layout, next_stop(layout, from.cluster, forward), forward)
+}
+
+/// Returns the other place of `from`'s offset, where a motion forward or backward reaches it after `from`.
+///
+/// A wrap's offset is at the end of one line, upstream, and the start of the
+/// next, downstream; a builder break opportunity there joins the two. One
+/// where the text changes direction is drawn by the text on each side. A
+/// motion forward reaches the upstream place first, and one backward the
+/// downstream one. A box edge with room is one stop each way, so its other
+/// side is no place of this kind. `None` where there is none, or where
+/// `from` is drawn there already.
+fn other_place(
+    layout: &Layout,
+    from: ClusteredPosition,
+    forward: bool,
+) -> Option<ClusteredPosition> {
+    let then = if forward {
+        Affinity::Downstream
+    } else {
+        Affinity::Upstream
+    };
+    let analysis = layout.analysis();
+    let clusters = &analysis.clusters;
+    // Across builder break opportunities, the two sides are one stop.
+    let mut other = from.cluster;
+    loop {
+        work::step();
+        let crossed = if forward {
+            other
+        } else {
+            match other.get().checked_sub(1) {
+                Some(before) => ClusterId::new(before),
+                None => break,
+            }
+        };
+        if clusters.class(crossed) != Some(ClusterClass::BreakOpportunity) {
+            break;
+        }
+        other = if forward {
+            ClusterId::new(other.get() + 1)
+        } else {
+            crossed
+        };
+    }
+    let other = ClusteredPosition::from_cluster(clusters, other, then);
+    if other.position == from.position {
+        return None;
+    }
+    let down = if forward { other.cluster } else { from.cluster };
+    if place::starts_line(layout, down) && !place::follows_break(layout, down) {
+        // The upper line's end is drawn on it, unless only builder break
+        // opportunities stand between it and what the line placed.
+        let up = if forward { from.cluster } else { other.cluster };
+        let lone = up.get().checked_sub(1).is_some_and(|before| {
+            clusters.class(ClusterId::new(before)) == Some(ClusterClass::BreakOpportunity)
+        });
+        return (!lone).then_some(other);
+    }
+    // A change of direction starts a script run, whose level differs in
+    // direction from the run before.
+    let runs = &analysis.runs;
+    let turns = runs.containing(from.cluster).is_some_and(|id| {
+        let level = |id: ScriptRunId| runs.get(id).map(|run| run.level.is_rtl());
+        let before = id.get().checked_sub(1).map(ScriptRunId::new);
+        runs.start(id, clusters.end_id()) == from.cluster
+            && before.is_some_and(|before| level(before) != level(id))
+    });
+    if !turns || other.cluster != from.cluster || place::is_sided(layout, from) {
+        return None;
+    }
+    let here = place::caret(layout, from, None)?;
+    let there = place::caret(layout, other, Some(LineId::new(here.line)))?;
+    (here.line != there.line || here.inline != there.inline).then_some(other)
 }
 
 /// Returns the cluster starting at the next caret stop from the start of `from`, forward or backward.
@@ -182,18 +270,35 @@ pub(super) fn next_stop(layout: &Layout, from: ClusterId, forward: bool) -> Clus
     to
 }
 
-/// Returns the position at `stop`'s start as a motion forward or backward arrives at it.
+/// Returns the position at `stop`'s start as a character motion forward or backward arrives at it.
 ///
-/// Forward it is upstream, with the text before it; backward, downstream,
-/// with the text after it. A line's start is downstream either way, so a step
-/// forward onto a wrap lands at the next line's start.
+/// Forward it is upstream, with the text before it, so a step forward onto a
+/// wrap lands at the upper line's end. Backward it is downstream, with the
+/// text after it. A line's start after a forced break has one place, and is
+/// downstream either way.
 pub(super) fn arrived(layout: &Layout, stop: ClusterId, forward: bool) -> ClusteredPosition {
-    let affinity = if forward && !place::starts_line(layout, stop) {
+    let affinity = if forward && !place::follows_break(layout, stop) {
         Affinity::Upstream
     } else {
         Affinity::Downstream
     };
     ClusteredPosition::from_cluster(&layout.analysis().clusters, stop, affinity)
+}
+
+/// Returns the position at `stop`'s start as a word motion forward or backward arrives at it.
+///
+/// It is where a character motion arrives, except that a word starting a
+/// line, after a wrap, is that line's start, downstream.
+fn word_arrived(layout: &Layout, stop: ClusterId, forward: bool) -> ClusteredPosition {
+    let arrived = arrived(layout, stop, forward);
+    if arrived.position.affinity == Affinity::Upstream && place::starts_line(layout, stop) {
+        return ClusteredPosition::from_cluster(
+            &layout.analysis().clusters,
+            stop,
+            Affinity::Downstream,
+        );
+    }
+    arrived
 }
 
 /// Returns the next word stop from `from`, forward or backward, as `rule` says.
@@ -214,7 +319,7 @@ pub(super) fn by_word(
         work::step();
         let to = next_stop(layout, from, forward);
         if to == from || is_word_stop(&mut words, to, forward, rule) {
-            return arrived(layout, to, forward);
+            return word_arrived(layout, to, forward);
         }
         from = to;
     }
@@ -304,6 +409,16 @@ pub(super) fn line_edge(layout: &Layout, line: &Line<'_>, forward: bool) -> Clus
             }
             _ => content = Some(content.map_or(end, |at: usize| at.max(end))),
         }
+    }
+    // At a soft wrap after white space, hanging or removed, the end is the
+    // wrap's, past all of it, so text typed there follows the space.
+    if place::wraps(layout, line) && (hanging.is_some() || place::wrap_end(layout, line).is_some())
+    {
+        return ClusteredPosition::from_cluster(
+            &layout.analysis().clusters,
+            clusters.end,
+            Affinity::Upstream,
+        );
     }
     let end = match (content, hanging) {
         (Some(content), Some(hangs)) if content > hangs => content,

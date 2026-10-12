@@ -1,0 +1,4 @@
+Wraps: narrow the window until this paragraph wraps, then walk it with Right and Left. Each wrap takes two stops, the end of the upper line after its trailing space and the start of the next line, at one offset.   Three spaces stand here, and End on a line that wraps among them lands after all three.
+Mixed: English עברית English العربية English 123 עברית. Right and Left stop at both edges of each Hebrew and Arabic run.
+עברית מימין לשמאל עם Latin words בתוך השורה, ושורה ארוכה שנשברת כשהחלון צר. Home goes to the left edge and End to the right.
+Boxes: a[bc]d, [ab]c, a[bc], a[[bc]]d, a[]b, א[בג]ד, a[בג]d, and a [box with padding whose text wraps across the end of the line] here.

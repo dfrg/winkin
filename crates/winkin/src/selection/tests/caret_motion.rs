@@ -10,9 +10,11 @@
 use super::*;
 use crate::selection::words::Words;
 
-/// By character, a caret stops at every boundary and at each side of a wrap after a space.
+/// By character, a caret stops at every boundary, and twice at a wrap.
 ///
-/// At the text's ends it stays.
+/// At a wrap after a space it stops before the space, then at the upper
+/// line's end past it, then at the next line's start. Chrome stops once
+/// after the space, at the next line's start. At the text's ends it stays.
 #[test]
 fn a_character_motion_crosses_one_cluster() {
     let layout = laid("abcd efgh ijkl", 100.0);
@@ -21,9 +23,24 @@ fn a_character_motion_crosses_one_cluster() {
         3,
         MotionDirection::Forward.moving(Granularity::Character),
     );
-    assert_eq!(forward, [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
-    let carets: Vec<(usize, f32)> = forward.iter().map(|&at| caret(&layout, at)).collect();
-    assert_eq!(carets[1..3], [(0, 80.0), (1, 0.0)]);
+    assert_eq!(forward, [3, 4, 5, 5, 6, 7, 8, 9, 10, 10, 11, 12, 13, 14]);
+    let positions = walk_positions(
+        &layout,
+        Position::from(3),
+        MotionDirection::Forward.moving(Granularity::Character),
+    );
+    let carets: Vec<(usize, f32)> = positions
+        .iter()
+        .map(|&at| position_caret(&layout, at))
+        .collect();
+    assert_eq!(carets[1..4], [(0, 80.0), (0, 100.0), (1, 0.0)]);
+    assert_eq!(
+        positions[2..4],
+        [
+            Position::new(5, Affinity::Upstream),
+            Position::new(5, Affinity::Downstream)
+        ]
+    );
     let backward = walk(
         &layout,
         14,
@@ -43,8 +60,9 @@ fn a_character_motion_crosses_one_cluster() {
 
 /// The two sides of a `<wbr>` are one stop each way.
 ///
-/// Where the line wraps there, forward stops at the upper line's end and
-/// backward at the lower line's start.
+/// Where the line wraps there, they are two places, and a motion stops at
+/// each: forward at the upper line's end, then the lower line's start, and
+/// backward the other way round. Chrome stops at one of them.
 #[test]
 fn a_break_opportunity_is_one_stop() {
     let layout = laid_with(&ComputedBlockStyle::new(&ahem()), 80.0, |b| {
@@ -59,44 +77,55 @@ fn a_break_opportunity_is_one_stop() {
         3,
         MotionDirection::Forward.moving(Granularity::Character),
     );
-    assert_eq!(forward[..3], [3, 4, 8]);
+    assert_eq!(forward[..4], [3, 4, 7, 8]);
     assert_eq!(caret(&layout, 4), (0, 80.0));
+    assert_eq!(caret(&layout, 7), (1, 0.0));
     let backward = walk(
         &layout,
         8,
         MotionDirection::Backward.moving(Granularity::Character),
     );
-    assert_eq!(backward[..3], [8, 7, 3]);
-    assert_eq!(caret(&layout, 7), (1, 0.0));
+    assert_eq!(backward[..4], [8, 7, 4, 3]);
+    // On one line the two sides are one place and one stop.
+    let layout = laid_with(&ComputedBlockStyle::new(&ahem()), 400.0, |b| {
+        b.text(NodeKey(1), "abcd");
+        b.break_opportunity();
+        b.text(NodeKey(1), "efgh");
+    });
+    let forward = walk(
+        &layout,
+        3,
+        MotionDirection::Forward.moving(Granularity::Character),
+    );
+    assert_eq!(forward[..3], [3, 4, 8]);
 }
 
 /// In bidi text, left and right go to the nearest caret on the screen, unlike Chrome's arrows.
 ///
 /// Chrome's arrows go through the text by the paragraph's direction, so the
-/// caret jumps where the direction changes; here right is forward. Left and
-/// right cross a change of direction on the side its carets are drawn.
+/// caret jumps where the direction changes; here right is forward. Forward
+/// stops at both places of each offset where the direction changes, where
+/// Chrome stops once. Left and right stop at every place on the screen,
+/// both edges of the right-to-left run included.
 #[test]
 fn left_and_right_go_the_way_they_point_and_chromes_arrows_by_the_paragraph() {
     let layout = laid("abc \u{5D0}\u{5D1}\u{5D2} def", 400.0);
     let chromes_right = chromes_arrow(&layout, Position::from(3), true);
     assert_eq!(chromes_right, MotionDirection::Forward);
     let right = walk(&layout, 3, chromes_right.moving(Granularity::Character));
-    assert_eq!(right[..5], [3, 4, 6, 8, 10]);
-    let right = walk(
-        &layout,
-        3,
-        MotionDirection::Right.moving(Granularity::Character),
-    );
-    let xs: Vec<f32> = right.iter().map(|&at| caret(&layout, at).1).collect();
-    assert_eq!(xs[..6], [60.0, 80.0, 100.0, 120.0, 140.0, 160.0]);
-    let left = walk(
-        &layout,
-        13,
-        MotionDirection::Left.moving(Granularity::Character),
-    );
-    let xs: Vec<f32> = left.iter().map(|&at| caret(&layout, at).1).collect();
-    assert!(xs.windows(2).all(|pair| pair[1] < pair[0]), "{xs:?}");
-    assert_eq!(xs.last(), Some(&0.0));
+    assert_eq!(right[..8], [3, 4, 4, 6, 8, 10, 10, 11]);
+    let xs = |motion: Motion, from: usize| -> Vec<f32> {
+        walk_positions(&layout, Position::from(from), motion)
+            .iter()
+            .map(|&at| position_caret(&layout, at).1)
+            .collect()
+    };
+    let right = xs(MotionDirection::Right.moving(Granularity::Character), 3);
+    assert_eq!(right[..6], [60.0, 80.0, 100.0, 120.0, 140.0, 160.0]);
+    let left = xs(MotionDirection::Left.moving(Granularity::Character), 13);
+    assert!(left.windows(2).all(|pair| pair[1] < pair[0]), "{left:?}");
+    assert_eq!(left.len(), 11);
+    assert_eq!(left.last(), Some(&0.0));
 }
 
 /// Up and down keep the column across a short line.
@@ -137,16 +166,18 @@ fn line_motion_keeps_its_column() {
 
 /// Home and End go to a line's logical ends, as Chrome's do (probe 16g).
 ///
-/// End goes before white space a wrap removed, and after the first preserved
-/// space hanging past a line, as Blink's `AdjustForSoftLineWrap`.
+/// At a wrap, End goes past white space the wrap removed, upstream at the
+/// wrap, so text typed there follows the space. Chrome's End stops before
+/// it. After a preserved space hanging past a line, End is past it, as
+/// Blink's `AdjustForSoftLineWrap` puts it.
 #[test]
 fn home_and_end_go_to_a_lines_logical_ends() {
     let home = MotionDirection::Backward.moving(Granularity::LineBoundary);
     let end = MotionDirection::Forward.moving(Granularity::LineBoundary);
     let layout = laid("abcd efgh ijkl", 100.0);
     let at = moved(&layout, Selection::from(Position::from(1)), end);
-    assert_eq!(at.focus(), Position::new(4, Affinity::Upstream));
-    assert_eq!(position_caret(&layout, at.focus()), (0, 80.0));
+    assert_eq!(at.focus(), Position::new(5, Affinity::Upstream));
+    assert_eq!(position_caret(&layout, at.focus()), (0, 100.0));
     assert_eq!(
         moved(&layout, Selection::from(Position::from(7)), home).focus(),
         Position::from(5)
@@ -172,13 +203,15 @@ fn home_and_end_go_to_a_lines_logical_ends() {
     );
     assert_eq!(at.focus().offset, 0);
     // Left on the screen: the line's left edge, the Hebrew's logical end,
-    // whose caret Chrome draws on the Latin's side, and whose other is at
-    // the edge. Right: the line's right edge, its logical end.
+    // upstream, drawn by the Hebrew at the edge, where Chrome draws its
+    // caret on the Latin's side. Right: the line's right edge, its logical
+    // end.
     let left = MotionDirection::Left.moving(Granularity::LineBoundary);
     let at = moved(&layout, Selection::from(Position::from(10)), left);
-    assert_eq!(at.focus().offset, 6);
+    assert_eq!(at.focus(), Position::new(6, Affinity::Upstream));
     let carets = layout.carets(at.focus()).unwrap();
-    assert_eq!(carets.weak.map(|weak| weak.inline), Some(along(0.0, 0.0)));
+    assert_eq!(carets.strong.inline, along(0.0, 0.0));
+    assert_eq!(carets.weak.map(|weak| weak.inline), Some(along(60.0, 60.0)));
     let right = MotionDirection::Right.moving(Granularity::LineBoundary);
     let at = moved(&layout, Selection::from(Position::from(1)), right);
     assert_eq!(at.focus(), Position::new(14, Affinity::Upstream));
@@ -419,7 +452,7 @@ fn left_and_right_follow_text_order_within_a_line() {
                     lands(screen.position),
                     "{name}: character fast path, right {right}, from {at}"
                 );
-                let logical = motion::by_character(&layout, from.cluster, forward);
+                let logical = motion::by_character(&layout, from, forward);
                 let stays = |to: Position| {
                     let from_caret = layout.caret(from.position).unwrap();
                     let to_caret = layout.caret(to).unwrap();
@@ -565,12 +598,16 @@ fn rtl_line_edges_cross_right_down_and_left_up() {
 #[test]
 fn a_word_on_the_screen_stops_as_each_run_reads() {
     let visited = |layout: &Layout, from: usize, direction: MotionDirection, stops| {
-        let offsets = walk(
+        let positions = walk_positions(
             layout,
-            from,
+            Position::from(from),
             direction.moving(Granularity::Word).with_word_motion(stops),
         );
-        let xs: Vec<f32> = offsets.iter().map(|&at| caret(layout, at).1).collect();
+        let offsets: Vec<usize> = positions.iter().map(|at| at.offset).collect();
+        let xs: Vec<f32> = positions
+            .iter()
+            .map(|&at| position_caret(layout, at).1)
+            .collect();
         (offsets, xs)
     };
     let one_way = |xs: &[f32], right: bool| {
@@ -581,16 +618,18 @@ fn a_word_on_the_screen_stops_as_each_run_reads() {
     use WordMotion::{SkipSpaces, StopAtWordEnd};
     // Three Hebrew words in Latin: aleph-bet at 200 to 240, gimel-dalet at
     // 140 to 180 and he-vav at 80 to 120, their starts, 4, 9 and 14, drawn at
-    // 80, 180 and 120.
+    // 240, 180 and 120. Offset 4 is also the Latin's end, upstream at 80, and
+    // 18, the Hebrew's end, is drawn at 80 upstream and 240 downstream. Each
+    // place is one word stop.
     let layout = laid(
         "abc \u{5D0}\u{5D1} \u{5D2}\u{5D3} \u{5D4}\u{5D5} def",
         400.0,
     );
     let cases = [
-        (0, Right, SkipSpaces, [0, 4, 14, 9, 19, 22]),
-        (0, Right, StopAtWordEnd, [0, 3, 14, 9, 18, 22]),
-        (22, Left, SkipSpaces, [22, 19, 9, 14, 4, 0]),
-        (22, Left, StopAtWordEnd, [22, 19, 8, 13, 4, 0]),
+        (0, Right, SkipSpaces, vec![0, 4, 14, 9, 4, 19, 22]),
+        (0, Right, StopAtWordEnd, vec![0, 3, 14, 9, 4, 22]),
+        (22, Left, SkipSpaces, vec![22, 19, 4, 9, 14, 4, 0]),
+        (22, Left, StopAtWordEnd, vec![22, 19, 8, 13, 18, 0]),
     ];
     for (from, direction, stops, expected) in cases {
         let (offsets, xs) = visited(&layout, from, direction, stops);
@@ -605,16 +644,15 @@ fn a_word_on_the_screen_stops_as_each_run_reads() {
     // Arabic before Latin: leaving the Arabic word to the right stops at its
     // start, its right edge, not past the Latin word; coming back left, at
     // the Latin word's start and then at the Arabic word's, which a change of
-    // direction draws where the space's start is. The Arabic word's left
-    // edge is no position's caret, which Chrome draws on the space's side.
+    // direction draws where the space's start is.
     let layout = laid("\u{628}\u{62A}\u{633} def", 400.0);
     let (offsets, _) = visited(&layout, 4, Right, SkipSpaces);
     assert_eq!(offsets[..3], [4, 0, 7]);
     let (offsets, _) = visited(&layout, 10, Left, SkipSpaces);
     assert_eq!(offsets[..3], [10, 7, 0]);
     // Latin in a right-to-left paragraph: its words' halves as it reads, left
-    // to right, and a word starting where Chrome draws its caret, on the
-    // paragraph's side.
+    // to right. Offset 5, the Latin's start, is drawn at its left edge, 60,
+    // and upstream at the Hebrew's end, 160, and a word stops at each.
     let plain = ahem();
     let rtl = ComputedBlockStyle {
         direction: BaseDirection::Rtl,
@@ -624,10 +662,10 @@ fn a_word_on_the_screen_stops_as_each_run_reads() {
         b.text(NodeKey(1), "\u{5D0}\u{5D1} ab cd \u{5D2}\u{5D3}")
     });
     let cases = [
-        (0, Left, SkipSpaces, [0, 5, 8, 11, 15]),
-        (0, Left, StopAtWordEnd, [0, 4, 8, 10, 15]),
-        (15, Right, SkipSpaces, [15, 11, 8, 5, 0]),
-        (15, Right, StopAtWordEnd, [15, 11, 7, 5, 0]),
+        (0, Left, SkipSpaces, vec![0, 5, 8, 5, 11, 15]),
+        (0, Left, StopAtWordEnd, vec![0, 4, 8, 5, 15]),
+        (15, Right, SkipSpaces, vec![15, 11, 5, 8, 5, 0]),
+        (15, Right, StopAtWordEnd, vec![15, 11, 7, 10, 0]),
     ];
     for (from, direction, stops, expected) in cases {
         let (offsets, xs) = visited(&layout, from, direction, stops);

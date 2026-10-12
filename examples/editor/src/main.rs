@@ -225,22 +225,17 @@ impl App {
                     Granularity::Line
                 },
             ),
-            Key::Named(NamedKey::Home) => (
-                MotionDirection::Backward,
-                if command {
-                    Granularity::DocumentBoundary
-                } else {
-                    Granularity::LineBoundary
-                },
-            ),
-            Key::Named(NamedKey::End) => (
-                MotionDirection::Forward,
-                if command {
-                    Granularity::DocumentBoundary
-                } else {
-                    Granularity::LineBoundary
-                },
-            ),
+            // Home and End go to the line's left and right edges, as the
+            // arrows go on the screen; with the command key, to the text's
+            // start and end.
+            Key::Named(NamedKey::Home) if command => {
+                (MotionDirection::Backward, Granularity::DocumentBoundary)
+            }
+            Key::Named(NamedKey::End) if command => {
+                (MotionDirection::Forward, Granularity::DocumentBoundary)
+            }
+            Key::Named(NamedKey::Home) => (MotionDirection::Left, Granularity::LineBoundary),
+            Key::Named(NamedKey::End) => (MotionDirection::Right, Granularity::LineBoundary),
             Key::Named(NamedKey::Backspace) => {
                 self.editor.delete(MotionDirection::Backward, word);
                 self.changed();

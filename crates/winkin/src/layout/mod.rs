@@ -667,11 +667,11 @@ impl Layout {
     /// Returns caret geometry for `position`, or `None` if there are no lines.
     ///
     /// At a wrap, affinity selects the line. At a box edge with margin,
-    /// border or padding, it selects the side of the edge (see [`Affinity`]).
-    /// At bidi boundaries, the caret
-    /// uses the paragraph direction; [`carets`](Self::carets) also returns
-    /// the alternate position. Text hidden by an ellipsis retains its caret
-    /// position beyond the ellipsis, matching Chrome.
+    /// border or padding, it selects the side of the edge, and at a bidi
+    /// boundary the side of the text it is drawn by (see [`Affinity`]);
+    /// [`carets`](Self::carets) also returns the other side. Text hidden by
+    /// an ellipsis retains its caret position beyond the ellipsis, matching
+    /// Chrome.
     #[inline]
     pub fn caret(&self, position: Position) -> Option<Caret> {
         self.carets(position).map(|carets| carets.strong)
@@ -679,8 +679,9 @@ impl Layout {
 
     /// Returns both possible caret positions at `position`.
     ///
-    /// The second position supports split carets at bidi boundaries.
-    /// Chrome draws only the first.
+    /// The second position supports split carets at bidi boundaries, where
+    /// the affinity selects the first. Chrome draws one caret, on the side
+    /// of the paragraph direction.
     #[inline]
     pub fn carets(&self, position: Position) -> Option<Carets> {
         selection::carets(self, position)

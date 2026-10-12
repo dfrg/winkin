@@ -17,7 +17,9 @@
 //! - `ruby`: split ruby annotations;
 //! - `seams`: the side a caret keeps at a boundary between nodes;
 //! - `security`: text masked by `-webkit-text-security`;
-//! - `seeks`: the searches each public call makes.
+//! - `seeks`: the searches each public call makes;
+//! - `two_places`: offsets drawn at two places, at wraps and changes of
+//!   direction, and left and right to a line's edges.
 //!
 //! Chrome counts offsets in UTF-16 and this crate in UTF-8 bytes. Where the
 //! text holds a soft hyphen or Hebrew, the offsets here match Chrome's byte
@@ -162,16 +164,27 @@ fn moved(layout: &Layout, selection: Selection, motion: Motion) -> Selection {
 }
 
 /// Returns the offsets a caret visits moving `direction` by `granularity` from `from`, until it stops.
+///
+/// An offset drawn in two places, at a wrap or a change of direction, is
+/// visited once for each.
 fn walk(layout: &Layout, from: usize, motion: Motion) -> Vec<usize> {
-    let mut at = Selection::from(Position::from(from));
+    walk_positions(layout, Position::from(from), motion)
+        .iter()
+        .map(|position| position.offset)
+        .collect()
+}
+
+/// Returns the positions a caret visits moving by `motion` from `from`, until it stops.
+fn walk_positions(layout: &Layout, from: Position, motion: Motion) -> Vec<Position> {
+    let mut at = Selection::from(from);
     let mut visited = vec![from];
     loop {
-        let before = at.focus().offset;
+        let before = at.focus();
         at.modify(layout, motion);
-        if at.focus().offset == before {
+        if at.focus() == before || visited.len() > 4 * layout.text().len() + 8 {
             return visited;
         }
-        visited.push(at.focus().offset);
+        visited.push(at.focus());
     }
 }
 
@@ -222,5 +235,6 @@ mod security;
 // Seeks are counted only in debug builds.
 #[cfg(debug_assertions)]
 mod seeks;
+mod two_places;
 mod vertical;
 mod word_motion;

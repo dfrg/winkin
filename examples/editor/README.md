@@ -25,8 +25,8 @@ Cmd/Ctrl+S. The example reads UTF-8 and normalizes line endings to LF.
 | Up / Down | Move by wrapped line, retaining the target column |
 | Shift+navigation | Extend the selection |
 | Option+Left/Right on macOS; Ctrl+Left/Right elsewhere | Move by word |
-| Home / End | Move to the start or end of the wrapped line |
-| Cmd+Left/Right on macOS | Move to the start or end of the wrapped line |
+| Home / End | Move to the left or right edge of the wrapped line, whatever its direction |
+| Cmd+Left/Right on macOS | Move to the left or right edge of the wrapped line |
 | Cmd+Up/Down on macOS; Ctrl+Home/End elsewhere | Move to the start or end of the document |
 | Backspace / Delete | Delete backward or forward; add the word modifier to delete a word |
 | Enter / Tab | Insert a newline or tab |
@@ -70,6 +70,21 @@ line, and bold spans in the middle, at the start and nested.
 Horizontal arrows cross line boundaries in screen order: Right continues
 onto the next line from the right edge, and Left continues onto the previous
 line from the left edge. This applies to both LTR and RTL paragraphs.
+
+An offset drawn at two places has a stop at each. At a wrap, Right stops at
+the end of the upper line, after its trailing spaces, and then at the start
+of the next line; the title shows the same offset, upstream then
+downstream. Where the text changes direction, the arrows stop at the edge of
+the text on each side. End on a wrapped line lands after its trailing
+spaces, so typed text follows them. Home and End go to the line's left and
+right edges, so on a right-to-left line Home goes to its left end. To try
+these:
+
+```sh
+cargo run --release -p winkin_editor -- examples/editor/caret-motion.txt
+```
+
+Narrow the window until the long lines wrap.
 
 IME preedit text is underlined. Its cursor or selected range is drawn using
 Winkin geometry, and the candidate window follows the caret. Committing a

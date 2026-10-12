@@ -27,10 +27,13 @@ fn a_caret_stands_at_each_boundary() {
     );
 }
 
-/// At a wrap after a space, the line's end is before the space and the next line's start after it.
+/// At a wrap, upstream is the upper line's end and downstream the next line's start.
 ///
-/// That holds whatever the affinity. At a wrap inside a word, the affinity
-/// chooses, as Blink's `InlineCaretPositionAtSoftLineWrap` does.
+/// After a space the wrap removed, the upper line's end is past the space,
+/// as if it hung. Before the space is on the upper line either way. Chrome
+/// draws the position after the space at the next line's start whatever
+/// the affinity. At a wrap inside a word, the affinity chooses, as Blink's
+/// `InlineCaretPositionAtSoftLineWrap` does.
 #[test]
 fn the_two_sides_of_a_wrap_are_two_places() {
     let layout = laid("abcd efgh ijkl", 100.0);
@@ -40,11 +43,12 @@ fn the_two_sides_of_a_wrap_are_two_places() {
             position_caret(&layout, Position::new(4, affinity)),
             (0, 80.0)
         );
-        assert_eq!(
-            position_caret(&layout, Position::new(5, affinity)),
-            (1, 0.0)
-        );
     }
+    assert_eq!(caret(&layout, 5), (1, 0.0));
+    assert_eq!(
+        position_caret(&layout, Position::new(5, Affinity::Upstream)),
+        (0, 100.0)
+    );
     let broken = styled(|style| style.text.word_break = WordBreak::BreakAll);
     let layout = laid_with(&ComputedBlockStyle::new(&broken), 80.0, |b| {
         b.text(NodeKey(1), "abcdefgh")
@@ -102,25 +106,27 @@ fn a_soft_hyphen_ends_its_line_before_the_hyphen() {
     assert_eq!(caret(&layout, 6), (0, 80.0));
 }
 
-/// Where the text changes direction, the caret is on the side nearer the paragraph's level.
+/// Where the text changes direction, the affinity chooses the side: upstream the text before, downstream the text after.
 ///
-/// The split caret's other side is the weak caret.
+/// The split caret's other side is the weak caret. Chrome draws the caret on
+/// the side nearer the paragraph's level whatever the affinity: at 80 for
+/// offset 4 and 140 for 10 here, and at 120 for 5 and 60 for 8 in the
+/// right-to-left paragraph.
 #[test]
-fn a_change_of_direction_draws_the_caret_on_the_paragraphs_side() {
+fn a_change_of_direction_draws_each_side_by_its_text() {
     // "abc " 0..80, then alef, bet, gimel drawn right to left 140..80,
     // then " def" 140..220.
     let layout = laid("abc \u{5D0}\u{5D1}\u{5D2} def", 400.0);
-    assert_eq!(caret(&layout, 4), (0, 80.0));
+    let upstream = |at: usize| position_caret(&layout, Position::new(at, Affinity::Upstream));
+    assert_eq!((upstream(4), caret(&layout, 4)), ((0, 80.0), (0, 140.0)));
     assert_eq!(caret(&layout, 6), (0, 120.0));
     assert_eq!(caret(&layout, 8), (0, 100.0));
-    assert_eq!(caret(&layout, 10), (0, 140.0));
+    assert_eq!((upstream(10), caret(&layout, 10)), ((0, 80.0), (0, 140.0)));
     let carets = layout.carets(Position::from(4)).unwrap();
-    assert_eq!(carets.strong.inline, along(80.0, 80.0));
-    assert_eq!(
-        carets.weak.map(|weak| weak.inline),
-        Some(along(140.0, 140.0))
-    );
-    assert!(carets.weak.unwrap().rtl);
+    assert_eq!(carets.strong.inline, along(140.0, 140.0));
+    assert!(carets.strong.rtl);
+    assert_eq!(carets.weak.map(|weak| weak.inline), Some(along(80.0, 80.0)));
+    assert!(!carets.weak.unwrap().rtl);
     let inside = layout.carets(Position::from(6)).unwrap();
     assert!(inside.strong.rtl && inside.weak.is_none());
     // A paragraph read right to left, with Latin in it, from its line box's
@@ -134,10 +140,11 @@ fn a_change_of_direction_draws_the_caret_on_the_paragraphs_side() {
     let layout = laid_with(&rtl, 400.0, |b| {
         b.text(NodeKey(1), "\u{5D0}\u{5D1} abc \u{5D2}\u{5D3}")
     });
+    let upstream = |at: usize| position_caret(&layout, Position::new(at, Affinity::Upstream));
     assert_eq!(caret(&layout, 0), (0, 180.0));
-    assert_eq!(caret(&layout, 5), (0, 120.0));
+    assert_eq!((upstream(5), caret(&layout, 5)), ((0, 120.0), (0, 60.0)));
     assert_eq!(caret(&layout, 6), (0, 80.0));
-    assert_eq!(caret(&layout, 8), (0, 60.0));
+    assert_eq!((upstream(8), caret(&layout, 8)), ((0, 120.0), (0, 60.0)));
 }
 
 /// An atomic inline has a caret before and after it, beside its box, as tall as the line.

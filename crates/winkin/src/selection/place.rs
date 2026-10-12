@@ -5,12 +5,17 @@
 //!   caret then stops at the edge. A character a text transform changed the
 //!   length of is one stop.
 //! - The line holds the offset downstream, or ends at it upstream. A position
-//!   upstream past everything a line placed, after a wrap's removed white
-//!   space or a forced break, is on the next line. Blink finds no item to put
-//!   it by there (`CanResolveInlineCaretPositionAfterFragment`).
-//! - The item holds the offset. Where two meet at it, the one nearer the
-//!   paragraph's level wins, the side Chrome draws the caret on. At equal
-//!   levels the one before wins, as Blink's `ComputeInlineCaretPosition`
+//!   upstream at a soft wrap past white space the wrap removed stays on the
+//!   line before, past that space, as if it hung. Chrome puts it on the next
+//!   line, finding no item to put it by (`CanResolveInlineCaretPositionAfterFragment`);
+//!   this keeps the two places of a wrap apart. Upstream after a forced break
+//!   is on the next line.
+//! - The item holds the offset. Where two reading different ways meet at it,
+//!   the affinity is the side: upstream the one before, downstream the one
+//!   after, so the offset's two places are two positions. Chrome draws the
+//!   caret on the side nearer the paragraph's level whatever the affinity.
+//!   At other changes of level the one nearer the paragraph's level wins,
+//!   and at equal levels the one before, as Blink's `ComputeInlineCaretPosition`
 //!   resolves it. Ruby annotation text is searched where the base text has
 //!   no match.
 //! - A box edge that takes room along the line, with a leaf either side on
@@ -28,7 +33,7 @@ use super::{Affinity, Caret, Carets, Position};
 use crate::data::{Id, TextOffset};
 use crate::layout::Layout;
 use crate::layout::{Atomic, CrossExtents, Item, Line, TextRun};
-use crate::stages::analysis::{BidiLevel, ClusterId, Clusters};
+use crate::stages::analysis::{BidiLevel, ClusterClass, ClusterId, Clusters};
 use crate::stages::content::{BoxFlags, ContentFlags, ItemKind};
 use crate::stages::lines::{InlineExtents, LineId};
 use crate::style::FirstLineVariant;
@@ -499,6 +504,65 @@ pub(super) fn starts_line(layout: &Layout, cluster: ClusterId) -> bool {
         && lines.get(LineId::new(line.get() + 1)).is_some()
 }
 
+/// Returns whether a forced break ends the text before `cluster`, so a line starting there has one place.
+pub(super) fn follows_break(layout: &Layout, cluster: ClusterId) -> bool {
+    let clusters = &layout.analysis().clusters;
+    cluster.get().checked_sub(1).is_some_and(|before| {
+        clusters
+            .class(ClusterId::new(before))
+            .is_some_and(ClusterClass::is_forced_break)
+    })
+}
+
+/// Returns whether `line` ends at a soft wrap: another line follows, and no forced break ends it.
+pub(super) fn wraps(layout: &Layout, line: &Line<'_>) -> bool {
+    Line::new(layout, LineId::new(line.index() + 1)).is_some()
+        && !follows_break(layout, line.record().clusters().end)
+}
+
+/// Returns the caret upstream at the end of `line`, where it wraps past white space it removed.
+///
+/// The caret stands past that space, at the line's end in the paragraph's
+/// direction, as if the space hung there. `None` where the line does not
+/// wrap, or its leaves reach its end, or what they leave out holds no space.
+pub(super) fn wrap_end(layout: &Layout, line: &Line<'_>) -> Option<Caret> {
+    if !wraps(layout, line) {
+        return None;
+    }
+    let (mut left, mut right, mut placed) = (f32::INFINITY, f32::NEG_INFINITY, None);
+    for leaf in leaves(*line) {
+        work::step();
+        left = left.min(leaf.inline.left);
+        right = right.max(leaf.inline.right);
+        placed = Some(placed.map_or(leaf.end, |at: usize| at.max(leaf.end)));
+    }
+    let placed = placed?;
+    let clusters = &layout.analysis().clusters;
+    let stages = line.stages();
+    let (mut cluster, mut room, mut removed) = (line.record().clusters().end, 0.0, false);
+    // What the line leaves out after its leaves, back from its end.
+    while let Some(before) = cluster.get().checked_sub(1).map(ClusterId::new) {
+        work::step();
+        if clusters.start(before).get() < placed {
+            break;
+        }
+        removed |= clusters.class(before) == Some(ClusterClass::Space);
+        room += stages.cluster_advance(before).to_px();
+        cluster = before;
+    }
+    if !removed {
+        return None;
+    }
+    let base = past_content(layout, line, placed);
+    let rtl = line.level().is_rtl();
+    let x = if rtl { left - room } else { right + room };
+    Some(Caret {
+        inline: InlineExtents { left: x, right: x },
+        rtl,
+        ..base
+    })
+}
+
 /// Returns whether a caret can stop at `cluster`'s start.
 ///
 /// A stop is not inside a grapheme split by a style boundary, and not inside
@@ -583,12 +647,19 @@ pub(super) fn carets(
         return Some(found);
     }
     let at = snapped.offset();
-    // Upstream past what the line placed, the caret is on the next line.
-    if snapped.position.affinity == Affinity::Upstream
-        && let Some(next) = Line::new(layout, LineId::new(id.get() + 1))
-        && let Some(found) = line_carets(layout, &next, snapped)
-    {
-        return Some(found);
+    if snapped.position.affinity == Affinity::Upstream {
+        // Upstream at a wrap past removed white space, past that space.
+        if line.record().clusters().end == snapped.cluster
+            && let Some(strong) = wrap_end(layout, &line)
+        {
+            return Some(Carets { strong, weak: None });
+        }
+        // Elsewhere past what the line placed, the caret is on the next line.
+        if let Some(next) = Line::new(layout, LineId::new(id.get() + 1))
+            && let Some(found) = line_carets(layout, &next, snapped)
+        {
+            return Some(found);
+        }
     }
     Some(Carets {
         strong: past_content(layout, &line, at),
@@ -618,6 +689,7 @@ pub(super) fn caret_line(
     let at = snapped.offset();
     if snapped.position.affinity == Affinity::Upstream
         && !touches(&line, at)
+        && !(line.record().clusters().end == snapped.cluster && wrap_end(layout, &line).is_some())
         && let Some(next) = Line::new(layout, LineId::new(id.get() + 1))
         && touches(&next, at)
     {
@@ -647,13 +719,14 @@ fn line_carets(layout: &Layout, line: &Line<'_>, snapped: ClusteredPosition) -> 
 /// Returns the carets of `snapped`, a snapped position, among `leaves`, all of one line.
 ///
 /// The strong caret is in the leaf holding the offset. At a boundary
-/// between two leaves, it is in the one nearer the paragraph's level, the
-/// side Chrome draws the caret on. At equal levels it is in the one before,
-/// which Blink resolves first. Where the two leaves read in different
-/// directions, the other gives the weak caret.
+/// between two leaves reading in different directions, the affinity is the
+/// side: upstream the leaf before, downstream the one after, and the other
+/// gives the weak caret. Chrome draws it in the one nearer the paragraph's
+/// level. At other changes of level it is in that one, and at equal levels
+/// in the one before, which Blink resolves first.
 ///
-/// At a box edge taking room between the two, the affinity is the side:
-/// upstream the leaf before, downstream the one after, with no weak caret.
+/// At a box edge taking room between the two, the affinity is the side,
+/// with no weak caret.
 ///
 /// At the edge of combined text, the affinity chooses: downstream the leaf
 /// after, upstream the one before. A click in a unit then draws its caret in
@@ -696,6 +769,12 @@ fn touching<'a>(
         });
     }
     let (strong, weak) = match (before, after) {
+        (Some(before), Some(after)) if before.is_rtl() != after.is_rtl() => {
+            match position.affinity {
+                Affinity::Upstream => (before, Some(after)),
+                Affinity::Downstream => (after, Some(before)),
+            }
+        }
         (Some(before), Some(after)) if after.level() < before.level() => (after, Some(before)),
         (Some(before), Some(after))
             if after.level() == before.level()

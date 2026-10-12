@@ -17,12 +17,20 @@
 //! goes into the node the caret came from. This is a deliberate choice:
 //! Chrome lands downstream after every motion.
 //!
+//! An offset drawn at two places has a character stop at each, where Chrome
+//! stops once. At a wrap the two are the end of the line before, upstream,
+//! and the start of the next, downstream. After white space the wrap
+//! removes, that line's end is past the space, and so is the line's end
+//! that [`Granularity::LineBoundary`] reaches; text typed there follows the
+//! space. Where the text changes direction, they are the edges of the text
+//! on each side: upstream the text before, downstream the text after.
+//!
 //! An inline box edge with margin, border or padding between two pieces of
 //! text on one line draws the two sides apart, each by its own text. A click
 //! in the room selects the nearer side. Character motion stops once at such
 //! an edge in each direction, and the next step crosses the room and the
 //! following character together. Elsewhere both sides are drawn at one
-//! place, except at a wrap, where they are on two lines.
+//! place.
 //!
 //! ```
 //! use winkin::config::PastLines;
@@ -126,8 +134,11 @@ impl From<usize> for Position {
 /// The side of an offset used for caret placement.
 ///
 /// At a wrap, upstream selects the preceding line end and downstream the
-/// following line start. At combined-text boundaries, selects the side
-/// before or after the offset.
+/// following line start. After white space the wrap removes, the line end
+/// is past that space, as if it hung. Where the text changes direction,
+/// upstream selects the edge of the text before the offset and downstream
+/// the edge of the text after it. At combined-text boundaries, selects the
+/// side before or after the offset.
 ///
 /// At a boundary between nodes, selects the node: upstream the end of the
 /// one before, downstream the start of the one after, as
@@ -248,10 +259,12 @@ pub enum MotionDirection {
     Backward,
     /// Leftward on the screen: `left`.
     ///
-    /// Character, word and line-boundary motion move left on the screen:
-    /// backward in left-to-right text and forward in right-to-left text,
-    /// across changes of direction. Character and word motion continue onto
-    /// the previous line at the left edge, regardless of paragraph direction.
+    /// Character and word motion move left on the screen: backward in
+    /// left-to-right text and forward in right-to-left text, across changes
+    /// of direction. They continue onto the previous line at the left edge,
+    /// regardless of paragraph direction. Line-boundary motion goes to the
+    /// line's left edge: its start in a left-to-right line and its end in a
+    /// right-to-left one. In vertical lines, left is line-left.
     ///
     /// Line, paragraph and document motion have no screen side and follow the
     /// paragraph direction, matching Chrome. Chrome arrow keys follow the
@@ -261,10 +274,12 @@ pub enum MotionDirection {
     Left,
     /// Rightward on the screen: `right`.
     ///
-    /// Character, word and line-boundary motion move right on the screen:
-    /// forward in left-to-right text and backward in right-to-left text,
-    /// across changes of direction. Character and word motion continue onto
-    /// the next line at the right edge, regardless of paragraph direction.
+    /// Character and word motion move right on the screen: forward in
+    /// left-to-right text and backward in right-to-left text, across changes
+    /// of direction. They continue onto the next line at the right edge,
+    /// regardless of paragraph direction. Line-boundary motion goes to the
+    /// line's right edge: its end in a left-to-right line and its start in a
+    /// right-to-left one. In vertical lines, right is line-right.
     ///
     /// Line, paragraph and document motion have no screen side and follow the
     /// paragraph direction, matching Chrome. Chrome arrow keys follow the
@@ -314,7 +329,13 @@ pub enum Granularity {
     Word,
     /// A line up or down, keeping the column.
     Line,
-    /// The line's start or end: Home and End.
+    /// An end of the line: Home and End.
+    ///
+    /// [`Forward`](MotionDirection::Forward) goes to the line's logical end,
+    /// upstream, and [`Backward`](MotionDirection::Backward) to its logical
+    /// start, downstream. [`Left`](MotionDirection::Left) and
+    /// [`Right`](MotionDirection::Right) go to its edge on that side of the
+    /// screen. At a wrap after white space, the line's end is past that space.
     LineBoundary,
     /// The paragraph's start or end.
     ParagraphBoundary,
@@ -418,13 +439,15 @@ pub struct Caret {
 
 /// The primary caret and an optional alternate at a bidi boundary.
 ///
-/// Chrome draws only the primary caret.
+/// At a bidi boundary the affinity selects the primary side. Chrome draws
+/// one caret, on the side of the paragraph direction.
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[non_exhaustive]
 pub struct Carets {
-    /// The primary caret, using the paragraph direction at bidi boundaries.
+    /// The primary caret, on the side of a bidi boundary the affinity selects.
     pub strong: Caret,
-    /// The alternate caret for a split caret, or `None` outside bidi boundaries.
+    /// The caret on the other side of a bidi boundary, for a split caret, or
+    /// `None` outside bidi boundaries.
     pub weak: Option<Caret>,
 }
 
