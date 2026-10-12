@@ -101,7 +101,7 @@ impl Continued {
     }
 }
 
-impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
+impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// Returns the last piece the line before set that ends at `start`,
     /// of `column` where one is named.
     fn previous_piece(

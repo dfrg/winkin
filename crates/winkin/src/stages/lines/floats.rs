@@ -109,7 +109,7 @@ impl Anchor {
     }
 }
 
-impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
+impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// Moves `cursor` below the floats that the forced break ending the line
     /// kept before `end` clears, where it clears any.
     ///

@@ -153,6 +153,7 @@ impl Collapser {
     }
 
     /// Moves on `event`, and returns what the writer must write.
+    #[inline(always)]
     pub(super) fn step(&mut self, event: Event) -> Effect {
         // A combined unit ends at anything but its own text. What it ends
         // with is dropped, and it is content to what follows.

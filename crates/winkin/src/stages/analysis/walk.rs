@@ -843,8 +843,8 @@ impl ClusterWriter<'_> {
     /// - the ruby column, the combined unit and the stream's resume;
     /// - a ZWNJ, and a stop from an item between;
     /// - the held small kana (no Latin-1 character is one);
-    /// - a soft hyphen, an atomic's edges and a separator;
-    /// - the paragraph flags and the East Asian gate.
+    /// - an atomic's edges and a separator;
+    /// - the paragraph flags but a soft hyphen's, and the East Asian gate.
     ///
     /// The runs are asked only where the cluster changes them
     /// ([`RunBuilder::joins`]). The last character is left pending, as the general
@@ -891,6 +891,8 @@ impl ClusterWriter<'_> {
             // own wrapping, after a space as after anything else: where
             // `filter_break` reads no style, no style is `nowrap`.
             breaks &= item.wraps;
+            let soft_hyphen = last_class == ClusterClass::SoftHyphen;
+            breaks &= !(soft_hyphen && item.hyphens_none);
             let attrs = ClusterAttrs::new(last_class)
                 .with(ClusterAttrs::BREAK_AFTER, breaks)
                 .with(ClusterAttrs::EMERGENCY_AFTER, item.emergency)
@@ -906,6 +908,9 @@ impl ClusterWriter<'_> {
                 );
                 return offset;
             };
+            if soft_hyphen {
+                self.write_soft_hyphen(item.node, id, breaks);
+            }
             let opens = id == self.paragraph.start;
             if opens || !self.script_runs.joins(last_props, item.language) {
                 let started = self.script_runs.cluster(
@@ -935,6 +940,18 @@ impl ClusterWriter<'_> {
         ));
         self.graphemes.skip_to(last_start, last);
         offset
+    }
+
+    /// Marks the paragraph as holding a soft hyphen, the cluster `id` in
+    /// `node`'s text, and records the node where a line may break after it.
+    ///
+    /// Kept out of line, so that the fast path's loop pays one test for it.
+    #[inline(never)]
+    fn write_soft_hyphen(&mut self, node: NodeId, id: ClusterId, breaks: bool) {
+        self.paragraph.flags.insert(ParagraphFlags::HAS_SOFT_HYPHEN);
+        if breaks {
+            self.out.push_hyphen_node(node, id);
+        }
     }
 
     /// Returns how a cluster stands in its line and its combined unit, and

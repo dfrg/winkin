@@ -133,14 +133,14 @@ pub(super) fn first_class(
     }
 }
 
-/// Whether `ch` is a fast-path character: printable Latin-1 but the soft hyphen.
+/// Whether `ch` is a fast-path character: printable Latin-1 or the soft hyphen.
 ///
 /// The fast path is U+0020 to U+007E and U+00A0 to U+00FF. Each fast-path character
 /// stands alone in grapheme clustering and is a cluster of its own class
 /// ([`latin1_fast_class`]). None is a separator, a tab or a control.
 #[inline]
 pub(super) fn is_latin1_fast(ch: char) -> bool {
-    matches!(ch, ' '..='~' | '\u{A0}'..='\u{FF}') && ch != '\u{AD}'
+    matches!(ch, ' '..='~' | '\u{A0}'..='\u{FF}')
 }
 
 /// Returns the fast-path character at byte `at` of `bytes` and its length.
@@ -170,6 +170,7 @@ pub(super) fn latin1_fast_class(ch: char) -> ClusterClass {
     match ch {
         ' ' => ClusterClass::Space,
         '\u{A0}' => ClusterClass::NoBreakSpace,
+        '\u{AD}' => ClusterClass::SoftHyphen,
         // Extended_Pictographic, in text presentation.
         '\u{A9}' | '\u{AE}' => ClusterClass::Symbol,
         _ => ClusterClass::Text,

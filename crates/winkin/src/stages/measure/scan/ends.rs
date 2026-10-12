@@ -203,6 +203,31 @@ impl LineEndState {
         };
     }
 
+    /// Takes the hyphen owed at boundary `at` inside plain text, and returns
+    /// what a line ending there pays for it and its line-edge cost.
+    ///
+    /// It is [`cost`](Self::cost)'s answer at a break with no edges, padding,
+    /// overhang, hanging mark or seam. Returns `None` where no hyphen is owed.
+    #[inline]
+    pub(super) fn take_plain_hyphen(&mut self, at: ClusterId) -> Option<(LinePay, LineEdgeCost)> {
+        let width = self.hyphen_owed.take()?;
+        let pay = LinePay {
+            edges: EdgeAmounts {
+                start: InlineLayoutUnit::ZERO,
+                end: InlineLayoutUnit::from_layout(width),
+            },
+            min_end_hang: InlineLayoutUnit::ZERO,
+        };
+        let edge = LineEdgeCost {
+            at,
+            end: width,
+            start: LayoutUnit::ZERO,
+            flex: LayoutUnit::ZERO,
+            flags: LineEdgeFlags::HYPHEN,
+        };
+        Some((pay, edge))
+    }
+
     /// Records that items at a boundary take `room` along the line.
     ///
     /// Past room-taking items, the cluster before them is not at a line's

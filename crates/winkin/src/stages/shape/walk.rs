@@ -28,11 +28,11 @@ use crate::work;
 /// into `out` and `advances`.
 ///
 /// Returns how many glyphs were left out, and the flags the glyphs give.
-pub(super) fn shape_text(
-    input: &ShapeInput<'_>,
+pub(super) fn shape_text<'f>(
+    input: &ShapeInput<'f>,
     variant: FirstLineVariant,
     end: ClusterId,
-    cx: &mut ShapeSession<'_, '_>,
+    cx: &mut ShapeSession<'_, 'f>,
     out: &mut ShapedText,
 ) -> (usize, ShapedFlags) {
     let ShapedText {
@@ -366,10 +366,10 @@ impl<'a> Walk<'a> {
 /// annotation's text. `neighbours` names the fonts of the runs either side.
 /// `narrow` names the form combined text is shaped in, if any.
 #[allow(clippy::too_many_arguments)]
-fn shape_run(
-    input: &ShapeInput<'_>,
+fn shape_run<'f>(
+    input: &ShapeInput<'f>,
     source: &ShapingSource<'_>,
-    cx: &mut ShapeSession<'_, '_>,
+    cx: &mut ShapeSession<'_, 'f>,
     sink: &mut GlyphSink<'_, ClusterId, InlineLayoutUnit>,
     run: &ShapedRun,
     range: Range<ClusterId>,
@@ -444,16 +444,16 @@ struct OpenUnit {
 ///
 /// This is shaping's part of `text-combine-upright`. Only text where
 /// analysis found combined units pays for it.
-struct CombinedUnits<'a> {
-    input: &'a ShapeInput<'a>,
+struct CombinedUnits<'a, 'f> {
+    input: &'a ShapeInput<'f>,
     /// The walk's text, which a unit is shaped again from.
     source: &'a ShapingSource<'a>,
     /// The unit being shaped, until its last shaping run is.
     open: Option<OpenUnit>,
 }
 
-impl<'a> CombinedUnits<'a> {
-    fn new(input: &'a ShapeInput<'a>, source: &'a ShapingSource<'a>) -> Self {
+impl<'a, 'f> CombinedUnits<'a, 'f> {
+    fn new(input: &'a ShapeInput<'f>, source: &'a ShapingSource<'a>) -> Self {
         Self {
             input,
             source,
@@ -467,7 +467,7 @@ impl<'a> CombinedUnits<'a> {
     /// where the run starts one.
     fn before(
         &mut self,
-        cx: &mut ShapeSession<'_, '_>,
+        cx: &mut ShapeSession<'_, 'f>,
         runs: &ShapedRuns,
         sink: &mut GlyphSink<'_, ClusterId, InlineLayoutUnit>,
         fits: &mut SortedTable<(ScriptRunId, CombineFit)>,
@@ -522,7 +522,7 @@ impl<'a> CombinedUnits<'a> {
     /// the odd pixel over, the unit sits half a pixel over its baseline.
     fn finish(
         &mut self,
-        cx: &mut ShapeSession<'_, '_>,
+        cx: &mut ShapeSession<'_, 'f>,
         runs: &ShapedRuns,
         sink: &mut GlyphSink<'_, ClusterId, InlineLayoutUnit>,
         fits: &mut SortedTable<(ScriptRunId, CombineFit)>,
@@ -573,7 +573,7 @@ impl<'a> CombinedUnits<'a> {
     /// form.
     fn shape_unit(
         &self,
-        cx: &mut ShapeSession<'_, '_>,
+        cx: &mut ShapeSession<'_, 'f>,
         runs: &ShapedRuns,
         sink: &mut GlyphSink<'_, ClusterId, InlineLayoutUnit>,
         open: OpenUnit,

@@ -32,7 +32,7 @@ use crate::stages::measure::{LineEdgeCost, LineEdgeFlags};
 use crate::stages::shape::ShapedFlags;
 use crate::unit::{InlineLayoutUnit, LayoutUnit};
 
-impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
+impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// Returns where `line` starts in `band`, and the paragraph's line-edge
     /// costs sought at its start.
     ///

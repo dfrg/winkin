@@ -225,10 +225,12 @@ pub(crate) struct ShapeContext {
 }
 
 /// One build or break pass over the shaping caches, with a borrowed metric
-/// source. The context retains neither the provider nor its cache.
+/// source and the fonts the pass shapes in.
+///
+/// The context retains neither the provider, its cache, nor the fonts.
 pub(crate) struct ShapeSession<'c, 'p> {
     context: &'c mut ShapeContext,
-    provider: Option<&'p dyn FontMetricsProvider>,
+    pass: PassFonts<'p>,
 }
 
 impl<'c, 'p> ShapeSession<'c, 'p> {
@@ -236,23 +238,28 @@ impl<'c, 'p> ShapeSession<'c, 'p> {
         context: &'c mut ShapeContext,
         provider: Option<&'p dyn FontMetricsProvider>,
     ) -> Self {
-        Self { context, provider }
+        let pass = PassFonts {
+            provider,
+            held: Default::default(),
+            next: 0,
+        };
+        Self { context, pass }
     }
 
     pub(super) fn shape_call<R>(
         &mut self,
-        font: &UsedInstance,
+        font: &'p UsedInstance,
         text: &CallText<'_>,
         settings: &CallSettings,
         wanted: Features<'_>,
         read: impl FnOnce(&Buffer) -> R,
     ) -> Option<R> {
         self.context
-            .shape_call(font, text, settings, wanted, self.provider, read)
+            .shape_call(font, text, settings, wanted, Some(&mut self.pass), read)
     }
 
     pub(crate) fn provider(&self) -> Option<&'p dyn FontMetricsProvider> {
-        self.provider
+        self.pass.provider
     }
 }
 
@@ -267,6 +274,50 @@ impl Deref for ShapeSession<'_, '_> {
 impl DerefMut for ShapeSession<'_, '_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.context
+    }
+}
+
+/// How many prepared fonts a pass keeps.
+const SHAPERS: usize = 4;
+
+/// What a pass shapes with beside the context: its metric provider, and
+/// the fonts it last shaped in, prepared for harfrust.
+///
+/// Preparing a font reads its layout tables and character map, and its
+/// glyph metrics on first use. A pass shapes run after run in the same few
+/// fonts, so a few prepared fonts spare nearly every preparation.
+struct PassFonts<'f> {
+    provider: Option<&'f dyn FontMetricsProvider>,
+    /// The prepared fonts, each with its key and the scale it was last set
+    /// to. A miss replaces the one prepared longest ago, at `next`.
+    held: [Option<(FontKey, i32, ShaperFont<'f, 'static>)>; SHAPERS],
+    next: usize,
+}
+
+impl<'f> PassFonts<'f> {
+    /// Returns `font` prepared for harfrust at `scale`, preparing it where
+    /// no entry holds it.
+    fn shaper(&mut self, font: &'f UsedInstance, scale: i32) -> &ShaperFont<'f, 'static> {
+        let found = self.held.iter().position(|held| {
+            held.as_ref()
+                .is_some_and(|(key, _, shaper)| is_instance(*key, shaper, font))
+        });
+        let at = found.unwrap_or_else(|| {
+            let at = self.next % SHAPERS;
+            self.next = at + 1;
+            self.held[at] = None;
+            at
+        });
+        let (_, held, shaper) = self.held[at].get_or_insert_with(|| {
+            let mut shaper = ShaperFont::new(&font.font);
+            shaper.set_scale(scale);
+            (font.key(), scale, shaper)
+        });
+        if *held != scale {
+            *held = scale;
+            shaper.set_scale(scale);
+        }
+        shaper
     }
 }
 
@@ -556,16 +607,17 @@ impl ShapeContext {
     /// Shapes `text` in `font`, a layout's used font, as `call` says,
     /// and hands the shaped buffer to `read`.
     ///
-    /// It uses `provider`'s glyph metrics where there is one. Returns `None`
-    /// where harfrust refuses the call, which never happens for a buffer
-    /// filled this way.
-    fn shape_call<R>(
+    /// It uses the glyph metrics of `pass`'s provider where there is one,
+    /// and otherwise the font as `pass` holds it prepared. Without `pass`, it
+    /// prepares the font for the call. Returns `None` where harfrust refuses
+    /// the call, which never happens for a buffer filled this way.
+    fn shape_call<'f, R>(
         &mut self,
-        font: &UsedInstance,
+        font: &'f UsedInstance,
         text: &CallText<'_>,
         call: &CallSettings,
         wanted: Features<'_>,
-        provider: Option<&dyn FontMetricsProvider>,
+        pass: Option<&mut PassFonts<'f>>,
         read: impl FnOnce(&Buffer) -> R,
     ) -> Option<R> {
         // Down the line, use the font's vertical metrics at the call's size,
@@ -602,7 +654,8 @@ impl ShapeContext {
         fill(buffer, text, call);
         // Trim probes shape at the font's em rather than a used CSS size;
         // they classify the font's design-space punctuation, not hinted ink.
-        let provided = provider
+        let provided = (pass.as_ref())
+            .and_then(|pass| pass.provider)
             .filter(|_| matches!(wanted, Features::Font { .. }))
             .map(|provider| (provider, provider_instance(font, call.scale)));
         let options = ShapeOptions::new()
@@ -619,14 +672,19 @@ impl ShapeContext {
                 buffer,
                 options,
             ),
-            None => {
-                let funcs =
-                    provided.map(|(provider, request)| ProvidedFuncs::new(provider, request, None));
-                let mut shaper = ShaperFont::new(&font.font);
-                shaper.set_scale(call.scale);
-                shaper.set_font_funcs(funcs.as_ref().map(|funcs| funcs as &dyn FontFuncs));
-                harfrust::shape(&shaper, buffer, options).is_ok()
-            }
+            None => match (provided, pass) {
+                (None, Some(pass)) => {
+                    harfrust::shape(pass.shaper(font, call.scale), buffer, options).is_ok()
+                }
+                (provided, _) => {
+                    let funcs = provided
+                        .map(|(provider, request)| ProvidedFuncs::new(provider, request, None));
+                    let mut shaper = ShaperFont::new(&font.font);
+                    shaper.set_scale(call.scale);
+                    shaper.set_font_funcs(funcs.as_ref().map(|funcs| funcs as &dyn FontFuncs));
+                    harfrust::shape(&shaper, buffer, options).is_ok()
+                }
+            },
         };
         let answer = shaped.then(|| read(buffer));
         buffer.clear();

@@ -73,9 +73,9 @@ pub(crate) struct ShapeInput<'a> {
 /// This call alone clears and fills `out`. It sets `out`'s flags once,
 /// from both shapings: an unsafe break in either lets the breaker reshape.
 /// Measurement copies the advances next.
-pub(crate) fn shape_runs(
-    input: &ShapeInput<'_>,
-    cx: &mut ShapeSession<'_, '_>,
+pub(crate) fn shape_runs<'f>(
+    input: &ShapeInput<'f>,
+    cx: &mut ShapeSession<'_, 'f>,
     out: &mut Shaped,
 ) -> usize {
     out.clear();

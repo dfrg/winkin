@@ -299,7 +299,7 @@ impl LineStages<'_> {
 }
 
 /// The scale of a line, as more of the breaker's `impl`.
-impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
+impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// Returns the scale the line `fitted`, from `start` and item
     /// `first_item`, takes in `band`, and scales its width and what hangs
     /// past it.

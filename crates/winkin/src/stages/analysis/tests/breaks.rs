@@ -831,7 +831,7 @@ fn latin_1_fast_path_characters_analyse_as_the_general_walk_does() {
         .filter(|&ch| super::classify::latin1_fast_agrees(ch, content))
         .map(u32::from)
         .collect();
-    let printable = (0x20..=0x7E).chain(0xA0..=0xFF).filter(|&cp| cp != 0xAD);
+    let printable = (0x20..=0x7E).chain(0xA0..=0xFF);
     assert_eq!(fast, printable.collect::<Vec<u32>>());
 }
 

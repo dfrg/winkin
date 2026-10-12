@@ -143,9 +143,9 @@ impl<'a> MeasureInput<'a> {
 ///
 /// Clears and fills `out`; nothing else writes it. Each prefix keeps its
 /// buffer from one measure to the next, so a warm measure allocates none.
-pub(crate) fn measure_text(
-    input: &MeasureInput<'_>,
-    cx: &mut ShapeSession<'_, '_>,
+pub(crate) fn measure_text<'f>(
+    input: &MeasureInput<'f>,
+    cx: &mut ShapeSession<'_, 'f>,
     scratch: &mut MeasureScratch,
     out: &mut Measured,
     new_fonts: bool,

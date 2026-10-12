@@ -96,7 +96,7 @@ heap_bytes! {
     SizedTabs { tabs; line, walked }
 }
 
-impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
+impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// Measures the line from the fitting's start to `end`, reshaping its
     /// edges where the font shaped across them.
     ///

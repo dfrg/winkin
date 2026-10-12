@@ -964,7 +964,7 @@ pub(super) struct Height {
 }
 
 /// A line's height, as more of the breaker's `impl`.
-impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
+impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// Returns how tall a line from `start` is taken to be before its own
     /// height is known.
     ///

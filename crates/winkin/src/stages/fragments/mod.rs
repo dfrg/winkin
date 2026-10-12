@@ -813,28 +813,21 @@ impl Fragments {
 
     /// Returns `line`'s annotation line for ruby level `level`, or `None`.
     ///
-    /// A line's annotation lines are in level order, so this binary searches.
-    /// Each probe steps back over an annotation's text to its head.
+    /// A line's annotation lines are in level order, and a line holds one or
+    /// two, so this steps from head to head.
     pub(crate) fn annotation_line(
         &self,
         line: LineId,
         level: RubyLevelId,
     ) -> Option<&FragmentItem> {
         let items = self.line_annotations(line);
-        let (mut low, mut high) = (0, items.len());
-        while low < high {
+        let mut head = 0;
+        while let Some(found) = items.get(head) {
             work::step();
-            let mut head = low + (high - low) / 2;
-            while head > low && items.get(head)?.kind() != FragmentItemKind::AnnotationLine {
-                work::step();
-                head -= 1;
-            }
-            let found = items.get(head)?;
-            let at = found.ruby_level()?;
-            match at.cmp(&level) {
+            match found.ruby_level()?.cmp(&level) {
                 Ordering::Equal => return Some(found),
-                Ordering::Less => low = head + 1 + found.descendants(),
-                Ordering::Greater => high = head,
+                Ordering::Less => head += 1 + found.descendants(),
+                Ordering::Greater => return None,
             }
         }
         None

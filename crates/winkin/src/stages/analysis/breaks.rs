@@ -44,7 +44,7 @@ use crate::work;
 /// Japanese or Chinese matters to it, and both mean the same.
 static JAPANESE: LanguageIdentifier = langid!("ja");
 
-/// The options a line segmenter is made with, resolved from a style: 24
+/// The options a line segmenter is made with, resolved from a style: 16
 /// values.
 ///
 /// Two styles that break alike resolve to one key, so a stream resumes only
@@ -65,7 +65,7 @@ pub(super) struct LineKey {
 
 impl LineKey {
     /// How many keys there are, and segmenters in the context.
-    pub(super) const COUNT: usize = 24;
+    pub(super) const COUNT: usize = 16;
 
     /// The key text breaks under with `line-break: strictness` and
     /// `word-break: word`.
@@ -152,37 +152,31 @@ impl LineKey {
 
     /// The key's slot among the context's segmenters.
     pub(super) fn index(self) -> usize {
-        let strictness = match self.strictness {
-            LineBreak::Loose => 0,
-            LineBreak::Normal => 1,
-            LineBreak::Strict => 2,
-            LineBreak::Anywhere => 3,
-        };
         let word = match self.word {
             WordBreak::Normal => 0,
             WordBreak::BreakAll => 1,
             WordBreak::KeepAll => 2,
         };
-        strictness * 6 + word * 2 + usize::from(self.ja_zh)
+        match self.strictness {
+            LineBreak::Loose => word * 2 + usize::from(self.ja_zh),
+            LineBreak::Normal => 6 + word * 2 + usize::from(self.ja_zh),
+            LineBreak::Strict => 12 + word,
+            LineBreak::Anywhere => 15,
+        }
     }
 
     /// The key in slot `index`, the other way from [`index`](Self::index).
     pub(super) fn from_index(index: usize) -> Self {
-        let strictness = match index / 6 {
-            0 => LineBreak::Loose,
-            1 => LineBreak::Normal,
-            2 => LineBreak::Strict,
-            _ => LineBreak::Anywhere,
-        };
-        let word = match (index % 6) / 2 {
+        let word = |at| match at {
             0 => WordBreak::Normal,
             1 => WordBreak::BreakAll,
             _ => WordBreak::KeepAll,
         };
-        Self {
-            strictness,
-            word,
-            ja_zh: index % 2 == 1,
+        match index {
+            0..6 => Self::new(LineBreak::Loose, word(index / 2), index % 2 == 1),
+            6..12 => Self::new(LineBreak::Normal, word(index / 2 - 3), index % 2 == 1),
+            12..15 => Self::new(LineBreak::Strict, word(index - 12), false),
+            _ => Self::new(LineBreak::Anywhere, WordBreak::Normal, false),
         }
     }
 

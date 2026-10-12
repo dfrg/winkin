@@ -261,13 +261,18 @@ impl ContentWriter<'_> {
         }
         // What the next text reads before it, whatever of this is kept.
         let mut before = mem::replace(&mut self.text_node.last_char, last);
+        // A lone space between two plain characters, where spaces collapse
+        // and nothing transforms them, is the one space its run owes, where
+        // the run began: it is written with the text around it.
+        let lone_spaces =
+            mode.collapses_spaces() && transforms.own.is_none() && !transforms.first_line_differs();
         let mut rest = text;
         while !rest.is_empty() {
             if self.room.full {
                 self.room.report.drop_bytes(rest.len());
                 return;
             }
-            let plain = plain_len(rest, !mode.keeps_spaces());
+            let plain = plain_len(rest, !mode.keeps_spaces(), lone_spaces);
             // `plain_len` stops only at the start of a character.
             let (content, tail) = rest.split_at(plain);
             if !content.is_empty() {
@@ -993,27 +998,137 @@ fn is_document_white_space(ch: char) -> bool {
 /// Those characters are a segment break, a carriage return, a character
 /// that forces a line break (VT, FF, NEL, U+2028, U+2029), and, if `spaces`
 /// (where they collapse or are discarded), a space or a tab. Everything
-/// before is written as it is. The result is always a character boundary:
-/// each of these is one character, and no other character's later bytes
-/// match.
-fn plain_len(text: &str, spaces: bool) -> usize {
+/// before is written as it is. Where `lone_spaces`, a space between two
+/// characters written as they are is written as it is too. The result is
+/// always a character boundary: each of these is one character, and no other
+/// character's later bytes match.
+fn plain_len(text: &str, spaces: bool, lone_spaces: bool) -> usize {
+    const ONES: u64 = u64::from_le_bytes([1; 8]);
     let bytes = text.as_bytes();
-    for (at, &byte) in bytes.iter().enumerate() {
+    let mut at = 0;
+    while let Some(rest) = bytes.get(at..).filter(|rest| !rest.is_empty()) {
         work::step();
-        let special = match byte {
-            b'\n' | b'\r' | b'\x0B' | b'\x0C' => true,
-            b' ' | b'\t' => spaces,
-            // NEL, U+0085, is C2 85.
-            0xC2 => bytes.get(at + 1) == Some(&0x85),
-            // U+2028 and U+2029 are E2 80 A8 and E2 80 A9.
-            0xE2 => {
-                bytes.get(at + 1) == Some(&0x80) && matches!(bytes.get(at + 2), Some(0xA8 | 0xA9))
-            }
-            _ => false,
+        let x = match rest.first_chunk::<8>() {
+            Some(&eight) => u64::from_le_bytes(eight),
+            // The last bytes below letters, built in a register: through
+            // memory, the load would wait on the bytes' stores.
+            None => rest
+                .iter()
+                .rev()
+                .fold(ONES * u64::from(b'a'), |x, &byte| x << 8 | u64::from(byte)),
         };
-        if special {
-            return at;
+        // Every special character starts with a byte up to a space, or with
+        // C2 or E2, which differ in one bit. Each such byte is flagged, and
+        // bytes above the first may be flagged too.
+        let low = x.wrapping_sub(ONES * 0x21) & !x;
+        let lead = (x & (ONES * 0xDF)) ^ (ONES * 0xC2);
+        let lead = lead.wrapping_sub(ONES) & !lead;
+        let mut flagged = (low | lead) & (ONES * 0x80);
+        while flagged != 0 {
+            let candidate = at + (flagged.trailing_zeros() / 8) as usize;
+            flagged &= flagged - 1;
+            let Some(&byte) = bytes.get(candidate) else {
+                break;
+            };
+            let lone = byte == b' '
+                && lone_spaces
+                && candidate > 0
+                && bytes
+                    .get(candidate + 1)
+                    .is_some_and(|&next| !is_special(bytes, candidate + 1, next, true));
+            if !lone && is_special(bytes, candidate, byte, spaces) {
+                return candidate;
+            }
         }
+        at += 8;
     }
     bytes.len()
+}
+
+/// Returns whether `byte`, at `at` in `bytes`, starts a character the writer
+/// handles on its own (see [`plain_len`]).
+#[inline(always)]
+fn is_special(bytes: &[u8], at: usize, byte: u8, spaces: bool) -> bool {
+    if byte > b' ' && byte & 0xDF != 0xC2 {
+        return false;
+    }
+    match byte {
+        b'\n' | b'\r' | b'\x0B' | b'\x0C' => true,
+        b' ' | b'\t' => spaces,
+        // NEL, U+0085, is C2 85.
+        0xC2 => bytes.get(at + 1) == Some(&0x85),
+        // U+2028 and U+2029 are E2 80 A8 and E2 80 A9.
+        0xE2 => bytes.get(at + 1) == Some(&0x80) && matches!(bytes.get(at + 2), Some(0xA8 | 0xA9)),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::string::String;
+
+    use super::{is_special, plain_len};
+
+    /// The scan `plain_len` makes, a byte at a time.
+    fn scan(text: &str, spaces: bool, lone_spaces: bool) -> usize {
+        let bytes = text.as_bytes();
+        let stops = |at: usize, byte: u8| {
+            let lone = byte == b' '
+                && lone_spaces
+                && at > 0
+                && bytes
+                    .get(at + 1)
+                    .is_some_and(|&next| !is_special(bytes, at + 1, next, true));
+            !lone && is_special(bytes, at, byte, spaces)
+        };
+        (0..bytes.len())
+            .find(|&at| stops(at, bytes[at]))
+            .unwrap_or(bytes.len())
+    }
+
+    #[test]
+    fn plain_text_ends_where_a_scan_a_byte_at_a_time_ends_it() {
+        // Every character the writer stops at, characters sharing their
+        // lead bytes, and words long enough to cross eight bytes.
+        let pieces = [
+            "a",
+            " ",
+            "\t",
+            "\n",
+            "\r",
+            "\u{B}",
+            "\u{C}",
+            "\u{1}",
+            "\u{85}",
+            "\u{A9}",
+            "\u{2028}",
+            "\u{2029}",
+            "\u{2027}",
+            "\u{E2}",
+            "é",
+            "日本",
+            "\u{200B}",
+            "abcdefghij",
+        ];
+        let mut state = 1_u64;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 33) as usize
+        };
+        for _ in 0..20_000 {
+            let mut text = String::new();
+            for _ in 0..next() % 24 {
+                text.push_str(pieces[next() % pieces.len()]);
+            }
+            for (spaces, lone_spaces) in [(true, true), (true, false), (false, false)] {
+                assert_eq!(
+                    plain_len(&text, spaces, lone_spaces),
+                    scan(&text, spaces, lone_spaces),
+                    "{text:?}, spaces {spaces}, lone spaces {lone_spaces}",
+                );
+            }
+        }
+    }
 }

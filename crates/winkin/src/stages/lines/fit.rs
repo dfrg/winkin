@@ -249,7 +249,7 @@ pub(super) struct LineTrial<'p> {
     pub(super) first: bool,
 }
 
-impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
+impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// Returns the ruby columns whose bases start among `clusters`, a
     /// line's, walked to from the column the last search ended near.
     pub(super) fn line_columns(&self, clusters: Range<ClusterId>) -> Range<RubyColumnId> {
@@ -291,7 +291,7 @@ impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
     /// marks. `fitting` says how `text-fit` scales each line's text.
     pub(super) fn new(
         input: &BreakInput<'a>,
-        shaping: &'c mut ShapeSession<'m, 'provider>,
+        shaping: &'c mut ShapeSession<'m, 'a>,
         scratch: &'c mut BreakScratch,
         exclusions: &'c mut dyn Exclusions,
         clamp: Clamp,

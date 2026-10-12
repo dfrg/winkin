@@ -413,12 +413,12 @@ impl<'a> NeighbourFonts<'a> {
 /// is the paragraph's, as Chrome gives HarfBuzz the whole text around the
 /// range, so a word broken across lines keeps its joining forms.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn shape_range<I: Id, A: AdvanceUnit, S: AdvanceStore<A>>(
-    cx: &mut ShapeSession<'_, '_>,
+pub(crate) fn shape_range<'f, I: Id, A: AdvanceUnit, S: AdvanceStore<A>>(
+    cx: &mut ShapeSession<'_, 'f>,
     source: &ShapingSource<'_>,
     paragraph: Range<TextOffset>,
     range: Range<ClusterId>,
-    key: &ShapingKey<'_>,
+    key: &ShapingKey<'f>,
     edges: ShapingEdges,
     neighbours: NeighbourFonts<'_>,
     out: &mut GlyphSink<'_, I, A, S>,
@@ -521,10 +521,10 @@ pub(crate) fn shape_range<I: Id, A: AdvanceUnit, S: AdvanceStore<A>>(
 /// `HarfBuzzShaper` shapes a `HyphenResult` and an ellipsis. Where the key
 /// has no font, the font cannot be read, or `out` cannot take every glyph,
 /// nothing is appended, and the text draws nothing and takes no room.
-pub(crate) fn shape_generated(
-    cx: &mut ShapeSession<'_, '_>,
+pub(crate) fn shape_generated<'f>(
+    cx: &mut ShapeSession<'_, 'f>,
     text: &str,
-    key: &ShapingKey<'_>,
+    key: &ShapingKey<'f>,
     out: &mut Table<SidecarGlyphId, SidecarGlyph>,
 ) -> InlineLayoutUnit {
     let Some(font) = &key.font else {

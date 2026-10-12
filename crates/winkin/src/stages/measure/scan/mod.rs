@@ -699,10 +699,9 @@ impl<'w, 'a> Walking<'w, 'a> {
         (self.widths).cluster(outer_attrs, step, tab, self.walk.facts.flags);
         self.record_line_end(at, class, (attrs, outer_attrs), gap, step);
         // Run the plain fast path from the next boundary where its gate holds:
-        // the fast path is open for the content, the item is plain, the
-        // paragraph has no autospace seams, and no hyphen is owed.
+        // the fast path is open for the content, the item is plain, and the
+        // paragraph has no autospace seams.
         if scan.plain_fast_path_open
-            && self.ends.hyphen_owed.is_none()
             && gap == InlineLayoutUnit::ZERO
             && self.walk.is_plain()
             && held.is_some()
@@ -789,15 +788,17 @@ impl<'w, 'a> Walking<'w, 'a> {
     /// item. It marks the paragraph where the prefix goes back, and keeps the
     /// intrinsic widths up to date.
     ///
+    /// A soft hyphen a line may break after owes its hyphen to the boundary
+    /// after it, which charges it ([`LineEndState::take_plain_hyphen`]).
+    ///
     /// Returns the boundary it stopped at: the fast path's end, or the
-    /// boundary before a sized tab, a soft hyphen or an atomic inline's
-    /// U+FFFC. The general body handles those.
+    /// boundary before a sized tab or an atomic inline's U+FFFC. The general
+    /// body handles those, and a hyphen still owed there.
     ///
     /// The fast path is exact because of its gate. The content has no ruby,
     /// line padding or hanging punctuation. The paragraph has no autospace
-    /// seam. The item has no spacing, cloned edge or annotation, and no
-    /// hyphen is owed. So every cost the general body would work out here is
-    /// zero.
+    /// seam. The item has no spacing, cloned edge or annotation. So every
+    /// cost the general body would work out here but the hyphen's is zero.
     #[inline(always)]
     fn plain_fast_path(&mut self, from: ClusterId) -> ClusterId {
         let scan = self.scan;
@@ -811,23 +812,41 @@ impl<'w, 'a> Walking<'w, 'a> {
                 writer,
                 flags,
                 widths,
+                ends,
+                out,
+                walk,
                 ..
             } = self;
             while at < fast_end {
                 let attrs = clusters.attrs(at);
                 let class = attrs.map_or(ClusterClass::Text, ClusterAttrs::class);
                 let tab = class == ClusterClass::Tab && scan.has_tabs;
-                if tab || class == ClusterClass::SoftHyphen || class == ClusterClass::Object {
+                if tab || class == ClusterClass::Object {
                     return at;
                 }
+                let pay = match ends.take_plain_hyphen(at) {
+                    Some((pay, edge)) => {
+                        out.rare_mut().edge_costs.push(edge);
+                        flags.insert(MeasureFlags::HAS_EDGE_COSTS);
+                        pay
+                    }
+                    None => LinePay::default(),
+                };
                 if writer.went_back() {
                     flags.insert(MeasureFlags::NONMONOTONE);
                 }
-                widths.boundary(writer.sum, LinePay::default());
+                widths.boundary(writer.sum, pay);
                 let advance = scan.advances.get(at.get()).copied().unwrap_or_default();
                 writer.write(sums);
                 writer.sum += advance;
                 widths.cluster(attrs, advance, Tab::NONE, text);
+                if class == ClusterClass::SoftHyphen
+                    && attrs.is_some_and(|attrs| attrs.has(ClusterAttrs::BREAK_AFTER))
+                {
+                    let generated = scan.generated;
+                    ends.hyphen_owed =
+                        (generated.hyphen(walk.text)).map(|hyphen| generated.snapped(hyphen));
+                }
                 at = ClusterId::new(at.get() + 1);
             }
             if at == fast_end && at < scan.end && self.walk.continues(scan, &mut self.out.extents) {

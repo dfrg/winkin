@@ -27,7 +27,7 @@
 
 use harfrust::unicode::{self as shaper, Decomposed};
 
-use super::core_props;
+use super::{core_props, rare_props};
 
 /// The most characters one character decomposes to canonically, in full,
 /// and the most steps of [`decompose`] that takes through the first half:
@@ -153,27 +153,11 @@ pub(crate) fn modified_combining_class(ch: char) -> u8 {
 /// the whole of the difference. U+180F, the fourth Mongolian free variation
 /// selector, is hidden, as harfrust 0.14.0 hides it.
 pub(crate) fn is_default_ignorable(ch: char) -> bool {
-    let u = u32::from(ch);
-    match u >> 16 {
-        0 => match u >> 8 {
-            0x00 => u == 0x00AD,
-            0x03 => u == 0x034F,
-            0x06 => u == 0x061C,
-            0x17 => (0x17B4..=0x17B5).contains(&u),
-            0x18 => (0x180B..=0x180F).contains(&u),
-            0x20 => {
-                (0x200B..=0x200F).contains(&u)
-                    || (0x202A..=0x202E).contains(&u)
-                    || (0x2060..=0x206F).contains(&u)
-            }
-            0xFE => (0xFE00..=0xFE0F).contains(&u) || u == 0xFEFF,
-            0xFF => (0xFFF0..=0xFFF8).contains(&u),
-            _ => false,
-        },
-        0x01 => (0x1D173..=0x1D17A).contains(&u),
-        0x0E => (0xE0000..=0xE0FFF).contains(&u),
-        _ => false,
-    }
+    rare_props(ch).is_default_ignorable()
+        && !matches!(
+            ch,
+            '\u{115F}' | '\u{1160}' | '\u{3164}' | '\u{FFA0}' | '\u{1BCA0}'..='\u{1BCA3}'
+        )
 }
 
 /// Whether `ch` is a variation selector as harfrust's normalizer takes one:

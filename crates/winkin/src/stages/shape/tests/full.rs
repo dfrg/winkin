@@ -1,5 +1,6 @@
 //! Tests of shaping with the font's full features:
-//! - a variable font shaped at its coordinates;
+//! - a variable font shaped at its coordinates, two instances of it apart in
+//!   one paragraph;
 //! - synthesized small capitals fed uppercased at their size, with Turkish
 //!   dotting its capital i;
 //! - `font-kerning: none`;
@@ -42,6 +43,33 @@ fn a_variable_font_is_shaped_at_its_coordinates() {
         assert!(
             (advance - bold).abs() <= 1 << 10,
             "{advance} against {bold}"
+        );
+    }
+}
+
+/// Two instances of one font in one paragraph each shape at their own
+/// coordinates, however the runs alternate between them.
+#[test]
+fn instances_of_one_font_shape_apart_in_one_paragraph() {
+    let mut fixture = fixture_with(&[cased()]);
+    let mut layout = Layout::new();
+    let regular = sized(&CASED, 100.0);
+    let mut bold = regular;
+    bold.font.weight = FontWeight::new(700.0);
+    fixture.spans(
+        &mut layout,
+        &regular,
+        &[(&regular, "ab"), (&bold, "ab"), (&regular, "ab")],
+    );
+    let size = i64::from(TextUnit::from_px(100.0).raw());
+    let (em, wide) = (scaled(500, 1000, size), scaled(620, 1000, size));
+    let advances = fixture.advances(&layout);
+    let wanted = [em, em, wide, wide, em, em];
+    assert_eq!(advances.len(), wanted.len());
+    for (advance, wanted) in advances.into_iter().zip(wanted) {
+        assert!(
+            (advance - wanted).abs() <= 1 << 10,
+            "{advance} against {wanted}"
         );
     }
 }

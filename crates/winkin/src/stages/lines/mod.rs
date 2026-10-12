@@ -182,9 +182,9 @@ impl Default for BreakScratch {
 ///
 /// `text-fit: consistent` lays the lines out twice: once to measure the
 /// scale they share, and again in it.
-pub(crate) fn break_lines(
-    input: &BreakInput<'_>,
-    cx: &mut ShapeSession<'_, '_>,
+pub(crate) fn break_lines<'a>(
+    input: &BreakInput<'a>,
+    cx: &mut ShapeSession<'_, 'a>,
     scratch: &mut BreakScratch,
     exclusions: &mut dyn Exclusions,
     out: &mut Lines,
@@ -200,9 +200,9 @@ pub(crate) fn break_lines(
 ///
 /// Out of line, so that text `text-fit` leaves alone breaks as without it.
 #[inline(never)]
-fn break_fitted(
-    input: &BreakInput<'_>,
-    cx: &mut ShapeSession<'_, '_>,
+fn break_fitted<'a>(
+    input: &BreakInput<'a>,
+    cx: &mut ShapeSession<'_, 'a>,
     scratch: &mut BreakScratch,
     exclusions: &mut dyn Exclusions,
     out: &mut Lines,
@@ -225,9 +225,9 @@ fn break_fitted(
 /// Breaks the text of `input` into lines once, into `out`, which starts
 /// empty, scaling each line's text as `fitting` says.
 #[inline]
-fn break_once(
-    input: &BreakInput<'_>,
-    cx: &mut ShapeSession<'_, '_>,
+fn break_once<'a>(
+    input: &BreakInput<'a>,
+    cx: &mut ShapeSession<'_, 'a>,
     scratch: &mut BreakScratch,
     exclusions: &mut dyn Exclusions,
     out: &mut Lines,
@@ -1283,7 +1283,7 @@ struct Fitting<'p, 'h> {
 
 /// The breaker: its view of the prepared tables, the shaping caches its
 /// reshapes use, and the state of the line being fitted.
-struct Breaker<'a, 'c, 'm, 'provider> {
+struct Breaker<'a, 'c, 'm> {
     /// The prepared tables in the variant of the line being broken.
     stages: LineStages<'a>,
     /// The prepared tables in the first line's variant, where `::first-line`
@@ -1298,7 +1298,7 @@ struct Breaker<'a, 'c, 'm, 'provider> {
     /// Measurement's whole output, which holds each text's tab stops for
     /// both variants.
     measured: &'a Measured,
-    shaping: &'c mut ShapeSession<'m, 'provider>,
+    shaping: &'c mut ShapeSession<'m, 'a>,
     /// The scratch for line heights, carried boxes and annotation levels.
     scratch: &'c mut BreakScratch,
     /// The host, which places the floats the lines reach and gives each

@@ -477,7 +477,7 @@ impl CulledDrawing<'_> {
     ///
     /// Only a box that decorates is looked for among the kept boxes, by the
     /// walk, which the boxes asked keep near one another.
-    fn sides<F: Fn(NodeKey) -> Decorates>(&mut self, node: NodeId, decorates: &F) -> Decorates {
+    fn sides(&mut self, node: NodeId, decorates: &dyn Fn(NodeKey) -> Decorates) -> Decorates {
         let (nodes, facts) = (&self.content.nodes, &self.content.facts);
         let decorating = nodes.kind(node).is_some_and(NodeKind::is_inline_box)
             && node != NodeId::BLOCK
@@ -497,10 +497,10 @@ impl CulledDrawing<'_> {
     /// Returns whether `node` is a culled box that decorates, and draws in
     /// the phase painted after the text where `after_text`, before it
     /// otherwise.
-    fn draws<F: Fn(NodeKey) -> Decorates>(
+    fn draws(
         &mut self,
         node: NodeId,
-        decorates: &F,
+        decorates: &dyn Fn(NodeKey) -> Decorates,
         after_text: bool,
     ) -> bool {
         let sides = self.sides(node, decorates);
@@ -513,11 +513,11 @@ impl CulledDrawing<'_> {
 
     /// Returns the `k`th of the boxes around `start` that draw in the phase,
     /// the innermost first, or `None` where there are fewer.
-    fn around<F: Fn(NodeKey) -> Decorates>(
+    fn around(
         &mut self,
         start: NodeId,
         k: usize,
-        decorates: &F,
+        decorates: &dyn Fn(NodeKey) -> Decorates,
         after_text: bool,
     ) -> Option<NodeId> {
         let mut count = 0;
@@ -531,10 +531,10 @@ impl CulledDrawing<'_> {
 
     /// Returns how many of the boxes around `start` draw before the text,
     /// and how many after it, in one walk up.
-    fn count_around<F: Fn(NodeKey) -> Decorates>(
+    fn count_around(
         &mut self,
         start: NodeId,
-        decorates: &F,
+        decorates: &dyn Fn(NodeKey) -> Decorates,
     ) -> (usize, usize) {
         let (mut before, mut after) = (0, 0);
         self.walk_up(start, |drawing, node| {
@@ -593,7 +593,10 @@ impl<'a, F: Fn(NodeKey) -> Decorates> PaintWalk<'a, F> {
 }
 
 // The walk is generic, so it is built in the crate that calls it, which
-// inlines only what is marked `#[inline]`: each step it takes is.
+// inlines only what is marked `#[inline]`: each step it takes is. The
+// culled boxes' steps ask `decorates` through a `&dyn Fn` and are built
+// once, here. `next_decoration` stays generic: asking through a `&dyn Fn`
+// for the block and every kept box slows a boxed article's paint by 2–3%.
 impl<'a> PaintedLine<'a> {
     /// Whether `item` is a leaf that is painted, and not what hangs.
     #[inline]
@@ -691,6 +694,9 @@ impl<'a> PaintedLine<'a> {
             let Some(first) = decorating.next else {
                 // Then each culled box that decorates, across the line, on
                 // its parent's baseline.
+                if !self.has_culled() {
+                    return None;
+                }
                 let (node, from, until) = self.next_culled(decorating, culled, decorates)?;
                 decorating.node = Some(node);
                 decorating.at = from;
@@ -723,29 +729,30 @@ impl<'a> PaintedLine<'a> {
         }
     }
 
-    /// The next culled box of the line that draws a decoration of the
-    /// phase `decorating`: those open across the line's start first,
-    /// outermost first, then those opening on it, in tree order (see the
-    /// module documentation).
-    fn next_culled<F: Fn(NodeKey) -> Decorates>(
-        &self,
-        decorating: &mut Decorating,
-        culled: &mut Option<CulledLine<'a>>,
-        decorates: &F,
-    ) -> Option<(NodeId, FragmentItemId, Option<ClusterId>)> {
+    /// Whether the line may hold a culled box that decorates.
+    ///
+    /// Content with no box that decorates has none to look for, and a line
+    /// no inline box holds any of, none of its own.
+    #[inline]
+    fn has_culled(&self) -> bool {
         let content = self.line.layout().content();
-        // Content with no box that decorates has none to look for, and a
-        // line no inline box holds any of, none of its own.
-        if !content.flags.contains(ContentFlags::DECORATED_BOXES) {
-            return None;
-        }
         let boxed = self
             .line
             .head()
             .is_some_and(|head| head.flags.contains(FragmentItemFlags::BOXED));
-        if !boxed && work::fast_paths() {
-            return None;
-        }
+        content.flags.contains(ContentFlags::DECORATED_BOXES) && (boxed || !work::fast_paths())
+    }
+
+    /// The next culled box of the line that draws a decoration of the
+    /// phase `decorating`: those open across the line's start first,
+    /// outermost first, then those opening on it, in tree order (see the
+    /// module documentation).
+    fn next_culled(
+        &self,
+        decorating: &mut Decorating,
+        culled: &mut Option<CulledLine<'a>>,
+        decorates: &dyn Fn(NodeKey) -> Decorates,
+    ) -> Option<(NodeId, FragmentItemId, Option<ClusterId>)> {
         let after_text = decorating.after_text;
         let line = culled.get_or_insert_with(|| self.start_culled(decorates));
         let mut boxes = decorating.culled.unwrap_or(CulledBoxes {
@@ -780,7 +787,7 @@ impl<'a> PaintedLine<'a> {
     /// The walk over the kept boxes starts at the line's first box item's
     /// row, where it has one, and otherwise at the line's first node, sought
     /// once.
-    fn start_culled<F: Fn(NodeKey) -> Decorates>(&self, decorates: &F) -> CulledLine<'a> {
+    fn start_culled(&self, decorates: &dyn Fn(NodeKey) -> Decorates) -> CulledLine<'a> {
         let layout = self.line.layout();
         let (content, analysis) = (layout.content(), layout.analysis());
         let kept = &self.line.stages().measured().kept_boxes;
@@ -838,11 +845,11 @@ impl<'a> PaintedLine<'a> {
     /// Returns the next culled box opening on the line that draws in the
     /// phase painted after the text where `after_text`, with the item its
     /// bars are looked for from, moving `boxes` past it.
-    fn next_opening<F: Fn(NodeKey) -> Decorates>(
+    fn next_opening(
         &self,
         line: &mut CulledLine<'a>,
         boxes: &mut CulledBoxes,
-        decorates: &F,
+        decorates: &dyn Fn(NodeKey) -> Decorates,
         after_text: bool,
     ) -> Option<(NodeId, FragmentItemId)> {
         let layout = self.line.layout();

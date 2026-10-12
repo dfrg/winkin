@@ -432,7 +432,7 @@ impl Layout {
     /// [`break_lines_with_metrics`](Self::break_lines_with_metrics) with the
     /// same provider and strike settings.
     pub fn break_lines(&mut self, cx: &mut Context, area: Area, exclusions: &mut dyn Exclusions) {
-        self.break_lines_with_provider(cx, area, exclusions, None);
+        self.break_with_provider(cx, area, exclusions, None, true);
     }
 
     /// Breaks and positions the content using host glyph metrics.
@@ -447,7 +447,7 @@ impl Layout {
         exclusions: &mut dyn Exclusions,
         provider: &dyn FontMetricsProvider,
     ) {
-        self.break_lines_with_provider(cx, area, exclusions, Some(provider));
+        self.break_with_provider(cx, area, exclusions, Some(provider), true);
     }
 
     /// Breaks the content in `area` to size it, without positioning items.
@@ -798,16 +798,6 @@ impl Layout {
     fn clear_lines(&mut self) {
         self.lines.clear();
         self.fragments.clear();
-    }
-
-    fn break_lines_with_provider(
-        &mut self,
-        cx: &mut Context,
-        area: Area,
-        exclusions: &mut dyn Exclusions,
-        provider: Option<&dyn FontMetricsProvider>,
-    ) {
-        self.break_with_provider(cx, area, exclusions, provider, true);
     }
 
     /// Breaks the content in `area`, and positions its items where `place`

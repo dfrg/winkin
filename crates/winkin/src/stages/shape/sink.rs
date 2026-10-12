@@ -7,7 +7,7 @@ use core::slice;
 use harfrust::{GlyphInfo, GlyphPosition};
 
 use super::{ClusterGlyphs, CombineFit, GlyphStore, GlyphWord, SidecarGlyph, SidecarGlyphId};
-use crate::data::{Id, Table, heap_bytes};
+use crate::data::{Id, Table, heap_bytes, index_to_u32, u32_to_index};
 use crate::stages::analysis::ClusterId;
 use crate::unit::{InlineLayoutUnit, LayoutUnit, TextUnit};
 use crate::work;
@@ -111,11 +111,12 @@ pub(crate) struct GlyphSink<'a, I: Id, A: AdvanceUnit, S: AdvanceStore<A> = Vec<
 /// The context owns it and keeps it between builds only for its capacity.
 ///
 /// Slots are filled the first time a cluster asks for one, not on clear.
-/// Most text expands no cluster to one glyph, and a fill writes 16 KiB,
+/// Most text expands no cluster to one glyph, and a fill writes 8 KiB,
 /// which a small layout would otherwise pay on every build.
 pub(super) struct SharedGlyphs {
-    /// Every slot, or none since the last [`clear`](Self::clear).
-    slots: Vec<Option<SidecarGlyphId>>,
+    /// Every slot's sidecar entry, `u32::MAX` for none, or no slots since the
+    /// last [`clear`](Self::clear). A sidecar entry's id is below 2^28.
+    slots: Vec<u32>,
 }
 
 impl SharedGlyphs {
@@ -134,11 +135,11 @@ impl SharedGlyphs {
         self.slots.clear();
     }
 
-    /// Returns the slot for glyph `id`, first filling every slot with `None`
+    /// Returns the slot for glyph `id`, first filling every slot with none
     /// if none has been made since the last clear.
-    fn slot(&mut self, id: u32) -> Option<&mut Option<SidecarGlyphId>> {
+    fn slot(&mut self, id: u32) -> Option<&mut u32> {
         if self.slots.is_empty() {
-            self.slots.resize(Self::SLOTS, None);
+            self.slots.resize(Self::SLOTS, u32::MAX);
         }
         let at = usize::try_from(id).unwrap_or(0) & (Self::SLOTS - 1);
         self.slots.get_mut(at)
@@ -375,7 +376,8 @@ impl<I: Id, A: AdvanceUnit, S: AdvanceStore<A>> GlyphSink<'_, I, A, S> {
         halved: Halved,
     ) -> GlyphWord {
         let written = sidecar_glyph(glyph, position, vertical, halved, true);
-        if let Some(Some(held)) = self.shared_slot(glyph.glyph_id).map(|slot| *slot)
+        if let Some(held) = self.shared_slot(glyph.glyph_id).map(|slot| *slot)
+            && let Some(held) = (held != u32::MAX).then(|| SidecarGlyphId::new(u32_to_index(held)))
             && self.sidecar.get(held) == Some(&written)
             && let Some(word) = GlyphWord::from_sidecar(held)
         {
@@ -386,14 +388,14 @@ impl<I: Id, A: AdvanceUnit, S: AdvanceStore<A>> GlyphSink<'_, I, A, S> {
         if word != GlyphWord::EMPTY
             && let Some(slot) = self.shared_slot(glyph.glyph_id)
         {
-            *slot = Some(at);
+            *slot = index_to_u32(at.get());
         }
         word
     }
 
     /// The slot of [`SharedGlyphs`] a glyph of id `id` finds its entry in,
     /// where the sink shares entries.
-    fn shared_slot(&mut self, id: u32) -> Option<&mut Option<SidecarGlyphId>> {
+    fn shared_slot(&mut self, id: u32) -> Option<&mut u32> {
         self.shared.as_mut().and_then(|shared| shared.slot(id))
     }
 

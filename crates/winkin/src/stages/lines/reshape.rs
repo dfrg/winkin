@@ -47,7 +47,7 @@ use crate::stages::{Segments, Step};
 use crate::style::TextSpacingTrim;
 use crate::unit::{InlineLayoutUnit, TextUnit};
 
-impl<'a: 'c, 'c, 'm, 'provider> Breaker<'a, 'c, 'm, 'provider> {
+impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// Reshapes the window of a line starting at the unsafe `start`, up to
     /// the next safe-to-break cluster within its shaping run.
     ///
