@@ -62,6 +62,7 @@ See [Config at a glance](#config-at-a-glance).
 - [text-overflow and line-clamp](#text-overflow-and-line-clamp)
 - [text-box-trim and text-box-edge](#text-box-trim-and-text-box-edge)
 - [text-wrap: balance and pretty](#text-wrap-balance-and-pretty)
+- [text-fit](#text-fit)
 - [Ruby](#ruby)
 - [Emphasis marks](#emphasis-marks)
 - [Vertical writing](#vertical-writing)
@@ -123,6 +124,7 @@ letter or digit.
 | Thai, Lao, Khmer, Myanmar | — | Supported | Broken by ICU's dictionaries, as Chrome breaks them. Without the `dictionaries` Cargo feature, an LSTM model breaks them instead, and the binary is about 3.5 MB smaller. | Cargo feature `dictionaries` (on by default) |
 | Chinese and Japanese words | — | Supported | For word motion and `capitalize`: ICU's dictionary with the `dictionaries` feature; UAX #29's own rules without it. Line breaking uses the CJK rules either way. | Cargo feature `dictionaries` |
 | Breaks beside atomic inlines | — | Supported | As CSS now says: no break beside a non-breaking glue character other than U+00A0, WJ or ZWJ. Chrome breaks beside every character here, a lag winkin does not copy. | — |
+| Marks after a space | — | Supported | A line may break between a space and the combining marks after it, inside the grapheme the two make, as UAX #14, Chrome and Firefox break there. The marks then start the next line; carets and word motion still treat the space and its marks as one grapheme. | — |
 | Small kana | — | Supported | Under `line-break: normal`, Chrome lets a small kana start a line. `Held` holds it to the character before, as `strict` does and as CSS Text now asks. | `small_kana` |
 
 ## Hyphenation
@@ -228,7 +230,7 @@ goal, and fontwich mirrors each platform's Chrome rules to reach it.
 
 | Property | Values | Status | Notes and caveats | Config |
 |---|---|---|---|---|
-| `letter-spacing` | a length | Supported | Not applied in cursive scripts such as Arabic, as in Chrome. It goes once after each cluster as shaped: where the font joins two graphemes, as a Bengali ya-phala does, the pair takes it once, as in Chrome. A percentage is of each element's own font size; the host resolves it per element. | — |
+| `letter-spacing` | a length and a percentage | Supported | Not applied in cursive scripts such as Arabic, as in Chrome. It goes once after each cluster as shaped: where the font joins two graphemes, as a Bengali ya-phala does, the pair takes it once, as in Chrome. The percentage is of each element's own font size, resolved per element, as in CSS Text 4 and Chrome. | — |
 | `word-spacing` | a length and a percentage | Supported | The percentage is of the style's own font size, as in CSS Text 4 and Chrome. By default it widens U+0020 and U+00A0 only, and not a U+0020 at the text's start unless the block keeps its spaces, as Chrome does. `Css` widens every word separator CSS lists, wherever it is. | `word_spacing` |
 | `text-autospace` | `no-autospace`, `normal`, `ideograph-alpha`, `ideograph-numeric` | Supported | The initial value is `no-autospace`, as Chrome computes it. The space is an eighth of the primary font's `ic`, and works across element boundaries. After right-to-left text it is drawn before the later text, as in Chrome. In the sideways modes text is horizontal, so upright text there ends no space. | — |
 | `text-autospace` | `punctuation`, `insert`, `replace`, `auto` | Not supported | No value in the API. | — |
@@ -368,6 +370,14 @@ it.
 | `text-wrap-style` | `balance` | Supported, beyond Chrome by default | Chrome's scorer, as Chrome balances a paragraph of six lines or fewer. Chrome balances only the first paragraph and gives up past six lines or beside floats; winkin balances every paragraph, longer ones and beside floats, by halving the room. An initial letter's lines are balanced too. A clamp's kept lines are balanced. A width whose lines need an `overflow-wrap` emergency break is not taken, as Chrome stops balancing after an overflow; `pretty` treats such a line as overflowing. | — |
 | `text-wrap-style` | `pretty` | Supported | By default Chrome's rule: it acts where the last line is one word under a third of the line, or the two lines before it end in hyphens, over the last four lines. `Even` also acts on any last line under a fifth, over the last six lines. | `pretty` |
 
+## text-fit
+
+| Property | Values | Status | Notes and caveats | Config |
+|---|---|---|---|---|
+| `text-fit` | `none`, `grow`, `shrink` with `consistent`, `per-line`, `per-line-all` and a limit | Supported | Set on the block (`ComputedBlockStyle::text_fit`). Lines break at the text's own size, and each line is scaled after, as Chrome's line fitter does. `per-line` leaves a paragraph's last line alone. `consistent` lays the block out, takes the least scale its lines ask for (skipping full lines, lines with no text and lines that cannot shrink enough) and lays it out again at that scale. A limit holds growing to at most `max(limit, 1)` and shrinking to at least `min(limit, 1)`. | — |
+| What scales | — | Supported | Glyph advances and offsets, the text's metrics, `normal` and number line heights, `sub`, `super` and percentage shifts, percentage letter- and word-spacing, hyphens, decorations, emphasis marks, text-box-trim edges and text extents. Length spacing, `text-indent` and length line heights keep their size. Justification and alignment see the scaled width. Carets, selection and hit testing follow the scaled text. Hinted advances scale linearly, as Chrome's paint transform scales them. | — |
+| Where it applies | — | Partial | As in Chrome, a block with a float, an initial letter or ruby is not fitted. Intrinsic sizes are those of the unscaled text. | — |
+
 ## Ruby
 
 Ruby is pushed with `LayoutBuilder::open_ruby`, `open_annotation`, `close_annotation`
@@ -435,8 +445,9 @@ Not CSS, but an integration needs them. Everything is in
 | Feature | Status | Notes and caveats | Config |
 |---|---|---|---|
 | Hit testing | Supported | `Layout::hit_test`. A point past the lines hits its column on Windows and the line's start or end on macOS and Linux. Ellipses and hyphens pass through to the text under them. Annotations can be hit. | per call |
-| Carets | Supported | `Layout::caret` gives the caret Chrome draws. `Layout::carets` adds the second caret at a change of direction, for a host that draws a split caret (beyond Chrome). Works in vertical lines and in combined text. | — |
+| Carets | Supported | `Layout::caret` gives the caret Chrome draws, with the affinity choosing the side at a box edge (below). `Layout::carets` adds the second caret at a change of direction, for a host that draws a split caret (beyond Chrome). Works in vertical lines and in combined text. | — |
 | Motion | Supported | `Selection::modify` with a `Motion`: by character, word, line (keeping the column), line start or end, paragraph and text. Word motion stops after the spaces on Windows and at the word's end elsewhere (`WordMotion`, per motion). A run of punctuation and symbols is one word, as in Chrome. `Left` and `Right` move the way they point on the screen; a host that moves as Chrome does maps arrows to `Forward` and `Backward` by `Layout::paragraph_direction`. | per motion |
+| Affinity | Beyond Chrome | A position's `Affinity` is the side it belongs to: at a boundary between nodes, upstream is the end of the node before and downstream the start of the node after, as `Layout::node_position` reports it. Motion keeps the side it arrives from: moving forward lands upstream, moving backward lands downstream, and a click takes the half of the glyph it hits, so text typed at the caret goes into the node it came from. At an inline box edge with margin, border or padding and text on both sides on one line, the two sides are two caret positions, each drawn on its side of the edge. Chrome draws one caret position at such an edge. | — |
 | Selection rectangles | Supported | `Layout::selection_rects`, as tall as the line box, as Chrome paints them. | — |
 | Copying | Supported | `Layout::selected_text`, as `Selection.toString()` gives it, or with `CopyKind::Clipboard` with no-break spaces as spaces, as Chrome's clipboard has it. | per call |
 | The host's offsets | Supported | `Layout::node_position` and `Layout::position` convert to and from a node and an offset in the text the host gave it. Build with `BuildOptions::map_source` set. | — |
@@ -491,15 +502,17 @@ winkin lays out lines. The host does everything around them.
 
 - **The cascade.** Compute every value: inheritance, `em` and percentages
   against the containing block, `match-parent`, `line-break: auto`,
-  shorthands such as `white-space` and `-webkit-line-clamp`, `letter-spacing`
-  percentages per element, and border widths snapped to whole pixels. Hand
-  in a `ComputedStyle` for each box and a `ComputedBlockStyle` for the block,
-  with its `::first-line` styles where it has them.
+  shorthands such as `white-space` and `-webkit-line-clamp`, and border
+  widths snapped to whole pixels. Hand in a `ComputedStyle` for each box and
+  a `ComputedBlockStyle` for the block, with its `::first-line` styles where
+  it has them.
 - **Font loading.** Build a `fontwich::Collection`: system fonts (enable
   fontwich's `system` feature), application fonts, and `@font-face` faces.
   Fetch the faces in `Layout::wanted_faces`, add each when it lands, give
   the context the new collection with `Context::set_collection`, and
-  rebuild the layouts that wanted it.
+  rebuild the layouts that wanted it. Contexts made with
+  `Context::with_shared_fonts` and clones of one `SharedFonts` parse each
+  font once between them, on one thread or several.
 - **Painting.** Draw everything `Line::paints` hands out, in its order:
   backgrounds, borders, text runs (glyph ids, positions and fonts),
   decoration lines, emphasis marks, hyphens and ellipses, atomic inlines.
