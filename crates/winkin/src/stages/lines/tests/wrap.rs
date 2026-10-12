@@ -853,7 +853,7 @@ fn a_relayout_of_balanced_and_pretty_text_equals_a_fresh_layout() {
                 let (a, b) = (layout.line_records(), fresh.line_records());
                 let at = (wrap, letters, first_line, ruby, width);
                 assert_eq!(a.lines.as_slice(), b.lines.as_slice(), "{at:?}");
-                assert_eq!(a.floats.as_slice(), b.floats.as_slice(), "{at:?}");
+                assert_eq!(a.floats(), b.floats(), "{at:?}");
                 assert_eq!(a.block, b.block, "{at:?}");
             }
         }

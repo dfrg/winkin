@@ -9,11 +9,11 @@ use core::ops::Range;
 
 use super::sink::SinkMark;
 use super::{
-    CombineFit, CombineWidth, GlyphSink, NeighbourFonts, ShapeInput, ShapeSession, ShapedFlags,
-    ShapedRun, ShapedRunId, ShapedRuns, ShapedText, ShapingEdges, ShapingKey, ShapingSource,
-    maybe_opening_mark, shape_range,
+    CombineFit, CombineFits, CombineWidth, GlyphSink, NeighbourFonts, ShapeInput, ShapeSession,
+    ShapedFlags, ShapedRun, ShapedRunId, ShapedRuns, ShapedText, ShapingEdges, ShapingKey,
+    ShapingSource, maybe_opening_mark, shape_range,
 };
-use crate::data::{Id, IdRange, RunCursor, SortedTable, TextOffset, make_room};
+use crate::data::{Id, IdRange, RunCursor, TextOffset, make_room};
 use crate::stages::analysis::{
     Analysis, ClusterAttrs, ClusterClass, ClusterId, ParagraphFlags, ParagraphId, RunOrientation,
     ScriptRunId,
@@ -470,7 +470,7 @@ impl<'a, 'f> CombinedUnits<'a, 'f> {
         cx: &mut ShapeSession<'_, 'f>,
         runs: &ShapedRuns,
         sink: &mut GlyphSink<'_, ClusterId, InlineLayoutUnit>,
-        fits: &mut SortedTable<(ScriptRunId, CombineFit)>,
+        fits: &mut CombineFits,
         run: &ShapedRun,
         paragraph: ParagraphId,
     ) {
@@ -525,7 +525,7 @@ impl<'a, 'f> CombinedUnits<'a, 'f> {
         cx: &mut ShapeSession<'_, 'f>,
         runs: &ShapedRuns,
         sink: &mut GlyphSink<'_, ClusterId, InlineLayoutUnit>,
-        fits: &mut SortedTable<(ScriptRunId, CombineFit)>,
+        fits: &mut CombineFits,
     ) {
         let Some(open) = self.open.take() else {
             return;
@@ -566,7 +566,7 @@ impl<'a, 'f> CombinedUnits<'a, 'f> {
         fit.middle = primary.map_or(LayoutUnit::ZERO, |used| used.metrics.text_middle());
         let em = LayoutUnit::from_px(size);
         sink.set_combined(open.mark, em, baseline, fit);
-        fits.push((open.script_run, fit));
+        fits.push(open.script_run, fit);
     }
 
     /// Shapes every shaping run of the unit `open` again, in `narrow`'s

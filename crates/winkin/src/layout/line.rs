@@ -161,7 +161,7 @@ impl<'a> Line<'a> {
     /// the line, then below it if they did not fit. Anchors occupy no line
     /// space and are excluded from [`items`](Self::items).
     pub fn floats(&self) -> impl Iterator<Item = FloatPlacement> + Clone + use<'a> {
-        Floats::new(self.layout, self.record.floats.clone())
+        Floats::new(self.layout, self.layout.line_records().line_floats(self.id))
     }
 
     /// Returns all items, including the tail hidden by an ellipsis.
@@ -226,6 +226,12 @@ impl<'a> Line<'a> {
     #[inline]
     pub(crate) fn record(&self) -> &'a lines::LineRecord {
         self.record
+    }
+
+    /// Returns the scale `text-fit` sets its text in, 1 where none does.
+    #[inline]
+    pub(crate) fn scale(&self) -> f32 {
+        self.layout.line_records().scale(self.id)
     }
 
     /// Its `Line` item: where line layout placed the line box. Every line

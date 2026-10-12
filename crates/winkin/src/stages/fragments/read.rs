@@ -333,7 +333,7 @@ impl<'a> Steps<'a> {
             && !item.flags.contains(FragmentItemFlags::ANNOTATION)
             && !item.is_spread()
             && line.shapes.is_empty()
-            && line.scale() == 1.0
+            && input.lines.scale(id) == 1.0
             && input.fragments.line_justification(id).is_none();
         match positions.first() {
             Some(&pen)
@@ -461,7 +461,7 @@ impl<'a> Steps<'a> {
             pen_end,
             justify: None,
             text: {
-                let scale = line.scale();
+                let scale = input.lines.scale(id);
                 let words = input.stages.measured.word_spacing_rule;
                 (scale != 1.0)
                     .then(|| TextSteps::Fitted(FitText::new(stages, item.node, words, scale)))

@@ -26,6 +26,8 @@ use crate::work;
 impl Placer<'_> {
     /// Records the static position of each anchor among `line`'s pieces,
     /// now placed with the line box's left at `offset`.
+    #[cold]
+    #[inline(never)]
     pub(super) fn place_anchors(
         &self,
         pieces: &LinePieces,
@@ -70,6 +72,8 @@ impl Placer<'_> {
     /// Each stands on an empty line at the lines' end, set as the last line
     /// of a paragraph is. Its band is the area's, since the host's floats are
     /// not asked about a line that holds nothing.
+    #[cold]
+    #[inline(never)]
     pub(super) fn place_unheld_anchors(&self, out: &mut Fragments) {
         let content = self.stages.content;
         let last = out.anchors().last().map(|anchor| anchor.node);

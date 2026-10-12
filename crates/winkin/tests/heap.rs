@@ -224,7 +224,7 @@ const DOCUMENTS: [Document; 4] = [
 const WIDTHS: [f32; 3] = [240.0, 97.5, 600.0];
 
 /// A layout's record, what it takes beside what it keeps on the heap, is
-/// 1,376 bytes at most on a 64-bit target.
+/// 1,336 bytes at most on a 64-bit target.
 ///
 /// - The stages' first-line variants are boxed, made only where a layout
 ///   has one.
@@ -245,16 +245,18 @@ const WIDTHS: [f32; 3] = [240.0, 97.5, 600.0];
 /// - The layout keeps no style table. The builder's memo of the styles it
 ///   lowered takes 8, boxed, and its index of atomic inline keys 8, boxed.
 /// - The shaped text keeps each cluster's advance, 24 bytes, so that new
-///   box sizes are measured without shaping again.
-/// - The lines keep how far the first line's annotations move an initial
-///   letter: 4 bytes, 8 with padding.
+///   box sizes are measured without shaping again. Its fits of combined
+///   upright text are boxed.
+/// - The lines' floats, `text-fit` scales and the carries of annotations
+///   and an initial letter are boxed together, made only where a layout
+///   has one.
 ///
 /// The whole of a layout is this and its heap.
 #[test]
 #[cfg(target_pointer_width = "64")]
-fn a_layout_record_is_1376_bytes_at_most() {
+fn a_layout_record_is_1336_bytes_at_most() {
     let record = size_of::<Layout>();
-    assert!(record <= 1376, "a layout's record is {record} bytes");
+    assert!(record <= 1336, "a layout's record is {record} bytes");
 }
 
 /// A layout never built keeps nothing.

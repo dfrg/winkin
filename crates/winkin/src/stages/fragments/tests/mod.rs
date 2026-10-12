@@ -667,10 +667,12 @@ fn line_placement_survives_rewinds_and_lives_in_the_context() {
 
 /// Line layout's records keep their sizes: a fragment item is 40 bytes, and a line head an item id.
 ///
-/// The read walks keep theirs too: a reader makes one for every text run,
-/// and a painter copies it.
+/// A piece fits a cache line: 64 bytes, with ruby's spread room in the
+/// line's own rows. The read walks keep theirs too: a reader makes one for
+/// every text run, and a painter copies it.
 #[test]
 fn records_keep_their_sizes() {
+    assert_eq!(size_of::<Piece>(), 64);
     assert_eq!(size_of::<FragmentItem>(), 40);
     assert_eq!(size_of::<FragmentItemId>(), 4);
     assert_eq!(size_of::<FragmentItemFlags>(), 1);

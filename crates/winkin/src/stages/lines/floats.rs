@@ -23,7 +23,7 @@
 use super::fit::{LineTrial, MAX_MOVES_DOWN, moves_to};
 use super::{
     Breaker, BreakerParagraph, Cursor, Exclusions, ExclusionsCheckpoint, Fitted, FloatRequest,
-    LineBand, LineFloat, LineFloatId, LineHead, LineStart, Lines, PlacedFloat,
+    LineBand, LineFloatId, LineHead, LineStart, Lines, PlacedFloat,
 };
 use crate::build::FloatSide;
 use crate::data::Id;
@@ -57,14 +57,14 @@ impl Placing {
     pub(super) fn new(exclusions: &dyn Exclusions, out: &Lines, next: FloatId) -> Self {
         Self {
             checkpoint: exclusions.checkpoint(),
-            kept: out.floats.next_id(),
+            kept: out.float_end(),
             next,
         }
     }
 
     /// Returns whether a float has been kept since.
     pub(super) fn placed_since(&self, out: &Lines) -> bool {
-        out.floats.next_id() != self.kept
+        out.float_end() != self.kept
     }
 
     /// Takes back every float placed since, as Chrome's `RewindFloats`
@@ -76,7 +76,7 @@ impl Placing {
         next: &mut FloatId,
     ) {
         exclusions.rewind(self.checkpoint);
-        out.floats.truncate(self.kept);
+        out.truncate_floats(self.kept);
         *next = self.next;
     }
 }
@@ -223,17 +223,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
 
     /// Records where the host put `float`, in placement order.
     fn record(&mut self, out: &mut Lines, float: FloatId, placed: PlacedFloat) {
-        let record = LineFloat {
-            float,
-            left: LayoutUnit::from_px(placed.inline.left),
-            top: LayoutUnit::from_px(placed.block.start),
-        };
-        if out.floats.push(record).is_none() {
-            debug_assert!(
-                false,
-                "each float is kept once, and a LineFloatId names a float"
-            );
-        }
+        let left = LayoutUnit::from_px(placed.inline.left);
+        out.push_float(float, left, LayoutUnit::from_px(placed.block.start));
     }
 
     /// Places the floats anchored at or before a line's `start` at its
@@ -418,7 +409,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         // The first line's annotations move the letter down, and its
         // exclusion's end with it. Its start stays at the line's top unless
         // the letter's margin box starts above it.
-        let shift = out.letter_shift;
+        let shift = out.letter_shift();
         let top = (letter.exclusion_top + shift).min(LayoutUnit::ZERO);
         let height = letter.exclusion_top + letter.exclusion_height + shift - top;
         let width = letter.exclusion_width + line.indent.max(LayoutUnit::ZERO);

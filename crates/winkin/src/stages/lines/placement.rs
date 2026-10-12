@@ -19,10 +19,12 @@ pub(crate) struct PlacementFacts {
 
 pub(crate) type LinePlacements = Table<LineId, PlacementFacts>;
 
-/// A fitted line before it is kept: its kept record and its placement facts.
+/// A fitted line before it is kept: its kept record, its placement facts,
+/// and the scale `text-fit` sets its text in, 1 where none does.
 pub(super) struct PendingLine {
     pub(super) record: LineRecord,
     pub(super) facts: PlacementFacts,
+    pub(super) scale: f32,
 }
 
 impl Deref for PendingLine {
@@ -43,14 +45,22 @@ pub(crate) struct LineView<'a> {
     record: &'a LineRecord,
     pub(crate) content_end: ClusterId,
     pub(crate) block_start: LayoutUnit,
+    /// The scale `text-fit` sets its text in, 1 where none does.
+    pub(crate) scale: f32,
 }
 impl<'a> LineView<'a> {
-    pub(crate) fn new(id: LineId, record: &'a LineRecord, facts: PlacementFacts) -> Self {
+    pub(crate) fn new(
+        id: LineId,
+        record: &'a LineRecord,
+        facts: PlacementFacts,
+        scale: f32,
+    ) -> Self {
         Self {
             id,
             record,
             content_end: facts.content_end,
             block_start: facts.block_start,
+            scale,
         }
     }
 }

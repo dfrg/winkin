@@ -335,6 +335,7 @@ impl<'a> Placer<'a> {
     /// ending at one piece do so innermost first. So a running sum of the
     /// edges met at that piece gives the room deeper boxes take inside the
     /// next.
+    #[inline(never)]
     pub(super) fn box_parts(&self, pieces: &LinePieces, boxes: &mut LineBoxes) {
         let end = pieces.order.next_id();
         boxes.rooms.clear();
@@ -480,6 +481,7 @@ impl<'a> Placer<'a> {
     /// breaker for a clone, charged for the edge. The initial letter's start
     /// takes `letter_indent` more, the indent inside its box, which the
     /// line's indent holds.
+    #[inline(never)]
     pub(super) fn rooms(&self, boxes: &mut LineBoxes, letter_indent: LayoutUnit) {
         for open in boxes.line_boxes.as_mut_slice() {
             work::step();
@@ -536,6 +538,7 @@ impl<'a> Placer<'a> {
     /// An open side reaches to the pieces it holds, around inner boxes'
     /// edges. This is how Chrome's `ComputeInlinePositions` places a box.
     #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
     pub(super) fn emit_box_part(
         &self,
         pieces: &LinePieces,
@@ -624,6 +627,7 @@ impl<'a> Placer<'a> {
 /// The returned first link goes in the line's item; `None` where the line
 /// has no part. A painter follows the links instead of searching, so
 /// painting a line is linear in its items.
+#[inline(never)]
 pub(super) fn paint_order(
     counts: &mut LeafCounts,
     boxes: &mut LineBoxes,

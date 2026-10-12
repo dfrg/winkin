@@ -286,6 +286,13 @@ impl FragmentItem {
     /// What `c` or `d` hold where the kind names nothing there.
     const NONE: u32 = u32::MAX;
 
+    /// Packs `id` as `c` or `d` hold it: [`NONE`](Self::NONE) where it is
+    /// `None`.
+    #[inline]
+    fn link<I: Id>(id: Option<I>) -> u32 {
+        id.map_or(Self::NONE, |id| index_to_u32(id.get()))
+    }
+
     /// Packs `kind` with a shortfall of `short` 1/65536 px below the size.
     #[inline]
     const fn pack(kind: FragmentItemKind, short: u16) -> u16 {
@@ -311,7 +318,7 @@ impl FragmentItem {
             a: index_to_u32(descendants),
             // No box item is the table's first, which is a line's.
             b: first.map_or(0, |first| index_to_u32(first.get())),
-            c: justified.map_or(Self::NONE, |row| index_to_u32(row.get())),
+            c: Self::link(justified),
             d: Self::NONE,
             size: LayoutUnit::ZERO,
             block: top,
@@ -412,7 +419,7 @@ impl FragmentItem {
             node,
             a: index_to_u32(descendants),
             b: index_to_u32(id.get()),
-            c: kept.map_or(Self::NONE, |kept| index_to_u32(kept.get())),
+            c: Self::link(kept),
             d: Self::NONE,
             size: width,
             block: baseline,
@@ -722,18 +729,37 @@ impl Fragments {
 
     /// Writes the spread row of `piece`, text of line `line` that took room
     /// in, in any order: [`settle_spread`](Self::settle_spread) sorts them.
-    fn push_spread(&mut self, line: LineId, piece: &Piece) {
+    #[cold]
+    #[inline(never)]
+    fn push_spread(
+        &mut self,
+        line: LineId,
+        piece: &Piece,
+        (left, right): (InlineLayoutUnit, InlineLayoutUnit),
+    ) {
         debug_assert_eq!(piece.kind, PieceKind::Text, "only text takes room in");
         self.rare_mut().spread.push_unsorted(SpreadText {
             line,
             cluster: piece.start,
-            left: piece.room.0,
-            right: piece.room.1,
+            left,
+            right,
         });
     }
 
     /// Sorts the spread rows the line being written pushed since `mark`.
+    ///
+    /// A line that pushed none pays one test.
+    #[inline]
     fn settle_spread(&mut self, mark: usize) {
+        if self.spread_mark() > mark {
+            self.sort_spread(mark);
+        }
+    }
+
+    /// Sorts the spread rows pushed since `mark`, out of line.
+    #[cold]
+    #[inline(never)]
+    fn sort_spread(&mut self, mark: usize) {
         if let Some(rare) = &mut self.rare {
             rare.spread.sort_from(mark);
         }
@@ -1002,10 +1028,12 @@ struct Piece {
     /// For text, the used font of its shaped clusters, where it has any.
     font: Option<UsedFontId>,
     /// For text, the shaping run of its first shaped cluster, or of its
-    /// first cluster where none is shaped. Its item names it.
-    run: Option<ShapedRunId>,
-    /// For text, the content item holding its first cluster.
-    item: Option<ItemId>,
+    /// first cluster where none is shaped, packed as its item names it:
+    /// [`FragmentItem::NONE`] where there is none.
+    run: u32,
+    /// For text, the content item holding its first cluster, packed as its
+    /// item names it: [`FragmentItem::NONE`] where there is none.
+    item: u32,
     /// For text, how its glyphs stand.
     ///
     /// One text item keeps one orientation, since its reader draws it one
@@ -1029,10 +1057,10 @@ struct Piece {
     ///
     /// `TAB` and `HANGS` are set as the piece is made. `HIDDEN` marks a piece
     /// an ellipsis cut hides whole: it keeps its place and is not painted.
+    ///
+    /// The room `ruby-align` spreads into text is not here: the line's
+    /// room rows hold it ([`LinePieces::room`](place::LinePieces::room)).
     flags: FragmentItemFlags,
-    /// For text, the room `ruby-align` spread on its left and its right,
-    /// which its advance took in from the gaps beside it.
-    room: (InlineLayoutUnit, InlineLayoutUnit),
 }
 
 impl Piece {
@@ -1057,8 +1085,8 @@ impl Piece {
             start: clusters.start,
             end: clusters.end,
             font: None,
-            run: None,
-            item: None,
+            run: FragmentItem::NONE,
+            item: FragmentItem::NONE,
             orientation: RunOrientation::Horizontal,
             advance,
             inline: InlineLayoutUnit::ZERO,
@@ -1066,7 +1094,6 @@ impl Piece {
             opportunities: 0,
             shift,
             flags: FragmentItemFlags::NONE,
-            room: (InlineLayoutUnit::ZERO, InlineLayoutUnit::ZERO),
         }
     }
 
@@ -1082,13 +1109,15 @@ impl Piece {
     /// Returns its item of `kind`, a leaf holding its clusters, flagged
     /// `flags`, on `baseline` from the line box's top less its shift.
     ///
-    /// Text names its shaping run and its content item.
+    /// Text names its shaping run and its content item. `spread` marks text
+    /// `ruby-align` spread room into.
     #[inline]
     fn fragment_item(
         &self,
         kind: FragmentItemKind,
         flags: FragmentItemFlags,
         baseline: LayoutUnit,
+        spread: bool,
     ) -> FragmentItem {
         let (size, short) = self.advance.to_layout_and_short();
         FragmentItem {
@@ -1096,20 +1125,12 @@ impl Piece {
             node: self.node,
             a: index_to_u32(self.start.get()),
             b: index_to_u32(self.end.get()),
-            c: self
-                .run
-                .map_or(FragmentItem::NONE, |run| index_to_u32(run.get())),
-            d: self
-                .item
-                .map_or(FragmentItem::NONE, |item| index_to_u32(item.get())),
+            c: self.run,
+            d: self.item,
             size,
             block: baseline - self.shift,
             kind_short: FragmentItem::pack(kind, short)
-                | if self.room == (InlineLayoutUnit::ZERO, InlineLayoutUnit::ZERO) {
-                    0
-                } else {
-                    FragmentItem::SPREAD
-                },
+                | if spread { FragmentItem::SPREAD } else { 0 },
             flags,
             level: self.level,
         }
@@ -1181,7 +1202,10 @@ struct Placer<'a> {
     /// open across the next line's start.
     open_boxes: u32,
     /// The state of the line being laid out.
-    line_state: LineState<'a>,
+    line_state: LineState,
+    /// The ruby state of the line being laid out, where the content has
+    /// ruby.
+    line_ruby: LineRuby<'a>,
 }
 
 /// What line layout reads the same on every line: the content's gates,
@@ -1202,6 +1226,10 @@ struct Gates {
     /// Where `text-autospace` puts room, which a seam after right-to-left
     /// text draws with the text after it.
     autospace: AutospaceRules,
+    /// Some style sets `text-autospace` and some paragraph has mixed levels
+    /// and reads right to left. Without it, no seam's room stands before
+    /// the text after it.
+    has_seams_before: bool,
     /// The last paragraph holds clusters, so every item at the text's end is
     /// on the last line.
     ends_on_a_line: bool,
@@ -1218,6 +1246,9 @@ struct Gates {
     has_line_padding: bool,
     /// How `text-group-align` narrows every line's band.
     group: Group,
+    /// Some ruby column is in either variant, or the lines split one. Only
+    /// then does a line start its ruby state.
+    has_ruby: bool,
     /// The block has ruby and some right-to-left text.
     ///
     /// Then no ruby column sits flush with a line's edge, as in Chrome when
@@ -1264,14 +1295,30 @@ impl FragmentItem {
 /// The state of the line being laid out: what it reads once as it starts,
 /// and what its piece walk carries.
 ///
-/// One constructor writes it whole as each line starts.
-struct LineState<'a> {
+/// One constructor writes it whole as each line starts. The ruby state is
+/// apart, in [`LineRuby`].
+struct LineState {
     /// The line's paragraph, and its level.
     paragraph: ParagraphId,
     level: BidiLevel,
     /// Its band, narrowed by `text-group-align`, and its alignment.
     band: LineBand,
     align: TextAlign,
+    /// The line's tabs.
+    tab_line: TabLine,
+    /// The generated text of the hyphen the line ends with, found once as
+    /// its piece is made.
+    ///
+    /// A line has one hyphen at most, so the pieces don't carry it.
+    hyphen: Option<GeneratedItems>,
+    /// An inline box holds some of the line, or is open across it.
+    boxed: bool,
+}
+
+/// The ruby state of the line being laid out, written whole as each line
+/// starts where the content has ruby, and left empty otherwise.
+#[derive(Default)]
+struct LineRuby<'a> {
     /// Which ends of the line a ruby column sits flush with.
     ruby_edges: RubyEdges,
     /// The parts of split ruby columns the line sets.
@@ -1279,23 +1326,14 @@ struct LineState<'a> {
     /// Where the ruby column cursor stood as the line started, before it
     /// went back to the first column continued onto the line.
     line_column: RubyColumnId,
-    /// The line's tabs.
-    tab_line: TabLine,
     /// The room a spread ruby base shares among its justification
     /// opportunities, given out as its pieces are made.
     ///
     /// This is what Chrome's `JustifyResults` spreads over a ruby line.
     spread: Option<Justified<'a>>,
-    /// The generated text of the hyphen the line ends with, found once as
-    /// its piece is made.
-    ///
-    /// A line has one hyphen at most, so the pieces don't carry it.
-    hyphen: Option<GeneratedItems>,
     /// The innermost ruby column open where the walk is, as an index into
     /// the line's columns.
     open_column: Option<usize>,
-    /// An inline box holds some of the line, or is open across it.
-    boxed: bool,
 }
 
 /// Whether `ruby-align` places room among a base's or an annotation's

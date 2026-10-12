@@ -78,7 +78,7 @@ impl<'a> TextRun<'a> {
             bytes: &drawn.bytes,
             index: drawn.index,
             size: {
-                let (size, scale) = (used.glyph_size().to_px(), self.line.record().scale());
+                let (size, scale) = (used.glyph_size().to_px(), self.line.scale());
                 if scale == 1.0 { size } else { size * scale }
             },
             coords: &drawn.coords,
@@ -302,7 +302,7 @@ impl<'a> TextRun<'a> {
     pub(super) fn block_extent(&self) -> (LayoutUnit, LayoutUnit) {
         let extent = self.used().map_or(Extent::NONE, |used| {
             let metrics = &used.metrics;
-            let scale = self.line.record().scale();
+            let scale = self.line.scale();
             if scale == 1.0 {
                 Extent::new(metrics.ascent, metrics.descent)
             } else {
@@ -346,7 +346,7 @@ impl<'a> TextRun<'a> {
             };
             used.synthesis.raise() - under
         });
-        let scale = self.line.record().scale();
+        let scale = self.line.scale();
         if scale == 1.0 {
             self.item.block - raise
         } else {
@@ -597,7 +597,7 @@ impl<'a> RunGlyphs<'a> {
                     },
                     clusters,
                     baseline,
-                    scale: run.line.record().scale(),
+                    scale: run.line.scale(),
                 }
             }
             None => Self {

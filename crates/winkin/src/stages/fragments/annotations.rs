@@ -243,7 +243,7 @@ impl<'a> Placer<'a> {
             self.lines
                 .ruby
                 .as_deref()
-                .map(|ruby| (ruby, self.line_state.column_parts)),
+                .map(|ruby| (ruby, self.line_ruby.column_parts)),
         );
         // Closing-item order is postorder: child annotations precede their
         // parent's, while siblings retain text order. Columns with none
@@ -657,8 +657,8 @@ impl<'a> Placer<'a> {
                     );
                 let piece = Piece {
                     font,
-                    run: Some(segment.run),
-                    item: Some(segment.item),
+                    run: FragmentItem::link(Some(segment.run)),
+                    item: FragmentItem::link(Some(segment.item)),
                     orientation,
                     flags,
                     ..Piece::new(
@@ -780,11 +780,12 @@ impl<'a> Placer<'a> {
                 PieceKind::Atomic => FragmentItemKind::Atomic,
                 _ => continue,
             };
-            if piece.room != (InlineLayoutUnit::ZERO, InlineLayoutUnit::ZERO) {
-                out.push_spread(line, piece);
+            let room = pieces.room(logical);
+            if let Some(room) = room {
+                out.push_spread(line, piece, room);
             }
             let flags = piece.flags.union(FragmentItemFlags::ANNOTATION);
-            let item = piece.fragment_item(kind, flags, place.baseline);
+            let item = piece.fragment_item(kind, flags, place.baseline, room.is_some());
             out.items
                 .push_bounded(item, "no more items than a FragmentItemId names");
         }

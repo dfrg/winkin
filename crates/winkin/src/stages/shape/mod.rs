@@ -25,13 +25,14 @@ mod trim;
 mod vertical;
 mod walk;
 
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::ops::Range;
 
 use crate::config::PunctuationTrim;
 use crate::data::{
-    Id, RankedBitTable, Run, RunCursor, Runs, SortedTable, Table, define_flags, define_id,
-    heap_bytes,
+    HeapBytes, Id, RankedBitTable, Run, RunCursor, Runs, SortedTable, Table, define_flags,
+    define_id, heap_bytes,
 };
 use crate::stages::analysis::{Analysis, ClusterId, ScriptRunId};
 use crate::stages::content::{Content, ShapingFactsId};
@@ -663,8 +664,8 @@ pub(crate) struct ShapedText {
     /// unit's script run.
     ///
     /// Each unit is one script run. Font fallback may split it into several
-    /// shaping runs, which share the fit. Sorted by run, and sparse.
-    combined: SortedTable<(ScriptRunId, CombineFit)>,
+    /// shaping runs, which share the fit.
+    combined: CombineFits,
     /// Each cluster's advance along the line, in 48.16, which measurement
     /// sums.
     pub(crate) advances: Vec<InlineLayoutUnit>,
@@ -675,7 +676,7 @@ impl ShapedText {
         Self {
             glyphs: GlyphStore::new(),
             runs: ShapedRuns::new(),
-            combined: SortedTable::new(),
+            combined: CombineFits(None),
             advances: Vec::new(),
         }
     }
@@ -694,6 +695,49 @@ impl ShapedText {
         self.combined
             .get(run)
             .map_or(CombineFit::NATURAL, |&(_, fit)| fit)
+    }
+}
+
+/// How each `text-combine-upright` unit fits its one em, keyed by the unit's
+/// script run: sorted by run, and boxed, made only where the text has a
+/// unit.
+struct CombineFits(Option<Box<SortedTable<(ScriptRunId, CombineFit)>>>);
+
+impl CombineFits {
+    /// Returns the fit of the unit in script run `run`, if it is one.
+    fn get(&self, run: ScriptRunId) -> Option<&(ScriptRunId, CombineFit)> {
+        self.0.as_deref()?.get(run)
+    }
+
+    /// Adds the fit of the unit in script run `run`, after every unit
+    /// before it.
+    fn push(&mut self, run: ScriptRunId, fit: CombineFit) {
+        self.0.get_or_insert_with(Box::default).push((run, fit));
+    }
+
+    /// Forgets every fit, keeping the table.
+    fn clear(&mut self) {
+        if let Some(fits) = &mut self.0 {
+            fits.clear();
+        }
+    }
+
+    /// Whether no unit has a fit.
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.0.as_deref().is_none_or(SortedTable::is_empty)
+    }
+
+    /// Returns every unit's fit, in run order.
+    #[cfg(test)]
+    fn iter(&self) -> impl Iterator<Item = &(ScriptRunId, CombineFit)> {
+        self.0.as_deref().into_iter().flat_map(SortedTable::iter)
+    }
+}
+
+impl HeapBytes for CombineFits {
+    fn heap_bytes(&self) -> usize {
+        self.0.heap_bytes()
     }
 }
 

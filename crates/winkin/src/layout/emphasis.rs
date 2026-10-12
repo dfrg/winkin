@@ -105,7 +105,7 @@ impl<'a> EmphasisMarks<'a> {
             .filter(|_| text.has(TextFlags::EMPHASIS))
             .map(|metrics| {
                 // On a line `text-fit` scales, the mark scales with the text.
-                let scale = line.record().scale();
+                let scale = line.scale();
                 let mark = metrics.mark;
                 if scale == 1.0 {
                     mark
@@ -221,7 +221,7 @@ fn mark_offset(
     });
     let (over, under) = (em.zero_if_none().ascent(), em.zero_if_none().descent());
     // On a line `text-fit` scales, the em box scales with the text.
-    let scale = line.record().scale();
+    let scale = line.scale();
     let (over, under) = if scale == 1.0 {
         (over, under)
     } else {

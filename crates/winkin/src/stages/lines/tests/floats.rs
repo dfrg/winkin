@@ -917,7 +917,7 @@ fn a_relayout_around_floats_equals_a_fresh_layout() {
         fixture.lay_out_with(&mut fresh, Area::new(width), &mut Host::new(width));
         let (a, b) = (layout.line_records(), fresh.line_records());
         assert_eq!(a.lines.as_slice(), b.lines.as_slice(), "at {width}");
-        assert_eq!(a.floats.as_slice(), b.floats.as_slice(), "at {width}");
+        assert_eq!(a.floats(), b.floats(), "at {width}");
         assert_eq!(a.block, b.block);
     }
 }

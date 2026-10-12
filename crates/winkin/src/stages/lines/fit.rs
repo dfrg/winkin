@@ -36,7 +36,7 @@ use super::trim::TextBoxTrims;
 use super::wrap::{LayoutMark, RecentMarks};
 use super::{
     Area, BlockExtents, BreakInput, BreakScratch, EdgeMark, Exclusions, LineBand, LineFlags,
-    LineFloatId, LineRecord, Lines, PendingLine, TextFitting,
+    LineRecord, Lines, PendingLine, TextFitting,
 };
 use crate::data::Id;
 use crate::stages::analysis::{ClusterClass, ClusterId, Paragraph, ParagraphFlags, ParagraphId};
@@ -389,11 +389,9 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         // With annotations, each line works out its room, and the last
         // line's carry is the block's. Without, `Lines::room_below` works out
         // the last line's room when a host asks, so a relayout pays nothing.
-        out.annotated_carry = if self.annotation.is_some() && !out.lines.is_empty() {
-            self.carry
-        } else {
-            LayoutUnit::ZERO
-        };
+        if self.annotation.is_some() && !out.lines.is_empty() {
+            out.rare_mut().annotated_carry = self.carry;
+        }
         cursor
     }
 
@@ -416,9 +414,9 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// That is the line box's bottom, less `trimmed` (what `text-box-trim`
     /// takes off the first line) and what it takes off the last.
     fn block_end_if_last(&self, line: &super::PendingLine, trimmed: LayoutUnit) -> LayoutUnit {
-        let under = self.trims.map_or(LayoutUnit::ZERO, |trims| {
-            trims.end(line.extent, line.scale())
-        });
+        let under = self
+            .trims
+            .map_or(LayoutUnit::ZERO, |trims| trims.end(line.extent, line.scale));
         line.facts.block_start + line.extent.box_height() - trimmed - under
     }
 
@@ -569,7 +567,6 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         area: LineBand,
         cursor: &mut Cursor,
     ) -> (PendingLine, Carry) {
-        let placed = out.floats.next_id();
         let top = cursor.top - cursor.trimmed;
         if FLOATS {
             self.place_leading(out, start, top, &mut cursor.floats);
@@ -633,7 +630,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             self.place_after(out, para, start, &trial.fitted, bottom, &mut cursor.floats);
         }
         (
-            self.kept(out, para, (start, first_item), top, &trial, placed),
+            self.kept(out, para, (start, first_item), top, &trial),
             trial.height.carry,
         )
     }
@@ -729,7 +726,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         if out.lines.is_empty()
             && let Some(trims) = self.trims
         {
-            cursor.trimmed = trims.start(line.extent, line.scale());
+            cursor.trimmed = trims.start(line.extent, line.scale);
         }
         // `line-clamp: auto`: a line that would take the block's content
         // past its end, if it were the last, is not kept.
@@ -740,10 +737,19 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             cursor.clamped = true;
             return false;
         }
-        let super::PendingLine { record, facts } = line;
+        let super::PendingLine {
+            record,
+            facts,
+            scale,
+        } = line;
         if out.lines.push(record).is_none() {
             debug_assert!(false, "no more lines than clusters, which a LineId names");
             return false;
+        }
+        if self.text_fit.is_some() {
+            out.rare_mut()
+                .scales
+                .push_bounded(scale, "one scale per kept line");
         }
         self.scratch
             .placements
@@ -790,9 +796,12 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// Returns the record of a kept line, fitted as `trial` is, its line box
     /// from `top`.
     ///
-    /// Pushes its reshaped pieces to the edge shapes. Its floats are those
-    /// kept from `floats` on, and its shifts those its last measure settled.
-    #[inline]
+    /// Pushes its reshaped pieces to the edge shapes. Its shifts are those
+    /// its last measure settled.
+    ///
+    /// Always inlined: out of line, the record it returns goes through
+    /// memory, which costs a 400-character relayout 1.2% more instructions.
+    #[inline(always)]
     pub(super) fn kept(
         &mut self,
         out: &mut Lines,
@@ -800,7 +809,6 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         (start, first_item): (ClusterId, ItemId),
         top: LayoutUnit,
         trial: &Trial,
-        floats: LineFloatId,
     ) -> super::PendingLine {
         let Trial {
             band,
@@ -828,7 +836,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         // them after the kept lines, and the kept line is the last measured.
         let shifts = out.kept_shifts_end();
         if start == ClusterId::new(0) {
-            out.letter_shift = height.letter_shift;
+            out.set_letter_shift(height.letter_shift);
         }
         super::PendingLine {
             facts: super::PlacementFacts {
@@ -846,11 +854,10 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
                 hang: fitted.hang,
                 extent: height.extent,
                 shapes: from..out.edges.shapes.next_id(),
-                floats: floats..out.floats.next_id(),
                 shifts: shifts..out.shifts.next_id(),
                 flags,
-                scale_bits: self.line_scale.to_bits(),
             },
+            scale: self.line_scale,
         }
     }
 }

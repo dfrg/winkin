@@ -167,7 +167,7 @@ impl<'a> BoxFragment<'a> {
         let left = item.inline;
         let layout = line.layout();
         let kept = &line.stages().measured().kept_boxes;
-        let scale = line.record().scale();
+        let scale = line.scale();
         let fitted = if scale == 1.0 {
             None
         } else {

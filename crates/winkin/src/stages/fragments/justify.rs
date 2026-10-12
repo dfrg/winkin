@@ -11,7 +11,6 @@ use crate::data::{Id, Table, define_id};
 use crate::stages::analysis::ClusterId;
 use crate::stages::lines::{LineBand, LineId, LineView};
 use crate::stages::measure::{JustifyOpportunities, JustifySummary};
-use crate::style::TextAlign;
 use crate::unit::{InlineLayoutUnit, LayoutUnit};
 
 /// The line's spare room per justification opportunity, in 48.16: 32 bytes.
@@ -164,32 +163,36 @@ pub(super) struct JustifiedLine {
 }
 
 impl<'a> Placer<'a> {
-    /// Justifies `line` where `align` is `justify`, and records it in `out`.
+    /// Justifies `line`, whose alignment is `justify`, and records it in
+    /// `out`.
     ///
-    /// Returns what justification gave the line and its record's row, which
-    /// the line's item names, or `None` where it is not justified.
+    /// Writes what justification gave the line to `justified`, and returns
+    /// its record's row, which the line's item names, or `None` where it is
+    /// not justified. Out of line, so that a line set another way holds none
+    /// of its code; the justification is written in place, as it is large.
+    #[inline(never)]
     pub(super) fn justify_into(
         &self,
         pieces: &mut LinePieces,
         line: &LineView<'_>,
         id: LineId,
         band: LineBand,
-        align: TextAlign,
         out: &mut Fragments,
-    ) -> Option<(Justified<'a>, JustifiedLineId)> {
-        if align != TextAlign::Justify {
-            return None;
-        }
-        let justified = self.justify(pieces, line, band)?;
+        justified: &mut Option<Justified<'a>>,
+    ) -> Option<JustifiedLineId> {
+        let made = justified.insert(self.justify(pieces, line, band)?);
         let row = out.rare_mut().justified.push(super::JustifiedLine {
             line: id,
             content_end: line.content_end,
-            justification: justified.justification,
+            justification: made.justification,
         });
         // A line has one row at most, and a JustifiedLineId names as many
         // as a LineId.
         debug_assert!(row.is_some(), "no more justified lines than lines");
-        Some((justified, row?))
+        if row.is_none() {
+            *justified = None;
+        }
+        row
     }
 
     /// Justifies `line` in `band`, giving each of `pieces` its share of the

@@ -8,13 +8,12 @@
 //! puts each float where its line reaches it and forgets it, so it reads here
 //! where to draw each.
 
-use core::ops::Range;
 use core::slice;
 
 use crate::build::FloatSide;
 use crate::layout::Layout;
 use crate::stages::content::NodeKey;
-use crate::stages::lines::{BlockExtents, InlineExtents, LineFloat, LineFloatId};
+use crate::stages::lines::{BlockExtents, InlineExtents, LineFloat};
 
 /// A float placement returned by the host.
 ///
@@ -45,14 +44,9 @@ pub(super) struct Floats<'a> {
 }
 
 impl<'a> Floats<'a> {
-    /// The floats `floats` names of those `layout`'s lines placed, in the
-    /// order they were placed: one line's, or every one.
-    pub(super) fn new(layout: &'a Layout, floats: Range<LineFloatId>) -> Self {
-        let records = layout
-            .line_records()
-            .floats
-            .get_slice(floats)
-            .unwrap_or_default();
+    /// The floats `records` of those `layout`'s lines placed, in the order
+    /// they were placed: one line's, or every one.
+    pub(super) fn new(layout: &'a Layout, records: &'a [LineFloat]) -> Self {
         Self {
             layout,
             records: records.iter(),

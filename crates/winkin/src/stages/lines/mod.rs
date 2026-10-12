@@ -662,8 +662,9 @@ struct LinesMark {
     lines: LineId,
     shapes: EdgeShapeId,
     edges: EdgeMark,
-    floats: LineFloatId,
     shifts: LineShiftId,
+    /// The floats placed, where the content has any.
+    floats: LineFloatId,
     /// The ruby pieces and their levels, where any are written.
     ruby: RubyMark,
 }
@@ -675,6 +676,9 @@ struct LinesMark {
 pub(crate) struct LineFloat {
     /// Which float it is.
     pub(crate) float: FloatId,
+    /// The line whose anchors hold it: the line being fitted as it was
+    /// placed. A float no kept line reaches names one past the last line.
+    line: LineId,
     /// Where the host put its margin box's line-left edge.
     pub(crate) left: LayoutUnit,
     /// Where the host put its margin box's block-start edge.
@@ -707,7 +711,7 @@ impl Keyed for LineShift {
     }
 }
 
-/// One line: every decision about its ends, written once. 88 bytes.
+/// One line: every decision about its ends, written once. 76 bytes.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct LineRecord {
     /// Its first cluster.
@@ -740,28 +744,17 @@ pub(crate) struct LineRecord {
     pub(crate) extent: Extent,
     /// Its reshaped edges in [`ReshapedEdges`]: none, one or two.
     pub(super) shapes: Range<EdgeShapeId>,
-    /// The floats whose anchors it holds, in placement order: those it
-    /// starts beside, those beside it, and those below it.
-    pub(crate) floats: Range<LineFloatId>,
     /// The baseline shifts it settled, sorted by node: none where nothing
     /// on it is `middle`, `text-top`, `text-bottom`, `top` or `bottom`.
     shifts: Range<LineShiftId>,
     /// What else is true of it.
-    pub(crate) flags: LineFlags,
-    /// The scale `text-fit` sets its text in, as the bits of an `f32`: 1
-    /// where the text keeps its size.
     ///
-    /// It is a finite positive number.
-    scale_bits: u32,
+    /// The floats it holds and the scale `text-fit` sets it in are in the
+    /// lines' rare tables ([`Lines::line_floats`], [`Lines::scale`]).
+    pub(crate) flags: LineFlags,
 }
 
 impl LineRecord {
-    /// Returns the scale `text-fit` sets its text in, 1 where none does.
-    #[inline]
-    pub(crate) fn scale(&self) -> f32 {
-        f32::from_bits(self.scale_bits)
-    }
-
     /// Returns its clusters, what hangs included.
     pub(crate) fn clusters(&self) -> Range<ClusterId> {
         self.start..self.end
@@ -837,30 +830,15 @@ pub(crate) struct Lines {
     /// The line edges reshaped at unsafe breaks, which the lines' records
     /// name.
     pub(super) edges: ReshapedEdges,
-    /// Every float the lines placed, once each, in placement order.
-    ///
-    /// Each line's floats are together. Floats no line reaches come last,
-    /// placed where the text ends.
-    pub(crate) floats: Table<LineFloatId, LineFloat>,
     /// The baseline shifts the lines settled, a line's together.
     pub(super) shifts: Table<LineShiftId, LineShift>,
     /// The pieces of the ruby columns the lines split, where any did.
     pub(crate) ruby: Option<Box<RubyLines>>,
+    /// The floats, the `text-fit` scales and the carries of annotations and
+    /// the initial letter, where the content has any.
+    rare: Option<Box<RareLines>>,
     /// The block's trim, end and baselines.
     pub(crate) block: BlockResult,
-    /// The last line's carry, where the content has annotations or marks.
-    ///
-    /// It is the room the last line leaves under its content, or, negative,
-    /// how far its annotations and marks reach past its line box. It is zero
-    /// for content with neither, or no line. Read it through
-    /// [`room_below`](Self::room_below).
-    annotated_carry: LayoutUnit,
-    /// How far the first line's annotations move the initial letter down:
-    /// what they move the line beyond a raised letter's raise.
-    ///
-    /// The kept first line writes it. It is zero where the line has no
-    /// annotation over it, or no initial letter.
-    pub(super) letter_shift: LayoutUnit,
     /// How many prefix positions the last break compared, for the tests
     /// that hold fitting to O(log L) a line.
     #[cfg(test)]
@@ -877,12 +855,10 @@ impl Lines {
         Self {
             lines: Table::new(),
             edges: ReshapedEdges::new(),
-            floats: Table::new(),
             shifts: Table::new(),
             ruby: None,
+            rare: None,
             block: BlockResult::EMPTY,
-            annotated_carry: LayoutUnit::ZERO,
-            letter_shift: LayoutUnit::ZERO,
             #[cfg(test)]
             probes: 0,
             #[cfg(test)]
@@ -894,14 +870,14 @@ impl Lines {
     pub(crate) fn clear(&mut self) {
         self.lines.clear();
         self.edges.clear();
-        self.floats.clear();
         self.shifts.clear();
         if let Some(ruby) = &mut self.ruby {
             ruby.clear();
         }
+        if let Some(rare) = &mut self.rare {
+            rare.clear();
+        }
         self.block = BlockResult::EMPTY;
-        self.annotated_carry = LayoutUnit::ZERO;
-        self.letter_shift = LayoutUnit::ZERO;
         #[cfg(test)]
         {
             self.probes = 0;
@@ -915,8 +891,8 @@ impl Lines {
             lines: self.lines.next_id(),
             shapes: self.edges.shapes.next_id(),
             edges: self.edges.mark(),
-            floats: self.floats.next_id(),
             shifts: self.shifts.next_id(),
+            floats: self.float_end(),
             ruby: self
                 .ruby
                 .as_deref()
@@ -938,11 +914,94 @@ impl Lines {
         self.lines.truncate(mark.lines);
         self.edges.shapes.truncate(mark.shapes);
         self.edges.rewind(mark.edges);
-        self.floats.truncate(mark.floats);
         self.shifts.truncate(mark.shifts);
         if let Some(ruby) = &mut self.ruby {
             ruby.rewind(mark.ruby);
         }
+        if let Some(rare) = &mut self.rare {
+            rare.floats.truncate(mark.floats);
+            rare.scales.truncate(mark.lines);
+        }
+    }
+
+    /// Returns the lines' rare tables to write, made empty the first time.
+    fn rare_mut(&mut self) -> &mut RareLines {
+        self.rare.get_or_insert_with(Box::default)
+    }
+
+    /// Returns every float the lines placed, in placement order: none where
+    /// the content has none.
+    pub(crate) fn floats(&self) -> &[LineFloat] {
+        self.rare
+            .as_deref()
+            .map_or(&[], |rare| rare.floats.as_slice())
+    }
+
+    /// Returns the floats whose anchors `line` holds, in placement order:
+    /// those it starts beside, those beside it, and those below it.
+    pub(crate) fn line_floats(&self, line: LineId) -> &[LineFloat] {
+        let floats = self.floats();
+        let start = floats.partition_point(|float| float.line < line);
+        let end = floats.partition_point(|float| float.line <= line);
+        floats.get(start..end).unwrap_or_default()
+    }
+
+    /// Returns where the floats placed so far end.
+    fn float_end(&self) -> LineFloatId {
+        self.rare
+            .as_deref()
+            .map_or(LineFloatId::new(0), |rare| rare.floats.next_id())
+    }
+
+    /// Records where the host put `float`, which the line being fitted
+    /// placed.
+    fn push_float(&mut self, float: FloatId, left: LayoutUnit, top: LayoutUnit) {
+        let line = self.lines.next_id();
+        let record = LineFloat {
+            float,
+            line,
+            left,
+            top,
+        };
+        if self.rare_mut().floats.push(record).is_none() {
+            debug_assert!(
+                false,
+                "each float is kept once, and a LineFloatId names a float"
+            );
+        }
+    }
+
+    /// Takes back every float placed since `end`.
+    fn truncate_floats(&mut self, end: LineFloatId) {
+        if let Some(rare) = &mut self.rare {
+            rare.floats.truncate(end);
+        }
+    }
+
+    /// Returns the scale `text-fit` sets `line`'s text in: 1 where none
+    /// does.
+    #[inline]
+    pub(crate) fn scale(&self, line: LineId) -> f32 {
+        match &self.rare {
+            None => 1.0,
+            Some(rare) => rare.scales.get(line).copied().unwrap_or(1.0),
+        }
+    }
+
+    /// Records how far the first line's annotations move the initial letter
+    /// down, making the rare tables only where it moves.
+    fn set_letter_shift(&mut self, shift: LayoutUnit) {
+        if shift != LayoutUnit::ZERO || self.rare.is_some() {
+            self.rare_mut().letter_shift = shift;
+        }
+    }
+
+    /// Returns how far the first line's annotations move the initial
+    /// letter down: zero where nothing moves it.
+    pub(super) fn letter_shift(&self) -> LayoutUnit {
+        self.rare
+            .as_deref()
+            .map_or(LayoutUnit::ZERO, |rare| rare.letter_shift)
     }
 
     /// Returns the first line ending at or past `cluster`, or one past the
@@ -986,14 +1045,17 @@ impl Lines {
     /// label's relayout.
     pub(crate) fn room_below(&self, stages: Stages<'_>) -> LayoutUnit {
         if AnnotationRoom::wanted(stages.content, stages.measured) {
-            return self.annotated_carry;
+            return self
+                .rare
+                .as_deref()
+                .map_or(LayoutUnit::ZERO, |rare| rare.annotated_carry);
         }
-        let Some(last) = self.lines.as_slice().last() else {
+        let Some((id, last)) = self.lines.iter().next_back() else {
             return LayoutUnit::ZERO;
         };
         let clusters = last.clusters();
         let stages = stages.variant(last.variant());
-        stages.plain_carry(last.first_item, clusters, last.extent, last.scale())
+        stages.plain_carry(last.first_item, clusters, last.extent, self.scale(id))
     }
 
     /// Returns how far `line` raises `node`'s baseline for its
@@ -1012,9 +1074,50 @@ impl Lines {
 heap_bytes! {
     /// Its tables, not the tests' record of what the last break reshaped.
     Lines {
-        lines, edges, floats, shifts, ruby;
-        block, annotated_carry, letter_shift, #[cfg(test)] probes, #[cfg(test)] reshaped
+        lines, edges, shifts, ruby, rare;
+        block, #[cfg(test)] probes, #[cfg(test)] reshaped
     }
+}
+
+/// What the lines keep only for floats, `text-fit`, annotations and the
+/// initial letter, made the first time a line needs one.
+#[derive(Default)]
+struct RareLines {
+    /// Every float the lines placed, once each, in placement order.
+    ///
+    /// A line's floats are together, in line order. Floats no line reaches
+    /// come last, placed where the text ends.
+    floats: Table<LineFloatId, LineFloat>,
+    /// The scale `text-fit` sets each line's text in, at its line's id.
+    ///
+    /// Every line has one where `text-fit` applies, and none otherwise. Each
+    /// is a finite positive number.
+    scales: Table<LineId, f32>,
+    /// The last line's carry, where the content has annotations or marks.
+    ///
+    /// It is the room the last line leaves under its content, or, negative,
+    /// how far its annotations and marks reach past its line box. Read it
+    /// through [`Lines::room_below`].
+    annotated_carry: LayoutUnit,
+    /// How far the first line's annotations move the initial letter down:
+    /// what they move the line beyond a raised letter's raise.
+    ///
+    /// The kept first line writes it where its annotations move the letter.
+    letter_shift: LayoutUnit,
+}
+
+impl RareLines {
+    /// Empties the tables, keeping every allocation.
+    fn clear(&mut self) {
+        self.floats.clear();
+        self.scales.clear();
+        self.annotated_carry = LayoutUnit::ZERO;
+        self.letter_shift = LayoutUnit::ZERO;
+    }
+}
+
+heap_bytes! {
+    RareLines { floats, scales; annotated_carry, letter_shift }
 }
 
 impl Default for Lines {

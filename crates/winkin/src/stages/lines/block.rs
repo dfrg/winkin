@@ -71,7 +71,8 @@ impl BlockResult {
         };
         let trim_end = last.map_or(LayoutUnit::ZERO, |line| {
             trims.map_or(LayoutUnit::ZERO, |trims| {
-                trims.end(line.extent, line.scale())
+                let scale = lines.lines.last_id().map_or(1.0, |id| lines.scale(id));
+                trims.end(line.extent, scale)
             })
         });
         let trimmed_end = end - trim_start - trim_end;

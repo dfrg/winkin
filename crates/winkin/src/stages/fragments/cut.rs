@@ -127,7 +127,8 @@ impl<'a> Placer<'a> {
     /// Writes the two items of a `piece` the cut divides as `split` says.
     ///
     /// The kept part is on the line's start side; the other is hidden. The
-    /// part on the left is written first.
+    /// part on the left is written first. Both are marked `spread` where
+    /// `ruby-align` spread room into the piece.
     #[allow(clippy::too_many_arguments)]
     #[inline(never)]
     pub(super) fn emit_split(
@@ -138,6 +139,7 @@ impl<'a> Placer<'a> {
         flags: FragmentItemFlags,
         split: PieceSplit,
         baseline: LayoutUnit,
+        spread: bool,
     ) {
         let hidden = flags.union(FragmentItemFlags::HIDDEN);
         let keeps_first = piece.keeps_first(self.line_state.level);
@@ -164,7 +166,7 @@ impl<'a> Placer<'a> {
                 ..*piece
             };
             out.items.push_bounded(
-                part.fragment_item(kind, flags, baseline),
+                part.fragment_item(kind, flags, baseline, spread),
                 "no more items than a FragmentItemId names",
             );
             inline += advance;

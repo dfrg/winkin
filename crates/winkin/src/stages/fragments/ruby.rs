@@ -162,7 +162,7 @@ impl<'a> Placer<'a> {
     /// Returns the part of column `id` that the line being placed sets,
     /// where the column is split.
     pub(super) fn line_part(&self, id: RubyColumnId) -> Option<&'a ColumnPart> {
-        self.line_state
+        self.line_ruby
             .column_parts
             .iter()
             .rev()
@@ -181,6 +181,8 @@ impl<'a> Placer<'a> {
 
     /// Closes every column still open at the end of `line`, innermost
     /// first.
+    #[cold]
+    #[inline(never)]
     pub(super) fn finish_columns(
         &mut self,
         pieces: &mut LinePieces,
@@ -189,7 +191,7 @@ impl<'a> Placer<'a> {
         line: &LineView<'_>,
     ) {
         while let Some(open) = self
-            .line_state
+            .line_ruby
             .open_column
             .and_then(|index| rubies.columns.get(index))
             .copied()
@@ -216,7 +218,7 @@ impl<'a> Placer<'a> {
         rest: InlineLayoutUnit,
     ) {
         while let Some(open) = self
-            .line_state
+            .line_ruby
             .open_column
             .and_then(|index| rubies.columns.get(index))
             .copied()
@@ -248,14 +250,14 @@ impl<'a> Placer<'a> {
                 // The columns between the parts continued onto the line and
                 // where the cursor stood as it started are all left behind:
                 // the walk goes on at the next of either.
-                if id < self.line_state.line_column {
+                if id < self.line_ruby.line_column {
                     let next = self
-                        .line_state
+                        .line_ruby
                         .column_parts
                         .iter()
                         .map(|part| part.column)
                         .filter(|&column| column > id)
-                        .fold(self.line_state.line_column, RubyColumnId::min);
+                        .fold(self.line_ruby.line_column, RubyColumnId::min);
                     self.column = self.column.max(next);
                 }
                 continue;
@@ -296,7 +298,7 @@ impl<'a> Placer<'a> {
         let container = column.container(content);
         let align = self.box_facts(container).ruby.align;
         let text = content.facts.text(self.stages.text_facts(container));
-        let scope = (id, id.max(self.line_state.line_column));
+        let scope = (id, id.max(self.line_ruby.line_column));
         let (analysis, ruby_columns) = (self.stages.analysis, self.rubies);
         let opportunities = || {
             let (justify, base) = (text.justify, base.clone());
@@ -340,10 +342,10 @@ impl<'a> Placer<'a> {
         // At a justified line's edge, the base sits flush with it.
         let (starts, ends) = if column.parent.is_none() && align == RubyAlign::SpaceAround {
             (
-                self.line_state.ruby_edges.start
+                self.line_ruby.ruby_edges.start
                     && !base.is_empty()
                     && base.start == line.clusters().start,
-                self.line_state.ruby_edges.end && end == self.inflow_end(line),
+                self.line_ruby.ruby_edges.end && end == self.inflow_end(line),
             )
         } else {
             (false, false)
@@ -351,14 +353,14 @@ impl<'a> Placer<'a> {
         let (room_before, room_inside, width) = sizes.room_on_edges(
             (room_before, room_inside),
             (starts, ends),
-            self.line_state.ruby_edges.room,
+            self.line_ruby.ruby_edges.room,
         );
         let room_after =
             (width - sizes.base_width - room_before - room_inside).max(LayoutUnit::ZERO);
         let [room_before, room_inside, width, room_after] =
             [room_before, room_inside, width, room_after].map(InlineLayoutUnit::from_layout);
         let (shift, _) = boxes.innermost_shifts();
-        let parent_room = match &self.line_state.spread {
+        let parent_room = match &self.line_ruby.spread {
             Some(spread) if column.parent.is_some() && !base.is_empty() => (
                 spread.room(base.start).0,
                 spread.room(ClusterId::new(base.end.get() - 1)).1,
@@ -375,10 +377,10 @@ impl<'a> Placer<'a> {
             boxes.innermost(),
             shift,
         ));
-        self.line_state.spread = Justified::new(opportunities, base.clone(), room_inside);
+        self.line_ruby.spread = Justified::new(opportunities, base.clone(), room_inside);
         let index = rubies.columns.len();
-        let parent = self.line_state.open_column;
-        self.line_state.open_column = Some(index);
+        let parent = self.line_ruby.open_column;
+        self.line_ruby.open_column = Some(index);
         rubies.columns.push(LineColumn {
             column: id,
             index,
@@ -389,7 +391,7 @@ impl<'a> Placer<'a> {
             continued: column.base.start < line.clusters().start,
             parent,
             spread: self
-                .line_state
+                .line_ruby
                 .spread
                 .as_ref()
                 .map(|spread| spread.justification),
@@ -423,7 +425,7 @@ impl<'a> Placer<'a> {
         line: &LineView<'_>,
         open: LineColumn,
     ) {
-        self.line_state.spread = None;
+        self.line_ruby.spread = None;
         let sizes = open.sizes;
         let base = sizes.base();
         let base_width = if base.is_empty() {
@@ -464,13 +466,13 @@ impl<'a> Placer<'a> {
             last.trailing = Some(trailing);
             last.overhang.1 = after;
         }
-        self.line_state.open_column = open.parent;
+        self.line_ruby.open_column = open.parent;
         // The parent's base spreads its room again, by the amounts saved as
         // it opened, so its base is not walked again.
         if let Some(parent) = open.parent.and_then(|index| rubies.columns.get(index))
             && let Some(saved) = parent.spread
         {
-            self.line_state.spread = JustifyOpportunities::from_base(
+            self.line_ruby.spread = JustifyOpportunities::from_base(
                 self.stages.content,
                 self.stages.analysis,
                 parent.sizes.base(),
@@ -480,10 +482,7 @@ impl<'a> Placer<'a> {
                     .text(self.stages.text_facts(parent.container))
                     .justify,
                 self.rubies,
-                (
-                    parent.column,
-                    parent.column.max(self.line_state.line_column),
-                ),
+                (parent.column, parent.column.max(self.line_ruby.line_column)),
                 Some(saved.summary),
             )
             .map(|opportunities| Justified {
@@ -584,7 +583,7 @@ impl<'a> Placer<'a> {
         piece: Piece,
         advance: &dyn Fn(&Self, ClusterId, ClusterId) -> InlineLayoutUnit,
     ) {
-        let Some(spread) = self.line_state.spread.as_ref() else {
+        let Some(spread) = self.line_ruby.spread.as_ref() else {
             pieces.push_or_join(piece);
             return;
         };
@@ -740,16 +739,16 @@ impl LinePieces {
             else {
                 continue;
             };
-            let Some(text) = self.logical.get_mut(PieceId::new(owner)) else {
+            let owner = PieceId::new(owner);
+            let Some(text) = self.logical.get(owner) else {
                 continue;
             };
-            text.advance += gap.advance;
             // A gap after the text in logical order is on its right, or its
             // left where it runs right to left.
             if gap_after != text.level.is_rtl() {
-                text.room.1 += gap.advance;
+                self.add_room(owner, InlineLayoutUnit::ZERO, gap.advance);
             } else {
-                text.room.0 += gap.advance;
+                self.add_room(owner, gap.advance, InlineLayoutUnit::ZERO);
             }
             if let Some(gap) = self.logical.get_mut(PieceId::new(at)) {
                 gap.advance = InlineLayoutUnit::ZERO;
@@ -787,14 +786,13 @@ impl LinePieces {
         } else {
             order.rev().inspect(|_| work::step()).find(holds)
         };
-        let Some(text) = found.and_then(|at| self.logical.get_mut(at)) else {
+        let Some(text) = found.filter(|&at| self.logical.get(at).is_some()) else {
             return InlineLayoutUnit::ZERO;
         };
-        text.advance += room;
         if left {
-            text.room.0 += room;
+            self.add_room(text, room, InlineLayoutUnit::ZERO);
         } else {
-            text.room.1 += room;
+            self.add_room(text, InlineLayoutUnit::ZERO, room);
         }
         room
     }

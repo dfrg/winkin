@@ -74,7 +74,7 @@ use crate::stages::content::{AtomicId, Content, FloatId, NodeKey, SizeChange};
 use crate::stages::content::{ContentLimits, ContentScratch, ContentWriter};
 use crate::stages::fonts::{self, FontInput, Fonts};
 use crate::stages::fragments::{self, Fragments, PlaceInput, ReadInput};
-use crate::stages::lines::{self, Area, BreakInput, Exclusions, LineFloatId, LineId};
+use crate::stages::lines::{self, Area, BreakInput, Exclusions, LineId};
 use crate::stages::measure::{self, IntrinsicSizes, MeasureInput, Measured};
 use crate::stages::shape::{self, ShapeInput, ShapeSession, Shaped};
 #[cfg(test)]
@@ -556,8 +556,7 @@ impl Layout {
     /// anchored after the final forced break or in content with no lines.
     #[inline]
     pub fn floats(&self) -> impl Iterator<Item = FloatPlacement> + Clone {
-        let placed = LineFloatId::new(0)..self.line_records().floats.next_id();
-        Floats::new(self, placed)
+        Floats::new(self, self.line_records().floats())
     }
 
     /// Returns static positions for absolutely positioned boxes, in content order.

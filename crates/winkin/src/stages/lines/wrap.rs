@@ -46,7 +46,7 @@ use super::{
     LineRecord, Lines, LinesMark,
 };
 use crate::config::Pretty;
-use crate::data::{Id, SortedCursor};
+use crate::data::{Id, IdRange, SortedCursor};
 use crate::stages::analysis::ClusterId;
 use crate::stages::measure::{LineEdgeCost, LineEdgeFlags};
 use crate::style::TextAlign;
@@ -250,7 +250,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         let scorable = greedy_lines.len() <= BALANCE_LINES
             && !lines.para.walks()
             && !first.flags.contains(LineFlags::FIRST_LINE)
-            && !self.holds_floats(out, greedy_lines, lines.para.start);
+            && !self.holds_floats(out, greedy.clone(), lines.para.start);
         let rule = scorable.then(|| self.score_rule(LineChoice::Balance, last));
         // Chrome's bisection starts from four fifths of the lines' average,
         // their indents included (`LineWidthSum`).
@@ -309,7 +309,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         if scored.len() <= 1
             || scored.iter().any(|line| line.flags.overflowed())
             || !self.ends_short(scored, facts.content_end, rule)
-            || self.holds_floats(out, scored, first.clusters().start)
+            || self.holds_floats(out, from..greedy.end, first.clusters().start)
         {
             return WrapDecision::Keep;
         }
@@ -360,11 +360,11 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// Such a float is placed where the lines break, so its band depends on
     /// them. Floats at the paragraph's start are placed before its first
     /// line.
-    fn holds_floats(&self, out: &Lines, lines: &[LineRecord], from: ClusterId) -> bool {
+    fn holds_floats(&self, out: &Lines, lines: Range<LineId>, from: ClusterId) -> bool {
         let stages = &self.stages;
         let (floats, item_clusters) = (stages.content.floats(), &stages.analysis.item_clusters);
-        lines.iter().any(|line| {
-            out.floats.slice(line.floats.clone()).iter().any(|placed| {
+        lines.ids().any(|line| {
+            out.line_floats(line).iter().any(|placed| {
                 work::step();
                 floats
                     .get(placed.float)

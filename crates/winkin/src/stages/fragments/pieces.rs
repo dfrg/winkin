@@ -51,7 +51,7 @@ use core::ops::Range;
 use super::boxes::{LineBoxId, LineBoxes};
 use super::place::LinePieces;
 use super::ruby::LineRubies;
-use super::{FragmentItemFlags, Piece, PieceKind, Placer};
+use super::{FragmentItem, FragmentItemFlags, Justified, Piece, PieceKind, Placer};
 use crate::data::Id;
 use crate::data::IdRange;
 use crate::stages::analysis::{
@@ -86,6 +86,7 @@ pub(super) struct TabLine {
 
 impl TabLine {
     /// Starts `line`'s tabs in `area`, with none placed yet.
+    #[inline(never)]
     pub(super) fn new(
         line: &LineView<'_>,
         paragraphs: &Paragraphs,
@@ -103,6 +104,22 @@ impl TabLine {
     }
 }
 
+/// The boundary the item walk is at, among items that hold no cluster.
+struct Boundary {
+    /// The boundary, where the walk is at one.
+    at: Option<ClusterId>,
+    /// Where a break there falls among its items.
+    split: BoundarySplit,
+    /// The room of the items after the break. The pen for the following text
+    /// stands past it.
+    rest: InlineLayoutUnit,
+    /// The first item at the line's end that starts the next line.
+    next_line: ItemId,
+    /// The line ends the text, and the last paragraph holds clusters, so
+    /// every item at its end is the line's.
+    everything_at_end: bool,
+}
+
 impl<'a> Placer<'a> {
     /// Walks the items on `line` from the cursor into `pieces`.
     ///
@@ -118,19 +135,17 @@ impl<'a> Placer<'a> {
     ) {
         let range = line.clusters();
         let end = range.end;
-        let level = self.line_state.level;
         // At the text's end, every item is the last line's when the last
         // paragraph holds clusters. Otherwise what follows the leading
         // closes belongs to the next line, or to none.
         let everything_at_end = end == self.count && self.gates.ends_on_a_line;
-        // The boundary being walked, where a break there falls among its
-        // items, and the room of the items after the break. The pen for the
-        // following text stands past that room.
-        let mut at: Option<ClusterId> = None;
-        let mut split = BoundarySplit::default();
-        let mut rest = InlineLayoutUnit::ZERO;
-        // The first item at the line's end that starts the next line.
-        let mut next_line = ItemId::new(0);
+        let mut boundary = Boundary {
+            at: None,
+            split: BoundarySplit::default(),
+            rest: InlineLayoutUnit::ZERO,
+            next_line: ItemId::new(0),
+            everything_at_end,
+        };
         // Where the line's trailing preserved white space starts. It takes
         // the paragraph's level (L1), which matters only with mixed levels.
         let trailing = if self.gates.has_mixed_levels {
@@ -146,8 +161,8 @@ impl<'a> Placer<'a> {
                 end: next,
             } = self.item_clusters.range(self.item);
             // The room of the items before this one at its first boundary.
-            let rest_here = if at == Some(first) {
-                rest
+            let rest_here = if boundary.at == Some(first) {
+                boundary.rest
             } else {
                 InlineLayoutUnit::ZERO
             };
@@ -180,19 +195,8 @@ impl<'a> Placer<'a> {
                             removable,
                         ),
                         ItemKind::Atomic => {
-                            let closes = self.closes_after(id, next, y);
-                            let advance = self.exact_advance(first..next, x, y, rest_here, closes);
-                            let (shift, _) = self.shift(line, item.node, boxes.innermost_shifts());
-                            let run = self.advance_run(x);
-                            pieces.push(Piece::new(
-                                PieceKind::Atomic,
-                                item.node,
-                                self.run_level(run, level),
-                                x..y,
-                                advance,
-                                boxes.innermost(),
-                                shift,
-                            ));
+                            let clusters = (first..next, x..y);
+                            self.atomic(pieces, boxes, line, (id, item), clusters, rest_here);
                         }
                         // A forced break's separator draws nothing. The
                         // caret after a line's last character is a
@@ -200,7 +204,7 @@ impl<'a> Placer<'a> {
                         _ => {}
                     }
                 }
-                at = None;
+                boundary.at = None;
                 if next > end {
                     // It goes on to the next line, which takes it from here.
                     break;
@@ -209,68 +213,116 @@ impl<'a> Placer<'a> {
                 continue;
             }
             // An item at boundary `first`, holding no cluster.
-            let b = first;
-            if b > end {
+            if first > end || !self.boundary_item(pieces, boxes, line, item, first, &mut boundary) {
                 break;
-            }
-            if at != Some(b) {
-                at = Some(b);
-                split = BoundarySplit::new(self.stages.analysis, b);
-                rest = InlineLayoutUnit::ZERO;
-                if b == end && !everything_at_end {
-                    next_line = measure::items_after_break(
-                        self.stages.content,
-                        self.stages.analysis,
-                        b,
-                        self.item,
-                    );
-                }
-            }
-            let annotation = item.flags.contains(ItemFlags::ANNOTATION);
-            let opener = !annotation && item.kind.is_open();
-            let closer = !annotation && item.kind.is_close();
-            if b == end && !everything_at_end && self.item >= next_line {
-                // What follows the break at the line's end starts the next
-                // line.
-                break;
-            }
-            // Each inline box's open and close items pass once, in order, so
-            // this counts the boxes open across a line's start.
-            if matches!(item.kind, ItemKind::Open | ItemKind::Close) && !annotation {
-                if opener {
-                    self.open_boxes = self.open_boxes.saturating_add(1);
-                    self.line_state.boxed = true;
-                } else {
-                    self.open_boxes = self.open_boxes.saturating_sub(1);
-                }
-            }
-            if opener || closer {
-                let room = if self.gates.has_box_edges {
-                    let letter = self.stages.measured.initial_letter();
-                    measure::edge_room(self.stages.content, letter, item, opener)
-                } else {
-                    InlineLayoutUnit::ZERO
-                };
-                // A box's controls come before its opening and after its
-                // closing, as Blink's items have them.
-                if opener {
-                    self.control(pieces, boxes, item, b);
-                }
-                self.edge(pieces, boxes, line, item, b, opener, room);
-                if closer {
-                    self.control(pieces, boxes, item, b);
-                }
-                let mut before = InlineLayoutUnit::ZERO;
-                split.take(item.kind, room, &mut before, &mut rest);
-            }
-            if item.kind == ItemKind::Absolute {
-                let at_break = b == end && !everything_at_end;
-                self.anchor(pieces, boxes, line, item, b, at_break);
-                let mut before = InlineLayoutUnit::ZERO;
-                split.take(item.kind, InlineLayoutUnit::ZERO, &mut before, &mut rest);
             }
             self.item = ItemId::new(self.item.get() + 1);
         }
+    }
+
+    /// Adds the piece of atomic inline `item`, content item `id`, holding
+    /// `bounds`, for its clusters `x..y` on `line`, in the innermost open box.
+    /// `rest` is the room of the items before it at its first boundary.
+    ///
+    /// Out of line, so that a line of text holds none of its code.
+    #[inline(never)]
+    fn atomic(
+        &mut self,
+        pieces: &mut LinePieces,
+        boxes: &LineBoxes,
+        line: &LineView<'_>,
+        (id, item): (ItemId, &Item),
+        (bounds, Range { start: x, end: y }): (Range<ClusterId>, Range<ClusterId>),
+        rest: InlineLayoutUnit,
+    ) {
+        let closes = self.closes_after(id, bounds.end, y);
+        let advance = self.exact_advance(bounds, x, y, rest, closes);
+        let (shift, _) = self.shift(line, item.node, boxes.innermost_shifts());
+        let run = self.advance_run(x);
+        pieces.push(Piece::new(
+            PieceKind::Atomic,
+            item.node,
+            self.run_level(run, self.line_state.level),
+            x..y,
+            advance,
+            boxes.innermost(),
+            shift,
+        ));
+    }
+
+    /// Adds the pieces of the walk's item `item`, which holds no cluster, at
+    /// boundary `b` on `line`: a box's placeholder, edge and controls, or an
+    /// anchor. Returns `false` where the item starts the next line.
+    ///
+    /// Out of line, so that a line of plain text holds none of its code.
+    #[inline(never)]
+    fn boundary_item(
+        &mut self,
+        pieces: &mut LinePieces,
+        boxes: &mut LineBoxes,
+        line: &LineView<'_>,
+        item: &Item,
+        b: ClusterId,
+        boundary: &mut Boundary,
+    ) -> bool {
+        let end = line.clusters().end;
+        let at_break = b == end && !boundary.everything_at_end;
+        if boundary.at != Some(b) {
+            boundary.at = Some(b);
+            boundary.split = BoundarySplit::new(self.stages.analysis, b);
+            boundary.rest = InlineLayoutUnit::ZERO;
+            if at_break {
+                boundary.next_line = measure::items_after_break(
+                    self.stages.content,
+                    self.stages.analysis,
+                    b,
+                    self.item,
+                );
+            }
+        }
+        let annotation = item.flags.contains(ItemFlags::ANNOTATION);
+        let opener = !annotation && item.kind.is_open();
+        let closer = !annotation && item.kind.is_close();
+        if at_break && self.item >= boundary.next_line {
+            // What follows the break at the line's end starts the next line.
+            return false;
+        }
+        // Each inline box's open and close items pass once, in order, so
+        // this counts the boxes open across a line's start.
+        if matches!(item.kind, ItemKind::Open | ItemKind::Close) && !annotation {
+            if opener {
+                self.open_boxes = self.open_boxes.saturating_add(1);
+                self.line_state.boxed = true;
+            } else {
+                self.open_boxes = self.open_boxes.saturating_sub(1);
+            }
+        }
+        if opener || closer {
+            let room = if self.gates.has_box_edges {
+                let letter = self.stages.measured.initial_letter();
+                measure::edge_room(self.stages.content, letter, item, opener)
+            } else {
+                InlineLayoutUnit::ZERO
+            };
+            // A box's controls come before its opening and after its
+            // closing, as Blink's items have them.
+            if opener {
+                self.control(pieces, boxes, item, b);
+            }
+            self.edge(pieces, boxes, line, item, b, opener, room);
+            if closer {
+                self.control(pieces, boxes, item, b);
+            }
+            let mut before = InlineLayoutUnit::ZERO;
+            (boundary.split).take(item.kind, room, &mut before, &mut boundary.rest);
+        }
+        if item.kind == ItemKind::Absolute {
+            self.anchor(pieces, boxes, line, item, b, at_break);
+            let mut before = InlineLayoutUnit::ZERO;
+            let rest = &mut boundary.rest;
+            (boundary.split).take(item.kind, InlineLayoutUnit::ZERO, &mut before, rest);
+        }
+        true
     }
 
     /// Adds the piece of the anchor `item` at boundary `at`, at its own
@@ -385,6 +437,8 @@ impl<'a> Placer<'a> {
     ///
     /// It walks a copy of the shaping run cursor forward, leaving the walk's
     /// own cursor where it is.
+    #[cold]
+    #[inline(never)]
     fn trailing_level_split(
         &self,
         trailing: ClusterId,
@@ -482,6 +536,7 @@ impl<'a> Placer<'a> {
     /// the closing edges after its last (`closes`). No item takes room
     /// inside an item's clusters. It leaves out an autospace seam's room at
     /// `v` that the text after draws ([`seam_before`](Self::seam_before)).
+    #[inline(always)]
     fn exact_advance(
         &self,
         bounds: Range<ClusterId>,
@@ -514,12 +569,21 @@ impl<'a> Placer<'a> {
     /// The side before reads right to left and the side after left to
     /// right, so Chrome's `TextAutoSpace` writes the room into the later
     /// item. It is looked for only where some style sets `text-autospace`
-    /// and some paragraph has mixed levels. `at` is inside the line, so the
-    /// seam is in the line's paragraph.
+    /// and some paragraph has mixed levels and reads right to left. `at` is
+    /// inside the line, so the seam is in the line's paragraph.
+    #[inline]
     fn seam_before(&self, at: ClusterId) -> Option<InlineLayoutUnit> {
-        if !self.gates.has_mixed_levels {
+        if !self.gates.has_seams_before {
             return None;
         }
+        self.mixed_seam_before(at)
+    }
+
+    /// Returns [`seam_before`](Self::seam_before)'s room where some seam may
+    /// have it, out of line.
+    #[cold]
+    #[inline(never)]
+    fn mixed_seam_before(&self, at: ClusterId) -> Option<InlineLayoutUnit> {
         let paragraph = self
             .stages
             .analysis
@@ -533,9 +597,32 @@ impl<'a> Placer<'a> {
         (room != InlineLayoutUnit::ZERO).then_some(room)
     }
 
+    /// Adds a gap for the room of an autospace seam at `at` that the text
+    /// after it draws, where there is one: at `level`, of `node`, in the box
+    /// `owner` and raised `shift`, so it stays with that text.
+    #[cold]
+    #[inline(never)]
+    fn seam_gap(
+        &self,
+        pieces: &mut LinePieces,
+        at: ClusterId,
+        node: NodeId,
+        level: BidiLevel,
+        (owner, shift): (Option<LineBoxId>, LayoutUnit),
+    ) {
+        if let Some(room) = self.seam_before(at) {
+            let gap = Piece::new(PieceKind::Gap, node, level, at..at, room, owner, shift);
+            pieces.push(gap);
+        }
+    }
+
     /// Returns the advance of clusters `u..v`, using the reshaped line edges
     /// where they hold some of them.
+    ///
+    /// A line with no reshaped edge, as most are, reads the prefix sums
+    /// alone; the edges are read out of line.
     #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
     fn advance(
         &self,
         shapes: &[EdgeShape],
@@ -545,7 +632,25 @@ impl<'a> Placer<'a> {
         rest: InlineLayoutUnit,
         closes: InlineLayoutUnit,
     ) -> InlineLayoutUnit {
-        let mut advance = self.exact_advance(bounds.clone(), u, v, rest, closes);
+        let advance = self.exact_advance(bounds.clone(), u, v, rest, closes);
+        if shapes.is_empty() {
+            return advance;
+        }
+        self.reshaped_advance(advance, shapes, bounds, u, v, (rest, closes))
+    }
+
+    /// Returns `advance`, clusters `u..v`'s from the prefix sums, with the
+    /// reshaped line edges in `shapes` that hold some of them read instead.
+    #[inline(never)]
+    fn reshaped_advance(
+        &self,
+        mut advance: InlineLayoutUnit,
+        shapes: &[EdgeShape],
+        bounds: Range<ClusterId>,
+        u: ClusterId,
+        v: ClusterId,
+        (rest, closes): (InlineLayoutUnit, InlineLayoutUnit),
+    ) -> InlineLayoutUnit {
         for shape in shapes {
             let clusters = shape.clusters();
             let (from, to) = (u.max(clusters.start), v.min(clusters.end));
@@ -660,8 +765,8 @@ impl<'a> Placer<'a> {
             }
             Piece {
                 flags,
-                run,
-                item: Some(id),
+                run: FragmentItem::link(run),
+                item: FragmentItem::link(Some(id)),
                 ..Piece::new(
                     PieceKind::Text,
                     node,
@@ -712,24 +817,14 @@ impl<'a> Placer<'a> {
             let shaped = self.clusters.class(u).is_some_and(ClusterClass::is_shaped);
             // An autospace seam's room the text before left out stands
             // before this text, at its level and in its box.
-            if u > line.clusters().start
-                && let Some(room) = self.seam_before(u)
-            {
-                pieces.push(Piece::new(
-                    PieceKind::Gap,
-                    node,
-                    level,
-                    u..u,
-                    room,
-                    owner,
-                    shift,
-                ));
+            if self.gates.has_seams_before && u > line.clusters().start {
+                self.seam_gap(pieces, u, node, level, (owner, shift));
             }
             if shaped {
                 let piece = Piece {
                     font: run.map(|run| run.font),
-                    run: run_id,
-                    item: Some(id),
+                    run: FragmentItem::link(run_id),
+                    item: FragmentItem::link(Some(id)),
                     orientation: self.orientation(run),
                     flags: marks,
                     ..Piece::new(
@@ -744,7 +839,7 @@ impl<'a> Placer<'a> {
                 };
                 // Text inside a spread ruby base takes its share of room.
                 // Text elsewhere takes none.
-                if self.line_state.spread.is_some() {
+                if self.line_ruby.spread.is_some() {
                     self.spread_text(pieces, piece, &piece_advance);
                 } else {
                     pieces.push_or_join(piece);
@@ -756,12 +851,10 @@ impl<'a> Placer<'a> {
                 for cluster in (u..to).ids() {
                     let piece =
                         cluster_piece(self, cluster, level, FragmentItemFlags::NONE, run_id);
-                    let room = self
-                        .line_state
-                        .spread
-                        .as_ref()
-                        .map(|spread| spread.room(cluster));
-                    pieces.push_with_room(piece, room.unwrap_or_default());
+                    match &self.line_ruby.spread {
+                        Some(spread) => push_spread_cluster(pieces, piece, spread, cluster),
+                        None => pieces.push_or_join(piece),
+                    }
                 }
             }
             u = to;
@@ -905,7 +998,7 @@ impl<'a> Placer<'a> {
         if let Some(letter) = self.stages.measured.initial_letter()
             && letter.node == node
         {
-            let baseline = letter.baseline + self.lines.letter_shift;
+            let baseline = letter.baseline + self.lines.letter_shift();
             return (line.ascent() - baseline, pinned);
         }
         let settled = self.lines.shift(line, node);
@@ -985,4 +1078,19 @@ impl<'a> Placer<'a> {
             LayoutUnit::ZERO,
         ));
     }
+}
+
+/// Adds `piece`, the one cluster `cluster` of a spread ruby base, with the
+/// room `spread` gives it before and after.
+///
+/// Out of line, as only a line with a spread ruby base gives room.
+#[cold]
+#[inline(never)]
+fn push_spread_cluster(
+    pieces: &mut LinePieces,
+    piece: Piece,
+    spread: &Justified<'_>,
+    cluster: ClusterId,
+) {
+    pieces.push_with_room(piece, spread.room(cluster));
 }

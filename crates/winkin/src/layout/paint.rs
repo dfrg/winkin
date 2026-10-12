@@ -998,7 +998,7 @@ impl<'a> PaintedLine<'a> {
             .primary_font(content.facts.text_request(text));
         // On a line `text-fit` scales, the font's metrics scale with the
         // text, as Chrome decorates through the scaled font.
-        let scale = self.line.record().scale();
+        let scale = self.line.scale();
         let scaled = |px: f32| if scale == 1.0 { px } else { px * scale };
         let (size, ascent, descent) = used.map_or((0.0, 0.0, 0.0), |used| {
             let metrics = &used.metrics;

@@ -139,7 +139,7 @@ fn check(layout: &Layout) {
         });
     let words = &lines.edges.words;
     assert_eq!(words.len(), lines.edges.advances.len(), "an advance a word");
-    let mut floats = LineFloatId::new(0);
+    let mut floats = 0;
     let mut shifts = LineShiftId::new(0);
     for (id, line) in lines.lines.iter() {
         let (pid, p) = paragraph.expect("a line is in a paragraph");
@@ -181,9 +181,9 @@ fn check(layout: &Layout) {
         assert!(block_start >= top, "{id:?} is not above the last");
         top = block_start + line.extent.box_height();
         // Its floats follow the last line's.
-        assert_eq!(line.floats.start, floats, "{id:?}'s floats follow");
-        assert!(line.floats.start <= line.floats.end);
-        floats = line.floats.end;
+        let start = lines.floats().partition_point(|float| float.line < id);
+        assert_eq!(start, floats, "{id:?}'s floats follow");
+        floats = start + lines.line_floats(id).len();
         let overflows = line.indent + line.width > line.band.width() + LayoutUnit::EPSILON;
         assert_eq!(
             line.flags.contains(LineFlags::OVERFLOWS),
@@ -258,7 +258,7 @@ fn check(layout: &Layout) {
     // Every float is placed once, in reading order. Each line's come in the
     // order its text reaches them, beside before below. Those no line
     // reached come last, and every float of the content is there.
-    let placed = lines.floats.as_slice();
+    let placed = lines.floats();
     assert!(placed.windows(2).all(|w| w[0].float < w[1].float));
     if clamped {
         assert!(placed.len() <= layout.content().floats().len());
@@ -496,11 +496,11 @@ impl Exclusions for Pushed {
 
 // The records --------------------------------------------------------------
 
-/// The records keep their sizes: a line 88 bytes, a reshaped edge 12, what
+/// The records keep their sizes: a line 76 bytes, a reshaped edge 12, what
 /// hangs 16, a band 8.
 #[test]
 fn records_keep_their_sizes() {
-    assert_eq!(size_of::<LineRecord>(), 88);
+    assert_eq!(size_of::<LineRecord>(), 76);
     assert_eq!(size_of::<PlacementFacts>(), 8);
     assert_eq!(size_of::<EdgeShape>(), 12);
     assert_eq!(size_of::<LineHang>(), 16);
