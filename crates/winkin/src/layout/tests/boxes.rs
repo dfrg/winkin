@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::build::FloatSide;
-use crate::style::{LengthPercentage, VerticalAlign, WritingMode};
+use crate::style::{FirstLineVariant, LengthPercentage, VerticalAlign, WritingMode};
 
 /// A box's edges' room along a line, `left` at its left and `right` at its
 /// right.
@@ -763,6 +763,121 @@ fn measuring_a_new_percentage_basis_equals_a_fresh_layout() {
     }
 }
 
+/// Content with no atomic inline, no float and no percentage margin or
+/// padding keeps no shaped advances, in either first-line variant.
+/// Measuring it with a new basis and sizes changes nothing and keeps the
+/// lines, which lay out as content built with that basis.
+#[test]
+fn measuring_content_with_nothing_to_size_equals_a_fresh_layout() {
+    let root = sized(&AHEM_FAMILY, 10.0);
+    let first_line = sized(&AHEM_FAMILY, 16.0);
+    let block = ComputedBlockStyle {
+        first_line: Some(&first_line),
+        ..ComputedBlockStyle::new(&root)
+    };
+    let edged = ComputedStyle {
+        edges: EdgesGroup {
+            margin: Sides::from_px(2.0),
+            padding: Sides::from_px(3.0),
+            ..EdgesGroup::INITIAL
+        },
+        ..root
+    };
+    let calls = |b: &mut LayoutBuilder<'_>| {
+        b.text(NodeKey(10), "XX XXX ");
+        b.open_box(NodeKey(1), &edged, None);
+        b.text(NodeKey(11), "XXXX XX");
+        b.close_box();
+        b.text(NodeKey(12), " XXX XX XXXXX");
+    };
+    let mut cx = context();
+    let mut layout = Layout::new();
+    let mut b = layout.builder(&mut cx, NodeKey(0), &block, BuildOptions::default());
+    calls(&mut b);
+    b.finish();
+    assert!(
+        layout.measured().first_line().is_some(),
+        "a first line's measure"
+    );
+    for variant in [FirstLineVariant::Standard, FirstLineVariant::FirstLine] {
+        let advances = &layout.shaped().text(variant).advances;
+        assert_eq!(advances.capacity(), 0, "{variant:?} keeps advances");
+    }
+    layout.break_lines(&mut cx, Area::new(60.0), &mut NoExclusions);
+    let before = laid_out(&layout);
+    let size = BoxSize {
+        inline: 20.0,
+        block: 10.0,
+        baseline: Some(8.0),
+    };
+    assert!(!layout.measure(&mut cx, 80.0, [(NodeKey(1), size), (NodeKey(10), size)]));
+    assert_eq!(laid_out(&layout), before, "nothing changed keeps the lines");
+    let mut fresh = Layout::new();
+    let options = BuildOptions {
+        percentage_basis: 80.0,
+        ..BuildOptions::default()
+    };
+    let mut b = fresh.builder(&mut cx, NodeKey(0), &block, options);
+    calls(&mut b);
+    b.finish();
+    assert_eq!(layout.intrinsic_sizes(), fresh.intrinsic_sizes());
+    for width in [40.0, 60.0, 400.0] {
+        layout.break_lines(&mut cx, Area::new(width), &mut NoExclusions);
+        fresh.break_lines(&mut cx, Area::new(width), &mut NoExclusions);
+        assert_eq!(laid_out(&layout), laid_out(&fresh), "at {width}");
+    }
+}
+
+/// Content with an atomic inline, a float or a percentage margin keeps its
+/// shaped advances, in both first-line variants, for measuring again.
+#[test]
+fn content_with_something_to_size_keeps_its_advances() {
+    let root = sized(&AHEM_FAMILY, 10.0);
+    let first_line = sized(&AHEM_FAMILY, 16.0);
+    let block = ComputedBlockStyle {
+        first_line: Some(&first_line),
+        ..ComputedBlockStyle::new(&root)
+    };
+    let edged = ComputedStyle {
+        edges: EdgesGroup {
+            margin: Sides::all(LengthPercentage {
+                px: 0.0,
+                fraction: 0.1,
+            }),
+            ..EdgesGroup::INITIAL
+        },
+        ..root
+    };
+    let size = built_size(1);
+    let boxes: [&dyn Fn(&mut LayoutBuilder<'_>); 3] = [
+        &|b| b.atomic(NodeKey(1), &root, None, size),
+        &|b| b.float(NodeKey(1), &root, FloatSide::Left, size),
+        &|b| {
+            b.open_box(NodeKey(1), &edged, None);
+            b.text(NodeKey(2), "XX");
+            b.close_box();
+        },
+    ];
+    let mut cx = context();
+    for (n, calls) in boxes.iter().enumerate() {
+        let mut layout = Layout::new();
+        let mut b = layout.builder(&mut cx, NodeKey(0), &block, BuildOptions::default());
+        b.text(NodeKey(10), "XX XXX ");
+        calls(&mut b);
+        b.text(NodeKey(11), " XXX XX");
+        b.finish();
+        assert!(
+            layout.measured().first_line().is_some(),
+            "{n}: a first line"
+        );
+        for variant in [FirstLineVariant::Standard, FirstLineVariant::FirstLine] {
+            let advances = &layout.shaped().text(variant).advances;
+            assert!(!advances.is_empty(), "{n}: {variant:?} keeps none");
+            assert_eq!(advances.len(), advances.capacity(), "{n}: {variant:?}");
+        }
+    }
+}
+
 /// Text with `count` atomic inlines keyed `0..count`, the `n`th built with
 /// [`built_size`] of `n` modulo 10.
 #[cfg(debug_assertions)]
@@ -799,4 +914,68 @@ fn setting_atomic_sizes_in_order_costs_linear_steps() {
     let (small, large) = (steps(300), steps(600));
     assert!(small > 0);
     assert!(large <= small * 5 / 2, "{small} steps, then {large}");
+}
+
+/// `text-box-trim` on an inline box brings its trimmed edges to
+/// `text-box-edge`'s, as Chrome's `InlineBoxState::AdjustEdges` does and
+/// `text-box-on-non-root-inline-box` pins. In Ahem at 100 px on 100 px
+/// lines, with the x-height at 80 px, `ex alphabetic` and `trim-end text
+/// alphabetic` each make the 100 px box 80 tall, ending on the baseline,
+/// and `trim-start cap text` leaves it whole. The line box keeps its height.
+#[test]
+fn text_box_trim_on_an_inline_box_trims_its_box() {
+    use crate::style::{TextBoxEdge, TextBoxTrim, TextEdgeOver, TextEdgeUnder};
+    let mut cx = context();
+    let mut layout = Layout::new();
+    let root = ComputedStyle {
+        line: LineGroup {
+            height: LineHeight::Factor(1.0),
+            ..LineGroup::INITIAL
+        },
+        ..sized(&AHEM_FAMILY, 100.0)
+    };
+    for (trim, over, under, expected) in [
+        (
+            TextBoxTrim::None,
+            TextEdgeOver::Text,
+            TextEdgeUnder::Text,
+            (0.0, 100.0),
+        ),
+        (
+            TextBoxTrim::TrimBoth,
+            TextEdgeOver::Ex,
+            TextEdgeUnder::Alphabetic,
+            (0.0, 80.0),
+        ),
+        (
+            TextBoxTrim::TrimEnd,
+            TextEdgeOver::Text,
+            TextEdgeUnder::Alphabetic,
+            (0.0, 80.0),
+        ),
+        (
+            TextBoxTrim::TrimStart,
+            TextEdgeOver::Cap,
+            TextEdgeUnder::Text,
+            (0.0, 100.0),
+        ),
+    ] {
+        let mut span = root;
+        span.paints = true;
+        span.line.text_box_trim = trim;
+        span.line.text_box_edge = TextBoxEdge { over, under };
+        build(&mut cx, &mut layout, &ComputedBlockStyle::new(&root), |b| {
+            b.open_box(NodeKey(1), &span, None);
+            b.text(NodeKey(2), "XX");
+            b.close_box();
+        });
+        layout.break_lines(&mut cx, Area::new(1000.0), &mut NoExclusions);
+        let piece = layout
+            .box_fragments(NodeKey(1))
+            .next()
+            .map(|piece| piece.block());
+        assert_eq!(piece, Some(across(expected.0, expected.1)), "{trim:?}");
+        let height = layout.line(0).map(|line| line.metrics().height());
+        assert_eq!(height, Some(100.0), "{trim:?}");
+    }
 }

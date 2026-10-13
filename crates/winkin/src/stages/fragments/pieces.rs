@@ -998,7 +998,14 @@ impl<'a> Placer<'a> {
         if let Some(letter) = self.stages.measured.initial_letter()
             && letter.node == node
         {
-            let baseline = letter.baseline + self.lines.letter_shift();
+            let mut baseline = letter.baseline + self.lines.letter_shift();
+            // Measurement places the box from the line's block-start side.
+            // That is its under side where lines flip, so the box turns
+            // about the line box's middle, its over side kept over.
+            if self.stages.content.block.writing_mode.flips_lines() {
+                let height = line.extent.zero_if_none().box_height();
+                baseline = height - baseline + letter.extent.ascent() - letter.extent.descent();
+            }
             return (line.ascent() - baseline, pinned);
         }
         let settled = self.lines.shift(line, node);

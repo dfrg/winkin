@@ -142,7 +142,7 @@ fn a_sub_range_at_a_safe_boundary_is_the_slice_of_the_whole() {
             },
             &[(&style, &text)],
         );
-        let advances = fixture.advances(&layout);
+        let advances = fixture.advances();
         let shaped = layout.shaped().text(FirstLineVariant::Standard);
         assert_eq!(shaped.runs.len(), 1, "{text}");
         let whole: Vec<(GlyphWord, Vec<Drawn>)> = shaped
@@ -258,7 +258,6 @@ fn a_new_context_shapes_the_same() {
     let mut fixture = fixture();
     let mut layout = Layout::new();
     fixture.span(&mut layout, &families_style(&LATIN_HEBREW), "office AVAIL");
-    let advances = fixture.advances(&layout);
     let run = ShapedRunId::new(0);
     let piece = fixture.reshape(&layout, run, ClusterId::new(2)..ClusterId::new(9));
 
@@ -271,7 +270,6 @@ fn a_new_context_shapes_the_same() {
     let others = fixture.cx.shaping().plan_count();
     assert!(others > 0);
 
-    assert_eq!(fixture.advances(&layout), advances);
     let again = fixture.reshape(&layout, run, ClusterId::new(2)..ClusterId::new(9));
     assert_eq!(again.words.as_slice(), piece.words.as_slice());
     assert_eq!(again.sidecar.as_slice(), piece.sidecar.as_slice());

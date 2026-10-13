@@ -61,7 +61,7 @@ fn vertical_line_layout(
 
 /// Each cluster's glyphs as drawn, with the cluster's advance.
 fn drawn_clusters(fixture: &mut Fixture, layout: &Layout) -> Vec<Vec<Drawn>> {
-    let advances = fixture.advances(layout);
+    let advances = fixture.advances();
     let shaped = layout.shaped().text(FirstLineVariant::Standard);
     shaped
         .glyphs
@@ -292,7 +292,7 @@ fn a_mark_gives_its_blank_back_down_a_vertical_line_in_the_fonts_vhal() {
             ..ComputedBlockStyle::new(&style)
         };
         fixture.build_spans(&mut layout, &block, &[(&style, text)]);
-        (fixture.advances(&layout), layout)
+        (fixture.advances(), layout)
     };
     for (text, halved) in [("漢「「漢", 2), ("漢」」漢", 1), ("漢」「漢", 2)] {
         let (advances, layout) = set(&mut fixture, &VHAL, Upright, text);

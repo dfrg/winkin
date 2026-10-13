@@ -105,12 +105,27 @@ pub(super) fn prepare_boxes(
             || boxes.has(BoxFlags::HAS_EDGES)
             || !matches!(boxes.align, VerticalAlign::Baseline)
             || shift != LayoutUnit::ZERO
-            || boxes.has(BoxFlags::TRIMS_TEXT_BOX)
+            || boxes.has(BoxFlags::TRIMS_OVER)
+            || boxes.has(BoxFlags::TRIMS_UNDER)
             || empty
             || !same_metrics;
         if kept {
+            // `text-box-trim` brings its trimmed edges to `text-box-edge`'s,
+            // as Chrome's `InlineBoxState::AdjustEdges` does.
+            let (trims_over, trims_under, edge) = boxes.text_box();
             let (ascent, descent) = own.map_or((LayoutUnit::ZERO, LayoutUnit::ZERO), |metrics| {
-                (metrics.ascent, metrics.descent)
+                (
+                    if trims_over {
+                        metrics.over_edge(edge)
+                    } else {
+                        metrics.ascent
+                    },
+                    if trims_under {
+                        metrics.under_edge(edge)
+                    } else {
+                        metrics.descent
+                    },
+                )
             });
             let (over, under) = boxes.across;
             out.rare_mut().kept_boxes.boxes.push_bounded(

@@ -131,3 +131,61 @@ fn measuring_allocates_nothing_warm() {
         assert_eq!(warm, 0, "{how:?}: a second layout allocated");
     }
 }
+
+/// `text` in paragraphs of Test Latin, its first line larger, with no
+/// atomic inline, no float and no percentage edge: content that keeps no
+/// shaped advances.
+fn plain(layout: &mut Layout, cx: &mut Context, text: &str) {
+    let families = [FontFamilyName::named("Test Latin")];
+    let root = ComputedStyle {
+        font: FontGroup {
+            families: &families,
+            ..FontGroup::INITIAL
+        },
+        ..ComputedStyle::initial()
+    };
+    let first_line = ComputedStyle {
+        font: FontGroup {
+            size: 20.0,
+            ..root.font
+        },
+        ..root
+    };
+    let block = ComputedBlockStyle {
+        first_line: Some(&first_line),
+        ..ComputedBlockStyle::new(&root)
+    };
+    let mut b = layout.builder(cx, NodeKey(0), &block, BuildOptions::default());
+    for (at, paragraph) in (0..).zip(text.split('\n')) {
+        b.text(NodeKey(2 * at), paragraph);
+        b.line_break(NodeKey(2 * at + 1));
+    }
+    assert!(b.finish().is_complete());
+}
+
+/// Content that keeps its shaped advances, having an atomic inline, and
+/// content that keeps none, built into one layout in turn, longer and
+/// shorter, allocates nothing warm: the advances keep their capacity, or
+/// the context's room holds them. So for a layout first built with either.
+#[test]
+fn content_keeping_and_dropping_advances_in_turn_allocates_nothing_warm() {
+    let how = ("Test Latin", "en");
+    let line = "To office AVAIL fit, flat Quiet: 1,000 times ffi.";
+    let (long, short) = (text(line, 12), text(line, 5));
+    let mut cx = Context::new(collection());
+    for plain_first in [true, false] {
+        let mut layout = Layout::new();
+        let turn = |layout: &mut Layout, cx: &mut Context| {
+            if plain_first {
+                plain(layout, cx, &long);
+            }
+            prose(layout, cx, how, &short);
+            plain(layout, cx, &short);
+            prose(layout, cx, how, &long);
+            plain(layout, cx, &long);
+        };
+        turn(&mut layout, &mut cx);
+        let warm = count_allocations(|| turn(&mut layout, &mut cx));
+        assert_eq!(warm, 0, "plain first: {plain_first}");
+    }
+}

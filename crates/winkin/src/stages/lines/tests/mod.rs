@@ -253,11 +253,19 @@ fn check(layout: &Layout) {
         paragraph.is_none() || clamped,
         "every paragraph with clusters has its lines"
     );
-    assert_eq!(
-        untrimmed_end(&lines.block),
-        top,
-        "the block ends after its last line"
-    );
+    // A clearing break may hold the end lower, below the floats it clears.
+    if layout.content().clearances().is_empty() {
+        assert_eq!(
+            untrimmed_end(&lines.block),
+            top,
+            "the block ends after its last line"
+        );
+    } else {
+        assert!(
+            untrimmed_end(&lines.block) >= top,
+            "the block ends after its last line"
+        );
+    }
     assert_eq!(lines.shift_end(), shifts, "every shift is a line's");
     // Every float is placed once, in reading order. Each line's come in the
     // order its text reaches them, beside before below. Those no line

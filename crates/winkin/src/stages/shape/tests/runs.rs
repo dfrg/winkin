@@ -153,7 +153,7 @@ fn clusters_not_shaped_are_runs_of_their_own() {
     b.line_break(NodeKey(5));
     b.text(NodeKey(6), "h");
     assert!(b.finish().is_complete());
-    check(&layout);
+    check(&layout, &fixture.cx);
     let starts: Vec<usize> = layout
         .shaped()
         .text(FirstLineVariant::Standard)
@@ -169,14 +169,14 @@ fn clusters_not_shaped_are_runs_of_their_own() {
         .glyphs
         .word(ClusterId::new(6));
     assert_ne!(shy, GlyphWord::EMPTY, "the soft hyphen is shaped");
-    assert_eq!(fixture.advances(&layout)[6], 0, "and hidden");
+    assert_eq!(fixture.advances()[6], 0, "and hidden");
     let lri = layout
         .shaped()
         .text(FirstLineVariant::Standard)
         .glyphs
         .word(ClusterId::new(10));
     assert_ne!(lri, GlyphWord::EMPTY, "the isolate is shaped");
-    assert_eq!(fixture.advances(&layout)[10], 0, "and hidden");
+    assert_eq!(fixture.advances()[10], 0, "and hidden");
 }
 
 /// A default-ignorable the caller wrote is shaped with the text around it
@@ -191,9 +191,9 @@ fn a_kern_survives_a_default_ignorable_the_caller_wrote() {
     let mut layout = Layout::new();
     let style = sized(&LATIN_HEBREW, 100.0);
     fixture.span(&mut layout, &style, "AV");
-    let kerned = fixture.advances(&layout)[0];
+    let kerned = fixture.advances()[0];
     fixture.span(&mut layout, &style, "A");
-    let apart = fixture.advances(&layout)[0];
+    let apart = fixture.advances()[0];
     assert!(kerned < apart, "{kerned} against {apart}");
     let modes = [
         WhiteSpaceCollapse::Collapse,
@@ -210,7 +210,7 @@ fn a_kern_survives_a_default_ignorable_the_caller_wrote() {
             style.text.white_space_collapse = mode;
             fixture.span(&mut layout, &style, &format!("A{ignorable}V"));
             assert_eq!(
-                fixture.advances(&layout)[0],
+                fixture.advances()[0],
                 kerned,
                 "U+{:04X} under {mode:?}",
                 u32::from(ignorable)
@@ -227,8 +227,8 @@ fn a_kern_survives_a_default_ignorable_the_caller_wrote() {
     b.break_opportunity();
     b.text(NodeKey(1), "V");
     b.finish();
-    check(&layout);
-    assert_eq!(fixture.advances(&layout)[0], apart, "a <wbr> parts them");
+    check(&layout, &fixture.cx);
+    assert_eq!(fixture.advances()[0], apart, "a <wbr> parts them");
 }
 
 /// A ZWNJ parts a kern only where its white space is kept: Chrome 153 kerns
@@ -243,9 +243,9 @@ fn a_zero_width_non_joiner_parts_a_kern_only_where_white_space_is_kept() {
     let font = latin_hebrew();
     let style = sized(&LATIN_HEBREW, 100.0);
     fixture.span(&mut layout, &style, "AV");
-    let kerned = fixture.advances(&layout)[0];
+    let kerned = fixture.advances()[0];
     fixture.span(&mut layout, &style, "A");
-    let apart = fixture.advances(&layout)[0];
+    let apart = fixture.advances()[0];
     for (mode, parted) in [
         (WhiteSpaceCollapse::Collapse, false),
         (WhiteSpaceCollapse::PreserveBreaks, false),
@@ -257,7 +257,7 @@ fn a_zero_width_non_joiner_parts_a_kern_only_where_white_space_is_kept() {
         style.text.white_space_collapse = mode;
         fixture.span(&mut layout, &style, "A\u{200C}V");
         let expected = if parted { apart } else { kerned };
-        assert_eq!(fixture.advances(&layout)[0], expected, "{mode:?}");
+        assert_eq!(fixture.advances()[0], expected, "{mode:?}");
         fixture.span(&mut layout, &style, "f\u{200C}i");
         assert_eq!(ids(&layout)[1], [font.glyph('i')], "{mode:?}: no ligature");
     }
@@ -283,6 +283,7 @@ fn runs_end_at_fonts_and_shaping_breaks() {
     };
     let mut whole = Layout::new();
     fixture.span(&mut whole, &style, "AVA");
+    let kerned = fixture.advances();
     let mut layout = Layout::new();
     fixture.spans(&mut layout, &style, &[(&style, "A"), (&painted, "VA")]);
     assert_eq!(
@@ -290,8 +291,7 @@ fn runs_end_at_fonts_and_shaping_breaks() {
         1,
         "a painting box is shaped across"
     );
-    let kerned = fixture.advances(&whole);
-    assert_eq!(fixture.advances(&layout), kerned, "and the kern survives");
+    assert_eq!(fixture.advances(), kerned, "and the kern survives");
     assert_eq!(kerned[0], (500 - 100) * 16 * 65_536 / 1000);
     fixture.spans(&mut layout, &style, &[(&style, "A"), (&padded, "VA")]);
     let starts: Vec<usize> = layout
@@ -302,11 +302,7 @@ fn runs_end_at_fonts_and_shaping_breaks() {
         .map(|(_, _, clusters)| clusters.start.get())
         .collect();
     assert_eq!(starts, [0, 1], "a padded box stops shaping");
-    assert_eq!(
-        fixture.advances(&layout)[0],
-        8 * 65_536,
-        "and the kern is lost"
-    );
+    assert_eq!(fixture.advances()[0], 8 * 65_536, "and the kern is lost");
     // A Han fallback run between Latin ones: three runs, three fonts.
     let ahem = families_style(&AHEM_FAMILY);
     fixture.span(&mut layout, &ahem, "ab漢字cd");
@@ -334,7 +330,7 @@ fn a_first_letter_is_shaped_across_whatever_its_bidi() {
     let style = families_style(&LATIN_HEBREW);
     let mut whole = Layout::new();
     fixture.text(&mut whole, &style, "AVA");
-    let kerned = fixture.advances(&whole);
+    let kerned = fixture.advances();
     let isolated = ComputedStyle {
         bidi: BidiGroup {
             unicode_bidi: UnicodeBidi::Isolate,
@@ -376,7 +372,7 @@ fn a_first_letter_is_shaped_across_whatever_its_bidi() {
             "{:?}",
             letter.bidi
         );
-        assert_eq!(fixture.advances(&layout), kerned, "{:?}", letter.bidi);
+        assert_eq!(fixture.advances(), kerned, "{:?}", letter.bidi);
     }
 }
 

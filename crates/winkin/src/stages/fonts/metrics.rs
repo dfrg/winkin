@@ -53,7 +53,10 @@ use crate::FontInstance;
 use crate::config::LineMetricsSource;
 use crate::font::FontMetricsProvider;
 use crate::stages::content::Content;
-use crate::style::{AdjustMetric, DominantBaseline, FontVariantPosition, InitialLetterAlign};
+use crate::style::{
+    AdjustMetric, DominantBaseline, FontVariantPosition, InitialLetterAlign, TextBoxEdge,
+    TextEdgeOver, TextEdgeUnder,
+};
 use crate::unit::{LayoutUnit, TextUnit};
 
 /// The line metrics a font has where it gives none: 0.8 em above, 0.2 below
@@ -167,6 +170,47 @@ pub(crate) struct FontLineMetrics {
     /// vertical line also takes as its `ic`: nothing reads the vertical
     /// advance.
     pub(super) ideographic_advance: TextUnit,
+}
+
+impl FontLineMetrics {
+    /// Returns how far `edge`'s over edge stands over the baseline.
+    ///
+    /// - `text`, `cap` and `ex` give the ascent, cap height and x-height, as
+    ///   Chrome's `AdjustEdges` reads `FixedAscent`, `FixedCapHeight` and
+    ///   `FixedXHeight`.
+    /// - Beyond Chrome, which parses neither, `ideographic` gives the top of
+    ///   the ideographic em box. `ideographic-ink` gives the same, since font
+    ///   metrics carry no character face.
+    ///
+    /// Cap height and x-height stand over the alphabetic baseline. In a
+    /// vertical line set on its central baseline, the alphabetic offset comes
+    /// off them. Chrome 153 trims a 40 px line of 20 px Ahem to 30 at its
+    /// start and 26 at its end under `cap alphabetic` in `vertical-rl`.
+    pub(crate) fn over_edge(&self, edge: TextBoxEdge) -> LayoutUnit {
+        let alphabetic = self.alphabetic;
+        match edge.over {
+            TextEdgeOver::Text => self.ascent,
+            TextEdgeOver::Cap => self.cap_height - alphabetic,
+            TextEdgeOver::Ex => self.x_height - alphabetic,
+            // The ideographic baseline is already an offset from the lines'.
+            TextEdgeOver::Ideographic | TextEdgeOver::IdeographicInk => {
+                self.em_over + self.em_under - self.ideographic
+            }
+        }
+    }
+
+    /// Returns how far `edge`'s under edge stands under the baseline.
+    ///
+    /// `text` gives the descent and `alphabetic` the alphabetic baseline, as
+    /// Chrome's `AdjustEdges` reads them. Beyond Chrome, `ideographic` and
+    /// `ideographic-ink` give the bottom of the ideographic em box.
+    pub(crate) fn under_edge(&self, edge: TextBoxEdge) -> LayoutUnit {
+        match edge.under {
+            TextEdgeUnder::Text => self.descent,
+            TextEdgeUnder::Alphabetic => self.alphabetic,
+            TextEdgeUnder::Ideographic | TextEdgeUnder::IdeographicInk => self.ideographic,
+        }
+    }
 }
 
 /// A font's metrics in ems at an instance's coordinates, before any size.
@@ -328,6 +372,12 @@ impl UnscaledMetrics {
                 .map(|advance| f32::from(advance) / em),
             em,
         }
+    }
+
+    /// Returns the advance of the font's space at `px`, 16.16: a quarter of
+    /// an em, a common space's width, where it gives none.
+    pub(super) fn space(&self, px: f32) -> TextUnit {
+        TextUnit::from_px(self.space.unwrap_or(0.25) * px)
     }
 
     /// Returns the aspect `font-size-adjust` holds: how much of the em
@@ -613,9 +663,7 @@ impl FontLineMetrics {
             strikeout_thickness,
             superscript: px(unscaled.superscript.unwrap_or(-0.34)),
             subscript: px(unscaled.subscript.unwrap_or(0.22)),
-            // A quarter of an em where the font has no space to read, a
-            // common space's width.
-            space: TextUnit::from_px(unscaled.space.unwrap_or(0.25) * size),
+            space: unscaled.space(size),
             ideographic_advance: TextUnit::from_px(
                 unscaled.ideographic_width.unwrap_or(1.0) * size,
             ),

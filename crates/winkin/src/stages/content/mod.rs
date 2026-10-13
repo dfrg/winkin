@@ -827,6 +827,15 @@ impl Content {
             && !self.flags.contains(ContentFlags::INITIAL_LETTER)
     }
 
+    /// Whether measuring again with new box geometry can change anything:
+    /// the content has an atomic inline, a float, or a percentage margin or
+    /// padding.
+    pub(crate) fn can_measure_again(&self) -> bool {
+        self.flags.contains(ContentFlags::PERCENTAGES)
+            || !self.atomics().is_empty()
+            || !self.floats().is_empty()
+    }
+
     /// Returns a search for the atomic inlines keyed `key`, round from
     /// `from`.
     pub(crate) fn keyed_atomics(&self, key: NodeKey, from: AtomicId) -> KeyedAtomics {

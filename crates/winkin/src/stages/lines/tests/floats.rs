@@ -710,6 +710,61 @@ fn the_lines_after_a_trimmed_first_are_asked_where_they_stand() {
     }
 }
 
+/// A clearing break keeps a block's trimmed end below the floats it clears,
+/// even where it needs no clearance past its line.
+///
+/// Chrome adds the clearance after `text-box-trim`
+/// (`text-box-trim-float-clear-br-002`). Here 20 px Ahem lines trimmed at
+/// `alphabetic` end at 16. A float reaching to 20 holds the end at 20, and
+/// one reaching to 10 lets the trim stand. Without the break, the trim
+/// stands as well.
+#[test]
+fn a_clearing_break_keeps_a_trimmed_end_below_the_floats() {
+    use crate::build::Clear;
+    use crate::style::{TextBoxEdge, TextEdgeUnder};
+    let mut fixture = fixture();
+    let mut layout = Layout::new();
+    let style = ComputedStyle {
+        line: LineGroup {
+            height: LineHeight::Px(20.0),
+            ..LineGroup::INITIAL
+        },
+        ..ahem(20.0)
+    };
+    let block = ComputedBlockStyle {
+        text_box_trim: TextBoxTrim::TrimEnd,
+        text_box_edge: TextBoxEdge {
+            under: TextEdgeUnder::Alphabetic,
+            ..TextBoxEdge::AUTO
+        },
+        ..ComputedBlockStyle::new(&style)
+    };
+    let float = |bottom| Held {
+        key: NodeKey(9),
+        side: FloatSide::Left,
+        left: 0.0,
+        right: 20.0,
+        top: 0.0,
+        bottom,
+    };
+    for (bottom, clears, end) in [
+        (20.0, true, 20.0),
+        (18.0, true, 18.0),
+        (10.0, true, 16.0),
+        (20.0, false, 16.0),
+    ] {
+        fixture.build(&mut layout, &block, |b| {
+            b.text(NodeKey(1), "XX");
+            if clears {
+                b.line_break_clearing(NodeKey(2), Clear::Both);
+            }
+        });
+        let mut host = Host::new(200.0).reaching(float(bottom));
+        fixture.lay_out_with(&mut layout, Area::new(200.0), &mut host);
+        assert_eq!(layout.metrics().block_end, end, "{bottom} {clears}");
+    }
+}
+
 /// A block's initial letter is reported to the host once its first line is
 /// kept, as Chrome's `CreateExclusionSpaceForInitialLetterBox` makes it.
 ///

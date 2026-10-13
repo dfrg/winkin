@@ -154,7 +154,7 @@ pub(crate) fn measure_text<'f>(
     out.word_spacing_rule = WordSpacingRule::new(input.word_spacing, input.content);
     if let Some(generated_input) = new_fonts {
         out.text_metrics.clear();
-        text_metrics(input, &mut out.text_metrics);
+        text_metrics(input, generated_input.block_space, &mut out.text_metrics);
         if let Some(generated) = &mut out.generated {
             generated.clear();
         }
@@ -633,7 +633,7 @@ pub(crate) struct InitialLetter {
     pub(super) start_margin: LayoutUnit,
     pub(super) end_margin: LayoutUnit,
     /// Its border box around the letter's baseline.
-    extent: Extent,
+    pub(crate) extent: Extent,
     /// How far the letter's baseline is below the top of the first line's
     /// box, before a raised letter moves the line's text down.
     pub(super) baseline: LayoutUnit,

@@ -52,8 +52,6 @@ mod tests;
 #[cfg(test)]
 pub(crate) use tests::{primary, primary_id};
 
-#[cfg(test)]
-use alloc::vec::Vec;
 use core::fmt;
 use core::ops::Range;
 
@@ -77,8 +75,6 @@ use crate::stages::fragments::{self, Fragments, PlaceInput, ReadInput};
 use crate::stages::lines::{self, Area, BreakInput, Exclusions, LineId};
 use crate::stages::measure::{self, IntrinsicSizes, MeasureInput, Measured};
 use crate::stages::shape::{self, ShapeInput, ShapeSession, Shaped};
-#[cfg(test)]
-use crate::style::FirstLineVariant;
 use crate::style::{ComputedBlockStyle, Direction, TextAlign, TextAlignLast};
 use crate::unit::LayoutUnit;
 
@@ -96,8 +92,6 @@ pub(crate) use ruby::AnnotationRuns;
 pub use run::{Cluster, FontInstance, Glyph, TextRun};
 // The walk a text run's carets and marks read, and the walks of a run's
 // glyphs and clusters, which the path and the selection hold as they read.
-#[cfg(test)]
-use crate::unit::InlineLayoutUnit;
 use places::Places;
 pub(crate) use run::{RunClusters, RunGlyphs};
 
@@ -161,7 +155,9 @@ impl PreparedStages {
     /// and measurement.
     ///
     /// Each uses the caches, scratch and config of `cx`. Shaping's advance
-    /// buffers pass to measurement, which turns them into prefix sums.
+    /// buffers pass to measurement, which turns them into prefix sums. The
+    /// stages keep the advances only where the content has something
+    /// [`measure`](Self::measure) can change.
     /// Records in `report` how many fonts and glyphs were dropped because a
     /// table was full.
     pub(crate) fn prepare(
@@ -202,6 +198,8 @@ impl PreparedStages {
             &mut self.shaped,
         );
         self.measure_stage(content, cx, provider, true);
+        let keep = content.can_measure_again();
+        self.shaped.settle_advances(cx.shaping(), keep);
         cx.finish_build(content.size());
     }
 
@@ -912,18 +910,6 @@ impl Layout {
     /// text item back through, as a painter does.
     pub(crate) fn read_input(&self) -> ReadInput<'_> {
         ReadInput::new(self.stages(), &self.lines, &self.fragments)
-    }
-
-    /// Returns each cluster's advance as shaping hands it on, for tests.
-    #[cfg(test)]
-    pub(crate) fn shaped_advances(&self) -> Vec<InlineLayoutUnit> {
-        self.stages
-            .shaped
-            .text(FirstLineVariant::Standard)
-            .advances
-            .iter()
-            .map(|&advance| InlineLayoutUnit::from_text(advance))
-            .collect()
     }
 }
 

@@ -9,8 +9,9 @@
 //! - Stops are multiples of `tab-size` from the block's content edge.
 //! - A `tab-size` in spaces counts the block container's space: its primary
 //!   font's U+0020 with its letter-spacing and word-spacing, as Chrome's
-//!   `LineBreaker` sizes a tab in `InlineNode::FontForTab`. The count is the
-//!   tab's own style's.
+//!   `LineBreaker` sizes a tab in `InlineNode::FontForTab`. Where the primary
+//!   maps no space, the first listed font that maps one gives it. The count
+//!   is the tab's own style's.
 //! - A tab reaches the first stop past where it starts, or the one after if
 //!   that is nearer than half a space.
 //! - With `tab-size: 0` a tab is as wide as its letter-spacing, which may be

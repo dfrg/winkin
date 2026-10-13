@@ -382,3 +382,68 @@ fn a_decoration_gives_its_fonts_own_lines() {
         (2.0, 4.0)
     );
 }
+
+/// A bar's font size is the computed one, which `font-size-adjust` leaves,
+/// as Chrome's `ComputeDecorationThickness` reads `ComputedFontSize`
+/// (`text-decoration-thickness-percent-001`). Ahem at 20 px with its
+/// x-height held at 0.25 is set at 6.25 px, and its `auto` underline stays
+/// 2 px thick.
+#[test]
+fn a_decoration_is_as_thick_as_the_computed_size_gives() {
+    use crate::style::{AdjustMetric, FontSizeAdjust};
+    let mut cx = context();
+    let mut layout = Layout::new();
+    let mut root = sized(&AHEM_FAMILY, 20.0);
+    root.font.size_adjust = FontSizeAdjust::Hold {
+        metric: AdjustMetric::ExHeight,
+        value: 0.25,
+    };
+    build(&mut cx, &mut layout, &ComputedBlockStyle::new(&root), |b| {
+        b.text(NodeKey(1), "X X");
+    });
+    layout.break_lines(&mut cx, Area::new(600.0), &mut NoExclusions);
+    let line = layout.line(0).expect("a line");
+    assert_eq!(line.metrics().width, 18.75, "set at the adjusted size");
+    let bar = line
+        .paints(|_| Decorates::BeforeText)
+        .find_map(|item| match item {
+            Paint::DecorationBeforeText(bar) => Some(bar),
+            _ => None,
+        })
+        .expect("a bar");
+    assert_eq!((bar.font_size(), bar.underline_thickness()), (20.0, 2.0));
+}
+
+/// A line's background spans the block's content area, not its line box, as
+/// Chrome paints a `::first-line` background: on 60 px lines, Ahem at 20 px
+/// is painted from 20 to 40, and at 40 px in the first line's font from 10 to
+/// 50, as in `text-box-trim-first-line-pseudo-003`.
+#[test]
+fn a_lines_background_spans_the_blocks_content_area() {
+    let mut cx = context();
+    let mut layout = Layout::new();
+    let lined = |size| ComputedStyle {
+        line: LineGroup {
+            height: LineHeight::Px(60.0),
+            ..LineGroup::INITIAL
+        },
+        ..sized(&AHEM_FAMILY, size)
+    };
+    let (root, first_line) = (lined(20.0), lined(40.0));
+    for (first, expected) in [(None, (20.0, 40.0)), (Some(&first_line), (10.0, 50.0))] {
+        let block = ComputedBlockStyle {
+            first_line: first,
+            ..ComputedBlockStyle::new(&root)
+        };
+        build(&mut cx, &mut layout, &block, |b| b.text(NodeKey(1), "XX"));
+        layout.break_lines(&mut cx, Area::new(400.0), &mut NoExclusions);
+        let line = layout.line(0).expect("a line");
+        let background = line
+            .paints(|_| Decorates::None)
+            .find_map(|item| match item {
+                Paint::Background(background) => Some(background.block()),
+                _ => None,
+            });
+        assert_eq!(background, Some(across(expected.0, expected.1)));
+    }
+}

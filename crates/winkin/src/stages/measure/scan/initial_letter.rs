@@ -152,8 +152,13 @@ pub(super) fn initial_letter(
     let start_room = InlineLayoutUnit::from_layout(room_start + kern) - outside_start;
     let end_room = InlineLayoutUnit::from_layout(room_end) - outside_end;
     let exclusion_width = (room_start + kern + width + room_end).max(LayoutUnit::ZERO);
-    // Across the lines.
-    let (margin_over, margin_under) = boxes.margin_across;
+    // Across the lines, from the block-start side. Its margin there is the
+    // under one where lines flip.
+    let (margin_before, margin_after) = if writing_mode.flips_lines() {
+        (boxes.margin_across.1, boxes.margin_across.0)
+    } else {
+        boxes.margin_across
+    };
     let above = boxes.across.0 + over;
     let below = under + boxes.across.1;
     let block = above + below;
@@ -173,20 +178,26 @@ pub(super) fn initial_letter(
             baseline =
                 baseline + em_under(nodes.text_facts(NodeId::BLOCK, variant)) - em_under(text);
         }
-        baseline - above + margin_over
+        baseline - above + margin_before
     } else {
-        line.times_whole(letter.sink) - block + margin_over
+        line.times_whole(letter.sink) - block + margin_before
     };
-    let exclusion_top = (border_top - margin_over).min(LayoutUnit::ZERO);
-    let exclusion_bottom = border_top + block + margin_under;
+    let exclusion_top = (border_top - margin_before).min(LayoutUnit::ZERO);
+    let exclusion_bottom = border_top + block + margin_after;
+    // The ink is measured about the glyphs' alphabetic baseline, which a
+    // centred vertical line sets under its central one. The box's baseline
+    // is its line's, so the glyphs land where their ink was placed.
+    let alphabetic = input
+        .primary(text)
+        .map_or(LayoutUnit::ZERO, |metrics| metrics.alphabetic);
     Some(InitialLetter {
         node,
         start_room,
         end_room,
         start_margin,
         end_margin: margin_end,
-        extent: Extent::new(above, below),
-        baseline: border_top + above,
+        extent: Extent::new(above - alphabetic, below + alphabetic),
+        baseline: border_top + above - alphabetic,
         raise,
         exclusion_top,
         exclusion_height: (exclusion_bottom - exclusion_top).max(LayoutUnit::ZERO),

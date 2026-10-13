@@ -25,8 +25,9 @@ use crate::data::{Id, IdRange};
 use crate::style::{
     BaseDirection, BoxDecorationBreak, ComputedStyle, Direction, DominantBaseline,
     FirstLineVariant, FontVariantPosition, HangingPunctuation, Hyphens, LengthPercentage,
-    LineHeight, OverflowWrap, Sides, TextBoxTrim, TextCombineUpright, TextJustify, TextOrientation,
-    TextWrapMode, UnicodeBidi, VerticalAlign, WritingMode,
+    LineHeight, OverflowWrap, Sides, TextBoxEdge, TextBoxTrim, TextCombineUpright, TextEdgeOver,
+    TextEdgeUnder, TextJustify, TextOrientation, TextWrapMode, UnicodeBidi, VerticalAlign,
+    WritingMode,
 };
 use crate::unit::{LayoutUnit, TextUnit};
 
@@ -435,12 +436,32 @@ fn box_is(
             && flag(BoxFlags::CLONES)
                 == (style.edges.decoration_break == BoxDecorationBreak::Clone)
             && flag(BoxFlags::RTL) == (style.bidi.direction == Direction::Rtl)
-            && flag(BoxFlags::TRIMS_TEXT_BOX) == (style.line.text_box_trim != TextBoxTrim::None)
+            && trims_text_box(facts.text_box(), style.line.text_box_trim, style.line.text_box_edge)
             && flag(BoxFlags::INITIAL_LETTER) == style.line.initial_letter.is_set()
             && facts.breaks_shaping(true) == edge_breaks_shaping(style, writing_mode, true)
             && facts.breaks_shaping(false) == edge_breaks_shaping(style, writing_mode, false),
         "{at:?}: {facts:?}"
     );
+}
+
+/// Whether a box's trims and edges, `(over, under, edge)`, are the ones
+/// `trim` and `edge` set, read from the style directly.
+fn trims_text_box(facts: (bool, bool, TextBoxEdge), trim: TextBoxTrim, edge: TextBoxEdge) -> bool {
+    let (over, under) = trim.sides();
+    if !over && !under {
+        return facts == (false, false, TextBoxEdge::AUTO);
+    }
+    let kept = TextBoxEdge {
+        over: match edge.over {
+            TextEdgeOver::IdeographicInk => TextEdgeOver::Ideographic,
+            other => other,
+        },
+        under: match edge.under {
+            TextEdgeUnder::IdeographicInk => TextEdgeUnder::Ideographic,
+            other => other,
+        },
+    };
+    facts == (over, under, kept)
 }
 
 /// Whether a box's opening (`opens`) or closing edge stops shaping, read

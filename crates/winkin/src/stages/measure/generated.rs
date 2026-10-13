@@ -8,17 +8,22 @@ use crate::stages::analysis::RunOrientation;
 use crate::stages::content::{HyphenStrings, TextFactsId, TextFlags};
 use crate::stages::fonts::{Generated, GeneratedFonts, UsedFontId};
 use crate::stages::shape::{self, ShapeSession, ShapingKey, SidecarGlyph, SidecarGlyphId};
-use crate::unit::{InlineLayoutUnit, LayoutUnit};
+use crate::unit::{InlineLayoutUnit, LayoutUnit, TextUnit};
 use crate::work;
 
 use super::{MeasureInput, ShapedGeneratedId};
 
-/// What the build chose for its generated texts, which the context keeps
-/// until the next build: their fonts, and the hyphen strings they say.
+/// What the build's font selection hands measurement, which the context
+/// keeps until the next build: the generated texts' fonts and the hyphen
+/// strings they say, and the space a block whose primary font maps none
+/// counts its tabs in.
 #[derive(Copy, Clone)]
 pub(crate) struct GeneratedInput<'a> {
     pub(crate) fonts: &'a GeneratedFonts,
     pub(crate) strings: &'a HyphenStrings,
+    /// The advance of U+0020 in the font a space falls back to among the
+    /// block's listed fonts, where its primary font maps none.
+    pub(crate) block_space: Option<TextUnit>,
 }
 
 /// The shaped items of one generated text, one per used font, from the left

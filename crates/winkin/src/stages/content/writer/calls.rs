@@ -202,13 +202,19 @@ impl ContentWriter<'_> {
             return;
         };
         let nodes = &self.content.nodes;
-        let position = side.unwrap_or_else(|| {
-            self.content
-                .facts
-                .box_facts(nodes.box_facts(container.container, FirstLineVariant::Standard))
-                .ruby
-                .position
-        });
+        let container_side = |variant| {
+            side.unwrap_or_else(|| {
+                self.content
+                    .facts
+                    .box_facts(nodes.box_facts(container.container, variant))
+                    .ruby
+                    .position
+            })
+        };
+        let position = container_side(FirstLineVariant::Standard);
+        // On the first line the side is the container's there, which
+        // `::first-line` may change.
+        let first_position = container_side(FirstLineVariant::FirstLine);
         // Everything open inside it closes.
         while self
             .scratch
@@ -219,14 +225,22 @@ impl ContentWriter<'_> {
         {
             self.pop();
         }
-        let style = ComputedStyle {
-            ruby: RubyGroup {
-                position,
-                ..style.ruby
-            },
-            ..*style
+        fn sided<'s>(style: &ComputedStyle<'s>, position: RubyPosition) -> ComputedStyle<'s> {
+            ComputedStyle {
+                ruby: RubyGroup {
+                    position,
+                    ..style.ruby
+                },
+                ..*style
+            }
+        }
+        let first_line = match first_line {
+            Some(first_line) => Some(sided(first_line, first_position)),
+            None if first_position != position => Some(sided(style, first_position)),
+            None => None,
         };
-        self.open(ContainerKind::Annotation, key, &style, first_line);
+        let style = sided(style, position);
+        self.open(ContainerKind::Annotation, key, &style, first_line.as_ref());
     }
 
     /// Returns where on the stack the ruby container an annotation opening

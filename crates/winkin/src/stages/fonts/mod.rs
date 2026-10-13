@@ -125,6 +125,11 @@ pub(crate) struct FontScratch {
     /// The generated texts' fonts, which measurement shapes the generated
     /// texts in as the build finishes. Nothing reads them after the build.
     generated: GeneratedFonts,
+    /// The advance of U+0020 in the font a space falls back to among the
+    /// block's listed fonts, where its primary font maps none: what a
+    /// `tab-size` in spaces counts there, as Chrome sizes such a tab.
+    /// Measurement reads it as the build finishes; nothing reads it after.
+    block_space: Option<TextUnit>,
     /// The run loop's.
     runs: RunScratch,
 }
@@ -136,6 +141,7 @@ impl FontScratch {
             used_index: HashTable::new(),
             hyphenated: Vec::new(),
             generated: GeneratedFonts::new(),
+            block_space: None,
             runs: RunScratch::new(),
         }
     }
@@ -145,6 +151,7 @@ impl FontScratch {
         self.used_index.clear();
         self.hyphenated.clear();
         self.generated.clear();
+        self.block_space = None;
         self.runs.clear();
     }
 
@@ -152,10 +159,21 @@ impl FontScratch {
     pub(crate) fn generated(&self) -> &GeneratedFonts {
         &self.generated
     }
+
+    /// Returns the advance of the space a `tab-size` in spaces counts in the
+    /// last build, where the block's primary font maps no U+0020: that of
+    /// the first of the block's listed fonts that maps one, at the block's
+    /// used size.
+    ///
+    /// `None` where the primary maps a space, whose own advance counts, or
+    /// where no listed font maps one.
+    pub(crate) fn block_space(&self) -> Option<TextUnit> {
+        self.block_space
+    }
 }
 
 heap_bytes! {
-    FontScratch { used_index, hyphenated, generated, runs }
+    FontScratch { used_index, hyphenated, generated, runs; block_space }
 }
 
 /// Selects fonts for the content of `input` into `out`.
@@ -189,6 +207,7 @@ pub(crate) fn select_fonts(
         used_index,
         hyphenated,
         generated,
+        block_space,
         runs: run_scratch,
     } = scratch;
     let Fonts {
@@ -211,7 +230,7 @@ pub(crate) fn select_fonts(
         wanted,
     };
     let sel = &mut selecting;
-    resolve_requests(input, default_language, sel, resolutions);
+    *block_space = resolve_requests(input, default_language, sel, resolutions);
     let source = content.text(FirstLineVariant::Standard).cursor();
     let text_in = select::Input {
         stage: input,
@@ -256,12 +275,15 @@ fn ellipsis_texts(content: &Content) -> Option<(TextFactsId, TextFactsId)> {
 ///
 /// Every request is resolved before any run, so a run's fallback when the
 /// used fonts fill is always there.
+///
+/// Returns the advance of the space the block counts a `tab-size` in, where
+/// its primary font maps none (see [`FontScratch::block_space`]).
 fn resolve_requests(
     input: &FontInput<'_>,
     default_language: DefaultLanguage,
     sel: &mut Selecting<'_>,
     resolutions: &mut Table<FontRequestId, FontResolution>,
-) {
+) -> Option<TextUnit> {
     let Selecting {
         cx, used: interner, ..
     } = sel;
@@ -277,10 +299,22 @@ fn resolve_requests(
     // The grid an initial letter is sized to, made from the paragraph's
     // primary font once it is sized.
     let mut grid: Option<InitialLetterGrid> = None;
+    // The block's own text, whose space a `tab-size` in spaces counts.
+    let block = facts.text_request(
+        content
+            .nodes
+            .text_facts(NodeId::BLOCK, FirstLineVariant::Standard),
+    );
+    let mut block_space = None;
     resolutions.reserve(facts.request_count());
     for (id, request) in facts.requests() {
         let language = default_language.fonts_language(content.languages.get(request.language));
         let primary = cx.primary_font(request.font.families, request, language);
+        let space_font = if id == block && primary.as_ref().is_some_and(maps_no_space) {
+            cx.space_font(request.font.families, request, language)
+        } else {
+            None
+        };
         let mut caches = cx.font_caches();
         let mut resolution = FontResolution::new(request.font.computed_size(), request.upright);
         let instance = primary.and_then(|(family, index)| {
@@ -299,6 +333,9 @@ fn resolve_requests(
             Some((id, px)) => (Some(id), px),
             None => (None, resolution.base),
         };
+        if let Some((family, index)) = space_font {
+            block_space = space_advance(input, request, &family, index, &resolution, &mut caches);
+        }
         // Where even a primary does not fit, the last used font stands in:
         // the table is full, so there is one.
         let last = interner.used.table.last_id().unwrap_or(UsedFontId::new(0));
@@ -320,6 +357,50 @@ fn resolve_requests(
         }
         resolutions.push_bounded(resolution, "one entry per request, which an id names");
     }
+    block_space
+}
+
+/// Whether the font `primary` names, as its family and its index there,
+/// maps no U+0020.
+fn maps_no_space(primary: &(Family, usize)) -> bool {
+    let (family, index) = primary;
+    family
+        .fonts()
+        .get(*index)
+        .is_some_and(|font| !font.charset().contains(' '))
+}
+
+/// Returns the advance of U+0020 in font `index` of `family` at the size
+/// `resolution` uses its fonts at: the space a block whose primary font maps
+/// none counts a `tab-size` in.
+///
+/// `None` where the font's instance cannot be made.
+#[cold]
+fn space_advance(
+    input: &FontInput<'_>,
+    request: &FontRequest,
+    family: &Family,
+    index: usize,
+    resolution: &FontResolution,
+    caches: &mut FontCaches<'_>,
+) -> Option<TextUnit> {
+    let font = family.fonts().get(index)?;
+    let table = input.lists;
+    let overrides = FaceOverrides::new(font);
+    let px = resolution.font_px(overrides);
+    let instance = InstanceRequest {
+        font_request: request,
+        variations: table.variation_settings().get(request.font.variations),
+        settings: table.feature_settings().get(request.font.features),
+        upright: request.upright,
+        caps: FontVariantCaps::Normal,
+        position: request.font.variant_position,
+        size: px,
+        overrides,
+        matching_only: variations_left_to_matching(family, input.platform_font_variations),
+    };
+    let made = caches.instances.find_or_make(family, font, &instance)?;
+    Some(caches.instances.get(made)?.unscaled().space(px))
 }
 
 /// Sizes `request`'s primary font `font`, of `family`, into `resolution`,

@@ -97,7 +97,11 @@ const LAMED: char = '\u{5DC}';
 /// Its fallback puts Ahem at the head of every chain and Test Han among
 /// Han's script fonts. It runs [`check`] on each build.
 fn fixture_with(fonts: &[TestFont]) -> Fixture {
-    Fixture::new(fonts, han_fallback("Test Han"), StageCheck::Built(check))
+    Fixture::new(
+        fonts,
+        han_fallback("Test Han"),
+        StageCheck::BuiltWithContext(check),
+    )
 }
 
 /// A fixture over Ahem and the fonts above.
@@ -106,9 +110,10 @@ fn fixture() -> Fixture {
 }
 
 impl Fixture {
-    /// Each cluster's advance as shaping hands it on (see [`advances`]).
-    fn advances(&self, layout: &Layout) -> Vec<i32> {
-        advances(layout)
+    /// Each cluster's advance as the last build's shaping handed it on
+    /// (see [`advances`]).
+    fn advances(&self) -> Vec<i32> {
+        advances(&self.cx)
     }
 
     /// Shapes `range` of `layout`'s run `run` again, as the breaker will,
@@ -162,11 +167,10 @@ struct Piece {
     start: bool,
 }
 
-/// Each cluster's advance along the line as the stage hands it on, in 1/65536
-/// px, which a test's clusters fit an `i32` in.
-fn advances(layout: &Layout) -> Vec<i32> {
-    layout
-        .shaped_advances()
+/// Each cluster's advance along the line as the last build in `cx` handed it
+/// on, in 1/65536 px, which a test's clusters fit an `i32` in.
+fn advances(cx: &Context) -> Vec<i32> {
+    cx.shaped_advances()
         .iter()
         .map(|advance| i32::try_from(advance.raw()).expect("a test's cluster fits 16.16"))
         .collect()
@@ -224,11 +228,11 @@ fn ids(layout: &Layout) -> Vec<Vec<u32>> {
 /// - The flags say what is there.
 /// - There is no combined text and no first line's table, since the content
 ///   checked here never asks for them.
-fn check(layout: &Layout) {
+fn check(layout: &Layout, cx: &Context) {
     let shaped = layout.shaped().text(FirstLineVariant::Standard);
     let clusters = &layout.analysis().clusters;
     let count = clusters.len();
-    let advances = advances(layout);
+    let advances = advances(cx);
     assert_eq!(shaped.glyphs.len(), count, "a word per cluster");
     assert_eq!(advances.len(), count, "an advance per cluster");
     let runs: Vec<(&ShapedRun, Range<ClusterId>)> = shaped

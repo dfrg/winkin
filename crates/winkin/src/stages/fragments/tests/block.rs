@@ -252,6 +252,43 @@ fn text_box_trim_goes_either_way_and_follows_the_lines() {
     assert_eq!(metrics.first_baseline, None);
 }
 
+/// `text-box-trim` measures the first line's edges in its `::first-line`
+/// font, as in `text-box-trim-first-line-pseudo-001` and `-002`: Chrome's
+/// `ApplyTextBoxTrim` reads the line's style.
+///
+/// - Ahem at 20 px on lines twice its size, with a `::first-line` of 40 px,
+///   trims the first line's 20 px of half-leading, not the 36 px from it
+///   to a 20 px ascent.
+/// - At 40 px with a `::first-line` of 20 px, it trims that line's 10.
+#[test]
+fn text_box_trim_measures_the_first_line_in_its_own_font() {
+    use crate::style::TextBoxTrim;
+    let mut fixture = fixture();
+    let mut layout = Layout::new();
+    let doubled = |size| ComputedStyle {
+        line: LineGroup {
+            height: LineHeight::Factor(2.0),
+            ..LineGroup::INITIAL
+        },
+        ..ahem(size)
+    };
+    for (size, first_size, trimmed) in [(20.0, 40.0, 20.0), (40.0, 20.0, 10.0)] {
+        let (root, first_line) = (doubled(size), doubled(first_size));
+        let block = ComputedBlockStyle {
+            text_box_trim: TextBoxTrim::TrimStart,
+            first_line: Some(&first_line),
+            ..ComputedBlockStyle::new(&root)
+        };
+        fixture.build(&mut layout, &block, |b| {
+            b.text(NodeKey(1), "XX");
+            b.line_break(NodeKey(2));
+            b.text(NodeKey(3), "XX");
+        });
+        fixture.lay_out(&mut layout, 500.0);
+        assert_eq!(layout.metrics().trim_start, trimmed, "{size} {first_size}");
+    }
+}
+
 /// Only `vertical-lr` flips its lines.
 ///
 /// `sideways-lr` stacks lines from the left, as `vertical-lr` does. But they

@@ -46,9 +46,10 @@ use crate::style::{
     DominantBaseline, EdgesGroup, EmphasisSide, EmphasisSkip, FontVariantPosition,
     HangingPunctuation, Hyphens, InitialLetter, LengthPercentage, LineBreak, LineClamp, LineHeight,
     OrientationGroup, OverflowWrap, RubyGroup, TabSize, TextAlign, TextAlignLast, TextBoxEdge,
-    TextBoxTrim, TextCombineUpright, TextFit, TextFitKind, TextFitTarget, TextGroupAlign,
-    TextIndent, TextJustify, TextOrientation, TextOverflow, TextSpacingTrim, TextWrapMode,
-    TextWrapStyle, UnicodeBidi, VerticalAlign, WhiteSpaceCollapse, WordBreak, WritingMode,
+    TextBoxTrim, TextCombineUpright, TextEdgeOver, TextEdgeUnder, TextFit, TextFitKind,
+    TextFitTarget, TextGroupAlign, TextIndent, TextJustify, TextOrientation, TextOverflow,
+    TextSpacingTrim, TextWrapMode, TextWrapStyle, UnicodeBidi, VerticalAlign, WhiteSpaceCollapse,
+    WordBreak, WritingMode,
 };
 use crate::style::{Same, same_by_value, style_struct};
 use crate::unit::{LayoutUnit, TextUnit};
@@ -637,11 +638,60 @@ define_flags! {
         const BREAKS_SHAPING_AT_END = 1 << 5;
         /// `direction: rtl`: its start is on its right.
         pub(crate) const RTL = 1 << 6;
-        /// `text-box-trim` on it is not `none`.
-        pub(crate) const TRIMS_TEXT_BOX = 1 << 7;
+        /// `text-box-trim` trims its over edge to `text-box-edge`'s.
+        pub(crate) const TRIMS_OVER = 1 << 7;
         /// It is the block's initial letter, whose ink takes room at its
         /// edges however its own edges are set.
         pub(crate) const INITIAL_LETTER = 1 << 8;
+        /// `text-box-trim` trims its under edge to `text-box-edge`'s.
+        pub(crate) const TRIMS_UNDER = 1 << 9;
+        /// `text-box-edge`'s over edge is `cap`.
+        const EDGE_CAP = 1 << 10;
+        /// `text-box-edge`'s over edge is `ex`.
+        const EDGE_EX = 1 << 11;
+        /// `text-box-edge`'s over edge is `ideographic` or `ideographic-ink`.
+        const EDGE_IDEOGRAPHIC_OVER = 1 << 12;
+        /// `text-box-edge`'s under edge is `alphabetic`.
+        const EDGE_ALPHABETIC = 1 << 13;
+        /// `text-box-edge`'s under edge is `ideographic` or `ideographic-ink`.
+        const EDGE_IDEOGRAPHIC_UNDER = 1 << 14;
+    }
+}
+
+impl BoxFlags {
+    /// Returns the flags that hold `text-box-trim` and `text-box-edge`.
+    ///
+    /// The edges are kept only where something is trimmed. `ideographic-ink`
+    /// is kept as `ideographic`, which it measures as.
+    fn from_text_box(trim: TextBoxTrim, edge: TextBoxEdge) -> Self {
+        let (over, under) = trim.sides();
+        let mut flags = Self::NONE;
+        if !over && !under {
+            return flags;
+        }
+        flags.set(Self::TRIMS_OVER, over);
+        flags.set(Self::TRIMS_UNDER, under);
+        flags.set(Self::EDGE_CAP, edge.over == TextEdgeOver::Cap);
+        flags.set(Self::EDGE_EX, edge.over == TextEdgeOver::Ex);
+        flags.set(
+            Self::EDGE_IDEOGRAPHIC_OVER,
+            matches!(
+                edge.over,
+                TextEdgeOver::Ideographic | TextEdgeOver::IdeographicInk
+            ),
+        );
+        flags.set(
+            Self::EDGE_ALPHABETIC,
+            edge.under == TextEdgeUnder::Alphabetic,
+        );
+        flags.set(
+            Self::EDGE_IDEOGRAPHIC_UNDER,
+            matches!(
+                edge.under,
+                TextEdgeUnder::Ideographic | TextEdgeUnder::IdeographicInk
+            ),
+        );
+        flags
     }
 }
 
@@ -748,10 +798,10 @@ impl BoxFacts {
             edges.decoration_break == BoxDecorationBreak::Clone,
         );
         flags.set(BoxFlags::RTL, rtl);
-        flags.set(
-            BoxFlags::TRIMS_TEXT_BOX,
-            style.line.text_box_trim != TextBoxTrim::None,
-        );
+        flags.insert(BoxFlags::from_text_box(
+            style.line.text_box_trim,
+            style.line.text_box_edge,
+        ));
         flags.set(BoxFlags::INITIAL_LETTER, style.line.initial_letter.is_set());
         // An edge stops shaping as Blink's `ShouldBreakShapingBeforeBox`
         // and `AfterBox` say: margin, border or padding on that inline side,
@@ -813,6 +863,33 @@ impl BoxFacts {
     #[inline]
     pub(crate) fn has(&self, flag: BoxFlags) -> bool {
         self.flags.contains(flag)
+    }
+
+    /// Returns whether `text-box-trim` trims its over edge and its under
+    /// edge, and the `text-box-edge` they are trimmed to.
+    pub(crate) fn text_box(&self) -> (bool, bool, TextBoxEdge) {
+        let has = |flag| self.flags.contains(flag);
+        let over = if has(BoxFlags::EDGE_CAP) {
+            TextEdgeOver::Cap
+        } else if has(BoxFlags::EDGE_EX) {
+            TextEdgeOver::Ex
+        } else if has(BoxFlags::EDGE_IDEOGRAPHIC_OVER) {
+            TextEdgeOver::Ideographic
+        } else {
+            TextEdgeOver::Text
+        };
+        let under = if has(BoxFlags::EDGE_ALPHABETIC) {
+            TextEdgeUnder::Alphabetic
+        } else if has(BoxFlags::EDGE_IDEOGRAPHIC_UNDER) {
+            TextEdgeUnder::Ideographic
+        } else {
+            TextEdgeUnder::Text
+        };
+        (
+            has(BoxFlags::TRIMS_OVER),
+            has(BoxFlags::TRIMS_UNDER),
+            TextBoxEdge { over, under },
+        )
     }
 
     /// Whether its opening edge (`opens`) or its closing edge stops

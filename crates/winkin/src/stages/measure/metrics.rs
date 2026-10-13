@@ -14,21 +14,30 @@ use crate::{unit, work};
 ///
 /// `out` has one row per [`TextFactsId`], the first line's included, so both
 /// variants read one table. A document has few rows, and each looks up its
-/// primary font once.
-pub(super) fn text_metrics(input: &MeasureInput<'_>, out: &mut Table<TextFactsId, TextMetrics>) {
+/// primary font once. `block_space` is the space the block's tabs count
+/// where its primary font maps none.
+pub(super) fn text_metrics(
+    input: &MeasureInput<'_>,
+    block_space: Option<TextUnit>,
+    out: &mut Table<TextFactsId, TextMetrics>,
+) {
     let facts = &input.content.facts;
     out.reserve(facts.text_ids().len());
     // A tab in spaces counts the block container's space: its primary font's
     // U+0020 at the used size with its letter-spacing and word-spacing, as
-    // Chrome sizes a tab in `InlineNode::FontForTab`.
+    // Chrome sizes a tab in `InlineNode::FontForTab`. Where the primary maps
+    // no space, it is the space of the listed font a space falls back to, as
+    // in Chrome.
     let block = input
         .content
         .nodes
         .text_facts(NodeId::BLOCK, FirstLineVariant::Standard);
     let block_shaping = facts.shaping(facts.text(block).shaping);
-    let space = input
-        .primary(block)
-        .map_or(TextUnit::from_px(0.0), |metrics| metrics.space);
+    let space = block_space.unwrap_or_else(|| {
+        input
+            .primary(block)
+            .map_or(TextUnit::from_px(0.0), |metrics| metrics.space)
+    });
     for text in facts.text_ids() {
         work::step();
         let row = facts.text(text);

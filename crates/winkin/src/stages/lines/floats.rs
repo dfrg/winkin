@@ -25,7 +25,7 @@ use super::{
     Breaker, BreakerParagraph, Cursor, Exclusions, ExclusionsCheckpoint, Fitted, FloatRequest,
     LineBand, LineFloatId, LineHead, LineStart, Lines, PlacedFloat,
 };
-use crate::build::FloatSide;
+use crate::build::{Clear, FloatSide};
 use crate::data::Id;
 use crate::stages::analysis::{ClusterClass, ClusterId};
 use crate::stages::content::{BreakClearanceId, FloatId, NodeKey};
@@ -172,7 +172,61 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         // box, which the cursor already stands below.
         let reach = (-self.carry).max(LayoutUnit::ZERO);
         let line_end = cursor.top - reach;
-        let mut top = line_end - cursor.trimmed;
+        let top = self.clear_band(out, clear, area, line_end - cursor.trimmed);
+        let clearance = top + cursor.trimmed - line_end;
+        if clearance <= LayoutUnit::ZERO {
+            self.clear_past_trimmed_end(out, clear, area, line_end - cursor.trimmed, cursor);
+            return;
+        }
+        cursor.top = cursor.top.max(top + cursor.trimmed);
+        cursor.cleared = Some(top);
+        if reach > LayoutUnit::ZERO {
+            self.carry = -(reach - clearance).max(LayoutUnit::ZERO);
+        }
+    }
+
+    /// Keeps the block's end below the floats `clear` clears where the
+    /// break needs no clearance past its line, which ends at `line_end` in
+    /// the host's positions, but `text-box-trim` pulls the end up into them.
+    ///
+    /// Chrome adds the clearance after the trim, so the end stops at the
+    /// floats' bottom: a 100 px float beside a 100 px line trimmed to 80 at
+    /// `alphabetic` leaves the block 100 tall.
+    #[cold]
+    fn clear_past_trimmed_end(
+        &mut self,
+        out: &Lines,
+        clear: Clear,
+        area: LineBand,
+        line_end: LayoutUnit,
+        cursor: &mut Cursor,
+    ) {
+        let Some(trims) = self.trims.filter(|trims| trims.ends) else {
+            return;
+        };
+        let Some((id, line)) = out.lines.last_id().zip(out.lines.last()) else {
+            return;
+        };
+        let trimmed = trims.end(line.extent, out.scale(id), line.variant());
+        if trimmed <= LayoutUnit::ZERO {
+            return;
+        }
+        let start = line_end - trimmed;
+        let top = self.clear_band(out, clear, area, start);
+        if top > start {
+            cursor.cleared = Some(top.min(line_end));
+        }
+    }
+
+    /// Returns the first position from `top` down where the host's band in
+    /// `area` no longer narrows on a side `clear` clears.
+    fn clear_band(
+        &self,
+        out: &Lines,
+        clear: Clear,
+        area: LineBand,
+        mut top: LayoutUnit,
+    ) -> LayoutUnit {
         for _ in 0..MAX_MOVES_DOWN {
             let band = self.band(out, top, LayoutUnit::EPSILON);
             let narrowed = (clear.clears(FloatSide::Left) && band.left > area.left)
@@ -185,15 +239,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             };
             top = next;
         }
-        let clearance = top + cursor.trimmed - line_end;
-        if clearance <= LayoutUnit::ZERO {
-            return;
-        }
-        cursor.top = cursor.top.max(top + cursor.trimmed);
-        cursor.cleared = Some(top);
-        if reach > LayoutUnit::ZERO {
-            self.carry = -(reach - clearance).max(LayoutUnit::ZERO);
-        }
+        top
     }
 
     /// Returns the content's float `id` as the breaker places it, or `None`

@@ -386,6 +386,21 @@ fn a_transform_in_context_is_one_unit_where_it_must_be() {
     );
 }
 
+/// A letter whose marks a capital drops in context keeps a unit of its own
+/// where its marks mapped alone make what the context made.
+///
+/// Greek `Ϊ́Ρ` uppercases to `Ϊ̈Ρ`, dropping the acute. Chrome selects the
+/// capital iota alone for the first three UTF-16 units
+/// (`text-transform-upperlower-106`).
+#[test]
+fn a_letter_whose_marks_a_capital_drops_keeps_its_own_unit() {
+    let upper = cased(TextCase::Uppercase, "el");
+    let layout = mapped_with(&upper, |b| b.text(key(1), "\u{399}\u{308}\u{301}\u{3A1}"));
+    assert_eq!(text(&layout), "\u{399}\u{308}\u{3A1}");
+    assert_eq!(units(&layout), [(V, 0..4, 0..6), (I, 4..6, 6..8)]);
+    assert_eq!(content_offset(&layout, 1, 6, Before), Some(4));
+}
+
 /// Masked text is one unit for each grapheme. A one-character grapheme as
 /// long as its mask maps as given, and any other is one caret stop.
 #[test]

@@ -156,7 +156,7 @@ fn the_search_agrees_with_a_straightforward_breaker() {
             }
         }
     });
-    let advances = layout.shaped_advances();
+    let advances = fixture.cx.shaped_advances();
     let analysis = layout.analysis();
     // The paragraphs with tabs are walked, and the rest are searched.
     let walked = analysis

@@ -1013,11 +1013,16 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         // A raised initial letter moves its line down by how far it stands
         // above the paragraph, as Chrome's
         // `SetInitialLetterBlockStartAdjustment` does. The line box grows
-        // over its baseline by as much.
+        // on its block-start side by as much: over its baseline, or under it
+        // where lines flip.
         let extent = match self.stages.measured.initial_letter() {
             Some(letter) if start == ClusterId::new(0) && letter.raise > LayoutUnit::ZERO => {
                 let extent = extent.zero_if_none();
-                Extent::new(extent.ascent() + letter.raise, extent.descent())
+                if self.stages.content.block.writing_mode.flips_lines() {
+                    Extent::new(extent.ascent(), extent.descent() + letter.raise)
+                } else {
+                    Extent::new(extent.ascent() + letter.raise, extent.descent())
+                }
             }
             _ => extent,
         };

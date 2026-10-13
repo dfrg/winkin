@@ -414,9 +414,9 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// That is the line box's bottom, less `trimmed` (what `text-box-trim`
     /// takes off the first line) and what it takes off the last.
     fn block_end_if_last(&self, line: &super::PendingLine, trimmed: LayoutUnit) -> LayoutUnit {
-        let under = self
-            .trims
-            .map_or(LayoutUnit::ZERO, |trims| trims.end(line.extent, line.scale));
+        let under = self.trims.map_or(LayoutUnit::ZERO, |trims| {
+            trims.end(line.extent, line.scale, line.variant())
+        });
         line.facts.block_start + line.extent.box_height() - trimmed - under
     }
 
@@ -726,7 +726,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         if out.lines.is_empty()
             && let Some(trims) = self.trims
         {
-            cursor.trimmed = trims.start(line.extent, line.scale);
+            cursor.trimmed = trims.start(line.extent, line.scale, line.variant());
         }
         // `line-clamp: auto`: a line that would take the block's content
         // past its end, if it were the last, is not kept.

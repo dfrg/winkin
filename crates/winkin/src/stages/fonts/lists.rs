@@ -392,6 +392,24 @@ impl CandidateList {
         self.candidates.iter()
     }
 
+    /// Returns how many candidates come from the listed families and the
+    /// Standard font, or `usize::MAX` while some of those are unmatched.
+    ///
+    /// Candidates are matched a family at a time, in order, so those first
+    /// are theirs. Only a grapheme of private use asks, so the count is not
+    /// kept.
+    #[cold]
+    pub(super) fn listed_candidates(&self) -> usize {
+        if self.matched < self.listed {
+            return usize::MAX;
+        }
+        let listed = self.families.get(..self.listed).unwrap_or_default();
+        self.candidates
+            .iter()
+            .take_while(|(_, candidate)| listed.contains(&candidate.family))
+            .count()
+    }
+
     /// Whether every family it has is matched.
     ///
     /// An exhausted list holds all its candidates until a miss adds a
@@ -447,6 +465,15 @@ impl CandidateList {
             return;
         };
         self.missed.insert(at, c);
+        // Only the listed families draw a private-use character or a
+        // noncharacter in text, as Blink's `FallbackFontForCharacter` asks
+        // the platform for no font for one. CSS Fonts 4, section 5.4, asks
+        // the same of private use.
+        if matches!(presentation, Presentation::Text | Presentation::TextOnly)
+            && is_private_or_noncharacter(c)
+        {
+            return;
+        }
         let mut mapped = false;
         let families = &self.families;
         let found = collection
@@ -490,6 +517,28 @@ impl CandidateList {
             Some((family.clone(), at))
         })
     }
+
+    /// Returns the first font of the listed families, the Standard font
+    /// included, that matches the list's request and maps U+0020, as its
+    /// family and its index there.
+    ///
+    /// Only a block whose first available font maps no space asks.
+    #[cold]
+    fn space_font(&self) -> Option<(Family, usize)> {
+        let request = self.key.request;
+        let listed = self.families.get(..self.listed).unwrap_or_default();
+        listed.iter().find_map(|family| {
+            let fonts = family.fonts();
+            let at = family
+                .matching_indices(request.attributes(), request.synthesize_style)
+                .find(|&at| {
+                    fonts.get(at).is_some_and(|font| {
+                        !font.is_pending() && font.serves(' ') && font.charset().contains(' ')
+                    })
+                })?;
+            Some((family.clone(), at))
+        })
+    }
 }
 
 /// Adds each of `families` to `list` that it does not have, in order.
@@ -508,6 +557,13 @@ fn is_joining(c: char) -> bool {
         u32::from(c),
         0x200C | 0x200D | 0xFE00..=0xFE0F | 0xE0100..=0xE01EF
     )
+}
+
+/// Whether `c` is a private-use character or a noncharacter, as Blink's
+/// `Character::IsPrivateUse` and `Character::IsNonCharacter` test it.
+pub(super) fn is_private_or_noncharacter(c: char) -> bool {
+    let c = u32::from(c);
+    matches!(c, 0xE000..=0xF8FF | 0xF0000..=0x10FFFF | 0xFDD0..=0xFDEF) || c & 0xFFFE == 0xFFFE
 }
 
 heap_bytes! {
@@ -660,6 +716,12 @@ impl CandidateLists {
     /// allocates nothing.
     pub(super) fn first_available(&self, id: CandidateListId) -> Option<(Family, usize)> {
         self.lists.get(id)?.first_available()
+    }
+
+    /// Returns the first font of list `id`'s listed families that maps
+    /// U+0020, as its family and its index there. `None` where none does.
+    pub(super) fn space_font(&self, id: CandidateListId) -> Option<(Family, usize)> {
+        self.lists.get(id)?.space_font()
     }
 }
 

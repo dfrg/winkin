@@ -3118,3 +3118,50 @@ fn the_spread_bit_marks_the_text_with_spread_room() {
         assert!(spread > 0, "{base}: nothing spread");
     }
 }
+
+/// `ruby-position` from `::first-line` sets the first line's annotations
+/// under their bases, as in `css-ruby/pseudo-first-line`, and the lines
+/// after keep the element's side.
+#[test]
+fn a_first_line_ruby_position_moves_its_annotations() {
+    use crate::style::RubyPosition;
+    let mut cx = context();
+    let mut layout = Layout::new();
+    let mut base = sized(&AHEM_FAMILY, 20.0);
+    base.line.height = LineHeight::Px(20.0);
+    let small = sized(&AHEM_FAMILY, 10.0);
+    let mut under = base;
+    under.ruby.position = RubyPosition::Under;
+    let mut small_under = small;
+    small_under.ruby.position = RubyPosition::Under;
+    let block = ComputedBlockStyle {
+        first_line: Some(&under),
+        ..ComputedBlockStyle::new(&base)
+    };
+    build(&mut cx, &mut layout, &block, |b| {
+        for (n, line) in [(0, "foo "), (10, "bar ")] {
+            b.text(NodeKey(n + 1), line);
+            b.open_ruby(NodeKey(n + 2), &base, Some(&under));
+            b.text(NodeKey(n + 3), "XX");
+            b.open_annotation(NodeKey(n + 4), &small, Some(&small_under));
+            b.text(NodeKey(n + 5), "yy");
+            b.close_annotation();
+            b.close_ruby();
+            b.line_break(NodeKey(n + 6));
+        }
+    });
+    layout.break_lines(&mut cx, Area::new(400.0), &mut NoExclusions);
+    let sides: Vec<bool> = layout
+        .lines()
+        .take(2)
+        .map(|line| {
+            let base = runs(&layout, line.index())
+                .last()
+                .map_or(0.0, |run| run.block().over);
+            line.annotations()
+                .flat_map(|annotation| annotation.runs().collect::<Vec<_>>())
+                .all(|run| run.block().over > base)
+        })
+        .collect();
+    assert_eq!(sides, [true, false]);
+}

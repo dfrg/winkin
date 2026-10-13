@@ -631,6 +631,48 @@ fn nowrap_is_decided_by_the_space_or_the_nearest_common_ancestor() {
     assert_eq!(paragraphs(&layout), ["a b\n", "c d"]);
 }
 
+/// A generated break opportunity follows the box holding it, as a space does,
+/// not the nearest common ancestor of the text around it.
+///
+/// Chrome 155 sets each of these in a `nowrap` block on two lines:
+/// - `<nowrap>12345 </nowrap><span> </span>67890`, where the wrapping space
+///   collapses into the `nowrap` one and keeps its opportunity
+///   (WPT `white-space-wrap-after-nowrap-001`);
+/// - `12345<span><wbr></span>67890`, a `<wbr>` in a span that wraps.
+#[test]
+fn a_generated_opportunity_follows_the_box_holding_it() {
+    let block = nowrap();
+    let wrap = ComputedStyle::initial();
+    let layout = build_with(&ComputedBlockStyle::new(&block), |b| {
+        b.open_box(key(1), &nowrap(), None);
+        b.text(key(2), "a ");
+        b.close_box();
+        b.open_box(key(3), &wrap, None);
+        b.text(key(4), " ");
+        b.close_box();
+        b.text(key(5), "b");
+    });
+    assert_eq!(clusters(&layout).concat(), "a \u{200B}b");
+    assert_eq!(breaks(&layout), [5]);
+
+    let layout = build_with(&ComputedBlockStyle::new(&block), |b| {
+        b.text(key(1), "a");
+        b.open_box(key(2), &wrap, None);
+        b.break_opportunity();
+        b.close_box();
+        b.text(key(3), "b");
+    });
+    assert_eq!(breaks(&layout), [4]);
+
+    // A `<wbr>` the `nowrap` block holds itself makes none.
+    let layout = build_with(&ComputedBlockStyle::new(&block), |b| {
+        b.text(key(1), "a");
+        b.break_opportunity();
+        b.text(key(2), "b");
+    });
+    assert_eq!(breaks(&layout), [] as [usize; 0]);
+}
+
 /// `break-spaces` breaks after every preserved space and tab, and after every
 /// other space separator that breaks, between two of them too. Nothing hangs.
 #[test]

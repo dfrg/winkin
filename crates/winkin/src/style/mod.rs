@@ -520,7 +520,8 @@ impl<'a> ComputedStyle<'a> {
     ///
     /// Those come from `first_line`, and the rest from `self`, the element's
     /// own style. `::first-line` may change the font, the spacing, the
-    /// transform, `line-height`, `vertical-align` and emphasis. Anything else
+    /// transform, `line-height`, `vertical-align`, emphasis and
+    /// `ruby-position`. Anything else
     /// is pinned to the element's. Honoring it would make analysis depend on
     /// where the first line ends, which only line breaking knows. A cascade
     /// that already applies this list passes the same values, and this
@@ -542,6 +543,10 @@ impl<'a> ComputedStyle<'a> {
                 height: first_line.line.height,
                 vertical_align: first_line.line.vertical_align,
                 ..self.line
+            },
+            ruby: RubyGroup {
+                position: first_line.ruby.position,
+                ..self.ruby
             },
             ..*self
         }

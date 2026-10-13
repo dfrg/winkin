@@ -1,13 +1,15 @@
 //! Tab tests. They pin:
 //! - a tab measured where it lands, before the break is chosen;
 //! - tab stops at the content edges, beside floats too;
-//! - stops counted in the block container's spaces;
+//! - stops counted in the block container's spaces, or the space a space
+//!   falls back to where its primary font maps none;
 //! - any `tab-size` giving valid lines;
 //! - an annotation's tab taking no room on the base line;
 //! - tabbed intrinsic sizes the text fits.
 
 use super::*;
 use crate::style::LengthPercentage;
+use crate::tests::ahem_fallback;
 
 /// A tab is measured where it lands while the break is chosen, not after.
 ///
@@ -138,6 +140,48 @@ fn tab_stops_count_the_block_containers_spaces() {
     });
     fixture.lay_out(&mut layout, 500.0);
     assert_eq!(widths(&layout), [66.0]);
+}
+
+/// Where the block's primary font maps no space, a `tab-size` in spaces
+/// counts the space of the first listed font that maps one, as Chrome sizes
+/// such a tab by the font a space falls back to (WPT
+/// `tab-size-integer-005`).
+///
+/// Chrome 155, over a primary with no space and a 1 em `.notdef` at 40 px,
+/// puts a `tab-size: 8` tab's stop at 70.47 with Gentium Plus next in the
+/// list, eight of its spaces, and at 192 with Courier New next.
+///
+/// Here the primary's `.notdef` is 5 px at 10 px, and the next font's space
+/// 3 px: four of those put the stop at 12, not 20.
+#[test]
+fn tab_stops_count_the_space_a_space_falls_back_to() {
+    let spaceless = TestFont::new("Test Spaceless", &[(0x58, 0x58)]);
+    let mut spaced = TestFont::new("Test Spaced", &[(0x20, 0x7E)]);
+    spaced.advances = vec![(' ', 300)];
+    let mut fixture = Fixture::new(
+        &[spaceless, spaced],
+        ahem_fallback(),
+        StageCheck::Placed(check),
+    );
+    let families = [
+        FontFamilyName::Named(Cow::Borrowed("Test Spaceless")),
+        FontFamilyName::Named(Cow::Borrowed("Test Spaced")),
+    ];
+    let mut style = sized(&families, 10.0);
+    style.text.white_space_collapse = WhiteSpaceCollapse::Preserve;
+    style.text.tab_size = TabSize::Spaces(4.0);
+    let mut layout = Layout::new();
+    fixture.text(&mut layout, &style, "\tX");
+    fixture.lay_out(&mut layout, 500.0);
+    assert_eq!(widths(&layout), [17.0]);
+    // A primary that maps a space counts its own.
+    let families = [FontFamilyName::Named(Cow::Borrowed("Test Spaced"))];
+    let mut style = sized(&families, 10.0);
+    style.text.white_space_collapse = WhiteSpaceCollapse::Preserve;
+    style.text.tab_size = TabSize::Spaces(4.0);
+    fixture.text(&mut layout, &style, "\tX");
+    fixture.lay_out(&mut layout, 500.0);
+    assert_eq!(widths(&layout), [17.0]);
 }
 
 /// Every `tab-size` breaks into valid lines, even those no computed value

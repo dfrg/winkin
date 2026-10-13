@@ -29,7 +29,7 @@ fn square_glyphs_advance_exactly_at_16_16() {
         fixture.span(&mut layout, &sized(&AHEM_FAMILY, size), "XpÉ x");
         let scale = TextUnit::from_px_truncated(effective).raw();
         let em = scaled(1000, 1000, i64::from(scale));
-        let advances = fixture.advances(&layout);
+        let advances = fixture.advances();
         assert!(advances.iter().all(|&a| a == em), "{size} px: {advances:?}");
         let shaped = layout.shaped().text(FirstLineVariant::Standard);
         assert!(shaped.glyphs.sidecar.is_empty(), "{size} px: compact");
@@ -46,7 +46,7 @@ fn square_glyphs_advance_exactly_at_16_16() {
         let mut layout = Layout::new();
         fixture.span(&mut layout, &sized(&AHEM_FAMILY, size), "X");
         assert_eq!(
-            fixture.advances(&layout),
+            fixture.advances(),
             [TextUnit::from_px_truncated(size).raw()],
             "{size} px"
         );
@@ -65,7 +65,7 @@ fn any_font_size_gives_valid_advances() {
         let mut layout = Layout::new();
         fixture.span(&mut layout, &sized(&AHEM_FAMILY, size), "XpÉ x");
         let expected = if size == 50_000.0 { 10_000 * 65_536 } else { 0 };
-        let advances = fixture.advances(&layout);
+        let advances = fixture.advances();
         assert!(
             advances.iter().all(|&a| a == expected),
             "{size}: {advances:?}"
@@ -75,7 +75,7 @@ fn any_font_size_gives_valid_advances() {
     // its advance summed in 48.16, the prefix's own type.
     let mut layout = Layout::new();
     fixture.span(&mut layout, &sized(&LATIN_HEBREW, 50_000.0), "Q");
-    let q = layout.shaped_advances();
+    let q = fixture.cx.shaped_advances();
     assert_eq!(q[0].raw(), 7_500 * 65_536, "three quarters of an em");
 }
 
@@ -93,7 +93,7 @@ fn text_with_nothing_to_substitute_or_move_is_compact() {
         &families_style(&LATIN_HEBREW),
         "The quick brown dog jumps over the lazy cat.",
     );
-    let advances = fixture.advances(&layout);
+    let advances = fixture.advances();
     let shaped = layout.shaped().text(FirstLineVariant::Standard);
     assert!(shaped.glyphs.sidecar.is_empty());
     let text = &layout.content().text;
@@ -117,7 +117,7 @@ fn several_glyphs_or_an_offset_expand_a_cluster() {
     let mut layout = Layout::new();
     let font = latin_hebrew();
     fixture.span(&mut layout, &families_style(&LATIN_HEBREW), "aQbRc");
-    let advances = fixture.advances(&layout);
+    let advances = fixture.advances();
     let shaped = layout.shaped().text(FirstLineVariant::Standard);
     let word = |at| shaped.glyphs.word(ClusterId::new(at));
     assert!(!word(0).is_expanded() && !word(2).is_expanded() && !word(4).is_expanded());
@@ -146,7 +146,7 @@ fn a_ligature_leaves_continuations() {
     let mut layout = Layout::new();
     let font = latin_hebrew();
     fixture.span(&mut layout, &families_style(&LATIN_HEBREW), "office flat");
-    let advances = fixture.advances(&layout);
+    let advances = fixture.advances();
     let shaped = layout.shaped().text(FirstLineVariant::Standard);
     let expected = [
         vec![font.glyph('o')],
@@ -253,7 +253,7 @@ fn right_to_left_is_stored_in_cluster_order() {
             .is_continuation()
     );
     assert_eq!(
-        fixture.advances(&layout),
+        fixture.advances(),
         [12 * 65_536, 0, 12 * 65_536, 8 * 65_536]
     );
     // Latin in the same paragraph is at level 2 and set left to right:
@@ -351,7 +351,7 @@ fn a_cluster_no_font_covers_draws_notdef() {
         ClusterGlyphs::One(0)
     );
     assert_eq!(
-        fixture.advances(&layout)[1],
+        fixture.advances()[1],
         8 * 65_536,
         "the .notdef's half an em"
     );
@@ -373,10 +373,10 @@ fn no_font_at_all_draws_nothing() {
     b.line_break(NodeKey(2));
     b.text(NodeKey(3), "at all");
     assert!(b.finish().is_complete());
-    check(&layout);
+    check(&layout, &cx);
     let shaped = layout.shaped().text(FirstLineVariant::Standard);
     assert!(shaped.glyphs.iter().all(|(_, &w)| w == GlyphWord::EMPTY));
-    assert!(advances(&layout).iter().all(|&a| a == 0));
+    assert!(advances(&cx).iter().all(|&a| a == 0));
     assert!(!shaped.runs.is_empty());
 }
 
@@ -393,6 +393,6 @@ fn unreadable_layout_tables_shape_nominally() {
     fixture.span(&mut layout, &families_style(&family), "fiAVQR");
     let expected: Vec<Vec<u32>> = "fiAVQR".chars().map(|ch| vec![font.glyph(ch)]).collect();
     assert_eq!(ids(&layout), expected);
-    assert!(fixture.advances(&layout).iter().all(|&a| a == 8 * 65_536));
+    assert!(fixture.advances().iter().all(|&a| a == 8 * 65_536));
     assert!(!layout.shaped().flags.contains(ShapedFlags::HAS_UNSAFE));
 }

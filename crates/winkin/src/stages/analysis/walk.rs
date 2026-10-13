@@ -1462,8 +1462,11 @@ impl ClusterWriter<'_> {
         // the break, follows whether the box directly holding it wraps. One
         // between two other characters follows their nearest common ancestor
         // (CSS Text 3, section 5.1). Chrome decides a space's and a tab's so,
-        // and an other space separator's as any character's.
-        let wraps = if class.is_space_or_tab() {
+        // and an other space separator's as any character's. A generated
+        // opportunity follows its own box too, as Chrome's line breaker reads
+        // its item's style: the one collapsing keeps, where white space that
+        // wraps joins a run begun in `nowrap`, and a `<wbr>`.
+        let wraps = if class.is_space_or_tab() || class == ClusterClass::BreakOpportunity {
             item.wraps
         } else {
             self.wraps_between(item, &next.item)

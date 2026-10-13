@@ -47,7 +47,7 @@ fn fitting_rounds_the_running_sum_up_from_the_paragraph() {
         b.line_break(NodeKey(2));
         b.text(NodeKey(3), "hijk");
     });
-    let advances = layout.shaped_advances();
+    let advances = fixture.cx.shaped_advances();
     let text = layout.measured().text(FirstLineVariant::Standard);
     let one = advances[0];
     assert_ne!(one.ceil_to_grid(), one, "a third of an em is off the grid");
@@ -112,7 +112,7 @@ fn painting_differences_are_exact() {
             &sized(&LATIN, size),
             "office AVAIL fit Quiet R flat",
         );
-        let advances = layout.shaped_advances();
+        let advances = fixture.cx.shaped_advances();
         let stages = layout.stages().variant(FirstLineVariant::Standard);
         let text = stages.measured;
         let mut sum = InlineLayoutUnit::ZERO;

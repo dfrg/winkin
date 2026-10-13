@@ -159,7 +159,7 @@ fn the_plain_path_writes_what_asking_every_cluster_does() {
                     b.close_box();
                 }
             });
-            let advances = fixture.advances(&layout);
+            let advances = fixture.advances();
             let shaped = layout.shaped().text(FirstLineVariant::Standard);
             let words: Vec<(ClusterId, GlyphWord)> =
                 shaped.glyphs.iter().map(|(c, &w)| (c, w)).collect();

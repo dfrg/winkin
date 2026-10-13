@@ -51,6 +51,9 @@ pub(super) fn shape_text<'f>(
         .count();
     glyphs.words.reserve(end.get());
     runs.reserve(end.get(), script_runs);
+    // A layout with no allocation for the advances writes them in the
+    // context's room, which `Shaped::settle_advances` takes back.
+    cx.advance_rooms().lend(variant, advances);
     make_room(advances, end.get());
     // A cluster of one expanded glyph points at the entry already holding
     // it. Upright text draws a few hundred glyphs thousands of times.

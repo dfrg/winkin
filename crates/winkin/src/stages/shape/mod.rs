@@ -668,6 +668,10 @@ pub(crate) struct ShapedText {
     combined: CombineFits,
     /// Each cluster's advance along the line, in 16.16, saturating, which
     /// measurement sums into 48.16 prefix sums.
+    ///
+    /// Empty after the build where the content holds nothing that
+    /// measuring again with new box geometry changes
+    /// ([`Shaped::settle_advances`]).
     pub(crate) advances: Vec<TextUnit>,
 }
 
@@ -801,6 +805,19 @@ impl Shaped {
     #[inline]
     pub(crate) fn text(&self, variant: FirstLineVariant) -> &ShapedText {
         self.text.get(variant)
+    }
+
+    /// Keeps the advances where `keep` says measuring again can read them,
+    /// and otherwise drops them, giving the context back its room.
+    ///
+    /// The build calls it once measurement has summed them.
+    pub(crate) fn settle_advances(&mut self, cx: &mut ShapeContext, keep: bool) {
+        let rooms = cx.advance_rooms();
+        let text = self.text.text_mut();
+        rooms.settle(FirstLineVariant::Standard, &mut text.advances, keep);
+        if let Some(first_line) = self.text.kept_first_line_mut() {
+            rooms.settle(FirstLineVariant::FirstLine, &mut first_line.advances, keep);
+        }
     }
 
     /// The bytes the first line's variant takes on the heap, which

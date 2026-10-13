@@ -96,6 +96,46 @@ fn the_best_partial_font_draws_the_base() {
     assert_eq!(fixture.families(&layout), ["Test Acute Marks"]);
 }
 
+/// Only the listed families draw a private-use character or a noncharacter:
+/// the platform's fallback is not asked for one, as Blink's
+/// `FallbackFontForCharacter` asks for none
+/// (`font-unicode-PUA-primary-font`). A fallback font that maps U+E000 and
+/// U+FDD0 draws neither beside a primary of ASCII, which draws them as its
+/// missing glyph. Listed, it draws both.
+#[test]
+fn a_private_use_character_falls_back_to_no_platform_font() {
+    let ascii = TestFont::new("Test Bare Ascii", &[(0x20, 0x7E)]);
+    let private = TestFont::new("Test Private Use", &[(0xE000, 0xE0FF), (0xFDD0, 0xFDD0)]);
+    let fallback = ahem_fallback().family("Test Private Use");
+    let mut fixture = Fixture::new(
+        &[ascii, private],
+        fallback,
+        StageCheck::BuiltWithContext(check),
+    );
+    let mut layout = Layout::new();
+    let ascii_only = [FontFamilyName::named("Test Bare Ascii")];
+    fixture.span(
+        &mut layout,
+        &families_style(&ascii_only),
+        "a\u{E000}\u{FDD0}b",
+    );
+    assert_eq!(fixture.families(&layout), ["Test Bare Ascii"; 4]);
+    let both = [
+        FontFamilyName::named("Test Bare Ascii"),
+        FontFamilyName::named("Test Private Use"),
+    ];
+    fixture.span(&mut layout, &families_style(&both), "a\u{E000}\u{FDD0}b");
+    assert_eq!(
+        fixture.families(&layout),
+        [
+            "Test Bare Ascii",
+            "Test Private Use",
+            "Test Private Use",
+            "Test Bare Ascii"
+        ]
+    );
+}
+
 /// A cluster no font draws any of is set in the style's primary font, which
 /// draws `.notdef` for it, as Chrome draws its missing-glyph box.
 #[test]

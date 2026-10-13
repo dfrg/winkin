@@ -31,6 +31,8 @@
 //!   `halt` over each mark's range. A plan compiled with one such range
 //!   serves a call with any number, since harfrust sets ranged masks per
 //!   call.
+//! - **advance rooms** ([`AdvanceRooms`]): the shaped advances of a layout
+//!   that keeps none of its own.
 //!
 //! Warm, a call finds each entry by hash and allocates nothing. A plan's
 //! hash names its language by the language table's id, and its match
@@ -64,8 +66,8 @@ use crate::context::CacheLimits;
 use crate::data::{FxHasher, HeapBytes, LruCache, define_id, hash_one, heap_bytes};
 use crate::font::FontMetricsProvider;
 use crate::stages::fonts::{CaseMap, UsedInstance};
-use crate::style::FontLanguageOverride;
-use crate::unit;
+use crate::style::{FirstLineVariant, FontLanguageOverride};
+use crate::unit::{self, TextUnit};
 
 define_id! {
     /// Names a language in the context's table of [`ShapeLanguage`]s.
@@ -222,6 +224,9 @@ pub(crate) struct ShapeContext {
     /// The shaping pass takes it and gives it back
     /// ([`take_shared_glyphs`](Self::take_shared_glyphs)).
     shared_glyphs: SharedGlyphs,
+    /// Where the shaping pass writes the advances of a layout that has no
+    /// allocation for them.
+    advance_rooms: AdvanceRooms,
 }
 
 /// One build or break pass over the shaping caches, with a borrowed metric
@@ -475,6 +480,7 @@ impl ShapeContext {
             buffers: CallBuffers::new(),
             trim_marks: TrimMarks::default(),
             shared_glyphs: SharedGlyphs::new(),
+            advance_rooms: AdvanceRooms::default(),
         }
     }
 
@@ -526,6 +532,7 @@ impl ShapeContext {
         self.buffers = CallBuffers::new();
         self.trim_marks = TrimMarks::default();
         self.shared_glyphs = SharedGlyphs::new();
+        self.advance_rooms = AdvanceRooms::default();
     }
 
     /// Takes the emptied scratch a call finds `text-spacing-trim` marks
@@ -564,12 +571,27 @@ impl ShapeContext {
         self.shared_glyphs = shared;
     }
 
+    /// Returns the rooms the shaping pass writes a new layout's advances in.
+    pub(super) fn advance_rooms(&mut self) -> &mut AdvanceRooms {
+        &mut self.advance_rooms
+    }
+
+    /// Returns each cluster's advance as the last build's shaping wrote
+    /// it, for tests.
+    #[cfg(test)]
+    pub(crate) fn last_shaped_advances(&self) -> &[TextUnit] {
+        self.advance_rooms.last_text()
+    }
+
     /// The bytes the scratch takes on the heap.
     ///
     /// [`heap_bytes`](HeapBytes::heap_bytes) counts these too; the rest is
     /// the caches.
     pub(crate) fn scratch_heap_bytes(&self) -> usize {
-        self.buffers.heap_bytes() + self.trim_marks.heap_bytes() + self.shared_glyphs.heap_bytes()
+        self.buffers.heap_bytes()
+            + self.trim_marks.heap_bytes()
+            + self.shared_glyphs.heap_bytes()
+            + self.advance_rooms.heap_bytes()
     }
 
     /// Drops every instance set down the line, and its glyphs.
@@ -906,7 +928,104 @@ heap_bytes! {
     /// inside a font, a language, a plan and the buffer is their own, and
     /// counted at their size alone: neither says how much.
     ShapeContext {
-        languages, plans, trims, verticals, vertical_glyphs, buffers, trim_marks, shared_glyphs
+        languages, plans, trims, verticals, vertical_glyphs, buffers, trim_marks, shared_glyphs,
+        advance_rooms
+    }
+}
+
+/// Room for the shaped advances of a layout that has no allocation for
+/// them, one a first-line variant.
+///
+/// [`lend`](Self::lend) swaps a room in before the shaping pass writes.
+/// [`settle`](Self::settle) leaves the advances to the layout where it
+/// keeps them, and otherwise takes the room back with them, so a layout
+/// that keeps none never allocates for them. A layout with an allocation
+/// of its own writes in place and keeps it.
+#[derive(Default)]
+pub(super) struct AdvanceRooms {
+    text: AdvanceRoom,
+    first_line: AdvanceRoom,
+    /// The text's advances as the last build's shaping wrote them, for
+    /// tests to read whether or not the layout keeps them.
+    #[cfg(test)]
+    last_text: Vec<TextUnit>,
+}
+
+/// One variant's room, and whether a layout's advances hold it.
+#[derive(Default)]
+struct AdvanceRoom {
+    room: Vec<TextUnit>,
+    lent: bool,
+}
+
+impl AdvanceRooms {
+    /// Returns `variant`'s room.
+    fn room(&mut self, variant: FirstLineVariant) -> &mut AdvanceRoom {
+        match variant {
+            FirstLineVariant::Standard => &mut self.text,
+            FirstLineVariant::FirstLine => &mut self.first_line,
+        }
+    }
+
+    /// Lends `variant`'s room to `advances` where they have no allocation.
+    pub(super) fn lend(&mut self, variant: FirstLineVariant, advances: &mut Vec<TextUnit>) {
+        let room = self.room(variant);
+        if !room.lent && advances.capacity() == 0 {
+            mem::swap(advances, &mut room.room);
+            room.lent = true;
+        }
+    }
+
+    /// Leaves `advances` of `variant` to the layout where `keep` says it
+    /// keeps them, and otherwise empties them and takes the room back.
+    ///
+    /// Kept advances that hold the room keep it where it is exactly their
+    /// length, and are copied to an allocation of their length otherwise.
+    /// Where the allocator refuses the copy, they keep the room.
+    pub(super) fn settle(
+        &mut self,
+        variant: FirstLineVariant,
+        advances: &mut Vec<TextUnit>,
+        keep: bool,
+    ) {
+        #[cfg(test)]
+        if variant == FirstLineVariant::Standard {
+            self.last_text.clear();
+            self.last_text.extend_from_slice(advances);
+        }
+        let room = self.room(variant);
+        let lent = mem::take(&mut room.lent);
+        if !keep {
+            advances.clear();
+            if lent {
+                mem::swap(advances, &mut room.room);
+            }
+            return;
+        }
+        if !lent || advances.len() == advances.capacity() {
+            return;
+        }
+        let mut exact = Vec::new();
+        if exact.try_reserve_exact(advances.len()).is_err() {
+            return;
+        }
+        exact.extend_from_slice(advances);
+        room.room = mem::replace(advances, exact);
+        room.room.clear();
+    }
+}
+
+impl AdvanceRooms {
+    /// Returns the text's advances as the last build's shaping wrote them.
+    #[cfg(test)]
+    pub(super) fn last_text(&self) -> &[TextUnit] {
+        &self.last_text
+    }
+}
+
+impl HeapBytes for AdvanceRooms {
+    fn heap_bytes(&self) -> usize {
+        self.text.room.heap_bytes() + self.first_line.room.heap_bytes()
     }
 }
 

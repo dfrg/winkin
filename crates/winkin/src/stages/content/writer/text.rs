@@ -15,6 +15,7 @@
 //!   and the first line's copy.
 
 use alloc::boxed::Box;
+use alloc::string::String;
 use core::mem;
 
 use icu_segmenter::GraphemeClusterSegmenter;
@@ -23,12 +24,14 @@ use super::{ContentWriter, FirstLetter, MathText, Mirror};
 use crate::data::{TextOffset, index_to_u32};
 use crate::stages::content::collapse::{Anchor, Effect, Event, Run, ZWSP};
 use crate::stages::content::first_letter::FirstLetterScan;
+use crate::stages::content::map::Map;
 use crate::stages::content::transform::{TextTransformer, Transforms, align_counts};
 use crate::stages::content::{
     Content, ContentExtras, ContentFlags, Item, ItemFlags, ItemId, ItemKind, NodeId, NodeKey,
     NodeKind, TextFlags,
 };
 use crate::style::{TextCombineUpright, WhiteSpaceCollapse};
+use crate::unicode::is_mark;
 use crate::work;
 
 impl ContentWriter<'_> {
@@ -746,7 +749,10 @@ impl ContentWriter<'_> {
         );
         if !whole {
             map.truncate(back);
-            map.variable(source..end, mark);
+            if !transformed_clusters(map, written, src, transformer, source, mark) {
+                map.truncate(back);
+                map.variable(source..end, mark);
+            }
         }
     }
 
@@ -999,6 +1005,62 @@ impl ContentWriter<'_> {
             self.content.record(|map| map.generated(source..source, at));
         }
     }
+}
+
+/// Records the offset map's units for `src`, the caller's text from
+/// `source`, which `transformer` wrote as `written` from `mark`, a base
+/// character and the marks after it at a time.
+///
+/// It is for a piece whose characters the context mapped otherwise than
+/// each alone, as Greek capitals drop an accent above a letter: `Ϊ́Ρ`
+/// uppercases to `ΪΡ`, and the first letter keeps its own unit, as Chrome
+/// maps a selection of it. Returns false where the clusters mapped alone do
+/// not make `written`, or where the transform capitalizes. The caller then
+/// takes back what was recorded and takes the piece whole.
+#[cold]
+#[inline(never)]
+fn transformed_clusters(
+    map: &mut Map,
+    written: &str,
+    src: &str,
+    transformer: TextTransformer,
+    source: u32,
+    mark: TextOffset,
+) -> bool {
+    if transformer.capitalizes() {
+        return false;
+    }
+    let (mut made, mut scratch) = (String::new(), String::new());
+    let mut rest = src;
+    let mut at = 0;
+    while let Some(first) = rest.chars().next() {
+        work::step();
+        let len = first.len_utf8()
+            + rest[first.len_utf8()..]
+                .chars()
+                .take_while(|&ch| is_mark(ch))
+                .map(char::len_utf8)
+                .sum::<usize>();
+        let (cluster, after) = rest.split_at(len);
+        made.clear();
+        transformer.write(cluster, ' ', &mut scratch, &mut made);
+        let Some(tail) = written.get(at..) else {
+            return false;
+        };
+        if !tail.starts_with(made.as_str()) {
+            return false;
+        }
+        let from = source.saturating_add(index_to_u32(src.len() - rest.len()));
+        let to = from.saturating_add(index_to_u32(len));
+        if made == cluster {
+            map.identity(from, len, TextOffset::new(mark.get() + at), false);
+        } else {
+            map.variable(from..to, TextOffset::new(mark.get() + at));
+        }
+        at += made.len();
+        rest = after;
+    }
+    at == written.len()
 }
 
 /// Returns whether `ch` is CSS's document white space, which

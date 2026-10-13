@@ -16,7 +16,8 @@
 //! over what hangs, since a space that overflows still hangs. It then steps
 //! back through the opportunity bitset, measuring each candidate exactly
 //! until one fits. If none fits, it takes an `overflow-wrap` break inside the
-//! word where allowed, or the first opportunity, overflowing.
+//! word where allowed. Where a prefix goes back, a later opportunity may fit
+//! again. Otherwise it takes the first opportunity, overflowing.
 
 use super::{
     Breaker, EdgeShapeId, Fitted, Fitting, LineBand, LineFlags, LineHang, LineHead, LineStart,
@@ -282,6 +283,16 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             return fitted;
         }
 
+        // A prefix that goes back, as under a negative inline margin, may
+        // bring a later opportunity within the room.
+        if !para.monotone
+            && !para.tabs
+            && let Some(first) = opportunity
+            && let Some(fitted) = self.later_fit(out, &mut fitting, first)
+        {
+            return fitted;
+        }
+
         // Otherwise take the first opportunity, overflowing. Where only
         // spaces follow it, they end this line rather than make their own.
         // If its reshaped edges bring it within the room, it fits after all.
@@ -295,6 +306,44 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             return overflowing(&fitting, &candidate);
         }
         settle(&fitting, &candidate).unwrap_or_else(|| overflowing(&fitting, &candidate))
+    }
+
+    /// Returns the line `fitting` starts, fitted again from the first
+    /// opportunity after `first` within the room, where nothing up to
+    /// `first` fits.
+    ///
+    /// Only a prefix that goes back, as under a negative inline margin, can
+    /// fit again past an overflow. Chrome's breaker goes on past an overflow
+    /// that no opportunity before it can end. Where the line comes back
+    /// within the room, it fits on as any line does, and ends at the last
+    /// opportunity before its next overflow (WPT
+    /// `inline-negative-margin-001`). `None` where no later opportunity fits.
+    #[cold]
+    #[inline(never)]
+    fn later_fit(
+        &mut self,
+        out: &mut Lines,
+        fitting: &mut Fitting<'_, '_>,
+        first: ClusterId,
+    ) -> Option<Fitted> {
+        let end = fitting.line.para.end;
+        let mut fits = None;
+        let mut at = first;
+        while at < end {
+            let next = ClusterId::new(at.get() + 1);
+            let later = self.opportunity(next..end, false, false).unwrap_or(end);
+            let candidate = self.candidate(out, fitting, later, false);
+            match settle(fitting, &candidate) {
+                Some(_) => fits = Some(later),
+                None if fits.is_some() => break,
+                None => {}
+            }
+            at = later;
+        }
+        // Each candidate replaces the last one's reshaped edges, so the one
+        // kept is measured again.
+        let candidate = self.candidate(out, fitting, fits?, false);
+        settle(fitting, &candidate)
     }
 
     /// Returns whether the line `fitting` starts may fit to its paragraph's

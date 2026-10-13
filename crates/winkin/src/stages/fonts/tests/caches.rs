@@ -87,11 +87,11 @@ fn a_character_no_font_maps_is_walked_once_a_context() {
     let mut fixture = fixture_with(&[plain()]);
     let mut layout = Layout::new();
     let listed = [FontFamilyName::named("Test Plain Hyphen")];
-    let unmapped = '\u{10FFFD}';
+    let unmapped = '\u{2FFFD}';
     let walked = |fixture: &Fixture| fixture.cx.font_context().candidate_lists().walked(unmapped);
-    fixture.span(&mut layout, &ComputedStyle::initial(), "a\u{10FFFD}");
+    fixture.span(&mut layout, &ComputedStyle::initial(), "a\u{2FFFD}");
     assert_eq!(walked(&fixture), (1, true));
-    fixture.span(&mut layout, &families_style(&listed), "a\u{10FFFD}");
+    fixture.span(&mut layout, &families_style(&listed), "a\u{2FFFD}");
     assert_eq!(walked(&fixture), (1, true));
     let families = fixture.families(&layout);
     assert!(

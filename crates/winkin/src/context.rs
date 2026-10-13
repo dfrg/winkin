@@ -11,6 +11,8 @@
 //! it runs. [`Context::finish_build`] and [`Context::start_break`] release
 //! scratch far bigger than the last calls needed.
 
+#[cfg(test)]
+use alloc::vec::Vec;
 use core::mem;
 
 use fontwich::Collection;
@@ -26,6 +28,8 @@ use crate::stages::fragments::PlaceScratch;
 use crate::stages::lines::{BreakScratch, LinePlacements};
 use crate::stages::measure::{GeneratedInput, MeasureScratch};
 use crate::stages::shape::ShapeContext;
+#[cfg(test)]
+use crate::unit::InlineLayoutUnit;
 
 /// Fonts, configuration, caches and working memory for layout.
 ///
@@ -330,6 +334,7 @@ impl Context {
         let generated = GeneratedInput {
             fonts: self.font_scratch.generated(),
             strings: self.content_scratch.lists().hyphen_strings(),
+            block_space: self.font_scratch.block_space(),
         };
         (&mut self.shaping, &mut self.measure_scratch, generated)
     }
@@ -360,6 +365,16 @@ impl Context {
     #[cfg(test)]
     pub(crate) fn generated_fonts(&self) -> &GeneratedFonts {
         self.font_scratch.generated()
+    }
+
+    /// Returns each cluster's advance as the last build's shaping wrote it,
+    /// whether or not the layout keeps them, for tests to inspect.
+    #[cfg(test)]
+    pub(crate) fn shaped_advances(&self) -> Vec<InlineLayoutUnit> {
+        let advances = self.shaping.last_shaped_advances().iter();
+        advances
+            .map(|&advance| InlineLayoutUnit::from_text(advance))
+            .collect()
     }
 
     /// Returns font selection's caches, for tests to inspect.

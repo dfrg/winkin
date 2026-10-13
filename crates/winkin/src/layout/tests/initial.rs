@@ -168,9 +168,16 @@ fn a_first_letter_is_a_box_its_text_answers_to() {
 /// An initial letter is sized by the lines it spans in every writing mode,
 /// as in the `initial-letter-sunk-initial` tests: in Ahem at 20 px on 24 px
 /// lines, `3 2` sets it at 80 px, its box 80 along the line and 80 across,
-/// and asks for an exclusion of that size. In `vertical-*` modes, whose
-/// lines sit on the central baseline, it starts 4 px before the first
-/// line, as the tests' references put it.
+/// and asks for an exclusion of that size.
+///
+/// - In `vertical-*` modes, whose lines sit on the central baseline, the
+///   box starts 4 px before the first line, as the tests' references put
+///   it, and the glyph fills it. The ink is measured about the alphabetic
+///   baseline, and the box's baseline is the central one above it.
+/// - The raise grows the first line on its block-start side, to 48 px.
+/// - A `vertical-lr` line's over side is its block-end side, so there the
+///   box starts 28 px beyond the line's over edge: 4 px before its
+///   block-start edge on the page.
 #[test]
 fn an_initial_letter_is_sized_alike_in_every_writing_mode() {
     use crate::style::WritingMode;
@@ -190,11 +197,11 @@ fn an_initial_letter_is_sized_alike_in_every_writing_mode() {
         sink: 2,
         ..InitialLetter::NONE
     };
-    for (mode, over) in [
-        (WritingMode::HorizontalTb, 2.0),
-        (WritingMode::VerticalRl, -4.0),
-        (WritingMode::VerticalLr, -4.0),
-        (WritingMode::SidewaysRl, 2.0),
+    for (mode, over, block_start) in [
+        (WritingMode::HorizontalTb, 2.0, 0.0),
+        (WritingMode::VerticalRl, -4.0, -4.0),
+        (WritingMode::VerticalLr, -28.0, -4.0),
+        (WritingMode::SidewaysRl, 2.0, 0.0),
     ] {
         let block = ComputedBlockStyle {
             writing_mode: mode,
@@ -215,12 +222,68 @@ fn an_initial_letter_is_sized_alike_in_every_writing_mode() {
             Some((along(0.0, 80.0), across(over, over + 80.0))),
             "{mode:?}"
         );
+        // The letter's glyph fills its box.
+        let ink = runs(&layout, 0)
+            .iter()
+            .find(|run| run.key() == NodeKey(9))
+            .map(|run| run.block());
+        assert_eq!(ink, Some(across(over, over + 80.0)), "{mode:?}");
         let asked = host
             .asked
             .first()
             .map(|asked| (asked.inline_size, asked.block_start));
-        assert_eq!(asked, Some((80.0, over.min(0.0))), "{mode:?}");
+        assert_eq!(asked, Some((80.0, block_start)), "{mode:?}");
     }
+}
+
+/// An initial letter's margin on the block-start side moves it across the
+/// lines, as in `initial-letter-block-position-margins-vlr`. In
+/// `vertical-lr` that side is the left, the lines' under side. With margins
+/// of 15 px left and 45 px right, Chrome sets the `3 drop` letter's 80 px
+/// box 11 px into the block, past the 4 px it starts before the first line,
+/// and its margin box from 4 px before it to 45 px past it.
+#[test]
+fn an_initial_letters_block_start_margin_is_its_left_one_in_vertical_lr() {
+    use crate::style::WritingMode;
+    let mut cx = context();
+    cx.set_config(Config::chrome_windows());
+    let mut layout = Layout::new();
+    let root = paragraph(Direction::Ltr);
+    let mut letter = dropped(&root);
+    letter.edges = EdgesGroup {
+        margin: Sides::<f32> {
+            top: 10.0,
+            right: 45.0,
+            bottom: 30.0,
+            left: 15.0,
+        }
+        .into(),
+        ..EdgesGroup::INITIAL
+    };
+    let block = ComputedBlockStyle {
+        writing_mode: WritingMode::VerticalLr,
+        ..ComputedBlockStyle::new(&root)
+    };
+    build(&mut cx, &mut layout, &block, |b| {
+        b.set_first_letter(NodeKey(9), &letter, None);
+        b.text(NodeKey(1), "bc def ghi jkl mno");
+    });
+    let mut host = Recording::default();
+    layout.break_lines(&mut cx, Area::new(230.0), &mut host);
+    // The first line is 24 px across, and its over side is the right: the
+    // box at 11 to 91 from the left is at -67 to 13 from it.
+    let height = layout.line(0).map(|line| line.metrics().height());
+    assert_eq!(height, Some(24.0));
+    let piece = layout
+        .box_fragments(NodeKey(9))
+        .next()
+        .map(|piece| piece.block());
+    assert_eq!(piece, Some(across(-67.0, 13.0)));
+    let asked = host
+        .asked
+        .first()
+        .map(|asked| (asked.block_start, asked.block_size));
+    assert_eq!(asked, Some((-4.0, 140.0)));
 }
 
 /// The paragraph style the `initial-letter` tests set: Ahem at 20 px on

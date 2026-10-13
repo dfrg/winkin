@@ -14,6 +14,7 @@ use crate::stages::fonts::context::CacheChange;
 use crate::stages::fonts::coverage;
 use crate::stages::fonts::lists::{
     Candidate, CandidateId, CandidateList, CandidateListId, CandidateLists,
+    is_private_or_noncharacter,
 };
 use crate::style::FontVariantEmoji;
 use crate::unicode;
@@ -81,6 +82,9 @@ pub(super) struct GraphemeNeeds<'t> {
     /// The sequence whose presence in a font's `cmap` accepts the font for
     /// the presentation whatever its colour, for a forced one.
     presented: Option<(char, char)>,
+    /// It starts with a private-use character or a noncharacter in text,
+    /// which only the listed families and the Standard font draw.
+    listed_only: bool,
 }
 
 impl<'t> GraphemeNeeds<'t> {
@@ -102,6 +106,8 @@ impl<'t> GraphemeNeeds<'t> {
             presentation,
             sequences: selector && coverage::asks_sequences(text),
             presented: coverage::presentation_sequence(text, presentation),
+            listed_only: presentation.base() == Presentation::Text
+                && text.chars().next().is_some_and(is_private_or_noncharacter),
         }
     }
 
@@ -251,6 +257,9 @@ pub(super) fn resolve(
     if let Some(at) = base {
         return Ok(Some(at));
     }
+    if needs.listed_only {
+        return Ok(None);
+    }
     let p = needs.presentation;
     let base = if p == p.base() {
         ListOutcome::Exhausted(None)
@@ -353,7 +362,12 @@ impl<'w> SpanText<'w> {
         // The first candidate covering the grapheme without every sequence: the
         // second pass's answer.
         let mut base: Option<CandidateId> = None;
-        for (at, candidate) in list.iter() {
+        let tried = if needs.listed_only {
+            list.listed_candidates()
+        } else {
+            usize::MAX
+        };
+        for (at, candidate) in list.iter().take(tried) {
             if memo.get(at).is_some_and(|&next| next > cluster) {
                 continue;
             }
@@ -376,6 +390,10 @@ impl<'w> SpanText<'w> {
                 }
                 CandidateFit::Passed => {}
             }
+        }
+        // Every listed family is matched, and no other is tried.
+        if tried != usize::MAX {
+            return ListOutcome::Exhausted(base);
         }
         second_pass(list, base)
     }

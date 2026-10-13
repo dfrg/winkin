@@ -172,6 +172,12 @@ impl TextTransformer {
         }
     }
 
+    /// Whether it capitalizes, whose mapping reads the words around a
+    /// character.
+    pub(super) fn capitalizes(&self) -> bool {
+        self.transform.case == TextCase::Capitalize
+    }
+
     /// Returns the most bytes the transform makes of one byte of text.
     ///
     /// The writer leaves this much room for each byte before it writes the

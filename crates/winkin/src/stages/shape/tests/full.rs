@@ -35,11 +35,11 @@ fn a_variable_font_is_shaped_at_its_coordinates() {
     let mut style = sized(&CASED, 100.0);
     fixture.span(&mut layout, &style, "ab");
     let em = scaled(500, 1000, i64::from(TextUnit::from_px(100.0).raw()));
-    assert_eq!(fixture.advances(&layout), [em, em]);
+    assert_eq!(fixture.advances(), [em, em]);
     style.font.weight = FontWeight::new(700.0);
     fixture.span(&mut layout, &style, "ab");
     let bold = scaled(620, 1000, i64::from(TextUnit::from_px(100.0).raw()));
-    for advance in fixture.advances(&layout) {
+    for advance in fixture.advances() {
         assert!(
             (advance - bold).abs() <= 1 << 10,
             "{advance} against {bold}"
@@ -63,7 +63,7 @@ fn instances_of_one_font_shape_apart_in_one_paragraph() {
     );
     let size = i64::from(TextUnit::from_px(100.0).raw());
     let (em, wide) = (scaled(500, 1000, size), scaled(620, 1000, size));
-    let advances = fixture.advances(&layout);
+    let advances = fixture.advances();
     let wanted = [em, em, wide, wide, em, em];
     assert_eq!(advances.len(), wanted.len());
     for (advance, wanted) in advances.into_iter().zip(wanted) {
@@ -96,7 +96,7 @@ fn synthesized_small_caps_are_fed_uppercased_at_their_size() {
     let small = scaled(500, 1000, i64::from(TextUnit::from_px(14.0).raw()));
     let full = scaled(500, 1000, i64::from(TextUnit::from_px(20.0).raw()));
     assert_eq!(
-        fixture.advances(&layout),
+        fixture.advances(),
         [full, small, 2 * small, small],
         "the capital at the size, the rest at 0.7 of it"
     );
@@ -149,10 +149,10 @@ fn font_kerning_none_leaves_the_pairs_apart() {
     let mut layout = Layout::new();
     let mut style = sized(&LATIN_HEBREW, 100.0);
     fixture.span(&mut layout, &style, "AV");
-    let kerned = fixture.advances(&layout)[0];
+    let kerned = fixture.advances()[0];
     style.font.kerning = FontKerning::None;
     fixture.span(&mut layout, &style, "AV");
-    let apart = fixture.advances(&layout)[0];
+    let apart = fixture.advances()[0];
     assert!(apart > kerned, "{apart} against {kerned}");
 }
 
@@ -189,7 +189,7 @@ fn the_point_size_is_the_computed_size() {
     };
     let mut style = sized(&TRACKED, 20.0);
     fixture.span(&mut layout, &style, "xx");
-    assert_eq!(in_px(fixture.advances(&layout)), [16.0, 16.0]);
+    assert_eq!(in_px(fixture.advances()), [16.0, 16.0]);
 
     // The x-height is half the em, so 0.25 sets the glyphs at 10 px.
     style.font.size_adjust = FontSizeAdjust::Hold {
@@ -197,7 +197,7 @@ fn the_point_size_is_the_computed_size() {
         value: 0.25,
     };
     fixture.span(&mut layout, &style, "xx");
-    assert_eq!(in_px(fixture.advances(&layout)), [8.0, 8.0]);
+    assert_eq!(in_px(fixture.advances()), [8.0, 8.0]);
     let piece = fixture.reshape(
         &layout,
         ShapedRunId::new(0),
@@ -209,5 +209,5 @@ fn the_point_size_is_the_computed_size() {
     style.font.size_adjust = FontSizeAdjust::None;
     style.font.variant_caps = FontVariantCaps::SmallCaps;
     fixture.span(&mut layout, &style, "xx");
-    assert_eq!(in_px(fixture.advances(&layout)), [11.2, 11.2]);
+    assert_eq!(in_px(fixture.advances()), [11.2, 11.2]);
 }

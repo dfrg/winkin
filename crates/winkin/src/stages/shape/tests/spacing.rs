@@ -40,7 +40,7 @@ fn a_mark_gives_its_blank_back_in_the_fonts_halt() {
         fixture.span(&mut layout, &style, text);
         let mut expected = vec![px16(20); 4];
         expected[halved] = px16(10);
-        assert_eq!(fixture.advances(&layout), expected, "{text}");
+        assert_eq!(fixture.advances(), expected, "{text}");
         let shaped = layout.shaped().text(FirstLineVariant::Standard);
         // Breaking between the two marks is unsafe.
         assert!(
@@ -63,7 +63,7 @@ fn a_mark_gives_its_blank_back_in_the_fonts_halt() {
     assert_eq!((second[0].1, second[0].3), (-px16(10), px16(10)));
     // A mark beside ideographs keeps its blank.
     fixture.span(&mut layout, &style, "漢「漢」漢");
-    assert_eq!(fixture.advances(&layout), vec![px16(20); 5]);
+    assert_eq!(fixture.advances(), vec![px16(20); 5]);
 }
 
 /// Nothing is trimmed under `space-all`; nor, as in Chrome, in a font
@@ -77,10 +77,10 @@ fn a_font_without_halt_trims_nothing_but_where_the_config_says() {
     let mut spaced = sized(&PUNCT, 20.0);
     spaced.text.spacing_trim = TextSpacingTrim::SpaceAll;
     fixture.span(&mut layout, &spaced, "漢「「漢");
-    assert_eq!(fixture.advances(&layout), vec![px16(20); 4]);
+    assert_eq!(fixture.advances(), vec![px16(20); 4]);
     let plain = sized(&PLAIN_PUNCT, 20.0);
     fixture.span(&mut layout, &plain, "漢「「漢");
-    assert_eq!(fixture.advances(&layout), vec![px16(20); 4]);
+    assert_eq!(fixture.advances(), vec![px16(20); 4]);
     assert!(
         !layout
             .shaped()
@@ -99,10 +99,7 @@ fn a_font_without_halt_trims_nothing_but_where_the_config_says() {
             .flags
             .contains(ShapedFlags::HALVES_PUNCTUATION)
     );
-    assert_eq!(
-        fixture.advances(&layout),
-        [px16(20), px16(20), px16(10), px16(20)]
-    );
+    assert_eq!(fixture.advances(), [px16(20), px16(20), px16(10), px16(20)]);
     let shaped = layout.shaped().text(FirstLineVariant::Standard);
     let second = drawn(
         shaped.glyphs.word(ClusterId::new(2)),
@@ -111,17 +108,11 @@ fn a_font_without_halt_trims_nothing_but_where_the_config_says() {
     );
     assert_eq!((second[0].1, second[0].3), (-px16(10), px16(10)));
     fixture.span(&mut layout, &plain, "漢」」漢");
-    assert_eq!(
-        fixture.advances(&layout),
-        [px16(20), px16(10), px16(20), px16(20)]
-    );
+    assert_eq!(fixture.advances(), [px16(20), px16(10), px16(20), px16(20)]);
     // A curly quote, half an em in a Japanese font, is a narrow opening
     // mark, and the full-width one after it gives its blank back.
     fixture.span(&mut layout, &plain, "漢“「漢");
-    assert_eq!(
-        fixture.advances(&layout),
-        [px16(20), px16(10), px16(10), px16(20)]
-    );
+    assert_eq!(fixture.advances(), [px16(20), px16(10), px16(10), px16(20)]);
 }
 
 /// A pair is found across a style boundary that stops shaping, the text
@@ -136,15 +127,9 @@ fn a_pair_is_found_across_runs() {
     let style = sized(&PUNCT, 20.0);
     let small = sized(&PUNCT, 10.0);
     fixture.spans(&mut layout, &style, &[(&style, "漢」"), (&small, "」漢")]);
-    assert_eq!(
-        fixture.advances(&layout),
-        [px16(20), px16(10), px16(10), px16(10)]
-    );
+    assert_eq!(fixture.advances(), [px16(20), px16(10), px16(10), px16(10)]);
     fixture.spans(&mut layout, &style, &[(&style, "漢」"), (&small, "「漢")]);
-    assert_eq!(
-        fixture.advances(&layout),
-        [px16(20), px16(20), px16(5), px16(10)]
-    );
+    assert_eq!(fixture.advances(), [px16(20), px16(20), px16(5), px16(10)]);
     // The pair makes the second run's first cluster unsafe to break
     // before, though the runs are shaped apart: a line starting there is
     // reshaped, and a line end's window, which stops at its run's start,
@@ -172,11 +157,7 @@ fn trim_start_trims_a_paragraphs_opening_mark() {
     ] {
         style.text.spacing_trim = trim;
         fixture.span(&mut layout, &style, "「漢");
-        assert_eq!(
-            fixture.advances(&layout),
-            [px16(first), px16(20)],
-            "{trim:?}"
-        );
+        assert_eq!(fixture.advances(), [px16(first), px16(20)], "{trim:?}");
     }
 }
 
@@ -192,10 +173,7 @@ fn a_font_with_chws_collapses_its_own_pairs() {
     let mut layout = Layout::new();
     let style = sized(&family, 20.0);
     fixture.span(&mut layout, &style, "漢」」漢");
-    assert_eq!(
-        fixture.advances(&layout),
-        [px16(20), px16(10), px16(20), px16(20)]
-    );
+    assert_eq!(fixture.advances(), [px16(20), px16(10), px16(20), px16(20)]);
 }
 
 /// A pair in two fallback fonts is trimmed as in one font: a neighbour is
@@ -242,7 +220,7 @@ fn a_pair_in_two_fallback_fonts_is_trimmed() {
         fixture.span(&mut layout, &style, text);
         let mut expected = vec![px16(20); 4];
         expected[trimmed] = px16(10);
-        assert_eq!(fixture.advances(&layout), expected, "{families:?} {text}");
+        assert_eq!(fixture.advances(), expected, "{families:?} {text}");
     }
 }
 

@@ -263,6 +263,31 @@ impl FontContext {
         request: &FontRequest,
         language: Language,
     ) -> Option<(Family, usize)> {
+        let id = self.primary_list(list, request, language)?;
+        self.candidates.first_available(id)
+    }
+
+    /// Returns the first font a primary font is looked for among, as
+    /// [`primary_font`](Self::primary_font) looks, that maps U+0020: the font
+    /// a space falls back to. `None` where no listed font maps one.
+    pub(super) fn space_font(
+        &mut self,
+        list: NamedListId,
+        request: &FontRequest,
+        language: Language,
+    ) -> Option<(Family, usize)> {
+        let id = self.primary_list(list, request, language)?;
+        self.candidates.space_font(id)
+    }
+
+    /// Finds or makes the candidate list a primary font of `request` is
+    /// looked for in.
+    fn primary_list(
+        &mut self,
+        list: NamedListId,
+        request: &FontRequest,
+        language: Language,
+    ) -> Option<CandidateListId> {
         let key = ListKey {
             list,
             script: PRIMARY_SCRIPT,
@@ -270,10 +295,8 @@ impl FontContext {
             request: MatchRequest::from(request),
             emoji: false,
         };
-        let id = self
-            .candidates
-            .find_or_make(&self.collection, &self.names, key)?;
-        self.candidates.first_available(id)
+        self.candidates
+            .find_or_make(&self.collection, &self.names, key)
     }
 
     /// Finds or makes the candidate list `key` names, which a span's

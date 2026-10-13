@@ -2,7 +2,8 @@
 //! - a word with nowhere to break overflowing, unless `overflow-wrap` or
 //!   `word-break: break-all` lets it break;
 //! - spaces ending an overflowing line staying on it;
-//! - a paragraph whose prefix goes back breaking as Chrome's walk does.
+//! - a paragraph whose prefix goes back breaking as Chrome's walk does;
+//! - a negative margin after an overflow letting the line fit on.
 
 use super::*;
 use crate::style::FirstLineVariant;
@@ -178,4 +179,54 @@ fn a_paragraph_that_goes_back_ends_its_line_at_the_first_overflow() {
     assert_eq!(texts(&layout), ["XXXX ", "YY"]);
     assert_eq!(widths(&layout), [40.0, 40.0]);
     assert_eq!(end_kinds(&layout)[0], EndKind::Soft);
+}
+
+/// Where no opportunity before an overflow fits, a negative margin after it
+/// may bring the line back within the room. The line then fits on from
+/// there, as any line does.
+///
+/// Chrome 155 sets these in a 40 px block of 10 px Ahem (WPT
+/// `inline-negative-margin-001`, and probes like it):
+/// - `XXXXX <span -60>XXX</span>` on one line: the span takes the five `X`
+///   and the space back;
+/// - `XXXXX <span -40>XXX</span>` on two, the span starting the second: the
+///   line overflows to its end;
+/// - `XXXXX <span -50>X</span> X X X` as `XXXXX X X` and `X X`: the line
+///   fits on from where the margin brings it back.
+#[test]
+fn a_negative_margin_after_an_overflow_lets_the_line_fit_on() {
+    let mut fixture = fixture();
+    let mut layout = Layout::new();
+    let root = ahem(10.0);
+    let back = |px: f32| ComputedStyle {
+        edges: EdgesGroup {
+            margin: Sides::<f32> {
+                left: -px,
+                ..Sides::ZERO
+            }
+            .into(),
+            ..EdgesGroup::INITIAL
+        },
+        ..root
+    };
+    for (before, margin, inside, after, expected) in [
+        ("XXXXX ", 60.0, "XXX", "", &["XXXXX XXX"][..]),
+        ("XXXXX ", 40.0, "XXX", "", &["XXXXX ", "XXX"][..]),
+        ("XXXXX ", 50.0, "X", " X X X", &["XXXXX X X ", "X X"][..]),
+    ] {
+        let span = back(margin);
+        fixture.build(&mut layout, &ComputedBlockStyle::new(&root), |b| {
+            b.text(NodeKey(1), before);
+            b.open_box(NodeKey(2), &span, None);
+            b.text(NodeKey(3), inside);
+            b.close_box();
+            b.text(NodeKey(4), after);
+        });
+        fixture.lay_out(&mut layout, 40.0);
+        assert_eq!(
+            texts(&layout),
+            expected,
+            "{before}|{margin}|{inside}|{after}"
+        );
+    }
 }

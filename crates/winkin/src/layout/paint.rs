@@ -84,7 +84,7 @@ impl Decorates {
 #[non_exhaustive]
 pub enum Paint<'a> {
     /// The block's background behind the line's content.
-    Background(Background),
+    Background(Background<'a>),
     /// The border box of a retained inline-box fragment.
     ///
     /// Culled boxes are available through
@@ -116,16 +116,20 @@ pub enum Paint<'a> {
     DecorationAfterText(Decoration),
 }
 
-/// The block background behind one line of content.
+/// The block background behind one line of content, as a `::first-line`
+/// background is painted.
 ///
-/// Spans the line-box height and content width, excluding hanging content.
-#[derive(Copy, Clone, PartialEq, Debug)]
-pub struct Background {
+/// Spans the content width, excluding hanging content, and the block's
+/// primary font's ascent and descent about the line's baseline, as an inline
+/// box's background does. Without a font it spans the line-box height.
+#[derive(Copy, Clone)]
+pub struct Background<'a> {
     inline: InlineExtents,
-    block: CrossExtents,
+    /// Its line, whose font gives the extent across it when asked.
+    line: Line<'a>,
 }
 
-impl Background {
+impl Background<'_> {
     /// Returns inline extents relative to line-box left.
     pub fn inline(&self) -> InlineExtents {
         self.inline
@@ -133,7 +137,39 @@ impl Background {
 
     /// Returns cross-line extents relative to the line-over edge.
     pub fn block(&self) -> CrossExtents {
-        self.block
+        // The block's content area, in its first-line font on the first
+        // line, as Chrome paints the line's root inline box.
+        let line = &self.line;
+        let layout = line.layout();
+        let content = layout.content();
+        let text = content.nodes.text_facts(NodeId::BLOCK, line.variant());
+        let request = content.facts.text_request(text);
+        let metrics = line.metrics();
+        let scale = line.scale();
+        let scaled = |px: f32| if scale == 1.0 { px } else { px * scale };
+        layout.fonts().primary_font(request).map_or_else(
+            || CrossExtents::from_line_height(metrics.height()),
+            |used| CrossExtents {
+                over: metrics.ascent - scaled(used.metrics.ascent.to_px()),
+                under: metrics.ascent + scaled(used.metrics.descent.to_px()),
+            },
+        )
+    }
+}
+
+impl PartialEq for Background<'_> {
+    /// Compares where it is painted, not which line it was found on.
+    fn eq(&self, other: &Self) -> bool {
+        self.inline == other.inline && self.block() == other.block()
+    }
+}
+
+impl fmt::Debug for Background<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Background")
+            .field("inline", &self.inline)
+            .field("block", &self.block())
+            .finish()
     }
 }
 
@@ -208,7 +244,11 @@ impl Decoration {
         self.baseline
     }
 
-    /// Returns the used primary-font size, the basis for decoration thickness.
+    /// Returns the computed font size, the basis for decoration thickness
+    /// and for lengths in `em`.
+    ///
+    /// It is the size before `font-size-adjust` and `@font-face`
+    /// `size-adjust`, scaled where `text-fit` scales the line.
     pub fn font_size(&self) -> f32 {
         self.size
     }
@@ -621,7 +661,7 @@ impl<'a> PaintedLine<'a> {
 
     /// The background: the extent of the line's content, where it has any.
     #[inline]
-    fn background(&self) -> Option<Background> {
+    fn background(&self) -> Option<Background<'a>> {
         let mut extent: Option<(InlineLayoutUnit, InlineLayoutUnit)> = None;
         let own = self.items.get_slice(self.own.clone()).unwrap_or_default();
         for item in own.iter().filter(|item| Self::content(item)) {
@@ -636,7 +676,7 @@ impl<'a> PaintedLine<'a> {
         let (from, to) = extent?;
         Some(Background {
             inline: InlineExtents::from_exact(from, to),
-            block: CrossExtents::from_line_height(self.line.metrics().height()),
+            line: self.line,
         })
     }
 
@@ -993,17 +1033,19 @@ impl<'a> PaintedLine<'a> {
         let content = layout.content();
         // The block's first line decorates in its first-line fonts.
         let text = content.nodes.text_facts(node, self.line.variant());
-        let used = layout
-            .fonts()
-            .primary_font(content.facts.text_request(text));
+        let request = content.facts.text_request(text);
+        let used = layout.fonts().primary_font(request);
         // On a line `text-fit` scales, the font's metrics scale with the
         // text, as Chrome decorates through the scaled font.
         let scale = self.line.scale();
         let scaled = |px: f32| if scale == 1.0 { px } else { px * scale };
-        let (size, ascent, descent) = used.map_or((0.0, 0.0, 0.0), |used| {
+        // Thickness is of the computed size, before `font-size-adjust` and
+        // `size-adjust`, as Chrome's `ComputeDecorationThickness` takes
+        // `ComputedFontSize`.
+        let size = used.map_or(0.0, |_| scaled(content.facts.request(request).font.size));
+        let (ascent, descent) = used.map_or((0.0, 0.0), |used| {
             let metrics = &used.metrics;
             (
-                scaled(used.size.to_px()),
                 scaled(metrics.ascent.to_px()),
                 scaled(metrics.descent.to_px()),
             )
