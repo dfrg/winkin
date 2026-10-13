@@ -103,12 +103,13 @@ impl LevelBands {
     /// of columns split across lines. Each level's em box sits on the one
     /// inside it, and the first sits on the bases'. Where every base under a
     /// side is empty, its levels stand on `line`, the line box's extent, as
-    /// Chrome's do. Linear in the levels.
+    /// Chrome's do. A base's em box is the one the line sets, whose in-flow
+    /// content ends at `end`. Linear in the levels.
     pub(crate) fn stack(
         &mut self,
         rubies: &RubyColumns,
         on_line: Range<RubyColumnId>,
-        line: Extent,
+        (line, end): (Extent, ClusterId),
         parts: Option<(&RubyLines, &[ColumnPart])>,
     ) -> AnnotationReach {
         let out = &mut self.bands;
@@ -171,7 +172,7 @@ impl LevelBands {
                     index += 1;
                 }
                 if index > from {
-                    base = base.unite(column.base_em);
+                    base = base.unite(rubies.line_base_em(id, column, end));
                 }
             }
             if side == RubySide::Over {
@@ -337,7 +338,8 @@ impl<'a> AnnotationRoom<'a> {
         let reach = if rubies.is_empty() {
             AnnotationReach::default()
         } else {
-            bands.stack(rubies, line_columns.clone(), natural, parts)
+            let end = stages.analysis.clusters.drawn_end(clusters.clone());
+            bands.stack(rubies, line_columns.clone(), (natural, end), parts)
         };
         // What the content reaches from the baseline: the em boxes, their
         // marks and the annotations.

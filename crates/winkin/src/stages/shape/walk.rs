@@ -20,7 +20,7 @@ use crate::stages::analysis::{
 };
 use crate::stages::content::{ItemFlags, ItemId, ItemKind, ShapingFactsId};
 use crate::stages::fonts::{FontRunId, FontRuns, UsedFontId};
-use crate::style::FirstLineVariant;
+use crate::style::{FirstLineVariant, UnicodeBidi};
 use crate::unit::{InlineLayoutUnit, LayoutUnit, TextUnit};
 use crate::work;
 
@@ -78,11 +78,13 @@ pub(super) fn shape_text<'f>(
         // it in its paragraph, beside the fonts of the runs either side.
         let run = walk.open();
         let annotation = walk.annotation;
+        let cut_before = walk.cut == Some(run.start);
         paragraphs.step_to(&mut paragraph, run.start);
         if paragraph.id() != facts.id {
             facts = ParagraphFacts::new(analysis, paragraph.id(), paragraph.end(), end);
         }
         let run_end = walk.run_end(&facts);
+        let cuts = (cut_before, walk.cut == Some(run_end));
         let after = (run_end < end).then(|| walk.font());
         let neighbours = NeighbourFonts::new(input.fonts, before, after);
         before = Some(run.font);
@@ -102,6 +104,7 @@ pub(super) fn shape_text<'f>(
             facts.text.clone(),
             annotation,
             neighbours,
+            cuts,
             None,
         );
         if run_end >= end {
@@ -187,6 +190,11 @@ struct Walk<'a> {
     /// That item is a ruby annotation's text. A shaping run never holds
     /// both annotation and base text, since an annotation's edges end runs.
     annotation: bool,
+    /// The last cluster that an edge of a box whose `unicode-bidi` is not
+    /// `normal` stands before. Blink's text holds a bidi control there. The
+    /// edge ends a shaping run, and the runs either side take no context
+    /// across it, so Arabic does not join across an isolate.
+    cut: Option<ClusterId>,
 }
 
 impl<'a> Walk<'a> {
@@ -208,6 +216,7 @@ impl<'a> Walk<'a> {
             shaping: ShapingFactsId::new(0),
             text: None,
             annotation: false,
+            cut: None,
         };
         walk.items_to(ClusterId::new(0));
         walk.next = walk.next_end();
@@ -331,13 +340,17 @@ impl<'a> Walk<'a> {
             && let Some(item) = content.items.get(self.item.id())
         {
             edge |= match item.kind {
-                ItemKind::Open | ItemKind::Close => (content.facts)
-                    .box_facts(
+                ItemKind::Open | ItemKind::Close => {
+                    let facts = (content.facts).box_facts(
                         content
                             .nodes
                             .box_facts(item.node, FirstLineVariant::Standard),
-                    )
-                    .breaks_shaping(item.kind == ItemKind::Open),
+                    );
+                    if facts.bidi != UnicodeBidi::Normal {
+                        self.cut = Some(cluster);
+                    }
+                    facts.breaks_shaping(item.kind == ItemKind::Open)
+                }
                 ItemKind::Text | ItemKind::Atomic | ItemKind::Break => false,
                 _ => true,
             };
@@ -366,7 +379,8 @@ impl<'a> Walk<'a> {
 ///
 /// Where the run is not shaped, or its font has nothing to draw with, it
 /// writes its clusters with no glyphs. `annotation` marks a ruby
-/// annotation's text. `neighbours` names the fonts of the runs either side.
+/// annotation's text. `neighbours` names the fonts of the runs either side,
+/// and `cuts` whether a bidi control stands before and after the run.
 /// `narrow` names the form combined text is shaped in, if any.
 #[allow(clippy::too_many_arguments)]
 fn shape_run<'f>(
@@ -379,6 +393,7 @@ fn shape_run<'f>(
     paragraph: Range<TextOffset>,
     annotation: bool,
     neighbours: NeighbourFonts<'_>,
+    cuts: (bool, bool),
     narrow: Option<CombineWidth>,
 ) {
     let ShapeInput {
@@ -424,6 +439,8 @@ fn shape_run<'f>(
         line_start: starts,
         trim_start: opens,
         trim_end: false,
+        cut_before: cuts.0,
+        cut_after: cuts.1,
     };
     shape_range(cx, source, paragraph, range, &key, edges, neighbours, sink);
 }
@@ -599,6 +616,7 @@ impl<'a, 'f> CombinedUnits<'a, 'f> {
                 paragraph.clone(),
                 false,
                 NeighbourFonts::default(),
+                (false, false),
                 narrow,
             );
         }

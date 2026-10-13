@@ -93,7 +93,8 @@ fn a_line_wrapping_to_an_opening_mark_trims_it_under_space_first() {
 ///
 /// One that fits whole keeps its blank. One that fits neither way goes to
 /// the next line, with what may not start a line without it. These match
-/// Chrome 153 in Yu Gothic at 180, 200 and 179px.
+/// Chrome 153 in Yu Gothic at 180, 200 and 179px. A paragraph's end is a
+/// line's end too.
 #[test]
 fn a_closing_mark_that_fits_only_trimmed_ends_the_line_trimmed() {
     let mut fixture = cjk();
@@ -113,6 +114,17 @@ fn a_closing_mark_that_fits_only_trimmed_ends_the_line_trimmed() {
     );
     fixture.lay_out(&mut layout, 90.0);
     assert_eq!(widths(&layout), [(0..3, 60.0), (3..7, 80.0)]);
+    // At the paragraph's end, where no break is set, the line ends too:
+    // Chrome 155 sets WPT's `text-spacing-trim-end-span-001` on one line of
+    // 7.5 em.
+    let style = trimmed(&PUNCT, TextSpacingTrim::Normal);
+    fixture.spans(
+        &mut layout,
+        &style,
+        &[(&style, "漢字漢"), (&style, "字"), (&style, "漢字漢」")],
+    );
+    fixture.lay_out(&mut layout, 150.0);
+    assert_eq!(widths(&layout), [(0..8, 150.0)]);
 }
 
 /// A pair of marks a break parts keeps the closing trim and gives the

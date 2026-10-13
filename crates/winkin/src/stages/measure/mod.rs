@@ -835,7 +835,7 @@ heap_bytes! {
 }
 
 heap_bytes! {
-    RubyColumns { columns, levels, steps, floors, rooms, tab_reaches }
+    RubyColumns { columns, levels, steps, floors, rooms, tab_reaches, trimmed_ems }
 }
 
 heap_bytes! {

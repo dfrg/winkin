@@ -377,6 +377,7 @@ fn the_marks_are_found_as_blink_finds_them() {
         line_start: true,
         trim_start: true,
         trim_end: true,
+        ..ShapingEdges::default()
     };
     assert_eq!(
         marks("「漢」", None, None, &font, both),

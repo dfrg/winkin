@@ -73,6 +73,13 @@ fn presentation_follows_selectors_then_the_property() {
         (Text, "0", AsEmoji, P::EmojiOnly),
         (Text, "7", AsText, P::TextOnly),
         (Text, "5", Normal, P::Text),
+        // A keycap asks for emoji under `normal`, and the property and VS15
+        // override it, as Chrome 155 draws WPT's `font-variant-emoji-005`.
+        (Text, "1\u{20E3}", Normal, P::EmojiOnly),
+        (Text, "1\u{20E3}", AsText, P::TextOnly),
+        (Text, "2\u{20E3}", Unicode, P::TextOnly),
+        (Text, "3\u{20E3}", AsEmoji, P::EmojiOnly),
+        (Text, "5\u{FE0E}\u{20E3}", AsEmoji, P::TextOnly),
         // ★ is a pictograph and no emoji: the property prefers a form and
         // forces none, and `unicode` leaves it as `normal` does.
         (Symbol, "\u{2605}", AsEmoji, P::Emoji),

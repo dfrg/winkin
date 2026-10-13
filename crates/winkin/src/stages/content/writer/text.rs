@@ -234,6 +234,25 @@ impl ContentWriter<'_> {
             transforms
         };
         self.collapse_text(mode, wraps, transforms, text);
+        if combined && !text.is_empty() && self.collapser.is_combining_empty() {
+            self.keep_empty_unit(node);
+        }
+    }
+
+    /// Keeps a combined unit whose text all collapsed away, with a zero
+    /// width space generated for it.
+    ///
+    /// The unit still sets one em across the line, at a line's end too, as
+    /// Blink's `LayoutTextCombine` is an inline block whatever its text.
+    #[cold]
+    #[inline(never)]
+    fn keep_empty_unit(&mut self, node: NodeId) {
+        if !self.has_text_room(ZWSP.len_utf8()) {
+            self.room.full = true;
+            return;
+        }
+        self.generated_break(node, self.text_node.source);
+        self.collapser.step(Event::Content { first: ZWSP });
     }
 
     /// Writes `text` for the current text node, under its white space rules,
@@ -303,12 +322,16 @@ impl ContentWriter<'_> {
                     self.collapsed(len);
                     true
                 }
-                // Inside a ruby container no segment break is kept: a column
-                // is one unit of a line, and no paragraph ends inside one.
-                // Where only breaks were kept it collapses as white space,
-                // and where spaces are kept it is one, as Blink has it
-                // (`should_not_preserve_newline` in ruby).
-                '\n' => match (mode, self.ruby.innermost.is_some()) {
+                // Inside a ruby container or a combined unit no segment
+                // break is kept: each is one unit of a line, and no
+                // paragraph ends inside one. Where only breaks were kept it
+                // collapses as white space, and where spaces are kept it is
+                // one, as Blink has it (`should_not_preserve_newline` in
+                // ruby, `is_text_combine_` in a combined unit).
+                '\n' => match (
+                    mode,
+                    self.ruby.innermost.is_some() || self.collapser.is_combining(),
+                ) {
                     (Ws::Discard, _) => {
                         self.collapsed(len);
                         true

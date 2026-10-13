@@ -200,6 +200,28 @@ fn under_spaces_a_column_reaches_into_blank_alone() {
     assert_eq!(column.overhang, (LayoutUnit::ZERO, LayoutUnit::ZERO));
 }
 
+/// Under `ruby-overhang: spaces` a column reaches over a quarter of a
+/// middle dot beside it however narrow its glyph, as Chrome's
+/// `MaybeHanKerningMiddle` reads only the character
+/// (`css-ruby/ruby-overhang-spaces-019`): `・` set half an em wide either
+/// side of `X` under `XXXXXX` in 16px gives 4 each.
+#[test]
+fn under_spaces_a_column_reaches_over_a_narrow_middle_dot() {
+    use crate::style::RubyOverhang;
+    let mut fixture = fixture();
+    let mut layout = Layout::new();
+    let column = ruby_column(
+        &mut fixture,
+        &mut layout,
+        ("A\u{30FB}", "X", "XXXXXX", "\u{30FB}B"),
+        RubyOverhang::Spaces,
+    );
+    assert_eq!(
+        column.overhang,
+        (LayoutUnit::from_px(4.0), LayoutUnit::from_px(4.0))
+    );
+}
+
 /// Under `ruby-overhang: spaces` two columns never reach into the same
 /// blank, as Chrome's `GetOverhang` takes the last column's end overhang off
 /// the text between them: in 10px Ahem, two 40px `X`s under `XXXX` at 20px

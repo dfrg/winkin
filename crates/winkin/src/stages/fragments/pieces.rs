@@ -138,7 +138,8 @@ impl<'a> Placer<'a> {
         // At the text's end, every item is the last line's when the last
         // paragraph holds clusters. Otherwise what follows the leading
         // closes belongs to the next line, or to none.
-        let everything_at_end = end == self.count && self.gates.ends_on_a_line;
+        let everything_at_end =
+            end == self.count && (self.gates.ends_on_a_line || range.start == end);
         let mut boundary = Boundary {
             at: None,
             split: BoundarySplit::default(),
@@ -153,7 +154,7 @@ impl<'a> Placer<'a> {
         } else {
             end
         };
-        let removable = self.removable_spaces(line);
+        let mut removable = self.removable_spaces(line);
         while let Some(item) = self.items.get(self.item) {
             work::step();
             let Range {
@@ -169,6 +170,9 @@ impl<'a> Placer<'a> {
             // A ruby column ending before this item, or starting with it.
             if !self.rubies.is_empty() {
                 self.update_columns(pieces, boxes, rubies, line, first, rest_here);
+                if let Some(from) = self.line_ruby.base_spaces {
+                    removable = removable.min(from);
+                }
             }
             if first < next {
                 // An item holding clusters belongs to the line where it holds
@@ -781,7 +785,9 @@ impl<'a> Placer<'a> {
         // The level of the last text placed, which a hyphen after it takes.
         let mut level = paragraph;
         let mut u = x;
-        let content = y.min(content_end.max(x));
+        // Spaces a ruby base ends the line with are removed, though the
+        // annotation's clusters come after them.
+        let content = y.min(content_end.max(x)).min(removable.max(x));
         // Trailing white space inside one stretch of this item's text keeps
         // its level.
         let trailing = if x < trailing && trailing < content && content < bounds.end {

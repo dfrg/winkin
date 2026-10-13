@@ -145,6 +145,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
                 line_start: start > para.start,
                 trim_start: window.is_some_and(|window| window.trims),
                 trim_end: trims_end,
+                ..ShapingEdges::default()
             };
             let ends = EdgeEnd {
                 whole,

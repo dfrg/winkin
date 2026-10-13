@@ -223,6 +223,224 @@ fn a_culled_box_split_by_reordering_has_a_part_each_side() {
     assert_eq!(parts(6), [(along(80.0, 160.0), false, false)]);
 }
 
+/// A line holding no cluster but an empty box with an inline margin,
+/// border or padding is a line box of the strut's height, as CSS 2, section
+/// 9.4.2, has it; a box with only block-axis edges makes none. Chrome 155,
+/// 20px Ahem on lines of 20 in a block 200 wide, the box's fragment along
+/// and across its line:
+/// - 3px of left padding and a 2px border: a line 20 tall, the box from 0
+///   to 7 and -2 to 22; right-aligned, the line starts at 193;
+/// - 3px of top padding: no line;
+/// - a 5px left margin on lines of 30: a line 30 tall, the box at 5, from
+///   5 to 25;
+/// - after `x<br>`: a second line, the box from 0 to 3 on it;
+/// - on lines of 0: a line of no height, the box from -10 to 10.
+#[test]
+fn an_empty_box_with_inline_edges_makes_a_line() {
+    use crate::config::PastLines;
+    let mut cx = context();
+    let edged = |margin: f32, padding: Sides<f32>, border: f32| ComputedStyle {
+        edges: EdgesGroup {
+            margin: Sides::<f32> {
+                left: margin,
+                ..Sides::ZERO
+            }
+            .into(),
+            padding: padding.into(),
+            border: Sides::all(border),
+            ..EdgesGroup::INITIAL
+        },
+        ..sized(&AHEM_FAMILY, 20.0)
+    };
+    let left = Sides::<f32> {
+        left: 3.0,
+        ..Sides::ZERO
+    };
+    let top = Sides::<f32> {
+        top: 3.0,
+        ..Sides::ZERO
+    };
+    let right = TextAlign::Right;
+    let start = TextAlign::Start;
+    // Each case: the box, its line height, a line before it, the
+    // alignment; then the lines, the block's end, the line's left, and the
+    // box's line and extents.
+    let cases = [
+        (
+            edged(0.0, left, 2.0),
+            20.0,
+            false,
+            start,
+            1,
+            20.0,
+            0.0,
+            Some((0, (0.0, 7.0), (-2.0, 22.0))),
+        ),
+        (
+            edged(0.0, left, 2.0),
+            20.0,
+            false,
+            right,
+            1,
+            20.0,
+            193.0,
+            Some((0, (0.0, 7.0), (-2.0, 22.0))),
+        ),
+        (edged(0.0, top, 0.0), 20.0, false, start, 0, 0.0, 0.0, None),
+        (
+            edged(5.0, Sides::ZERO, 0.0),
+            30.0,
+            false,
+            start,
+            1,
+            30.0,
+            0.0,
+            Some((0, (5.0, 5.0), (5.0, 25.0))),
+        ),
+        (
+            edged(0.0, left, 0.0),
+            20.0,
+            true,
+            start,
+            2,
+            40.0,
+            0.0,
+            Some((1, (0.0, 3.0), (0.0, 20.0))),
+        ),
+        (
+            edged(0.0, left, 0.0),
+            0.0,
+            false,
+            start,
+            1,
+            0.0,
+            0.0,
+            Some((0, (0.0, 3.0), (-10.0, 10.0))),
+        ),
+    ];
+    for (n, (span, height, br, align, lines, end, line_left, expected)) in
+        cases.into_iter().enumerate()
+    {
+        let mut layout = Layout::new();
+        let mut root = sized(&AHEM_FAMILY, 20.0);
+        root.line.height = LineHeight::Px(height);
+        let mut span = span;
+        span.line.height = root.line.height;
+        let mut block = ComputedBlockStyle::new(&root);
+        block.text_align = align;
+        build(&mut cx, &mut layout, &block, |b| {
+            if br {
+                b.text(NodeKey(1), "x");
+                b.line_break(NodeKey(2));
+            }
+            b.open_box(NodeKey(3), &span, None);
+            b.close_box();
+        });
+        layout.break_lines(&mut cx, Area::new(200.0), &mut NoExclusions);
+        assert_eq!(layout.lines().len(), lines, "case {n}");
+        assert_eq!(layout.metrics().block_end, end, "case {n}");
+        let fragment = layout.box_fragments(NodeKey(3)).next().map(|fragment| {
+            let block = fragment.block();
+            (
+                fragment.line(),
+                ends(fragment.inline()),
+                (block.over, block.under),
+            )
+        });
+        assert_eq!(fragment, expected, "case {n}");
+        if let Some((line, ..)) = expected {
+            let left = layout.line(line).map(|line| line.metrics().left);
+            assert_eq!(left, Some(line_left), "case {n}");
+        }
+        // The readers walk the empty line as any other.
+        for past in [PastLines::Column, PastLines::LineEnds] {
+            for (x, y) in [(0.0, 0.0), (5.0, 30.0), (300.0, 300.0), (-5.0, -5.0)] {
+                if let Some(position) = layout.hit_test(x, y, past) {
+                    let _ = (layout.caret(position), layout.carets(position));
+                }
+            }
+        }
+        let rects = layout.selection_rects(0..layout.text().len()).count();
+        let paints: usize = layout
+            .lines()
+            .map(|line| line.paints(|_| Decorates::None).count() + line.items().count())
+            .sum();
+        let _ = (rects, paints);
+    }
+}
+
+/// The intrinsic sizes count a line holding only an empty box with inline
+/// edges. Chrome 155, 20px Ahem, `width: max-content` and `min-content`
+/// alike: a box with 3px of left padding and a 2px border is 7 wide;
+/// `x<br>` and a box with 30px of left padding, 30.
+#[test]
+fn an_empty_box_line_counts_in_the_intrinsic_sizes() {
+    let mut cx = context();
+    let root = sized(&AHEM_FAMILY, 20.0);
+    for (padding, border, br, expected) in [(3.0, 2.0, false, 7.0), (30.0, 0.0, true, 30.0)] {
+        let span = ComputedStyle {
+            edges: EdgesGroup {
+                padding: Sides::<f32> {
+                    left: padding,
+                    ..Sides::ZERO
+                }
+                .into(),
+                border: Sides::all(border),
+                ..EdgesGroup::INITIAL
+            },
+            ..root
+        };
+        let mut layout = Layout::new();
+        build(&mut cx, &mut layout, &ComputedBlockStyle::new(&root), |b| {
+            if br {
+                b.text(NodeKey(1), "x");
+                b.line_break(NodeKey(2));
+            }
+            b.open_box(NodeKey(3), &span, None);
+            b.close_box();
+        });
+        let sizes = layout.intrinsic_sizes();
+        assert_eq!((sizes.min_content, sizes.max_content), (expected, expected));
+    }
+}
+
+/// Empty ruby containers on a line of their own keep their fragments, a
+/// bordered one making the line. Chrome 155, 20px Ahem, three empty
+/// `<ruby>`s, the middle one with a 1px border: at 0, from 0 to 2, and at
+/// 2.
+#[test]
+fn empty_ruby_containers_keep_their_fragments_on_their_line() {
+    let mut cx = context();
+    let root = sized(&AHEM_FAMILY, 20.0);
+    let bordered = ComputedStyle {
+        edges: EdgesGroup {
+            border: Sides::all(1.0),
+            ..EdgesGroup::INITIAL
+        },
+        ..root
+    };
+    let mut layout = Layout::new();
+    build(&mut cx, &mut layout, &ComputedBlockStyle::new(&root), |b| {
+        b.open_ruby(NodeKey(1), &root, None);
+        b.close_ruby();
+        b.open_ruby(NodeKey(2), &bordered, None);
+        b.close_ruby();
+        b.open_ruby(NodeKey(3), &root, None);
+        b.close_ruby();
+    });
+    layout.break_lines(&mut cx, Area::new(200.0), &mut NoExclusions);
+    assert_eq!(layout.lines().len(), 1);
+    let found: Vec<Vec<(f32, f32)>> = (1..4)
+        .map(|key| {
+            layout
+                .box_fragments(NodeKey(key))
+                .map(|fragment| ends(fragment.inline()))
+                .collect()
+        })
+        .collect();
+    assert_eq!(found, [[(0.0, 0.0)], [(0.0, 2.0)], [(2.0, 2.0)]]);
+}
+
 /// An atomic inline is its margin box: as wide as its size and its margins,
 /// its baseline where it said, its top and bottom around it.
 #[test]

@@ -181,6 +181,56 @@ fn a_paragraph_that_goes_back_ends_its_line_at_the_first_overflow() {
     assert_eq!(end_kinds(&layout)[0], EndKind::Soft);
 }
 
+/// Min-content measures a paragraph whose prefix goes back as Chrome's
+/// breaker sets it in no room: a box opening with a negative margin where a
+/// line may end stays on the line where it brings it back, and a later
+/// opportunity that fits takes the line on. Chrome 155, 10px Ahem,
+/// `width: min-content` (WPT `inline-negative-margin-001`'s inline-block
+/// rows and probes like them):
+/// - `123 <span -80>1234 </span>` and `123 <span -80>123 </span>`: 0;
+/// - `XXXXX <span -50>X</span> X X X`: 10;
+/// - `XXX<span -40>X</span> YY`: 20;
+/// - `XX XX <span -30>X</span> XXXX` and with `-50`: 40.
+#[test]
+fn min_content_takes_a_negative_margin_back_as_chrome_does() {
+    let mut fixture = fixture();
+    let mut layout = Layout::new();
+    let root = ahem(10.0);
+    let back = |px: f32| ComputedStyle {
+        edges: EdgesGroup {
+            margin: Sides::<f32> {
+                left: -px,
+                ..Sides::ZERO
+            }
+            .into(),
+            ..EdgesGroup::INITIAL
+        },
+        ..root
+    };
+    for (before, margin, inside, after, expected) in [
+        ("123 ", 80.0, "1234 ", "", 0.0),
+        ("123 ", 80.0, "123 ", "", 0.0),
+        ("XXXXX ", 50.0, "X", " X X X", 10.0),
+        ("XXX", 40.0, "X", " YY", 20.0),
+        ("XX XX ", 30.0, "X", " XXXX", 40.0),
+        ("XX XX ", 50.0, "X", " XXXX", 40.0),
+    ] {
+        let span = back(margin);
+        fixture.build(&mut layout, &ComputedBlockStyle::new(&root), |b| {
+            b.text(NodeKey(1), before);
+            b.open_box(NodeKey(2), &span, None);
+            b.text(NodeKey(3), inside);
+            b.close_box();
+            b.text(NodeKey(4), after);
+        });
+        assert_eq!(
+            layout.intrinsic_sizes().min_content,
+            expected,
+            "{before}|{margin}|{inside}|{after}"
+        );
+    }
+}
+
 /// Where no opportunity before an overflow fits, a negative margin after it
 /// may bring the line back within the room. The line then fits on from
 /// there, as any line does.

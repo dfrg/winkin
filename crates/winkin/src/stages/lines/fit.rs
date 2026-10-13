@@ -40,9 +40,9 @@ use super::{
 };
 use crate::data::Id;
 use crate::stages::analysis::{ClusterClass, ClusterId, Paragraph, ParagraphFlags, ParagraphId};
-use crate::stages::content::{ContentFlags, ItemId, NodeId, TextFlags};
+use crate::stages::content::{ContentFlags, ItemFlags, ItemId, NodeId, TextFlags};
 use crate::stages::measure::{
-    AutospaceRules, InitialLetter, LineEdgeCost, MeasureFlags, RubyColumnId,
+    AutospaceRules, InitialLetter, LineEdgeCost, MeasureFlags, RubyColumnId, edge_room,
 };
 use crate::stages::shape::ShapeSession;
 use crate::style::{FirstLineVariant, TextOverflow};
@@ -435,8 +435,11 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         for (id, paragraph) in self.stages.analysis.paragraphs.iter() {
             // A text ending in a separator ends in an empty paragraph, which
             // draws no line: the separator's line is the last, as in Chrome.
-            // An empty text draws none at all.
-            if self.stages.analysis.paragraphs.clusters(id).is_empty() {
+            // An empty text draws none at all. Where a box with an inline
+            // edge stands there, the paragraph is one line of its own.
+            let paragraphs = &self.stages.analysis.paragraphs;
+            let empty = paragraphs.clusters(id).is_empty();
+            if empty && !paragraphs.has_end_line() {
                 continue;
             }
             let para = self.breaker_paragraph(id, paragraph);
@@ -446,7 +449,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             };
             // `text-wrap-style` balances or scores a paragraph at a time, as
             // Chrome does. Otherwise the fit is greedy.
-            if self.choice == LineChoice::Greedy {
+            if self.choice == LineChoice::Greedy || empty {
                 let from = Resume::new(para.start, WrapLineId::new(0));
                 self.paragraph_lines::<FLOATS>(
                     out,
@@ -490,7 +493,9 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         let id = lines.para.id;
         let mut start = from.start;
         let mut tally = Tally::new(from);
-        while start < lines.para.end {
+        // A paragraph holding no cluster that makes a line makes one.
+        let mut empty = start == lines.para.end;
+        while start < lines.para.end || mem::take(&mut empty) {
             let Some(hold) = plan.hold(tally.next_line()) else {
                 // A trial of the room, past its line count.
                 break;
@@ -513,6 +518,9 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             };
             let para = first_para.as_ref().unwrap_or(lines.para);
             let (mut line, carry) = self.line::<FLOATS>(out, para, start, lines.area, cursor);
+            if start == para.end {
+                self.widen_end_line(&mut line);
+            }
             self.hold = Hold::Free;
             // The initial letter, as the first line's variant measured it.
             // Its room is reported once the line is kept.
@@ -541,7 +549,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             // as Chrome's bisection stops there.
             let too_narrow = plan.is_narrowing_trial() && tally.overflowed;
             // Every line holds a cluster at least, so this ends.
-            debug_assert!(line.end > start, "a line holds something");
+            debug_assert!(line.end > start || line.end == lines.para.end);
             start = line.end;
             let kept = self.keep(out, line, carry, letter, cursor);
             self.clear_floats(out, start, lines.area, cursor);
@@ -760,6 +768,30 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             self.sink_initial_letter(out, letter, cursor.trimmed);
         }
         !cursor.clamped
+    }
+
+    /// Adds to `line`, a line holding no cluster at the text's end, the room
+    /// of the box edges on it, which no prefix sum holds.
+    #[cold]
+    #[inline(never)]
+    fn widen_end_line(&self, line: &mut super::PendingLine) {
+        let (content, analysis) = (self.stages.content, self.stages.analysis);
+        let end = line.end;
+        let mut room = InlineLayoutUnit::ZERO;
+        let mut id = line.first_item;
+        while let Some(item) = content.items.get(id) {
+            work::step();
+            let clusters = analysis.item_clusters.range(id);
+            if clusters.start != end || !clusters.is_empty() {
+                break;
+            }
+            let (opens, closes) = (item.kind.is_open(), item.kind.is_close());
+            if !item.flags.contains(ItemFlags::ANNOTATION) && (opens || closes) {
+                room += edge_room(content, None, item, opens);
+            }
+            id = ItemId::new(id.get() + 1);
+        }
+        line.record.width = line.record.width + room.to_layout();
     }
 
     fn breaker_paragraph(&self, id: ParagraphId, paragraph: &Paragraph) -> BreakerParagraph {

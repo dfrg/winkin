@@ -99,11 +99,14 @@ impl ScriptState {
             Some(pair) if !props.opens_bracket() => self.close(pair),
             _ => None,
         };
-        let step = match (closes, props.scripts().single()) {
+        let step = match (closes, props.scripts().single().map(kana_as_hiragana)) {
             (Some(script), _) => self.real(script),
             (None, Some(script)) if is_shared(script) => ScriptStep::Joins,
             (None, Some(script)) => self.real(script),
-            (None, None) => self.shared(unicode::script_extensions(props), unicode::script(props)),
+            (None, None) => self.shared(
+                unicode::script_extensions(props),
+                kana_as_hiragana(unicode::script(props)),
+            ),
         };
         if let Some(pair) = bracket
             && props.opens_bracket()
@@ -245,6 +248,19 @@ impl ScriptState {
         self.depth = at;
         self.undecided_from = self.undecided_from.min(at);
         (!is_shared(script)).then_some(script)
+    }
+}
+
+/// Returns `script`, with Katakana taken as Hiragana.
+///
+/// OpenType tags both `kana`, so a run of both shapes as one and kerns
+/// across them. Blink's `GetScriptForOpenType` maps them the same way. A
+/// Script_Extensions set that holds Katakana holds Hiragana too.
+fn kana_as_hiragana(script: ScriptId) -> ScriptId {
+    if script == ScriptId::KATAKANA {
+        ScriptId::HIRAGANA
+    } else {
+        script
     }
 }
 

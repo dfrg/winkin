@@ -60,6 +60,7 @@ pub(super) const SCRIPT_INHERITED: u16 = 1;
 pub(super) const SCRIPT_UNKNOWN: u16 = 103;
 pub(super) const SCRIPT_HAN: u16 = 17;
 pub(super) const SCRIPT_HIRAGANA: u16 = 20;
+pub(super) const SCRIPT_KATAKANA: u16 = 22;
 
 /// The ISO 15924 tag of each script, by value. A value no character has
 /// keeps ICU's name for it, or `Zzzz` where ICU has none.

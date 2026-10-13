@@ -1331,6 +1331,9 @@ struct LineRuby<'a> {
     /// The innermost ruby column open where the walk is, as an index into
     /// the line's columns.
     open_column: Option<usize>,
+    /// Where the collapsible spaces start that end the base of the ruby
+    /// column ending the line: line layout removes them.
+    base_spaces: Option<ClusterId>,
 }
 
 /// Whether `ruby-align` places room among a base's or an annotation's

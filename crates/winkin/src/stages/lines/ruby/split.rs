@@ -632,8 +632,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         let ends = EdgeEnd {
             whole: ShapingEdges {
                 line_start: start_unsafe,
-                trim_start: false,
-                trim_end: false,
+                ..ShapingEdges::default()
             },
             reshaped: end_unsafe,
             trims: false,

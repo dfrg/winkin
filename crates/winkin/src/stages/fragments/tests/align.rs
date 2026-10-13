@@ -686,6 +686,69 @@ fn a_tabbed_relayout_equals_a_fresh_layout() {
     }
 }
 
+/// Under `ruby-overhang: spaces` a ruby column's overhang reaches over the
+/// whole run of spaces and tabs beside it, the tabs sized where Chrome's
+/// breaker stands: before the column, where they fall; after it, a run of
+/// tabs from where the items before it gave back what they took
+/// (`CommitPendingEndOverhang`). Chrome 155, 20px Ahem, `tab-size: 50px`,
+/// `X` under ten 10px `X`s (a column 100 wide, 40 to spare each side), with
+/// `X` before and after the blank: the column and the last `X` start at
+/// - `X\t|`: 20 and 120; `X \t|`: 20 and 120; `X\t |`: 30 and 130;
+///   `X\t\t|`: 60 and 160;
+/// - `|\tX`: 20 and 120; `|\t X`: 20 and 130; `| \tX`: 20 and 130;
+///   `|\t\tX`: 20 and 160.
+#[test]
+fn a_ruby_overhang_reaches_over_runs_of_tabs_and_spaces() {
+    use crate::style::RubyOverhang;
+    let mut fixture = fixture();
+    let mut layout = Layout::new();
+    let mut block = tabbed(20.0, 1.0);
+    block.text.tab_size = TabSize::Px(50.0);
+    let mut reading = block;
+    reading.font.size = 10.0;
+    let mut ruby = block;
+    ruby.ruby.overhang = RubyOverhang::Spaces;
+    ruby.ruby.align = RubyAlign::Center;
+    for (before, after, column, last) in [
+        ("X\t", "X", 20.0, 120.0),
+        ("X \t", "X", 20.0, 120.0),
+        ("X\t ", "X", 30.0, 130.0),
+        ("X\t\t", "X", 60.0, 160.0),
+        ("X", "\tX", 20.0, 120.0),
+        ("X", "\t X", 20.0, 130.0),
+        ("X", " \tX", 20.0, 130.0),
+        ("X", "\t\tX", 20.0, 160.0),
+    ] {
+        fixture.build(&mut layout, &ComputedBlockStyle::new(&block), |b| {
+            b.text(NodeKey(1), before);
+            b.open_ruby(NodeKey(2), &ruby, None);
+            b.text(NodeKey(3), "X");
+            b.open_annotation(NodeKey(4), &reading, None);
+            b.text(NodeKey(5), "XXXXXXXXXX");
+            b.close_annotation();
+            b.close_ruby();
+            b.text(NodeKey(6), after);
+        });
+        fixture.lay_out(&mut layout, 1000.0);
+        let lefts: Vec<f32> = places(&layout, 0).iter().map(|&(_, left)| left).collect();
+        assert_eq!(
+            (lefts.get(1).copied(), lefts.last().copied()),
+            (Some(column + 40.0), Some(last)),
+            "{before:?} {after:?}: {lefts:?}"
+        );
+        assert_eq!(
+            reach(&layout, 0).to_px(),
+            last + 20.0,
+            "{before:?} {after:?}"
+        );
+        assert_eq!(
+            layout.intrinsic_sizes().max_content,
+            last + 20.0,
+            "{before:?} {after:?}"
+        );
+    }
+}
+
 /// Under `ruby-overhang: spaces` a ruby column's overhang reaches into a tab
 /// beside it, as Chrome's `GetOverhang` and `CommitPendingEndOverhang` reach
 /// into a control item. Under `auto` it reaches into no tab.

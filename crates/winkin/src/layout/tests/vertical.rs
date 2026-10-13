@@ -1,7 +1,8 @@
 //! Vertical line tests. They pin:
 //! - upright and sideways glyphs placed along a vertical line;
 //! - a `sideways-lr` line's over side on its left;
-//! - combined text fitted to one em, centred, and spaced as one character;
+//! - combined text fitted to one em, centred, and spaced as one character,
+//!   keeping its em whatever its white space;
 //! - a generated hyphen standing as its text does.
 
 use super::*;
@@ -404,6 +405,43 @@ fn combined_text_is_spaced_justified_and_marked_as_one_character() {
     let share = 10.0 / 3.0;
     assert!((left - (20.0 + share)).abs() < 1e-3, "{left}");
     assert!((right - (40.0 + 2.0 * share)).abs() < 1e-3, "{right}");
+}
+
+/// Combined text keeps its em whatever its white space, as Blink's
+/// `LayoutTextCombine` is an inline block: a unit of one collapsible space
+/// is one em, between ideographs and at the line's end, as WPT's
+/// `tcy-white-space-processing-003` asks and Chrome draws; and a kept
+/// segment break inside a unit is a space, not a forced break
+/// (`text-combine-upright-break-inside-001a`).
+#[test]
+fn combined_text_keeps_its_em_whatever_its_white_space() {
+    use crate::style::{TextCombineUpright, WhiteSpaceCollapse, WritingMode};
+    let mut cx = combining_context();
+    let layout = combined_line(&mut cx, " ", 400.0, |_| {});
+    assert_eq!(layout.line(0).expect("a line").metrics().width, 60.0);
+    assert_eq!(combined_run(&layout).inline(), along(20.0, 40.0));
+    let layout = combined_line(&mut cx, "1\n2", 400.0, |style| {
+        style.text.white_space_collapse = WhiteSpaceCollapse::Preserve;
+    });
+    assert_eq!(layout.lines().len(), 1);
+    assert_eq!(layout.line(0).expect("a line").metrics().width, 60.0);
+    // At the line's end.
+    let mut layout = Layout::new();
+    let root = sized(&DIGITS, 20.0);
+    let block = ComputedBlockStyle {
+        writing_mode: WritingMode::VerticalRl,
+        ..ComputedBlockStyle::new(&root)
+    };
+    let mut combined = root;
+    combined.orientation.text_combine_upright = TextCombineUpright::All;
+    build(&mut cx, &mut layout, &block, |b| {
+        b.text(NodeKey(1), "\u{6C34}");
+        b.open_box(NodeKey(2), &combined, None);
+        b.text(NodeKey(3), " ");
+        b.close_box();
+    });
+    layout.break_lines(&mut cx, Area::new(400.0), &mut NoExclusions);
+    assert_eq!(layout.line(0).expect("a line").metrics().width, 40.0);
 }
 
 /// A generated hyphen stands as the text it ends stands, as Chrome shapes a

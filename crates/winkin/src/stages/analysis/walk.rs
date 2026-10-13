@@ -40,6 +40,7 @@ use crate::stages::content::{
 };
 use crate::style::{Direction, FirstLineVariant, TextCombineUpright, WhiteSpaceCollapse};
 use crate::unicode::{self, CoreProps, RareProps};
+use crate::unit::LayoutUnit;
 use crate::work;
 
 /// U+FFFC OBJECT REPLACEMENT CHARACTER. A cluster always ends after one, so a
@@ -1552,7 +1553,12 @@ impl ClusterWriter<'_> {
             self.open_paragraph();
         }
         self.paragraph.controls |= self.controls;
+        let empty = self.paragraph.start == self.out.clusters.end_id();
         self.end_paragraph();
+        if empty {
+            let end_line = end_opens_edged_box(self.content, self.out);
+            self.out.paragraphs.set_end_line(end_line);
+        }
         self.script_runs.finish(&mut self.scratch.pending_runs);
         scripts::emit(
             &self.scratch.pending_runs,
@@ -1563,4 +1569,42 @@ impl ClusterWriter<'_> {
         );
         (self.out).set_control_levels(&self.scratch.bidi.control_levels);
     }
+}
+
+/// Returns whether the text's end, where an empty last paragraph stands,
+/// opens a box with a margin, border or padding along the line.
+///
+/// Such a box makes a line where nothing else would, as Chrome's line
+/// breaker makes one for an open tag with an inline edge. A box closing
+/// there closes on the line before, after a forced break. Kept out of line:
+/// most texts end in a cluster.
+#[cold]
+#[inline(never)]
+fn end_opens_edged_box(content: &Content, analysis: &Analysis) -> bool {
+    let end = analysis.clusters.end_id();
+    let edged = |item: &Item| {
+        let facts = content
+            .nodes
+            .box_facts(item.node, FirstLineVariant::Standard);
+        let facts = content.facts.box_facts(facts);
+        let zero = (LayoutUnit::ZERO, LayoutUnit::ZERO);
+        facts.margin_line != zero || facts.room != facts.margin_line
+    };
+    let mut id = ItemId::new(content.items.len());
+    while let Some(before) = id.get().checked_sub(1) {
+        work::step();
+        id = ItemId::new(before);
+        let range = analysis.item_clusters.range(id);
+        if range.start != end || !range.is_empty() {
+            break;
+        }
+        let Some(item) = content.items.get(id) else {
+            break;
+        };
+        let opens = matches!(item.kind, ItemKind::Open | ItemKind::RubyOpen);
+        if opens && !item.flags.contains(ItemFlags::ANNOTATION) && edged(item) {
+            return true;
+        }
+    }
+    false
 }

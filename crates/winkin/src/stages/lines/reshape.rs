@@ -267,8 +267,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             // its closing mark where asked.
             let edges = ShapingEdges {
                 line_start: floor_is_start && from == floor && from > para.start,
-                trim_start: false,
                 trim_end: trims_end,
+                ..ShapingEdges::default()
             };
             let Some(piece) = self.reshape(out, para, run, from..end, edges, true) else {
                 return EndPiece::None;
@@ -431,20 +431,23 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// trimmed.
     ///
     /// The text must trim (Blink's `ShouldTrimEnd`), the character must be
-    /// a possible closing mark (`MaybeHanKerningClose`), and a break after
-    /// it must be allowed. The break is checked first, since it is one byte
-    /// and prose rarely offers one there.
+    /// a possible closing mark (`MaybeHanKerningClose`), and a line must be
+    /// able to end after it: at a break, or at the paragraph's end. The
+    /// break is checked first, since it is one byte and prose rarely offers
+    /// one there.
     pub(super) fn trims_end(&self, para: &BreakerParagraph, mark: ClusterId) -> bool {
+        let next = ClusterId::new(mark.get() + 1);
         mark < para.end
-            && self
+            && (self
                 .clusters
                 .attrs(mark)
                 .is_some_and(|attrs| attrs.has(ClusterAttrs::BREAK_AFTER))
+                || next == para.end)
             && self
                 .stages
                 .measured
                 .ruby_columns()
-                .interior(ClusterId::new(mark.get() + 1), &self.column)
+                .interior(next, &self.column)
                 .is_none()
             && self
                 .clusters

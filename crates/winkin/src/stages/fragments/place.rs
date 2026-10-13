@@ -770,6 +770,7 @@ impl<'a> Placer<'a> {
             line_column: self.column,
             spread: None,
             open_column: None,
+            base_spaces: None,
         };
         if let Some(first) = column_parts.iter().min_by_key(|part| part.column) {
             self.column = self.column.min(first.column);

@@ -101,6 +101,9 @@ pub(crate) struct Paragraphs {
     /// Where the last paragraph ends: the end of the clusters written when
     /// it was pushed, which is the text's.
     end: ClusterId,
+    /// The last paragraph holds no cluster but a box with an inline margin,
+    /// border or padding, which makes a line of its own.
+    end_line: bool,
 }
 
 impl Paragraphs {
@@ -108,12 +111,28 @@ impl Paragraphs {
         Self {
             paragraphs: Runs::new(),
             end: ClusterId(0),
+            end_line: false,
         }
     }
 
     pub(super) fn clear(&mut self) {
         self.paragraphs.clear();
         self.end = ClusterId(0);
+        self.end_line = false;
+    }
+
+    /// Notes whether the last paragraph, holding no cluster, makes a line.
+    pub(super) fn set_end_line(&mut self, end_line: bool) {
+        self.end_line = end_line;
+    }
+
+    /// Whether the last paragraph holds no cluster but makes a line: a box
+    /// in it has an inline margin, border or padding.
+    ///
+    /// Chrome makes a line box of the strut's height for it, as CSS 2,
+    /// section 9.4.2, has a line with such a box: it is no phantom line.
+    pub(crate) fn has_end_line(&self) -> bool {
+        self.end_line
     }
 
     /// Appends the paragraph after the last, ending at `end`.
@@ -242,5 +261,5 @@ impl Paragraphs {
 }
 
 heap_bytes! {
-    Paragraphs { paragraphs; end }
+    Paragraphs { paragraphs; end, end_line }
 }

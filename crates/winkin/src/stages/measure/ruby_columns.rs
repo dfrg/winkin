@@ -34,6 +34,18 @@ pub(super) struct ColumnRoom {
     pub(super) empty: bool,
 }
 
+/// A ruby column's base em box less the collapsible spaces that end its
+/// base, which a line the column ends removes.
+#[derive(Copy, Clone, Debug)]
+pub(super) struct TrimmedEm {
+    /// The column.
+    pub(super) column: RubyColumnId,
+    /// Where the column ends: its closing item's boundary.
+    pub(super) end: ClusterId,
+    /// The em box of what its base keeps.
+    pub(super) em: Extent,
+}
+
 /// The ruby columns, in text order, and their annotation levels, each
 /// column's together: what the breaker makes room for, line
 /// layout places, and justification reads of a base, each asking of one
@@ -58,6 +70,9 @@ pub(crate) struct RubyColumns {
     pub(super) rooms: Table<ColumnRoomId, ColumnRoom>,
     /// The tabs the columns' overhang reaches into, in text order.
     pub(super) tab_reaches: Vec<TabReach>,
+    /// The em boxes of bases ending in collapsible spaces, without them,
+    /// by column: rare, so kept apart from the columns.
+    pub(super) trimmed_ems: Vec<TrimmedEm>,
 }
 
 impl RubyColumns {
@@ -69,6 +84,7 @@ impl RubyColumns {
             floors: Table::new(),
             rooms: Table::new(),
             tab_reaches: Vec::new(),
+            trimmed_ems: Vec::new(),
         }
     }
 
@@ -80,6 +96,32 @@ impl RubyColumns {
         self.floors.clear();
         self.rooms.clear();
         self.tab_reaches.clear();
+        self.trimmed_ems.clear();
+    }
+
+    /// Returns the em box of column `id`'s base, `column`, on a line whose
+    /// in-flow content ends at `end`.
+    ///
+    /// Where the column ends the line, the collapsible spaces ending its
+    /// base are left out, as Chrome's `RemoveTrailingCollapsibleSpace`
+    /// removes them before the annotations are stacked.
+    pub(crate) fn line_base_em(
+        &self,
+        id: RubyColumnId,
+        column: &RubyColumn,
+        end: ClusterId,
+    ) -> Extent {
+        if self.trimmed_ems.is_empty() {
+            return column.base_em;
+        }
+        work::seek();
+        let found = self
+            .trimmed_ems
+            .binary_search_by_key(&id, |trimmed| trimmed.column);
+        match found.ok().and_then(|at| self.trimmed_ems.get(at)) {
+            Some(trimmed) if trimmed.end == end => trimmed.em,
+            _ => column.base_em,
+        }
     }
 
     /// Returns how far a column's overhang reaches into the tab at `tab`, if

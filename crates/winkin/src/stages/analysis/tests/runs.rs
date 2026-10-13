@@ -128,6 +128,10 @@ fn hani(text: &str) -> (&str, String) {
     (text, String::from("Hani"))
 }
 
+fn hira(text: &str) -> (&str, String) {
+    (text, String::from("Hira"))
+}
+
 #[test]
 fn runs_split_by_script() {
     assert_eq!(
@@ -160,6 +164,17 @@ fn extensions_narrow_toward_the_neighbour() {
         scripts(&plain("abc \u{661}\u{662}")),
         [latn("abc "), ("\u{661}\u{662}", String::from("Arab"))]
     );
+}
+
+/// Hiragana and Katakana make one run, so a kerning pair across them is
+/// shaped together. Blink's `ScriptRunIterator` takes Katakana as Hiragana,
+/// since OpenType tags both `kana`.
+#[test]
+fn hiragana_and_katakana_make_one_run() {
+    assert_eq!(scripts(&plain("すペ")), [hira("すペ")]);
+    assert_eq!(scripts(&plain("ペす")), [hira("ペす")]);
+    assert_eq!(scripts(&plain("カタカナ")), [hira("カタカナ")]);
+    assert_eq!(scripts(&plain("日本カ")), [hani("日本"), hira("カ")]);
 }
 
 /// A closing bracket takes its opener's script, as Blink's

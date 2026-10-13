@@ -1,6 +1,7 @@
 //! Shaping run tests: where runs split, default ignorables and kerns,
-//! first letters, divided graphemes, Arabic joining across a split, and
-//! the language and language system the shaping plan gets.
+//! first letters, divided graphemes, Arabic joining across a split and not
+//! across an isolate, and the language and language system the shaping plan
+//! gets.
 
 use super::*;
 use crate::style::LengthPercentage;
@@ -524,6 +525,38 @@ fn arabic_joins_across_a_run_split() {
         [
             vec![font.form_glyph(BEH, Form::Initial)],
             vec![font.form_glyph(TEH, Form::Final)]
+        ]
+    );
+}
+
+/// Arabic does not join across a box whose `unicode-bidi` is not `normal`:
+/// Blink's text holds a bidi control at its edges, which ends the join, as
+/// WPT's `shaping-012` (`<bdi>`) and `shaping-013` (`dir=auto`) pin. Each
+/// side takes the forms it takes alone.
+#[test]
+fn arabic_does_not_join_across_an_isolate() {
+    use crate::style::{Direction, UnicodeBidi};
+    let mut fixture = fixture();
+    let font = arabic();
+    let style = families_style(&ARABIC);
+    let rtl = ComputedBlockStyle {
+        direction: BaseDirection::Rtl,
+        ..ComputedBlockStyle::new(&style)
+    };
+    let mut isolated = style;
+    isolated.bidi.unicode_bidi = UnicodeBidi::Isolate;
+    isolated.bidi.direction = Direction::Rtl;
+    let head: String = [BEH, TEH].iter().collect();
+    let tail: String = [SEEN, MEEM].iter().collect();
+    let mut layout = Layout::new();
+    fixture.build_spans(&mut layout, &rtl, &[(&style, &head), (&isolated, &tail)]);
+    assert_eq!(
+        ids(&layout),
+        [
+            vec![font.form_glyph(BEH, Form::Initial)],
+            vec![font.form_glyph(TEH, Form::Final)],
+            vec![font.form_glyph(SEEN, Form::Initial)],
+            vec![font.form_glyph(MEEM, Form::Final)],
         ]
     );
 }

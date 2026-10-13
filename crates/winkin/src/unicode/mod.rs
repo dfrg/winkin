@@ -422,7 +422,9 @@ impl ScriptId {
     /// them.
     const HAN: Self = Self(tables::SCRIPT_HAN);
     /// Hiragana (`Hira`).
-    const HIRAGANA: Self = Self(tables::SCRIPT_HIRAGANA);
+    pub(crate) const HIRAGANA: Self = Self(tables::SCRIPT_HIRAGANA);
+    /// Katakana (`Kana`).
+    pub(crate) const KATAKANA: Self = Self(tables::SCRIPT_KATAKANA);
 
     /// The ISO 15924 tag.
     pub(crate) fn tag(self) -> [u8; 4] {

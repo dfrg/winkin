@@ -314,6 +314,11 @@ pub(crate) struct ShapingEdges {
     /// The last character gives its blank back whatever follows it: a
     /// closing mark ending a line that fits only when trimmed.
     pub(crate) trim_end: bool,
+    /// A bidi control stands before the range, so the text before it is no
+    /// context: Blink's text holds the control there, which ends joining.
+    pub(crate) cut_before: bool,
+    /// A bidi control stands after the range.
+    pub(crate) cut_after: bool,
 }
 
 /// A mark that gives its blank back.

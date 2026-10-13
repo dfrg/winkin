@@ -434,8 +434,16 @@ pub(crate) fn shape_range<'f, I: Id, S: AdvanceStore>(
     let call = CallText {
         chars: slice(start, end),
         base: start.to_u32(),
-        before: slice(paragraph.start, start),
-        after: slice(end, paragraph.end),
+        before: if edges.cut_before {
+            ""
+        } else {
+            slice(paragraph.start, start)
+        },
+        after: if edges.cut_after {
+            ""
+        } else {
+            slice(end, paragraph.end)
+        },
         starts_paragraph: start == paragraph.start,
     };
     let settings = key.settings();

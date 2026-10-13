@@ -475,6 +475,20 @@ impl Clusters {
         self.attrs(cluster).map(ClusterAttrs::class)
     }
 
+    /// Returns the end of `clusters` less the forced breaks and break
+    /// opportunities ending them, which draw nothing.
+    pub(crate) fn drawn_end(&self, clusters: Range<ClusterId>) -> ClusterId {
+        let mut end = clusters.end;
+        while end > clusters.start {
+            let last = ClusterId::new(end.get() - 1);
+            match self.class(last) {
+                Some(ClusterClass::Separator | ClusterClass::BreakOpportunity) => end = last,
+                _ => break,
+            }
+        }
+        end
+    }
+
     /// Whether boundary `boundary` follows a forced break.
     pub(crate) fn follows_forced_break(&self, boundary: ClusterId) -> bool {
         boundary.get() > 0

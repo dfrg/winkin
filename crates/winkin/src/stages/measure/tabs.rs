@@ -3,7 +3,7 @@
 //! A tab's width depends on where it starts on its line, so the prefix gives
 //! it none. The intrinsic sizes, the breaker and line layout each size it
 //! with [`tab_advance_reached`], so what the breaker fits is what line layout
-//! places. A ruby column's overhang may reach into a tab ([`TabReach`]).
+//! places. A ruby column's overhang may move a tab after it ([`TabReach`]).
 //!
 //! The rule is Chrome's `Font::TabWidth`:
 //! - Stops are multiples of `tab-size` from the block's content edge.
@@ -71,59 +71,38 @@ impl TabStops {
     pub(super) fn interval(self) -> InlineLayoutUnit {
         self.interval
     }
-
-    /// Returns the widest a tab under these stops can be, wherever it starts.
-    pub(super) fn widest(self) -> LayoutUnit {
-        if self.interval <= InlineLayoutUnit::ZERO {
-            return self.letter.to_layout().max(LayoutUnit::ZERO);
-        }
-        (self.interval + self.least).to_layout()
-    }
 }
 
-/// How far a ruby column's overhang reaches into a tab beside it, under
+/// How far a tab after a ruby column moves for the column's overhang, under
 /// `ruby-overhang: spaces`.
 ///
-/// Chrome sizes the tab where it stands without the overhang, then takes the
-/// overhang off as far as the tab reaches (`CommitPendingEndOverhang`,
-/// `GetOverhang`). The measured overhang is `reach`, which may be more than
-/// the tab turns out to be: the tab then widens to `reach`, so the column's
-/// annotation ends where the tab does.
+/// Chrome sizes each item after a column where it stands, then takes what
+/// it can of the column's end overhang off it (`CommitPendingEndOverhang`).
+/// The prefix takes the whole overhang off the column, so a tab there stands
+/// short of where Chrome sizes it by what the items after it take: `shift`.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub(crate) struct TabReach {
     /// The tab's cluster.
     pub(super) tab: ClusterId,
-    /// How far the overhang reaches into it.
-    pub(super) reach: LayoutUnit,
-    /// The tab follows the column, so the prefix took the reach off before
-    /// it.
-    pub(super) after: bool,
+    /// How far short of Chrome's place the tab stands.
+    pub(super) shift: LayoutUnit,
 }
 
 /// Returns the width of a tab that starts `position` along its line, as
-/// [`tab_advance`] does, where a ruby column's overhang `reach` may reach
-/// into it from before.
-///
-/// After the column, the prefix took the reach off before the tab, so the
-/// tab is sized from where it would start without it. Either side, it is at
-/// least `reach` wide, so the overhang never reaches past it.
+/// [`tab_advance`] does, sized `reach`'s shift further on where a ruby
+/// column's overhang moved it.
 pub(crate) fn tab_advance_reached(
     origin: LayoutUnit,
     position: InlineLayoutUnit,
     stops: TabStops,
     reach: Option<TabReach>,
 ) -> LayoutUnit {
-    let Some(TabReach { reach, after, .. }) = reach else {
-        return tab_advance(origin, position, stops);
-    };
-    let reach = reach.max(LayoutUnit::ZERO);
-    let shift = if after { reach } else { LayoutUnit::ZERO };
+    let shift = reach.map_or(LayoutUnit::ZERO, |reach| reach.shift);
     tab_advance(
         origin,
         position + InlineLayoutUnit::from_layout(shift),
         stops,
     )
-    .max(reach)
 }
 
 /// Returns the width of a tab that starts `position` along its line.
@@ -146,9 +125,14 @@ pub(super) fn tab_advance(
         return stops.letter.to_layout();
     }
     let at = InlineLayoutUnit::from_layout(origin) + position;
-    // Truncated toward zero as `fmodf` is, so a tab starting before the
-    // content edge reaches as far as Chrome's does.
-    let mut distance = interval - at % interval;
+    // The remainder is floored, so a tab starting before the content edge
+    // reaches the stop past it: Chrome 155 ends a tab starting 10 px before
+    // the edge at the edge, and one starting 110 px before it 100 px before.
+    let mut rem = at % interval;
+    if rem < InlineLayoutUnit::ZERO {
+        rem += interval;
+    }
+    let mut distance = interval - rem;
     if distance < stops.least {
         distance += interval;
     }

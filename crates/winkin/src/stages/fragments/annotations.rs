@@ -239,7 +239,7 @@ impl<'a> Placer<'a> {
         bands.stack(
             self.rubies,
             on_line,
-            line.extent,
+            (line.extent, self.clusters.drawn_end(line.clusters())),
             self.lines
                 .ruby
                 .as_deref()

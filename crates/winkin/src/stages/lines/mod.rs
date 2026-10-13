@@ -1323,7 +1323,7 @@ impl StartWindow {
         ShapingEdges {
             line_start: true,
             trim_start: trims,
-            trim_end: false,
+            ..ShapingEdges::default()
         }
     }
 }

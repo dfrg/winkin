@@ -1030,6 +1030,7 @@ fn main() {
         ("SCRIPT_UNKNOWN", Script::Unknown),
         ("SCRIPT_HAN", Script::Han),
         ("SCRIPT_HIRAGANA", Script::Hiragana),
+        ("SCRIPT_KATAKANA", Script::Katakana),
     ] {
         writeln!(
             code,

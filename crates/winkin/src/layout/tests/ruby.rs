@@ -1961,6 +1961,160 @@ fn an_atomic_inline_inside_an_annotation_is_placed_on_it() {
     assert!(line.items().all(|item| !matches!(item, Item::Atomic(_))));
 }
 
+/// Collapsible spaces at a ruby annotation's ends, and ending a base at
+/// the line's end, leave the em boxes the annotation stands on and stacks
+/// by. Chrome 155, 20px Ahem on lines of 20 with 10px annotations under
+/// their bases, the base an inline-block 20px square and the annotation one
+/// 50 wide and 150 tall (`css-ruby/br-clear-all-002`):
+/// - with white space around every tag and a `<br>` after, the annotation
+///   runs from 20 to 170, under the inline-block, also where the annotation
+///   is `white-space: nowrap`, as Firefox's UA style sheet has it;
+/// - with a space opening the annotation, the same;
+/// - with a space after the base's inline-block, between two `x`, the space
+///   stays and the annotation runs from 24 to 174, under its em box.
+#[test]
+fn spaces_a_line_removes_leave_the_ruby_em_boxes() {
+    use crate::style::TextWrapMode;
+    // The text before the ruby, the base's after its inline-block, the
+    // annotation's before and after its inline-block, and the text after.
+    let cases = [
+        (
+            ["\n  ", "\n    ", "\n      ", "\n    ", "\n  "],
+            170.0,
+            across(20.0, 170.0),
+        ),
+        (["", "", " ", "", ""], 170.0, across(20.0, 170.0)),
+        (["x", " ", "", "", "x"], 174.0, across(24.0, 174.0)),
+        ([" ", " ", " ", " ", " "], 170.0, across(20.0, 170.0)),
+    ];
+    for (n, ([before, base, opening, closing, after], end, block)) in cases.into_iter().enumerate()
+    {
+        let mut cx = context();
+        let mut layout = Layout::new();
+        let mut root = sized(&AHEM_FAMILY, 20.0);
+        root.line.height = LineHeight::Px(20.0);
+        root.ruby.position = RubyPosition::Under;
+        let mut small = sized(&AHEM_FAMILY, 10.0);
+        small.ruby.position = RubyPosition::Under;
+        if n == 3 {
+            small.text.wrap_mode = TextWrapMode::NoWrap;
+        }
+        build(&mut cx, &mut layout, &ComputedBlockStyle::new(&root), |b| {
+            b.text(NodeKey(1), before);
+            b.open_ruby(NodeKey(2), &root, None);
+            b.text(NodeKey(3), before);
+            let size = BoxSize {
+                inline: 20.0,
+                block: 20.0,
+                baseline: None,
+            };
+            b.atomic(NodeKey(4), &root, None, size);
+            b.text(NodeKey(5), base);
+            b.open_annotation(NodeKey(6), &small, None);
+            b.text(NodeKey(7), opening);
+            let size = BoxSize {
+                inline: 50.0,
+                block: 150.0,
+                baseline: None,
+            };
+            b.atomic(NodeKey(8), &small, None, size);
+            b.text(NodeKey(9), closing);
+            b.close_annotation();
+            b.close_ruby();
+            b.text(NodeKey(10), after);
+            if after != "x" {
+                b.line_break(NodeKey(11));
+            }
+        });
+        layout.break_lines(&mut cx, Area::new(400.0), &mut NoExclusions);
+        let line = layout.line(0).expect("a line");
+        let annotation = line.annotations().next().expect("an annotation");
+        let atomic = annotation.atomics().next().expect("the inline-block");
+        let found = (layout.metrics().block_end, atomic.block());
+        assert_eq!(found, (end, block), "case {n}");
+    }
+}
+
+/// An annotation's margin, border and padding across the line take room
+/// over and under its text, and the base stands past its margin box.
+/// Chrome 155, 10px Ahem with 5px annotations, `<ruby>base<rt>annotation
+/// </rt></ruby>` (`css-ruby/ruby-annotation-with-margin`), the block's
+/// end, the annotation's text and the base's, over the base:
+/// - plain: 15, 0 to 5, 5 to 15;
+/// - a 10px margin all round: 35, 10 to 15, 25 to 35, the annotation's
+///   text from 10 to 60 along the line;
+/// - a 10px margin on top: 25, 10 to 15, 15 to 25;
+/// - a 10px margin under: 25, 0 to 5, 15 to 25;
+/// - 3px of padding and 2px of border all round: 25, 5 to 10, 15 to 25;
+///
+/// and under the base, a 10px margin all round: 35, 20 to 25, 0 to 10.
+#[test]
+fn an_annotation_margin_box_takes_room_across_the_line() {
+    let margin = |sides: Sides<f32>| EdgesGroup {
+        margin: sides.into(),
+        ..EdgesGroup::INITIAL
+    };
+    let all = Sides::<f32>::all(10.0);
+    let top = Sides::<f32> {
+        top: 10.0,
+        ..Sides::ZERO
+    };
+    let bottom = Sides::<f32> {
+        bottom: 10.0,
+        ..Sides::ZERO
+    };
+    let padded = EdgesGroup {
+        padding: Sides::<f32>::all(3.0).into(),
+        border: Sides::all(2.0),
+        ..EdgesGroup::INITIAL
+    };
+    let cases = [
+        (EdgesGroup::INITIAL, false, 15.0, (0.0, 5.0), (5.0, 15.0)),
+        (margin(all), false, 35.0, (10.0, 15.0), (25.0, 35.0)),
+        (margin(top), false, 25.0, (10.0, 15.0), (15.0, 25.0)),
+        (margin(bottom), false, 25.0, (0.0, 5.0), (15.0, 25.0)),
+        (padded, false, 25.0, (5.0, 10.0), (15.0, 25.0)),
+        (margin(all), true, 35.0, (20.0, 25.0), (0.0, 10.0)),
+    ];
+    for (n, (edges, under, end, text, base)) in cases.into_iter().enumerate() {
+        let mut cx = context();
+        let mut layout = Layout::new();
+        let mut root = sized(&AHEM_FAMILY, 10.0);
+        let mut small = ComputedStyle {
+            edges,
+            ..sized(&AHEM_FAMILY, 5.0)
+        };
+        if under {
+            root.ruby.position = RubyPosition::Under;
+            small.ruby.position = RubyPosition::Under;
+        }
+        build(&mut cx, &mut layout, &ComputedBlockStyle::new(&root), |b| {
+            b.open_ruby(NodeKey(1), &root, None);
+            b.text(NodeKey(2), "base");
+            b.open_annotation(NodeKey(3), &small, None);
+            b.text(NodeKey(4), "annotation");
+            b.close_annotation();
+            b.close_ruby();
+        });
+        layout.break_lines(&mut cx, Area::new(400.0), &mut NoExclusions);
+        let line = layout.line(0).expect("a line");
+        let annotation = line.annotations().next().expect("an annotation");
+        let run = annotation.runs().next().expect("its text");
+        let found = (
+            layout.metrics().block_end,
+            (run.block().over, run.block().under),
+            (
+                runs(&layout, 0)[0].block().over,
+                runs(&layout, 0)[0].block().under,
+            ),
+        );
+        assert_eq!(found, (end, text, base), "case {n}");
+        if n == 1 {
+            assert_eq!(ends(run.inline()), (10.0, 60.0));
+        }
+    }
+}
+
 /// The text of line 0's base clusters and of its annotations' clusters,
 /// each left to right.
 fn visual_text(layout: &Layout) -> (String, String) {
@@ -3164,4 +3318,49 @@ fn a_first_line_ruby_position_moves_its_annotations() {
         })
         .collect();
     assert_eq!(sides, [true, false]);
+}
+
+/// A collapsible space ending a ruby base at a line's end leaves the
+/// column's width, as Chrome removes it. Chrome 155, 20px Ahem on lines of
+/// 20 with 10px annotations, 240 wide, `nihongo | <ruby>n <rt>n</ruby>
+/// <ruby>hon<rt>hon</ruby><ruby>go <rt>go</ruby>|`: the first line's
+/// column and its annotation run from 200 to 220; the second line's from 0
+/// to 60 and 60 to 120, the space after `go` kept.
+#[test]
+fn a_space_ending_a_ruby_base_at_a_line_end_leaves_the_column() {
+    let mut cx = context();
+    let mut layout = Layout::new();
+    let mut base = sized(&AHEM_FAMILY, 20.0);
+    base.line.height = LineHeight::Px(20.0);
+    let small = sized(&AHEM_FAMILY, 10.0);
+    build(&mut cx, &mut layout, &ComputedBlockStyle::new(&base), |b| {
+        b.text(NodeKey(1), "nihongo | ");
+        let columns = [("n ", "n"), ("hon", "hon"), ("go ", "go")];
+        for (n, (text, note)) in (1..).zip(columns) {
+            let n = 10 * n;
+            b.open_ruby(NodeKey(n), &base, None);
+            b.text(NodeKey(n + 1), text);
+            b.open_annotation(NodeKey(n + 2), &small, None);
+            b.text(NodeKey(n + 3), note);
+            b.close_annotation();
+            b.close_ruby();
+        }
+        b.text(NodeKey(2), "|");
+    });
+    layout.break_lines(&mut cx, Area::new(240.0), &mut NoExclusions);
+    let lines: Vec<Vec<(NodeKey, (f32, f32))>> = layout
+        .lines()
+        .map(|line| {
+            line.annotations()
+                .map(|annotation| (annotation.key(), ends(annotation.inline())))
+                .collect()
+        })
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            vec![(NodeKey(12), (200.0, 220.0))],
+            vec![(NodeKey(22), (0.0, 60.0)), (NodeKey(32), (60.0, 120.0))],
+        ]
+    );
 }

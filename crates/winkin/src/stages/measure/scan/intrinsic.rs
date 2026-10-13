@@ -138,6 +138,13 @@ pub(crate) struct IntrinsicScan {
     pending: bool,
     /// The widest min-content lines, and floats among the others.
     min: Widest,
+    /// `min` as the current paragraph started, and the widest float
+    /// anchored in it since, which measuring its lines again starts from.
+    min_before: Widest,
+    paragraph_floats: InlineLayoutUnit,
+    /// The current paragraph's min-content lines are measured again whole,
+    /// so its end ends none.
+    redone: bool,
     /// The widest paragraphs.
     max: Widest,
 }
@@ -213,6 +220,12 @@ impl IntrinsicScan {
     fn paragraph_indent(&self) -> InlineLayoutUnit {
         self.indent
             .line_indent(self.first_paragraph, !self.first_paragraph)
+    }
+
+    /// Returns what turns a running sum into a place along the current
+    /// paragraph's line: past its indent and its tabs so far.
+    pub(super) fn paragraph_offset(&self) -> InlineLayoutUnit {
+        self.paragraph.tabs - (self.paragraph.start - self.paragraph_indent())
     }
 
     /// Returns where fitting reads `at` in the current paragraph.
@@ -344,12 +357,15 @@ impl IntrinsicScan {
     pub(super) fn floats(&mut self, anchored: AnchoredFloats) {
         self.floats += anchored.sum;
         self.min.other = self.min.other.max(anchored.widest);
+        self.paragraph_floats = self.paragraph_floats.max(anchored.widest);
     }
 
     /// Ends the paragraph at `at`, after its closing edges, and starts the
     /// next there. A line either side pays `cost`.
     pub(super) fn end_paragraph(&mut self, at: InlineLayoutUnit, cost: LinePay) {
-        self.end_min_line(at, cost.edges.end - cost.min_end_hang);
+        if !self.redone {
+            self.end_min_line(at, cost.edges.end - cost.min_end_hang);
+        }
         let line = self.paragraph;
         let hung = if self.tail_conditional {
             InlineLayoutUnit::ZERO
@@ -369,6 +385,39 @@ impl IntrinsicScan {
         self.min_line = OpenLine::new(at, cost.edges.start);
         self.tail_conditional = false;
         self.pending = false;
+        self.min_before = self.min;
+        self.paragraph_floats = InlineLayoutUnit::ZERO;
+        self.redone = false;
+    }
+
+    /// Starts the current paragraph's min-content lines again, from the
+    /// widest before it and its floats: it measures them whole.
+    pub(super) fn restart_min_lines(&mut self) {
+        self.min = self.min_before;
+        self.min.other = self.min.other.max(self.paragraph_floats);
+        self.redone = true;
+    }
+
+    /// Returns the width of a min-content line of the current paragraph
+    /// from `start` to `end`, the sum where its content ends, its
+    /// paragraph's first where `first`.
+    pub(super) fn min_line_width(
+        &self,
+        start: InlineLayoutUnit,
+        end: InlineLayoutUnit,
+        first: bool,
+    ) -> InlineLayoutUnit {
+        let indent = self.indent.line_indent(
+            self.first_paragraph && first,
+            !self.first_paragraph && first,
+        );
+        self.fit(end) - self.fit(start) + indent
+    }
+
+    /// Takes a min-content line `width` wide, its paragraph's first where
+    /// `first`.
+    pub(super) fn take_min_line(&mut self, width: InlineLayoutUnit, first: bool) {
+        (self.min).take(self.first_paragraph && first, width);
     }
 
     /// Returns the sizes, taking the first line's widths from `first` where

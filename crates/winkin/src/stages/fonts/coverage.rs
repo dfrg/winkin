@@ -86,12 +86,14 @@ pub(super) fn draws_nothing(class: ClusterClass) -> bool {
 ///   CSS's Emoji Presentation Participating Code Points, though no
 ///   pictograph.
 ///
-/// VS16 or a keycap asks for emoji only, and VS15 for text only. Without
-/// one, an emoji cluster asks for emoji first, and anything else for text
-/// first.
+/// VS16 asks for emoji only, and VS15 for text only. Without one, a keycap
+/// asks for emoji only, an emoji cluster for emoji first, and anything else
+/// for text first.
 ///
 /// `font-variant-emoji` forces a form on a cluster whose first character is
-/// an emoji (Emoji=Yes), unless a selector in the text overrides it. Chrome's
+/// an emoji (Emoji=Yes), a keycap's base among them, unless a selector in the
+/// text overrides it. Chrome 155 sets a keycap as text under `text` and
+/// `unicode`, and a keycap after VS15 as text under `emoji`. Chrome's
 /// glyph callback (`HarfBuzzGetGlyph`) does the same by supplying VS15 or
 /// VS16 to every such character. `text` forces the text form, `emoji` the
 /// emoji form, and `unicode` the form Emoji_Presentation says. Like Chrome,
@@ -108,11 +110,12 @@ pub(super) fn presentation(
     if !matches!(class, ClusterClass::Emoji | ClusterClass::Symbol) && !keycap {
         return Presentation::Text;
     }
-    let (mut text_selector, mut emoji_selector) = (false, false);
+    let (mut text_selector, mut emoji_selector, mut keycap_mark) = (false, false, false);
     for ch in text.chars() {
         match ch {
             '\u{FE0E}' => text_selector = true,
-            '\u{FE0F}' | '\u{20E3}' => emoji_selector = true,
+            '\u{FE0F}' => emoji_selector = true,
+            '\u{20E3}' => keycap_mark = true,
             _ => {}
         }
     }
@@ -125,6 +128,7 @@ pub(super) fn presentation(
     let props = first.map(unicode::core_props);
     let emoji = props.is_some_and(|props| props.is_emoji());
     match variant {
+        FontVariantEmoji::Normal if keycap_mark => Presentation::EmojiOnly,
         FontVariantEmoji::Text if emoji => Presentation::TextOnly,
         FontVariantEmoji::Emoji if emoji => Presentation::EmojiOnly,
         FontVariantEmoji::Unicode if emoji => {

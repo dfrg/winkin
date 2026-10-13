@@ -118,8 +118,13 @@ fn a_tab_reaches_the_next_stop_past_where_it_lands() {
         ),
         46.6875
     );
-    // Before the content edge the remainder is truncated, as `fmodf`'s is.
-    assert_eq!(tab(0.0, px(-10.0), eight), 90.0);
+    // Before the content edge it reaches the stop past it, as Chrome 155
+    // ends a tab starting 10 px before the edge at the edge, and one
+    // starting 110 px before at 100 px before, under 100 px stops (WPT's
+    // `text-indent-tab-positions-001`).
+    assert_eq!(tab(0.0, px(-10.0), eight), 10.0);
+    assert_eq!(tab(0.0, px(-90.0), eight), 10.0);
+    assert_eq!(tab(0.0, px(-2.0), eight), 82.0, "less than half a space");
     let fixed = TabStops::new(
         TabSize::Px(100.0),
         space,

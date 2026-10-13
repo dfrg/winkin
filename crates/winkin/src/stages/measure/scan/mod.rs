@@ -24,12 +24,13 @@ mod ruby;
 mod walk;
 
 use alloc::vec::Vec;
+use core::cell::Cell;
 use core::mem;
 use core::ops::Range;
 
 use super::autospace::{AutospaceRules, SeamContext, Seams};
 use super::boxes::prepare_boxes;
-use super::edges::{BoundarySplit, edge_room};
+use super::edges::{BoundarySplit, boundary_room, edge_room};
 use super::spacing::{LetterWordSpacing, WordSpacingRule};
 use super::tabs::TabStops;
 use super::{
@@ -589,7 +590,7 @@ impl<'w, 'a> Walking<'w, 'a> {
                 prefix,
                 self.ruby_starts,
                 at,
-                sum,
+                (sum, self.widths.paragraph_offset()),
                 &mut room,
                 self.out,
             );
@@ -684,7 +685,7 @@ impl<'w, 'a> Walking<'w, 'a> {
                     self.widths.tab(self.writer.sum, stops, reach)
                 });
                 if scan.has_ruby {
-                    self.ruby.pass_tab(at, tab.paragraph_reach());
+                    self.ruby.pass_tab(scan, at, tab.paragraph_reach());
                 }
                 tab
             }
@@ -738,12 +739,137 @@ impl<'w, 'a> Walking<'w, 'a> {
     fn end_paragraphs(&mut self, next: ParagraphId, carried: MeasureFlags) {
         let sum = self.writer.sum;
         while self.paragraph < next {
+            if self.flags.contains(MeasureFlags::NONMONOTONE) {
+                self.redo_min_lines(sum);
+            }
             self.widths.end_paragraph(sum, self.cost);
             (self.out.paragraphs)
                 .push_bounded(self.flags, "no more paragraphs than a ParagraphId names");
             self.flags = carried;
             self.paragraph = ParagraphId::new(self.paragraph.get() + 1);
             self.ends = LineEndState::default();
+        }
+    }
+
+    /// Measures again the min-content lines of the current paragraph, which
+    /// ends at sum `end` and whose prefix goes back, as Chrome's breaker
+    /// sets them in no room.
+    ///
+    /// A line overflows at its first opportunity unless its content ends
+    /// there no further on than it started. Where nothing up to its first
+    /// opportunity fits, the breaker tries the later ones, as
+    /// `Breaker::later_fit` does: from the first that fits, the line goes on
+    /// to the last that fits before one that doesn't (WPT
+    /// `inline-negative-margin-001`). A paragraph with tabs, ruby, hanging
+    /// marks or line-edge costs keeps the lines the scan gave it.
+    #[cold]
+    #[inline(never)]
+    fn redo_min_lines(&mut self, end: InlineLayoutUnit) {
+        let scan = self.scan;
+        let analysis = scan.input.analysis;
+        let paragraph = analysis.paragraphs.get(self.paragraph);
+        let tabs = paragraph.is_some_and(|row| row.flags.contains(ParagraphFlags::HAS_TABS));
+        if tabs
+            || scan.has_ruby
+            || scan.has_hanging
+            || self.flags.contains(MeasureFlags::HAS_EDGE_COSTS)
+            || scan
+                .input
+                .content
+                .flags
+                .contains(ContentFlags::INITIAL_LETTER)
+        {
+            return;
+        }
+        let range = analysis.paragraphs.clusters(self.paragraph);
+        let clusters = &analysis.clusters;
+        let sums: &[InlineLayoutUnit] = self.sums;
+        let sum = |at: ClusterId| {
+            if at >= range.end {
+                end
+            } else {
+                sums.get(at.get()).copied().unwrap_or(end)
+            }
+        };
+        let has = |at: ClusterId, bit| clusters.attrs(at).is_some_and(|attrs| attrs.has(bit));
+        // The first boundary past `from` a line may end at.
+        let next_end = |from: ClusterId| {
+            let mut at = from;
+            while at < range.end {
+                work::step();
+                let next = ClusterId::new(at.get() + 1);
+                if has(at, ClusterAttrs::BREAK_AFTER) {
+                    return next;
+                }
+                at = next;
+            }
+            range.end
+        };
+        // Where the content of a line ending at `at` ends: before what hangs.
+        let content_end = |at: ClusterId| {
+            let mut first = at;
+            while first > range.start && has(ClusterId::new(first.get() - 1), ClusterAttrs::HANGS) {
+                work::step();
+                first = ClusterId::new(first.get() - 1);
+            }
+            sum(first)
+        };
+        // The room of the boxes opening at boundary `at`, which a line
+        // ending there takes where it brings the line back.
+        let content = scan.input.content;
+        let near = Cell::new(ItemId::new(0));
+        let opening = |at: ClusterId| {
+            if at >= range.end {
+                return InlineLayoutUnit::ZERO;
+            }
+            let item = analysis.item_clusters.walk_to(near.get(), at);
+            near.set(item);
+            boundary_room(content, analysis, None, at, item).1
+        };
+        // The content's end on a line ending at `at`, and where the next
+        // starts: the boxes opening there end the line where their negative
+        // room fits, as Chrome's breaker takes each item that fits.
+        let ends = |at: ClusterId| {
+            let rest = opening(at).min(InlineLayoutUnit::ZERO);
+            (content_end(at) + rest, sum(at) + rest)
+        };
+        let widths = &mut self.widths;
+        widths.restart_min_lines();
+        let (mut start, mut pen, mut first) = (range.start, sum(range.start), true);
+        while start < range.end {
+            let scan_widths: &IntrinsicScan = widths;
+            let width = |end: InlineLayoutUnit| scan_widths.min_line_width(pen, end, first);
+            let fits = |at: ClusterId| {
+                let (end, next) = ends(at);
+                (width(end) <= InlineLayoutUnit::ZERO).then_some((at, width(end), next))
+            };
+            // Where nothing fits up to the first opportunity, a later one
+            // may; from the first that fits, the line goes on while they do.
+            let opportunity = next_end(start);
+            let mut found = fits(opportunity);
+            let mut at = opportunity;
+            while found.is_none() && at < range.end {
+                at = next_end(at);
+                found = fits(at);
+            }
+            let (stop, line, next) = match found {
+                Some(mut fitted) => {
+                    while fitted.0 < range.end {
+                        match fits(next_end(fitted.0)) {
+                            Some(further) => fitted = further,
+                            None => break,
+                        }
+                    }
+                    fitted
+                }
+                None => (
+                    opportunity,
+                    width(content_end(opportunity)),
+                    sum(opportunity),
+                ),
+            };
+            widths.take_min_line(line, first);
+            (start, pen, first) = (stop, next, false);
         }
     }
 
@@ -878,7 +1004,16 @@ impl<'w, 'a> Walking<'w, 'a> {
         // edges. A line ending there pays what the last boundary charged. A
         // scan that stops at the first paragraph's end has ended it already.
         if scan.end == analysis.clusters.end_id() {
-            let sum = self.sums.last().copied().unwrap_or_default();
+            // An empty last paragraph that makes a line holds the room of
+            // the boxes opening there, which no prefix sum holds.
+            let sum = if analysis.paragraphs.has_end_line() {
+                self.writer.sum
+            } else {
+                self.sums.last().copied().unwrap_or_default()
+            };
+            if self.flags.contains(MeasureFlags::NONMONOTONE) {
+                self.redo_min_lines(sum);
+            }
             self.widths.end_paragraph(sum, self.cost);
             if analysis.paragraphs.get(self.paragraph).is_some() {
                 (self.out.paragraphs)

@@ -77,6 +77,9 @@ pub(super) struct LineColumn {
     pub(super) parent_room: (InlineLayoutUnit, InlineLayoutUnit),
     /// The shaping run its base starts in on this line.
     first_run: ShapedRunId,
+    /// The advance of the collapsible spaces ending its base at the line's
+    /// end, which line layout removes.
+    removed: InlineLayoutUnit,
 }
 
 /// A ruby column's base and sizes as the line being placed sets them: its
@@ -292,8 +295,24 @@ impl<'a> Placer<'a> {
         at: ClusterId,
         rest: InlineLayoutUnit,
     ) {
-        let sizes = ColumnSizes::new(column, part);
+        let mut sizes = ColumnSizes::new(column, part);
         let base = sizes.base();
+        // Collapsible spaces ending the base at the line's end go, and the
+        // column narrows to what is left.
+        let removed = if part.is_none() && !base.is_empty() {
+            self.base_end_spaces(line, column)
+        } else {
+            None
+        };
+        let mut spread_base = base.clone();
+        if let Some((from, advance)) = removed {
+            self.line_ruby.base_spaces = Some(from);
+            sizes.base_width = sizes.base_width - advance.to_layout();
+            let widest = (self.rubies.levels(column).iter())
+                .fold(sizes.base_width, |widest, level| widest.max(level.width));
+            sizes.width = widest;
+            spread_base = base.start..from;
+        }
         let content = self.stages.content;
         let container = column.container(content);
         let align = self.box_facts(container).ruby.align;
@@ -301,7 +320,7 @@ impl<'a> Placer<'a> {
         let scope = (id, id.max(self.line_ruby.line_column));
         let (analysis, ruby_columns) = (self.stages.analysis, self.rubies);
         let opportunities = || {
-            let (justify, base) = (text.justify, base.clone());
+            let (justify, base) = (text.justify, spread_base.clone());
             JustifyOpportunities::from_base(
                 content,
                 analysis,
@@ -313,11 +332,11 @@ impl<'a> Placer<'a> {
             )
         };
         let (mut room_before, mut room_inside) = (column.room_before, column.room_inside);
-        if part.is_some() {
+        if part.is_some() || removed.is_some() {
             let space = sizes.width - sizes.base_width;
             // Only room spread inside the base reads its opportunities.
             let count = if space > LayoutUnit::ZERO && spreads_inside(align) {
-                opportunities().map_or(0, |found| found.count_range(base.clone()))
+                opportunities().map_or(0, |found| found.count_range(spread_base.clone()))
             } else {
                 0
             };
@@ -377,7 +396,7 @@ impl<'a> Placer<'a> {
             boxes.innermost(),
             shift,
         ));
-        self.line_ruby.spread = Justified::new(opportunities, base.clone(), room_inside);
+        self.line_ruby.spread = Justified::new(opportunities, spread_base.clone(), room_inside);
         let index = rubies.columns.len();
         let parent = self.line_ruby.open_column;
         self.line_ruby.open_column = Some(index);
@@ -406,6 +425,7 @@ impl<'a> Placer<'a> {
             shift,
             parent_room,
             first_run,
+            removed: removed.map_or(InlineLayoutUnit::ZERO, |(_, advance)| advance),
         });
     }
 
@@ -431,7 +451,10 @@ impl<'a> Placer<'a> {
         let base_width = if base.is_empty() {
             InlineLayoutUnit::ZERO
         } else {
-            self.stages.measured.prefix.get(base.end) - open.start - self.closes_past_base(&open)
+            self.stages.measured.prefix.get(base.end)
+                - open.start
+                - self.closes_past_base(&open)
+                - open.removed
         };
         let after = if open.end < line.clusters().end {
             InlineLayoutUnit::from_layout(sizes.overhang.1)
@@ -557,6 +580,41 @@ impl<'a> Placer<'a> {
             }
         }
         sum
+    }
+
+    /// Returns where the collapsible spaces ending `column`'s base start,
+    /// and their advance, where the column ends `line`.
+    ///
+    /// Chrome's `RemoveTrailingCollapsibleSpace` removes them from the
+    /// column's base, and the column takes the width of what is left.
+    #[cold]
+    #[inline(never)]
+    fn base_end_spaces(
+        &self,
+        line: &LineView<'_>,
+        column: &RubyColumn,
+    ) -> Option<(ClusterId, InlineLayoutUnit)> {
+        if self.item_clusters.start(column.close) != self.clusters.drawn_end(line.clusters()) {
+            return None;
+        }
+        let base = column.base.clone();
+        let start = base.start.max(line.clusters().start);
+        let mut from = base.end;
+        while from > start && self.is(ClusterId::new(from.get() - 1), ClusterClass::Space) {
+            from = ClusterId::new(from.get() - 1);
+        }
+        if from == base.end {
+            return None;
+        }
+        let last = ClusterId::new(base.end.get() - 1);
+        let item = self.item_clusters.walk_to_cluster(column.open, last);
+        let node = self.items.get(item)?.node;
+        let facts = self.stages.content.facts.text(self.stages.text_facts(node));
+        if !facts.collapse.collapses_spaces() {
+            return None;
+        }
+        let prefix = &self.stages.measured.prefix;
+        Some((from, prefix.get(base.end) - prefix.get(from)))
     }
 
     /// Returns where `line`'s in-flow content ends, leaving out a forced

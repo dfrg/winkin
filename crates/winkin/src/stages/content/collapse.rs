@@ -34,8 +34,9 @@
 //!   trims kept white space too.
 //! - **A combined unit** (`text-combine-upright: all`) collapses its white
 //!   space on its own, as Chrome's `LayoutTextCombine` is an inline block
-//!   with its own text. Nothing collapsible is written at its start or end.
-//!   Outside, it is content, as an atomic inline is.
+//!   with its own text. Nothing collapsible is written at its start or end,
+//!   and a unit left with nothing keeps a generated U+200B, as Blink's box
+//!   stays one em wide. Outside, it is content, as an atomic inline is.
 
 use super::ItemId;
 use crate::data::TextOffset;
@@ -150,6 +151,17 @@ impl Collapser {
             state: State::Dropping,
             combining: false,
         }
+    }
+
+    /// Whether the text arriving is in a combined unit.
+    pub(super) fn is_combining(&self) -> bool {
+        self.combining
+    }
+
+    /// Whether the text arriving is in a combined unit that has written
+    /// nothing yet.
+    pub(super) fn is_combining_empty(&self) -> bool {
+        self.combining && self.state == State::Dropping
     }
 
     /// Moves on `event`, and returns what the writer must write.
