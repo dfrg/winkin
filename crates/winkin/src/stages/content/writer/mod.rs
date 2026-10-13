@@ -53,8 +53,8 @@ use super::map::MapUnitId;
 use super::memo::{StyleKey, StyleMemo};
 use super::transform::Transforms;
 use super::{
-    BlockFacts, BoxFactsId, Content, ItemId, ItemKind, NodeId, NodeKey, NodeKind, TextFactsId,
-    TextFitFacts,
+    BlockFacts, BoxFactsId, Content, ContentStaging, ItemId, ItemKind, NodeId, NodeKey, NodeKind,
+    TextFactsId, TextFitFacts,
 };
 use crate::build::{BuildOptions, BuildReport};
 use crate::context::Context;
@@ -123,6 +123,8 @@ pub(crate) struct ContentScratch {
     /// two that share one.
     atomic_keys: HashIndex,
     lists: Lists,
+    /// The rooms a new layout's content is written in.
+    staging: ContentStaging,
 }
 
 impl ContentScratch {
@@ -134,6 +136,7 @@ impl ContentScratch {
             memo: StyleMemo::new(),
             atomic_keys: HashIndex::new(),
             lists: Lists::new(),
+            staging: ContentStaging::new(),
         }
     }
 
@@ -159,7 +162,7 @@ impl Default for ContentScratch {
 }
 
 heap_bytes! {
-    ContentScratch { open, words, memo, atomic_keys, lists }
+    ContentScratch { open, words, memo, atomic_keys, lists, staging }
 }
 
 define_id! {
@@ -552,6 +555,7 @@ impl<'a> ContentWriter<'a> {
         }
         let mut scratch = cx.take_content_scratch();
         scratch.clear();
+        scratch.staging.lend(content);
         let mut writer = Self {
             content,
             cx,

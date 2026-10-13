@@ -67,15 +67,15 @@ use alloc::vec::Vec;
 use core::mem;
 use core::ops::Range;
 
-use fontwich::{Charset, CharsetPage, FaceId, Presentation};
+use fontwich::{Charset, CharsetPage, Presentation};
 
-use super::FontInput;
 use super::context::{CacheChange, FontContext};
 use super::coverage;
 use super::features;
 use super::lists::{CandidateId, CandidateListId, ListKey, MatchRequest};
 use super::used::UsedFontInterner;
 use super::{DefaultLanguage, FontResolution, FontRun, FontRuns, UsedFontId};
+use super::{FontInput, WantedFaces};
 use crate::config::PositionSynthesis;
 use crate::data::{HeapBytes, Id, IdRange, Table, TextOffset, heap_bytes};
 use crate::stages::analysis::{ClusterAttrs, ClusterEnd, ClusterId, ScriptRunId};
@@ -144,7 +144,7 @@ pub(super) struct Selecting<'a> {
     pub(super) used: UsedFontInterner<'a>,
     /// The pending faces a cluster wants, each once, in the order first
     /// wanted.
-    pub(super) wanted: &'a mut Vec<FaceId>,
+    pub(super) wanted: &'a mut WantedFaces,
 }
 
 /// The run loop's working memory, in the stage's scratch.

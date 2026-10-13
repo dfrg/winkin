@@ -20,6 +20,8 @@
 //! their tables and returns the style keyed by their ids, a [`StyleKey`].
 //! The content never stores a key: the writer lowers it into the facts.
 
+use alloc::boxed::Box;
+
 use core::hash::{Hash, Hasher};
 use core::ops::Range;
 use parlance::{FontFeature, FontVariation, Language};
@@ -328,21 +330,24 @@ impl<I, V, T> HeapBytes for InternedLists<I, V, T> {
 /// The layout's content languages, each stored once.
 ///
 /// A font request's and a script run's [`LanguageId`] names one.
+///
+/// The table is made at the first language other than `und`, then cleared
+/// and kept.
 pub(crate) struct Languages {
-    languages: Table<LanguageId, Language>,
+    languages: Option<Box<Table<LanguageId, Language>>>,
 }
 
 impl Languages {
     /// Creates an empty table, allocating nothing.
     pub(super) const fn new() -> Self {
-        Self {
-            languages: Table::new(),
-        }
+        Self { languages: None }
     }
 
     /// Removes every language and keeps the allocations.
     pub(super) fn clear(&mut self) {
-        self.languages.clear();
+        if let Some(languages) = &mut self.languages {
+            languages.clear();
+        }
     }
 
     /// Returns the id of a language, `None` being `und`, found through
@@ -356,16 +361,20 @@ impl Languages {
         if language == Language::UND {
             return Some(LanguageId::UNDETERMINED);
         }
-        if self.languages.is_empty() {
-            self.languages
-                .push_bounded(Language::UND, "an empty table has room");
+        let languages = self.languages.get_or_insert_with(Box::default);
+        if languages.is_empty() {
+            languages.push_bounded(Language::UND, "an empty table has room");
         }
-        lookup.intern(&mut self.languages, language)
+        lookup.intern(languages, language)
     }
 
     /// Returns the language `id` names, or `und` past the last.
     pub(crate) fn get(&self, id: LanguageId) -> Language {
-        self.languages.get(id).copied().unwrap_or(Language::UND)
+        self.languages
+            .as_deref()
+            .and_then(|languages| languages.get(id))
+            .copied()
+            .unwrap_or(Language::UND)
     }
 }
 

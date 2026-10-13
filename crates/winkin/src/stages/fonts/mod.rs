@@ -71,6 +71,10 @@ use instance::{
 use metrics::UnscaledMetrics;
 use select::{RunScratch, Selecting};
 
+/// The `@font-face` faces still downloading that some cluster wants, each
+/// once: no list until a face is wanted. Selection's pickers add to it.
+type WantedFaces = Option<Box<Vec<FaceId>>>;
+
 pub(crate) use context::FontContext;
 pub(crate) use lists::NamedListId;
 // Private to font selection: no layout holds one of the context's
@@ -1078,7 +1082,9 @@ pub(crate) struct Fonts {
     resolutions: Table<FontRequestId, FontResolution>,
     /// The `@font-face` faces still downloading that some cluster wants,
     /// each once. The host fetches them, and lays out again when they land.
-    pub(crate) wanted: Vec<FaceId>,
+    ///
+    /// The list is made at the first face wanted, then cleared and kept.
+    wanted: WantedFaces,
     /// The language text whose style names none had its fonts chosen in,
     /// and is shaped in.
     pub(super) default_language: DefaultLanguage,
@@ -1091,7 +1097,7 @@ impl Fonts {
             used: UsedFonts::new(),
             runs: FirstLine::new(FontRuns::new()),
             resolutions: Table::new(),
-            wanted: Vec::new(),
+            wanted: None,
             default_language: DefaultLanguage::new(Language::UND),
         }
     }
@@ -1102,8 +1108,16 @@ impl Fonts {
         self.used.clear();
         self.runs.clear();
         self.resolutions.clear();
-        self.wanted.clear();
+        if let Some(wanted) = &mut self.wanted {
+            wanted.clear();
+        }
         self.default_language = DefaultLanguage::new(Language::UND);
+    }
+
+    /// Returns the `@font-face` faces still downloading that some cluster
+    /// wants, each once.
+    pub(crate) fn wanted(&self) -> &[FaceId] {
+        self.wanted.as_deref().map_or(&[], Vec::as_slice)
     }
 
     /// Returns the runs `variant` reads: the first line's where they were

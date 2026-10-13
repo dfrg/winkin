@@ -370,8 +370,8 @@ impl<'a> Placer<'a> {
             return (first || room >= piece.advance).then_some(PieceCut::Whole);
         }
         let keeps_first = piece.keeps_first(self.line_state.level);
-        let shapes = self.lines.edges.line_edges(line);
-        let edges = &self.lines.edges;
+        let shapes = self.lines.edges().line_edges(line);
+        let edges = self.lines.edges();
         // The items at the boundaries the cut walks, where boxes have edges.
         let mut near = None;
         let mut step = |cluster: ClusterId| {

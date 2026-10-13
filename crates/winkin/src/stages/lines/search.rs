@@ -116,7 +116,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             .lines
             .last()
             .map_or(EdgeShapeId::new(0), |line| line.shapes.end);
-        out.edges.shapes.truncate(shapes);
+        out.truncate_edge_shapes(shapes);
         if let Some(ruby) = &mut out.ruby {
             ruby.truncate(next);
         }
@@ -177,7 +177,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
                     return fitted;
                 }
             } else {
-                out.edges.rewind(fitting.head.after());
+                out.rewind_edges(fitting.head.after());
             }
         }
 

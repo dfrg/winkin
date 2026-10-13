@@ -500,7 +500,7 @@ impl<'a> Placer<'a> {
         let clusters = level.clusters.clone();
         let words = self.input.stages.measured.word_spacing_rule;
         // The line's reshaped edges that hold some of the level.
-        let shapes = self.lines.edges.line_edges_touching(line, &clusters);
+        let shapes = self.lines.edges().line_edges_touching(line, &clusters);
         // The bidi level of the last text segment, which a closing edge
         // after it takes, as does an opening edge after the last.
         let mut before = None;
@@ -650,7 +650,7 @@ impl<'a> Placer<'a> {
                 let advance = shapes
                     .iter()
                     .find_map(|shape| shape.entry(cluster))
-                    .and_then(|entry| self.lines.edges.advances.get(entry))
+                    .and_then(|entry| self.lines.edges().advances.get(entry))
                     .map_or_else(
                         || text.step(cluster),
                         |&advance| InlineLayoutUnit::from_text(advance),

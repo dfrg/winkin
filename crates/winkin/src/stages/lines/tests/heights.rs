@@ -192,8 +192,7 @@ fn settled(layout: &Layout, line: usize) -> Vec<(usize, f32)> {
     let lines = layout.line_records();
     let record = &records(layout)[line];
     lines
-        .shifts
-        .slice(record.shifts.clone())
+        .line_shifts(record)
         .iter()
         .map(|shift| (shift.node.get(), shift.shift.to_px()))
         .collect()
@@ -642,11 +641,8 @@ fn a_relayout_settles_what_a_fresh_layout_does() {
         build(&mut fixture, &mut fresh);
         fixture.lay_out(&mut fresh, width);
         assert_eq!(records(&warm), records(&fresh), "{width}");
-        assert_eq!(
-            warm.line_records().shifts.as_slice(),
-            fresh.line_records().shifts.as_slice()
-        );
-        assert!(!warm.line_records().shifts.is_empty());
+        assert_eq!(warm.line_records().shifts(), fresh.line_records().shifts());
+        assert!(!warm.line_records().shifts().is_empty());
         for line in 0..records(&warm).len() {
             let nodes: Vec<usize> = settled(&warm, line).iter().map(|&(node, _)| node).collect();
             assert!(nodes.windows(2).all(|w| w[0] < w[1]), "{nodes:?}");

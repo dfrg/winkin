@@ -403,9 +403,9 @@ pub(crate) struct TextMetrics {
 /// styles.
 ///
 /// The first paragraph's has the same tables over fewer clusters. Each table
-/// has its own type and methods: the prefix, the paragraph flags, the
-/// extents and strut, and the kept boxes. The tables only some content has
-/// live in a box of their own ([`RareMeasures`]).
+/// has its own type and methods: the prefix, the paragraph flags, and the
+/// extents and strut. The tables only some content has live in a box of
+/// their own ([`RareMeasures`]).
 pub(crate) struct MeasuredText {
     /// The prefix advances.
     pub(crate) prefix: PrefixAdvances,
@@ -417,8 +417,6 @@ pub(crate) struct MeasuredText {
     paragraphs: Table<ParagraphId, MeasureFlags>,
     /// Each item's extent, and the strut.
     pub(crate) extents: ItemExtents,
-    /// The boxes that keep a fragment, with their fragments' extents.
-    pub(crate) kept_boxes: KeptBoxes,
     /// The tables only some content has.
     ///
     /// The box is made the first time a build needs it, then cleared with
@@ -430,8 +428,8 @@ pub(crate) struct MeasuredText {
 /// The tables of a [`MeasuredText`] that only some content fills.
 ///
 /// They are the line-edge costs, the baseline shifts, the text's em boxes
-/// (for ruby or emphasis marks), the ruby columns and the block's initial
-/// letter. Only the measure stage writes them. A text without them reads
+/// (for ruby or emphasis marks), the ruby columns, the kept boxes and the
+/// block's initial letter. Only the measure stage writes them. A text without them reads
 /// [`RareMeasures::NONE`].
 struct RareMeasures {
     /// The line-edge costs.
@@ -449,6 +447,8 @@ struct RareMeasures {
     shifts: SortedTable<(NodeId, LayoutUnit)>,
     em_boxes: ItemEmBoxes,
     rubies: RubyColumns,
+    /// The boxes that keep a fragment, with their fragments' extents.
+    kept_boxes: KeptBoxes,
     /// The block's initial letter, where it has one.
     initial_letter: Option<InitialLetter>,
 }
@@ -463,6 +463,7 @@ impl RareMeasures {
             shifts: SortedTable::new(),
             em_boxes: ItemEmBoxes::new(),
             rubies: RubyColumns::new(),
+            kept_boxes: KeptBoxes::new(),
             initial_letter: None,
         }
     }
@@ -480,6 +481,7 @@ impl RareMeasures {
         self.shifts.clear();
         self.em_boxes.clear();
         self.rubies.clear();
+        self.kept_boxes.clear();
         self.initial_letter = None;
     }
 }
@@ -493,7 +495,6 @@ impl MeasuredText {
             prefix: PrefixAdvances::new(),
             paragraphs: Table::new(),
             extents: ItemExtents::new(),
-            kept_boxes: KeptBoxes::new(),
             rare: None,
         }
     }
@@ -502,7 +503,6 @@ impl MeasuredText {
         self.prefix.clear();
         self.paragraphs.clear();
         self.extents.clear();
-        self.kept_boxes.clear();
         if let Some(rare) = &mut self.rare {
             rare.clear();
         }
@@ -559,6 +559,13 @@ impl MeasuredText {
     #[inline]
     pub(crate) fn edge_costs(&self) -> &LineEdgeCosts {
         &self.rare().edge_costs
+    }
+
+    /// The boxes that keep a fragment, with their fragments' extents: none
+    /// where every box is culled.
+    #[inline]
+    pub(crate) fn kept_boxes(&self) -> &KeptBoxes {
+        &self.rare().kept_boxes
     }
 
     /// The ruby columns and their levels.
@@ -802,13 +809,13 @@ heap_bytes! {
 }
 
 heap_bytes! {
-    RareMeasures { edge_costs, shifts, em_boxes, rubies; initial_letter }
+    RareMeasures { edge_costs, shifts, em_boxes, rubies, kept_boxes; initial_letter }
 }
 
 heap_bytes! {
     /// Its tables, and its rare tables' box and theirs where a build made
     /// them.
-    MeasuredText { prefix, paragraphs, extents, kept_boxes, rare }
+    MeasuredText { prefix, paragraphs, extents, rare }
 }
 
 heap_bytes! {

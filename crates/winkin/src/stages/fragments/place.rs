@@ -41,7 +41,7 @@ use super::{
     BlockResult, FragmentItem, FragmentItemFlags, FragmentItemId, Fragments, JustifiedLineId,
     PlaceInput,
 };
-use crate::data::{Id, Table, define_id, heap_bytes, u32_to_index};
+use crate::data::{Id, Staging, Table, define_id, heap_bytes, u32_to_index};
 use crate::stages::analysis::{BidiLevel, ClusterId, ParagraphFlags, ParagraphId};
 use crate::stages::content::{BoxFacts, ContentFlags, ItemId, NodeId};
 use crate::stages::lines::{LineBand, LineFlags, LineId, LineView};
@@ -435,6 +435,8 @@ pub(crate) struct PlaceScratch {
     counts: LeafCounts,
     /// Its ruby columns and their annotation lines.
     rubies: LineRubies,
+    /// The room a new layout's fragment items are written in.
+    pub(super) items: Staging<Table<FragmentItemId, FragmentItem>>,
 }
 
 impl PlaceScratch {
@@ -445,6 +447,7 @@ impl PlaceScratch {
             boxes: LineBoxes::new(),
             counts: LeafCounts::new(),
             rubies: LineRubies::new(),
+            items: Staging::new(Table::new()),
         }
     }
 
@@ -465,7 +468,7 @@ impl PlaceScratch {
 }
 
 heap_bytes! {
-    PlaceScratch { pieces, boxes, counts, rubies }
+    PlaceScratch { pieces, boxes, counts, rubies, items }
 }
 
 heap_bytes! {
@@ -651,7 +654,7 @@ impl<'a> Placer<'a> {
             items: &content.items,
             item_clusters: &analysis.item_clusters,
             count: analysis.clusters.end_id(),
-            kept_boxes: &measured.kept_boxes,
+            kept_boxes: measured.kept_boxes(),
             lines: input.lines,
             block,
             gates: Gates::new(input),
@@ -677,7 +680,7 @@ impl<'a> Placer<'a> {
             return;
         }
         self.stages = self.input.stages.variant(variant);
-        self.kept_boxes = &self.stages.measured.kept_boxes;
+        self.kept_boxes = self.stages.measured.kept_boxes();
         self.rubies = self.stages.measured.ruby_columns();
         self.run = self.stages.shaped.runs.cursor(ShapedRunId::new(0));
         self.next_kept = KeptBoxId::new(0);
@@ -787,6 +790,7 @@ impl<'a> Placer<'a> {
             boxes,
             counts,
             rubies,
+            ..
         } = scratch;
         let spread = out.spread_mark();
         let (band, align) = (self.line_state.band, self.line_state.align);
@@ -799,7 +803,7 @@ impl<'a> Placer<'a> {
         if !pieces.carried.is_empty() {
             pieces.take_carried(boxes.innermost());
         }
-        let shapes = self.lines.edges.line_edges(line);
+        let shapes = self.lines.edges().line_edges(line);
         self.pieces(pieces, boxes, rubies, line, shapes);
         if self.line_ruby.open_column.is_some() {
             self.finish_columns(pieces, boxes, rubies, line);

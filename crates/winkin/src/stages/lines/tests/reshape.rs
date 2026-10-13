@@ -13,7 +13,7 @@ use crate::style::FirstLineVariant;
 fn piece_ids(layout: &Layout, line: &LineRecord, clusters: Range<usize>) -> Vec<u32> {
     let lines = layout.line_records();
     let shape = lines
-        .edges
+        .edges()
         .shapes
         .slice(line.shapes.clone())
         .iter()
@@ -21,8 +21,8 @@ fn piece_ids(layout: &Layout, line: &LineRecord, clusters: Range<usize>) -> Vec<
         .expect("a piece over those clusters");
     (0..clusters.len())
         .flat_map(|k| {
-            let word = lines.edges.words[EdgeClusterId::new(shape.first.get() + k)];
-            match word.glyphs(&lines.edges.glyphs) {
+            let word = lines.edges().words[EdgeClusterId::new(shape.first.get() + k)];
+            match word.glyphs(&lines.edges().glyphs) {
                 ClusterGlyphs::None => Vec::new(),
                 ClusterGlyphs::One(id) => vec![id],
                 ClusterGlyphs::Many(glyphs) => glyphs.iter().map(|g| g.id()).collect(),
@@ -64,12 +64,12 @@ fn a_kerned_pair_broken_apart_is_measured_as_reshaped() {
     // drawn a whole half em, unkerned, after the paragraph's `AV`.
     let first = records(&layout)[0].clone();
     let lines = layout.line_records();
-    let shapes = lines.edges.shapes.slice(first.shapes.clone());
+    let shapes = lines.edges().shapes.slice(first.shapes.clone());
     assert_eq!(shapes.len(), 1);
     assert_eq!(shapes[0].clusters(), at(2)..at(3));
     let latin = latin();
     assert_eq!(piece_ids(&layout, &first, 2..3), [latin.glyph('A')]);
-    let last = lines.edges.advances[EdgeClusterId::new(shapes[0].first.get())];
+    let last = lines.edges().advances[EdgeClusterId::new(shapes[0].first.get())];
     assert_eq!(last, TextUnit::from_px_truncated(10.0));
     for line in records(&layout).to_vec() {
         assert_eq!(line.width, shaped_whole(&mut fixture, &layout, &line));
@@ -82,7 +82,7 @@ fn a_kerned_pair_broken_apart_is_measured_as_reshaped() {
     fixture.lay_out_with(&mut layout, Area::new(500.0), &mut { steps });
     assert_eq!(texts(&layout), ["AVA", "VA", "VA", "V"]);
     let second = records(&layout)[1].clone();
-    let shapes = layout.line_records().edges.shapes.slice(second.shapes);
+    let shapes = layout.line_records().edges().shapes.slice(second.shapes);
     let pieces: Vec<Range<ClusterId>> = shapes.iter().map(EdgeShape::clusters).collect();
     assert_eq!(pieces, [at(3)..at(4), at(4)..at(5)]);
     assert_eq!(second.width, LayoutUnit::from_px(20.0));
@@ -175,7 +175,7 @@ fn a_ligature_broken_inside_is_measured_as_reshaped() {
     // nothing is reshaped.
     fixture.lay_out(&mut layout, 26.0);
     assert_eq!(texts(&layout), ["offi", "ce"]);
-    assert!(layout.line_records().edges.shapes.is_empty());
+    assert!(layout.line_records().edges().shapes.is_empty());
     assert_eq!(glyph_words(&layout), glyphs);
 }
 
@@ -255,7 +255,7 @@ fn a_line_end_is_reshaped_back_to_its_run_and_no_further() {
     let ranges: Vec<Range<ClusterId>> = records(&layout).iter().map(LineRecord::clusters).collect();
     assert_eq!(ranges, [at(0)..at(6), at(6)..at(7)]);
     let lines = records(&layout).to_vec();
-    let edges = &layout.line_records().edges;
+    let edges = layout.line_records().edges();
     let pieces: Vec<Range<ClusterId>> = edges
         .shapes
         .slice(lines[0].shapes.clone())

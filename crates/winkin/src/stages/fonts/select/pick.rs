@@ -1,7 +1,7 @@
 //! Tries a candidate list on a grapheme: what the grapheme asks of a font,
 //! the memo's first pass, the second pass and the partial cover.
 
-use alloc::vec::Vec;
+use alloc::boxed::Box;
 
 use fontwich::{Charset, CharsetPage, FaceId, Font, Presentation};
 
@@ -9,6 +9,7 @@ use super::ItemGraphemes;
 use crate::data::{Id, IdRange, Table, TextOffset};
 use crate::stages::analysis::{ClusterClass, ClusterEnd, ClusterId, Clusters};
 use crate::stages::content::TextCursor;
+use crate::stages::fonts::WantedFaces;
 use crate::stages::fonts::context::CacheChange;
 use crate::stages::fonts::coverage;
 use crate::stages::fonts::lists::{
@@ -57,9 +58,10 @@ fn wants(font: &Font, text: &str) -> bool {
 
 /// Adds pending `face`, which wants a character of a cluster, to the faces
 /// the host fetches. Each face goes in once.
-fn want(wanted: &mut Vec<FaceId>, face: FaceId) {
-    if !wanted.contains(&face) {
-        wanted.push(face);
+fn want(wanted: &mut WantedFaces, face: FaceId) {
+    let faces = wanted.get_or_insert_with(Box::default);
+    if !faces.contains(&face) {
+        faces.push(face);
     }
 }
 
@@ -140,7 +142,7 @@ impl<'t> GraphemeNeeds<'t> {
     pub(super) fn fit<'l>(
         &self,
         candidate: &'l Candidate,
-        wanted: &mut Vec<FaceId>,
+        wanted: &mut WantedFaces,
         page: &mut Option<CharsetPage<'l>>,
     ) -> CandidateFit<'l> {
         if candidate.is_unusable() {
@@ -344,7 +346,7 @@ impl<'w> SpanText<'w> {
         list: &'l CandidateList,
         memo: &mut Table<CandidateId, ClusterId>,
         pages: &mut Pages<'l>,
-        wanted: &mut Vec<FaceId>,
+        wanted: &mut WantedFaces,
         cluster: ClusterId,
         needs: &GraphemeNeeds<'_>,
     ) -> ListOutcome {

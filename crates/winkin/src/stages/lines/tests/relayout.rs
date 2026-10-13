@@ -22,10 +22,10 @@ fn a_relayout_equals_a_fresh_layout() {
         fixture.lay_out(&mut fresh, width);
         let (a, b) = (layout.line_records(), fresh.line_records());
         assert_eq!(a.lines.as_slice(), b.lines.as_slice(), "at {width}");
-        assert_eq!(a.edges.shapes.as_slice(), b.edges.shapes.as_slice());
-        assert_eq!(a.edges.words.as_slice(), b.edges.words.as_slice());
-        assert_eq!(a.edges.glyphs.as_slice(), b.edges.glyphs.as_slice());
-        assert_eq!(a.edges.advances.as_slice(), b.edges.advances.as_slice());
+        assert_eq!(a.edges().shapes.as_slice(), b.edges().shapes.as_slice());
+        assert_eq!(a.edges().words.as_slice(), b.edges().words.as_slice());
+        assert_eq!(a.edges().glyphs.as_slice(), b.edges().glyphs.as_slice());
+        assert_eq!(a.edges().advances.as_slice(), b.edges().advances.as_slice());
         assert_eq!(a.block, b.block);
     }
     fixture.text(&mut layout, &style, "x");
@@ -79,10 +79,10 @@ impl Broken {
         }
         Self {
             lines: lines.lines.as_slice().to_vec(),
-            shapes: lines.edges.shapes.as_slice().to_vec(),
-            words: lines.edges.words.as_slice().to_vec(),
-            glyphs: lines.edges.glyphs.as_slice().to_vec(),
-            advances: lines.edges.advances.as_slice().to_vec(),
+            shapes: lines.edges().shapes.as_slice().to_vec(),
+            words: lines.edges().words.as_slice().to_vec(),
+            glyphs: lines.edges().glyphs.as_slice().to_vec(),
+            advances: lines.edges().advances.as_slice().to_vec(),
             untrimmed_end: untrimmed_end(&lines.block),
             drawn,
         }

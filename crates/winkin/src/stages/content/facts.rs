@@ -40,7 +40,7 @@ use core::mem;
 use super::lists::{HyphenStringId, LanguageId, Languages, Lookup};
 use super::memo::{FontKey, StyleKey};
 use super::{ContentFlags, NodeId, NodeKind};
-use crate::data::{Id, Table, define_flags, define_id, heap_bytes};
+use crate::data::{Id, Staging, Table, define_flags, define_id, heap_bytes};
 use crate::style::{
     BaseDirection, BoxDecorationBreak, ComputedBlockStyle, ComputedStyle, Direction,
     DominantBaseline, EdgesGroup, EmphasisSide, EmphasisSkip, FontVariantPosition,
@@ -1091,6 +1091,45 @@ pub(crate) struct Facts {
     requests: Table<FontRequestId, FontRequest>,
     /// The box facts and edges, boxed: content with no box makes no table.
     boxes: Option<Box<BoxTables>>,
+}
+
+/// The rooms the builder writes a new layout's fact tables in.
+pub(super) struct FactsStaging {
+    texts: Staging<Table<TextFactsId, TextFacts>>,
+    shapings: Staging<Table<ShapingFactsId, ShapingFacts>>,
+    requests: Staging<Table<FontRequestId, FontRequest>>,
+}
+
+impl FactsStaging {
+    /// Empty rooms, allocating nothing.
+    pub(super) const fn new() -> Self {
+        Self {
+            texts: Staging::new(Table::new()),
+            shapings: Staging::new(Table::new()),
+            requests: Staging::new(Table::new()),
+        }
+    }
+}
+
+heap_bytes! {
+    FactsStaging { texts, shapings, requests }
+}
+
+impl Facts {
+    /// Lends the rooms of `staging` to the tables that have no capacity.
+    pub(super) fn lend(&mut self, staging: &mut FactsStaging) {
+        staging.texts.lend(&mut self.texts);
+        staging.shapings.lend(&mut self.shapings);
+        staging.requests.lend(&mut self.requests);
+    }
+
+    /// Leaves the tables at their lengths and takes the rooms of `staging`
+    /// back.
+    pub(super) fn settle(&mut self, staging: &mut FactsStaging) {
+        staging.texts.settle(&mut self.texts);
+        staging.shapings.settle(&mut self.shapings);
+        staging.requests.settle(&mut self.requests);
+    }
 }
 
 /// The tables of [`Facts`] that only content with boxes fills.

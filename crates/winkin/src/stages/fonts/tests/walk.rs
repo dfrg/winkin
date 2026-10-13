@@ -51,7 +51,7 @@ fn selection(fixture: &Fixture, layout: &Layout) -> Vec<String> {
     for generated in fixture.cx.generated_fonts().iter() {
         said.push(format!("generated {generated:?}"));
     }
-    said.push(format!("wanted {:?}", fonts.wanted));
+    said.push(format!("wanted {:?}", fonts.wanted()));
     said
 }
 

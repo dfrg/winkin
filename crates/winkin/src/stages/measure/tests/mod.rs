@@ -306,7 +306,7 @@ fn check(layout: &Layout, cx: &Context) {
     for &(node, shift) in shifts.iter() {
         assert_ne!(shift, LayoutUnit::ZERO);
         match layout.content().nodes.kind(node) {
-            Some(NodeKind::Box) => assert!(text.kept_boxes.get(node).is_some()),
+            Some(NodeKind::Box) => assert!(text.kept_boxes().get(node).is_some()),
             Some(NodeKind::Atomic | NodeKind::FirstLetter) => {}
             other => panic!("{node:?} is shifted and is {other:?}"),
         }
@@ -314,9 +314,9 @@ fn check(layout: &Layout, cx: &Context) {
     }
     // A kept box's entry names the node of an opening item, in node order.
     let content = layout.content();
-    let kept = text.kept_boxes.boxes.as_slice();
+    let kept = text.kept_boxes().boxes.as_slice();
     assert!(kept.windows(2).all(|pair| pair[0].0 < pair[1].0));
-    for (node, extent) in text.kept_boxes.iter() {
+    for (node, extent) in text.kept_boxes().iter() {
         assert!(
             content.items.as_slice().iter().any(|item| item.node == node
                 && matches!(

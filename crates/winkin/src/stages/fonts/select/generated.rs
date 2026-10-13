@@ -1,9 +1,7 @@
 //! Chooses the string and fonts of each generated text: a soft hyphen's
 //! hyphen and a cut line's ellipsis.
 
-use alloc::vec::Vec;
-
-use fontwich::{FaceId, Presentation};
+use fontwich::Presentation;
 use icu_segmenter::GraphemeClusterSegmenter;
 use parlance::{Language, Script};
 
@@ -12,6 +10,7 @@ use super::pick::{CandidateFit, GraphemeNeeds, ListOutcome, resolve, second_pass
 use super::{Input, MAX_STOPS, Selecting};
 use crate::stages::analysis::ClusterClass;
 use crate::stages::content::{FontRequest, FontRequestId, HyphenStringId, TextFactsId};
+use crate::stages::fonts::WantedFaces;
 use crate::stages::fonts::context::CacheChange;
 use crate::stages::fonts::lists::{CandidateId, CandidateList, ListKey, MatchRequest, NamedListId};
 use crate::stages::fonts::{
@@ -220,7 +219,7 @@ fn generated_string(
 /// covers it. A pending face that wants the grapheme goes in `wanted`.
 fn pick_grapheme(
     list: &CandidateList,
-    wanted: &mut Vec<FaceId>,
+    wanted: &mut WantedFaces,
     needs: &GraphemeNeeds<'_>,
 ) -> ListOutcome {
     let mut base: Option<CandidateId> = None;

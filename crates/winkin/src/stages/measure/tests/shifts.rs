@@ -152,7 +152,7 @@ fn dominant_baseline_moves_a_box_only_where_the_config_applies_it() {
         layout
             .measured()
             .text(FirstLineVariant::Standard)
-            .kept_boxes
+            .kept_boxes()
             .get(NodeId::new(2))
             .is_none()
     );
@@ -172,7 +172,7 @@ fn dominant_baseline_moves_a_box_only_where_the_config_applies_it() {
         layout
             .measured()
             .text(FirstLineVariant::Standard)
-            .kept_boxes
+            .kept_boxes()
             .get(NodeId::new(4))
             .is_some()
     );

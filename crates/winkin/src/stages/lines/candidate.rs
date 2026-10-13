@@ -111,7 +111,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     ) -> Candidate {
         // The last candidate's pieces go; the start's window, which every
         // candidate shares, stays.
-        out.edges.rewind(fitting.head.after());
+        out.rewind_edges(fitting.head.after());
         let para = fitting.line.para;
         let start = fitting.line.start;
         let window = fitting.line.window;

@@ -52,12 +52,14 @@ use core::ops::Range;
 
 use crate::build::BoxSize;
 use crate::data::{
-    Id, Keyed, SortedTable, Table, TextOffset, define_flags, define_id, find_sorted, heap_bytes,
+    Id, Keyed, SortedTable, Staging, Table, TextOffset, define_flags, define_id, find_sorted,
+    heap_bytes,
 };
 use crate::style::FirstLineVariant;
 
 pub(crate) use extras::{Absolute, Atomic, BreakClearance, Float, KeyedAtomics, SizeChange};
 use extras::{ContentExtras, NO_EXTRAS};
+use facts::FactsStaging;
 #[cfg(test)]
 pub(super) use facts::ShapingFacts;
 pub(crate) use facts::{
@@ -967,4 +969,46 @@ impl Content {
 heap_bytes! {
     /// Its tables, and the extras' box and theirs where a build made it.
     Content { text, nodes, items, languages, facts, extras; block, flags, basis }
+}
+
+/// The rooms the builder writes a new layout's content tables in, so that
+/// the layout keeps each at its length.
+struct ContentStaging {
+    text: Staging<String>,
+    nodes: Staging<Table<NodeId, Node>>,
+    items: Staging<Table<ItemId, Item>>,
+    facts: FactsStaging,
+}
+
+impl ContentStaging {
+    /// Empty rooms, allocating nothing.
+    const fn new() -> Self {
+        Self {
+            text: Staging::new(String::new()),
+            nodes: Staging::new(Table::new()),
+            items: Staging::new(Table::new()),
+            facts: FactsStaging::new(),
+        }
+    }
+
+    /// Lends the rooms to the tables of `content` that have no capacity.
+    fn lend(&mut self, content: &mut Content) {
+        self.text.lend(&mut content.text);
+        self.nodes.lend(&mut content.nodes.nodes);
+        self.items.lend(&mut content.items);
+        content.facts.lend(&mut self.facts);
+    }
+
+    /// Leaves the tables of `content` at their lengths and takes the rooms
+    /// back.
+    fn settle(&mut self, content: &mut Content) {
+        self.text.settle(&mut content.text);
+        self.nodes.settle(&mut content.nodes.nodes);
+        self.items.settle(&mut content.items);
+        content.facts.settle(&mut self.facts);
+    }
+}
+
+heap_bytes! {
+    ContentStaging { text, nodes, items, facts }
 }

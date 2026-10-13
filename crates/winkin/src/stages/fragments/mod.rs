@@ -105,7 +105,9 @@ pub(crate) fn place_fragments(
     // Each line writes one head.
     out.line_heads.reserve(input.lines.lines.len());
     scratch.begin();
+    scratch.items.lend(&mut out.items);
     Placer::new(input, input.lines.block).place_lines(scratch, out);
+    scratch.items.settle(&mut out.items);
 }
 
 define_id! {

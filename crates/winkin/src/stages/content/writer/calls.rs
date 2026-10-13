@@ -527,6 +527,7 @@ impl ContentWriter<'_> {
         self.debug_check();
         #[cfg(debug_assertions)]
         check(self.content);
+        self.scratch.staging.settle(self.content);
         self.cx.put_content_scratch(mem::take(&mut self.scratch));
         self.room.report
     }

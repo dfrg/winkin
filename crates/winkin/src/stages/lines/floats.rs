@@ -285,7 +285,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             }
             self.record(out, anchor.id, placed);
             *band = line.area.meet(self.band(out, line.top, line.reserve));
-            out.edges.rewind(head.after());
+            out.rewind_edges(head.after());
             *fitted = self.fit(out, line, *band, head);
             if !holds(line.para, line.start, fitted, anchor.at) {
                 // The line keeps its break, which fits the narrower band and

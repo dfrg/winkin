@@ -344,7 +344,7 @@ impl<'a> Steps<'a> {
                 Self {
                     prefix: positions,
                     shapes: &[],
-                    edges: &input.lines.edges,
+                    edges: input.lines.edges(),
                     start: clusters.start,
                     len: words,
                     pen,
@@ -379,7 +379,7 @@ impl<'a> Steps<'a> {
             return Self {
                 prefix: &[],
                 shapes: &[],
-                edges: &input.lines.edges,
+                edges: input.lines.edges(),
                 start: clusters.start,
                 len: usize::from(words == 1 && end.saturating_sub(start) == 1),
                 pen: InlineLayoutUnit::ZERO,
@@ -395,8 +395,8 @@ impl<'a> Steps<'a> {
             // glyphs, with a running sum.
             return Self {
                 prefix: &[],
-                shapes: input.lines.edges.line_edges(line),
-                edges: &input.lines.edges,
+                shapes: input.lines.edges().line_edges(line),
+                edges: input.lines.edges(),
                 start: clusters.start,
                 len: if words == end.saturating_sub(start) {
                     words
@@ -450,7 +450,7 @@ impl<'a> Steps<'a> {
                 stages.pen_end(end, at(end), paragraph),
             )
         };
-        let edges = &input.lines.edges;
+        let edges = input.lines.edges();
         let mut steps = Self {
             prefix: positions,
             shapes: edges.line_edges_touching(line, &clusters),

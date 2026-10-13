@@ -790,7 +790,7 @@ impl<'a> PaintedLine<'a> {
     fn start_culled(&self, decorates: &dyn Fn(NodeKey) -> Decorates) -> CulledLine<'a> {
         let layout = self.line.layout();
         let (content, analysis) = (layout.content(), layout.analysis());
-        let kept = &self.line.stages().measured().kept_boxes;
+        let kept = self.line.stages().measured().kept_boxes();
         let record = self.line.record();
         let at = self
             .first

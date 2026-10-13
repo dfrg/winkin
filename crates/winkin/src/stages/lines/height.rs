@@ -1083,7 +1083,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         let scale = self.line_scale;
         if self.stages.has_shifts() || scale != 1.0 {
             let kept = out.kept_shifts_end();
-            let shifts = &mut out.shifts;
+            let shifts = &mut out.rare_mut().shifts;
             shifts.truncate(kept);
             let boxes = &mut self.scratch.boxes;
             let fonts = &mut self.line_fonts;

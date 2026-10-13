@@ -181,10 +181,10 @@ fn a_reshaped_edge_is_spaced_as_the_paragraph_is() {
             reshaped += line.shapes.end.get() - line.shapes.start.get();
         }
         let lines = layout.line_records();
-        for shape in lines.edges.shapes.as_slice() {
+        for shape in lines.edges().shapes.as_slice() {
             let clusters = shape.clusters();
             for (k, cluster) in clusters.ids().enumerate() {
-                let advance = lines.edges.advances[EdgeClusterId::new(shape.first.get() + k)];
+                let advance = lines.edges().advances[EdgeClusterId::new(shape.first.get() + k)];
                 assert!(
                     advance >= TextUnit::from_px(13.0),
                     "{cluster:?} spaced: {advance:?}"

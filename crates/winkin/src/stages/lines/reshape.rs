@@ -85,7 +85,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         };
         let head = ReshapedStart {
             piece: Some(piece),
-            after: out.edges.mark(),
+            after: out.edges().mark(),
         };
         Some((window, head))
     }
@@ -107,7 +107,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         para: &BreakerParagraph,
         start: ClusterId,
     ) -> (Option<StartWindow>, LineHead) {
-        let mark = out.edges.mark();
+        let mark = out.edges().mark();
         let wrapped = start > para.start;
         let trims = wrapped
             && self
@@ -144,13 +144,13 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         if let Some(shaped) = head.shaped {
             return shaped.piece;
         }
-        out.edges.rewind(head.mark);
+        out.rewind_edges(head.mark);
         let range = start..window.end;
         let edges = StartWindow::edges(window.trims);
         let piece = self.reshape(out, para, window.run, range, edges, false);
         head.shaped = Some(ReshapedStart {
             piece,
-            after: out.edges.mark(),
+            after: out.edges().mark(),
         });
         piece
     }
@@ -198,7 +198,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         let inside =
             shaped_end < window.end || (shaped_end == window.end && end.whole_at_window_end);
         if inside {
-            out.edges.rewind(head.mark);
+            out.rewind_edges(head.mark);
             head.shaped = None;
             pieces.push(self.reshape(out, para, window.run, line, end.whole, true));
             return pieces;
@@ -217,7 +217,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             }
             EndPiece::None => {}
             EndPiece::Whole(run) => {
-                out.edges.rewind(head.mark);
+                out.rewind_edges(head.mark);
                 head.shaped = None;
                 pieces = ReshapedPieces::default();
                 pieces.push(self.reshape(out, para, run, line, end.whole, true));
@@ -262,7 +262,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         let lowest = run_start.max(floor);
         let mut from = glyphs.prev_safe_to_break(end, lowest);
         loop {
-            let mark = out.edges.mark();
+            let mark = out.edges().mark();
             // A piece at the line's start is shaped as a start. Its end trims
             // its closing mark where asked.
             let edges = ShapingEdges {
@@ -276,7 +276,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             if !piece.start_unsafe || (from == floor && floor_is_start) || run_start == from {
                 return EndPiece::Piece(piece);
             }
-            out.edges.rewind(mark);
+            out.rewind_edges(mark);
             if from == floor {
                 return EndPiece::Whole(run);
             }
@@ -331,9 +331,9 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             self.shaped.contains(ShapedFlags::HALVES_PUNCTUATION),
         );
         let source = ShapingSource::new(content, analysis, stages.variant);
-        let mark = out.edges.mark();
+        let mark = out.edges().mark();
         let (start_unsafe, written) = {
-            let mut sink = out.edges.sink();
+            let mut sink = out.edges_mut().sink();
             let start_unsafe = shape_range(
                 self.shaping,
                 &source,
@@ -348,11 +348,11 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         };
         // The piece's entries in the edge tables: a word and an advance per
         // cluster.
-        let entries = mark.clusters..out.edges.words.next_id();
+        let entries = mark.clusters..out.edges().words.next_id();
         if written != count {
             // A table could not take the piece, so the line is measured with
             // the paragraph's glyphs.
-            out.edges.rewind(mark);
+            out.rewind_edges(mark);
             return None;
         }
         let seams = para.seams;
@@ -367,8 +367,9 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             let spaced = LetterWordSpacing::from_shaping(&content.facts, run.shaping, self.words);
             let paragraph = analysis.paragraphs.get(para.id);
             let source = self.stages.text();
-            let words = out.edges.words.get_slice(entries.clone());
-            let advances = out.edges.advances.get_slice_mut(entries.clone());
+            let edges = out.edges_mut();
+            let words = edges.words.get_slice(entries.clone());
+            let advances = edges.advances.get_slice_mut(entries.clone());
             // Where the walk over the piece stands, for its seams.
             let mut near = None;
             if let (Some(words), Some(advances)) = (words, advances) {
@@ -390,7 +391,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
                 }
             }
         }
-        let advance = out.edges.advance_sum(entries);
+        let advance = out.edges().advance_sum(entries);
         // No box edge with room stands inside a shaping run, so the
         // paragraph's advance over the piece is the prefix's step, spacing
         // included.
@@ -481,16 +482,16 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         room: InlineLayoutUnit,
     ) -> Option<ReshapedPiece> {
         let cluster = ClusterId::new(end.get().checked_sub(1)?);
-        let mark = out.edges.mark();
+        let mark = out.edges().mark();
         let own = self.stages.cluster_advance(cluster);
         let advance = own - room;
         let copied = {
-            let mut sink = out.edges.sink();
+            let mut sink = out.edges_mut().sink();
             sink.copy(&self.stages.shaped.glyphs, cluster, advance.raw());
             sink.dropped() == 0
         };
-        if !copied || out.edges.words.len() != mark.clusters.get() + 1 {
-            out.edges.rewind(mark);
+        if !copied || out.edges().words.len() != mark.clusters.get() + 1 {
+            out.rewind_edges(mark);
             return None;
         }
         Some(ReshapedPiece {

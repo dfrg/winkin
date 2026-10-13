@@ -657,7 +657,7 @@ impl<'a> Placer<'a> {
             if from >= to {
                 continue;
             }
-            let reshaped = self.lines.edges.advance_sum(shape.entries(from..to));
+            let reshaped = self.lines.edges().advance_sum(shape.entries(from..to));
             advance =
                 advance + reshaped - self.exact_advance(bounds.clone(), from, to, rest, closes);
         }
@@ -967,7 +967,7 @@ impl<'a> Placer<'a> {
         let clusters = shape.clusters();
         let reshaped = self
             .lines
-            .edges
+            .edges()
             .advance_sum(shape.entries(clusters.clone()));
         let prefix = &self.stages.measured.prefix;
         reshaped - prefix.advance(clusters.start, clusters.end)

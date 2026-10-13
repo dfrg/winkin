@@ -4,6 +4,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 use core::marker::PhantomData;
+use core::mem;
 #[cfg(test)]
 use core::ops::Index;
 use core::ops::Range;
@@ -30,17 +31,6 @@ pub(crate) fn make_room<T>(items: &mut Vec<T>, count: usize) {
         items.try_reserve_exact(additional)
     } else {
         items.try_reserve(additional)
-    };
-}
-
-/// Makes room in `text` for `bytes` more, as [`make_room`] does in a vector.
-///
-/// The content's text uses it as a call hands text in.
-pub(crate) fn make_text_room(text: &mut String, bytes: usize) {
-    let _refused = if text.capacity() == 0 {
-        text.try_reserve_exact(bytes)
-    } else {
-        text.try_reserve(bytes)
     };
 }
 
@@ -410,5 +400,136 @@ impl<I: Id, T> Index<I> for Table<I, T> {
     #[inline]
     fn index(&self, id: I) -> &T {
         &self.items[id.get()]
+    }
+}
+
+/// The most bytes a [`Staging`] room keeps between builds.
+///
+/// A larger room saves a large table's allocations as it grows, and the
+/// context keeps it for good: at 64 KB the context keeps about 200 KB more
+/// over the bench documents, for 20 to 30 fewer allocations a new article.
+const STAGING_LIMIT: usize = 16384;
+
+/// A table a [`Staging`] room stands in for.
+pub(crate) trait Staged {
+    /// Returns the bytes its capacity takes.
+    fn capacity_bytes(&self) -> usize;
+
+    /// Returns a copy with no spare capacity, or `None` where the allocator
+    /// refuses.
+    fn exact_copy(&self) -> Option<Self>
+    where
+        Self: Sized;
+
+    /// Removes everything and keeps the allocation.
+    fn clear(&mut self);
+}
+
+/// Room in the context that a stage writes a layout's table in, and the
+/// table's capacity before the stage.
+///
+/// A new layout's table has no capacity. [`lend`](Self::lend) swaps the
+/// room in, so the stage writes in the context's allocation, and
+/// [`settle`](Self::settle) copies what it wrote to an allocation of its
+/// exact length and takes the room back. A table that already has capacity,
+/// as a rebuilt layout's does, is written in place, and copied to its exact
+/// length only where the stage grew it.
+pub(crate) struct Staging<V> {
+    room: V,
+    /// Whether a table holds the room.
+    lent: bool,
+    /// The bytes the table's capacity took when the stage began.
+    before: usize,
+}
+
+impl<V> Staging<V> {
+    /// Returns a staging that lends `room`, which holds nothing.
+    pub(crate) const fn new(room: V) -> Self {
+        Self {
+            room,
+            lent: false,
+            before: 0,
+        }
+    }
+}
+
+impl<V: Staged> Staging<V> {
+    /// Lends the room to `table` where the table has no capacity of its own,
+    /// and notes the capacity it has otherwise.
+    #[inline]
+    pub(crate) fn lend(&mut self, table: &mut V) {
+        if self.lent {
+            return;
+        }
+        self.before = table.capacity_bytes();
+        if self.before == 0 {
+            mem::swap(table, &mut self.room);
+            self.lent = true;
+        }
+    }
+
+    /// Leaves `table` its rows at their exact length where it was lent the
+    /// room or grew, and takes the room back.
+    ///
+    /// A room grown past [`STAGING_LIMIT`] is dropped, and grows again in
+    /// the next table lent it. Where the allocator refuses the copy, the
+    /// table keeps what it has, and the room is made again.
+    #[inline]
+    pub(crate) fn settle(&mut self, table: &mut V) {
+        let lent = mem::take(&mut self.lent);
+        if !lent && table.capacity_bytes() <= self.before {
+            return;
+        }
+        let Some(copy) = table.exact_copy() else {
+            return;
+        };
+        let room = mem::replace(table, copy);
+        if lent && room.capacity_bytes() <= STAGING_LIMIT {
+            self.room = room;
+            self.room.clear();
+        }
+    }
+}
+
+impl<V: HeapBytes> HeapBytes for Staging<V> {
+    fn heap_bytes(&self) -> usize {
+        self.room.heap_bytes()
+    }
+}
+
+impl<I: Id, T: Clone> Staged for Table<I, T> {
+    fn capacity_bytes(&self) -> usize {
+        self.items.heap_bytes()
+    }
+
+    fn exact_copy(&self) -> Option<Self> {
+        let mut items = Vec::new();
+        items.try_reserve_exact(self.items.len()).ok()?;
+        items.extend_from_slice(&self.items);
+        Some(Self {
+            items,
+            id: PhantomData,
+        })
+    }
+
+    fn clear(&mut self) {
+        self.items.clear();
+    }
+}
+
+impl Staged for String {
+    fn capacity_bytes(&self) -> usize {
+        self.capacity()
+    }
+
+    fn exact_copy(&self) -> Option<Self> {
+        let mut text = String::new();
+        text.try_reserve_exact(self.len()).ok()?;
+        text.push_str(self);
+        Some(text)
+    }
+
+    fn clear(&mut self) {
+        String::clear(self);
     }
 }

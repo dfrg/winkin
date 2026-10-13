@@ -137,7 +137,7 @@ fn a_box_in_other_metrics_or_shifted_keeps_its_fragment() {
             layout
                 .measured()
                 .text(FirstLineVariant::Standard)
-                .kept_boxes
+                .kept_boxes()
                 .get(NodeId::new(2))
                 .is_some(),
             kept

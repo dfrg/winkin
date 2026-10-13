@@ -147,7 +147,7 @@ fn a_line_draws_its_reshaped_edges_from_its_own_pieces() {
     // Line 1's start alone is reshaped, so its item mixes the piece's
     // advances with the paragraph's.
     let line = &layout.line_records().lines[LineId::new(1)];
-    let shapes = layout.line_records().edges.shapes.as_slice();
+    let shapes = layout.line_records().edges().shapes.as_slice();
     let held: Vec<Range<ClusterId>> = shapes
         .get(line.shapes.start.get()..line.shapes.end.get())
         .unwrap_or_default()

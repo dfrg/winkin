@@ -74,7 +74,8 @@ use score::{LineChoice, Scoring};
 
 use crate::config::{EmphasisRoom, Pretty, RubyBreakWithin};
 use crate::data::{
-    Id, Keyed, SortedCursor, Table, TextOffset, define_flags, define_id, find_sorted, heap_bytes,
+    Id, Keyed, SortedCursor, Staging, Table, TextOffset, define_flags, define_id, find_sorted,
+    heap_bytes,
 };
 #[cfg(test)]
 use crate::stages::analysis::ClusterAttrs;
@@ -133,6 +134,8 @@ pub(crate) struct BreakScratch {
     scoring: Scoring,
     /// The levels of the ruby column being split, cut by its trials.
     level_cuts: Vec<ruby::LevelCut>,
+    /// The room a new layout's lines are written in.
+    lines: Staging<Table<LineId, LineRecord>>,
 }
 
 impl BreakScratch {
@@ -147,12 +150,13 @@ impl BreakScratch {
             tabs: SizedTabs::new(),
             scoring: Scoring::new(),
             level_cuts: Vec::new(),
+            lines: Staging::new(Table::new()),
         }
     }
 }
 
 heap_bytes! {
-    BreakScratch { placements, boxes, carried, bands, ems, tabs, scoring, level_cuts }
+    BreakScratch { placements, boxes, carried, bands, ems, tabs, scoring, level_cuts, lines }
 }
 
 impl Default for BreakScratch {
@@ -189,10 +193,12 @@ pub(crate) fn break_lines<'a>(
     exclusions: &mut dyn Exclusions,
     out: &mut Lines,
 ) {
+    scratch.lines.lend(&mut out.lines);
     match TextFitting::new(input.stages.content) {
         None => break_once(input, cx, scratch, exclusions, out, None),
         Some(fitting) => break_fitted(input, cx, scratch, exclusions, out, fitting),
     }
+    scratch.lines.settle(&mut out.lines);
 }
 
 /// Breaks the text of `input` into lines as [`break_lines`] does, scaling
@@ -576,6 +582,14 @@ impl ReshapedEdges {
         }
     }
 
+    /// Returns empty tables on the heap, out of line, so that each writer
+    /// inlines only the test for the box.
+    #[cold]
+    #[inline(never)]
+    fn boxed() -> Box<Self> {
+        Box::new(Self::new())
+    }
+
     /// Empties the tables, keeping every allocation.
     fn clear(&mut self) {
         self.shapes.clear();
@@ -644,6 +658,9 @@ impl ReshapedEdges {
 heap_bytes! {
     ReshapedEdges { shapes, words, glyphs, advances }
 }
+
+/// What lines with no reshaped edge read: empty tables.
+static NO_EDGES: ReshapedEdges = ReshapedEdges::new();
 
 /// A position in the edge tables, which a rejected candidate's edges rewind
 /// to.
@@ -828,10 +845,11 @@ pub(crate) struct Lines {
     /// The lines, in block order.
     pub(crate) lines: Table<LineId, LineRecord>,
     /// The line edges reshaped at unsafe breaks, which the lines' records
-    /// name.
-    pub(super) edges: ReshapedEdges,
-    /// The baseline shifts the lines settled, a line's together.
-    pub(super) shifts: Table<LineShiftId, LineShift>,
+    /// name, where any line reshaped one.
+    ///
+    /// The box is made at the first reshape, then cleared with the rest and
+    /// kept. Read it through [`edges`](Self::edges).
+    edges: Option<Box<ReshapedEdges>>,
     /// The pieces of the ruby columns the lines split, where any did.
     pub(crate) ruby: Option<Box<RubyLines>>,
     /// The floats, the `text-fit` scales and the carries of annotations and
@@ -854,8 +872,7 @@ impl Lines {
     pub(crate) const fn new() -> Self {
         Self {
             lines: Table::new(),
-            edges: ReshapedEdges::new(),
-            shifts: Table::new(),
+            edges: None,
             ruby: None,
             rare: None,
             block: BlockResult::EMPTY,
@@ -869,8 +886,9 @@ impl Lines {
     /// Empties the lines, keeping every allocation.
     pub(crate) fn clear(&mut self) {
         self.lines.clear();
-        self.edges.clear();
-        self.shifts.clear();
+        if let Some(edges) = &mut self.edges {
+            edges.clear();
+        }
         if let Some(ruby) = &mut self.ruby {
             ruby.clear();
         }
@@ -889,9 +907,9 @@ impl Lines {
     fn mark(&self) -> LinesMark {
         LinesMark {
             lines: self.lines.next_id(),
-            shapes: self.edges.shapes.next_id(),
-            edges: self.edges.mark(),
-            shifts: self.shifts.next_id(),
+            shapes: self.edges().shapes.next_id(),
+            edges: self.edges().mark(),
+            shifts: self.shift_end(),
             floats: self.float_end(),
             ruby: self
                 .ruby
@@ -912,16 +930,68 @@ impl Lines {
     /// placed, reshaped and settled.
     fn rewind(&mut self, mark: LinesMark) {
         self.lines.truncate(mark.lines);
-        self.edges.shapes.truncate(mark.shapes);
-        self.edges.rewind(mark.edges);
-        self.shifts.truncate(mark.shifts);
+        if let Some(edges) = &mut self.edges {
+            edges.shapes.truncate(mark.shapes);
+            edges.rewind(mark.edges);
+        }
         if let Some(ruby) = &mut self.ruby {
             ruby.rewind(mark.ruby);
         }
         if let Some(rare) = &mut self.rare {
             rare.floats.truncate(mark.floats);
             rare.scales.truncate(mark.lines);
+            rare.shifts.truncate(mark.shifts);
         }
+    }
+
+    /// Returns the reshaped line edges: empty tables where no line reshaped
+    /// one.
+    #[inline]
+    pub(super) fn edges(&self) -> &ReshapedEdges {
+        self.edges.as_deref().unwrap_or(&NO_EDGES)
+    }
+
+    /// Returns the reshaped line edges to write, made empty the first time.
+    fn edges_mut(&mut self) -> &mut ReshapedEdges {
+        self.edges.get_or_insert_with(ReshapedEdges::boxed)
+    }
+
+    /// Takes back every reshaped cluster written since `mark`.
+    fn rewind_edges(&mut self, mark: EdgeMark) {
+        if let Some(edges) = &mut self.edges {
+            edges.rewind(mark);
+        }
+    }
+
+    /// Takes back every reshaped edge from `end` on.
+    fn truncate_edge_shapes(&mut self, end: EdgeShapeId) {
+        if let Some(edges) = &mut self.edges {
+            edges.shapes.truncate(end);
+        }
+    }
+
+    /// Returns the baseline shifts the lines settled, a line's together:
+    /// none where no line settled any.
+    pub(super) fn shifts(&self) -> &[LineShift] {
+        self.rare
+            .as_deref()
+            .map_or(&[], |rare| rare.shifts.as_slice())
+    }
+
+    /// Returns the shifts `line` settled, sorted by node: none where it
+    /// settled none.
+    pub(super) fn line_shifts(&self, line: &LineRecord) -> &[LineShift] {
+        let shifts = self.shifts();
+        shifts
+            .get(line.shifts.start.get()..line.shifts.end.get())
+            .unwrap_or_default()
+    }
+
+    /// Returns where the settled shifts end.
+    fn shift_end(&self) -> LineShiftId {
+        self.rare
+            .as_deref()
+            .map_or(LineShiftId::new(0), |rare| rare.shifts.next_id())
     }
 
     /// Returns the lines' rare tables to write, made empty the first time.
@@ -1066,15 +1136,14 @@ impl Lines {
         if line.shifts.is_empty() {
             return LayoutUnit::ZERO;
         }
-        find_sorted(self.shifts.slice(line.shifts.clone()), node)
-            .map_or(LayoutUnit::ZERO, |shift| shift.shift)
+        find_sorted(self.line_shifts(line), node).map_or(LayoutUnit::ZERO, |shift| shift.shift)
     }
 }
 
 heap_bytes! {
     /// Its tables, not the tests' record of what the last break reshaped.
     Lines {
-        lines, edges, shifts, ruby, rare;
+        lines, edges, ruby, rare;
         block, #[cfg(test)] probes, #[cfg(test)] reshaped
     }
 }
@@ -1104,6 +1173,9 @@ struct RareLines {
     ///
     /// The kept first line writes it where its annotations move the letter.
     letter_shift: LayoutUnit,
+    /// The baseline shifts the lines settled, a line's together, where the
+    /// content has boxes whose line settles a shift or `text-fit` scales.
+    shifts: Table<LineShiftId, LineShift>,
 }
 
 impl RareLines {
@@ -1111,13 +1183,14 @@ impl RareLines {
     fn clear(&mut self) {
         self.floats.clear();
         self.scales.clear();
+        self.shifts.clear();
         self.annotated_carry = LayoutUnit::ZERO;
         self.letter_shift = LayoutUnit::ZERO;
     }
 }
 
 heap_bytes! {
-    RareLines { floats, scales; annotated_carry, letter_shift }
+    RareLines { floats, scales, shifts; annotated_carry, letter_shift }
 }
 
 impl Default for Lines {
@@ -1223,7 +1296,7 @@ impl ReshapedPieces {
     /// Returns `cluster`'s reshaped advance, where a piece holds it.
     fn advance(&self, out: &Lines, cluster: ClusterId) -> Option<InlineLayoutUnit> {
         let at = self.iter().find_map(|piece| piece.shape.entry(cluster))?;
-        out.edges
+        out.edges()
             .advances
             .get(at)
             .map(|&advance| InlineLayoutUnit::from_text(advance))

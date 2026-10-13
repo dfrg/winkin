@@ -4,7 +4,7 @@ use core::{iter, mem};
 
 use super::OpenId;
 use super::{ContainerKind, ContentWriter, LoweredNode, MathText, Open};
-use crate::data::{TextOffset, make_text_room};
+use crate::data::TextOffset;
 use crate::stages::content::collapse::Event;
 use crate::stages::content::{
     BoxFlags, Content, ContentFlags, Item, ItemFlags, ItemId, ItemKind, KeyedBox, Node, NodeId,
@@ -326,19 +326,5 @@ impl ContentWriter<'_> {
 
     pub(super) fn has_text_room(&self, bytes: usize) -> bool {
         !self.room.full && self.content.text.len() + bytes <= self.room.limits.text
-    }
-
-    /// Reserves room in the text for `bytes` more, up to its limit.
-    ///
-    /// A text call hands in at most what it writes, since collapsing only
-    /// shortens it. Reserving first makes a node's text one allocation, not
-    /// one per doubling as its words arrive. It reserves exactly `bytes` in
-    /// an empty text, doubles past the length where they do not fit, and does
-    /// nothing where they do, as `Table::reserve` does. If the allocator
-    /// refuses, it does nothing.
-    pub(super) fn reserve_text(&mut self, bytes: usize) {
-        let text = &mut self.content.text;
-        let bytes = bytes.min(self.room.limits.text.saturating_sub(text.len()));
-        make_text_room(text, bytes);
     }
 }

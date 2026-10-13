@@ -392,7 +392,7 @@ fn the_shifted_article_relays_out() {
          the article as it is: {} lines, relayout F-H {:.1} us",
         shifted.lines().len(),
         shifted.fragments().items.len(),
-        shifted.line_records().shifts.len(),
+        shifted.line_records().shifts().len(),
         shifted_time,
         unshifted.lines().len(),
         unshifted.fragments().items.len(),
@@ -647,7 +647,7 @@ fn a_new_context_relays_out_the_articles() {
             text,
         );
         layout.break_lines(&mut fixture.cx, area, &mut NoExclusions);
-        let edges = layout.line_records().edges.shapes.len();
+        let edges = layout.line_records().edges().shapes.len();
         let mut warm = Vec::with_capacity(rounds);
         for _ in 0..rounds {
             let start = Instant::now();

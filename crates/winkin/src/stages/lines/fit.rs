@@ -618,7 +618,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
                 None => break trial,
             }
             // Fit again, taking back what this try reshaped past the head.
-            out.edges.rewind(head.after());
+            out.rewind_edges(head.after());
         };
         // The line's first item, where the cursor stood, and the next's.
         let first_item = cursor.items;
@@ -678,7 +678,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
                 if let Some(from) = from {
                     from.rewind(self.exclusions, out, &mut cursor.floats);
                 }
-                out.edges.rewind(head.after());
+                out.rewind_edges(head.after());
                 line.reserve = tall;
                 settles += 1;
                 continue;
@@ -815,14 +815,14 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             fitted,
             height,
         } = trial;
-        let next = out.edges.shapes.next_id();
+        let next = out.edges().shapes.next_id();
         let from = out
             .ruby
             .as_deref()
             .and_then(|ruby| ruby.line_first_shape(out.lines.next_id()))
             .map_or(next, |first| first.min(next));
         for piece in fitted.pieces.iter() {
-            out.edges
+            out.edges_mut()
                 .shapes
                 .push_bounded(piece.shape, "no more pieces than clusters");
         }
@@ -853,8 +853,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
                 width: fitted.width,
                 hang: fitted.hang,
                 extent: height.extent,
-                shapes: from..out.edges.shapes.next_id(),
-                shifts: shifts..out.shifts.next_id(),
+                shapes: from..out.edges().shapes.next_id(),
+                shifts: shifts..out.shift_end(),
                 flags,
             },
             scale: self.line_scale,

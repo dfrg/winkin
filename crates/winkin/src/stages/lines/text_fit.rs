@@ -375,12 +375,12 @@ pub(super) fn block_scale(
             continue;
         }
         let stages = stages.variant(line.variant());
-        let edges = out.edges.line_edges(line);
+        let edges = out.edges().line_edges(line);
         let reshaped = |cluster| {
             let at = edges
                 .iter()
                 .find_map(|edge: &EdgeShape| edge.entry(cluster))?;
-            (out.edges.advances.get(at)).map(|&advance| InlineLayoutUnit::from_text(advance))
+            (out.edges().advances.get(at)).map(|&advance| InlineLayoutUnit::from_text(advance))
         };
         let clusters = line.clusters().start..facts.content_end;
         let text = stages.line_text(line.first_item, clusters, words, reshaped);

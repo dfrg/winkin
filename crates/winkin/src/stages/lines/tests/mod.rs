@@ -137,8 +137,12 @@ fn check(layout: &Layout) {
             LayoutUnit::from_px(layout.line(0).expect("a line").metrics().top)
                 + lines.block.trim_start
         });
-    let words = &lines.edges.words;
-    assert_eq!(words.len(), lines.edges.advances.len(), "an advance a word");
+    let words = &lines.edges().words;
+    assert_eq!(
+        words.len(),
+        lines.edges().advances.len(),
+        "an advance a word"
+    );
     let mut floats = 0;
     let mut shifts = LineShiftId::new(0);
     for (id, line) in lines.lines.iter() {
@@ -154,7 +158,7 @@ fn check(layout: &Layout) {
         assert_eq!(line.level(paragraphs), p.level);
         let mut before = range.start;
         let runs = &layout.shaped().text(line.variant()).runs;
-        for shape in lines.edges.shapes.slice(line.shapes.clone()) {
+        for shape in lines.edges().shapes.slice(line.shapes.clone()) {
             let piece = shape.clusters();
             assert!(before <= piece.start && piece.start < piece.end && piece.end <= range.end);
             // Shaped with its run's key, a piece stays in its run.
@@ -169,7 +173,7 @@ fn check(layout: &Layout) {
             assert!(shape.first.get() + count <= words.len());
             for k in 0..count {
                 let word = words[EdgeClusterId::new(shape.first.get() + k)];
-                if let ClusterGlyphs::Many(glyphs) = word.glyphs(&lines.edges.glyphs) {
+                if let ClusterGlyphs::Many(glyphs) = word.glyphs(&lines.edges().glyphs) {
                     assert!(!glyphs.is_empty());
                 }
             }
@@ -205,7 +209,7 @@ fn check(layout: &Layout) {
         assert_eq!(line.shifts.start, shifts, "{id:?}'s shifts follow");
         assert!(line.shifts.start <= line.shifts.end);
         shifts = line.shifts.end;
-        let settled = lines.shifts.slice(line.shifts.clone());
+        let settled = lines.line_shifts(line);
         assert!(settled.windows(2).all(|w| w[0].node < w[1].node));
         for shift in settled {
             let nodes = &layout.content().nodes;
@@ -254,7 +258,7 @@ fn check(layout: &Layout) {
         top,
         "the block ends after its last line"
     );
-    assert_eq!(lines.shifts.next_id(), shifts, "every shift is a line's");
+    assert_eq!(lines.shift_end(), shifts, "every shift is a line's");
     // Every float is placed once, in reading order. Each line's come in the
     // order its text reaches them, beside before below. Those no line
     // reached come last, and every float of the content is there.

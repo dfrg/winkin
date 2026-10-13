@@ -509,7 +509,7 @@ impl Layout {
     /// After loading a face, update the context collection and rebuild layouts
     /// that requested it. Until then, text uses available fallback fonts.
     pub fn wanted_faces(&self) -> &[FaceId] {
-        &self.stages.fonts.wanted
+        self.stages.fonts.wanted()
     }
 
     /// Returns lines from the last [`break_lines`](Self::break_lines) call.

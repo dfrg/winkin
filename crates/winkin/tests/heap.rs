@@ -224,16 +224,18 @@ const DOCUMENTS: [Document; 4] = [
 const WIDTHS: [f32; 3] = [240.0, 97.5, 600.0];
 
 /// A layout's record, what it takes beside what it keeps on the heap, is
-/// 1,152 bytes at most on a 64-bit target.
+/// 960 bytes at most on a 64-bit target.
 ///
 /// - The stages' first-line variants are boxed, made only where a layout
 ///   has one.
 /// - The tables a plain label, article or sample never fills are boxed too,
 ///   one box a type, made only where a layout has any: the content's offset
 ///   map, side text, atomic inlines, floats and absolutely positioned boxes;
-///   the measured text's edge costs, shifts, em boxes, ruby and letter;
-///   line layout's justified lines and static positions. So a small layout,
-///   whose record is most of it, holds their pointers alone.
+///   the measured text's edge costs, shifts, em boxes, ruby, kept boxes
+///   and letter; the lines' reshaped edges; line layout's justified lines
+///   and static positions; the content's languages and the wanted faces
+///   still downloading. So a small layout, whose record is most of it,
+///   holds their pointers alone.
 /// - The used fonts are one table, each sharing its instance's record.
 /// - The analysis keeps no table of levels, which its runs hold. The levels
 ///   of the bidi controls that split a line's runs take 8, boxed.
@@ -244,21 +246,21 @@ const WIDTHS: [f32; 3] = [240.0, 97.5, 600.0];
 /// - The layout keeps no style table, no family names and no lookup
 ///   state. The builder's memo, lookup and stack, the build's feature,
 ///   variation and hyphen lists, and the generated texts' fonts live in the
-///   context. The content keeps its languages, 24 bytes, which shaping
-///   reads at break time.
+///   context. The content keeps its languages, boxed, which shaping reads
+///   at break time.
 /// - The shaped text keeps each cluster's advance, 24 bytes, so that new
 ///   box sizes are measured without shaping again. Its fits of combined
 ///   upright text are boxed.
-/// - The lines' floats, `text-fit` scales and the carries of annotations
-///   and an initial letter are boxed together, made only where a layout
-///   has one.
+/// - The lines' floats, `text-fit` scales, settled shifts and the carries
+///   of annotations and an initial letter are boxed together, made only
+///   where a layout has one.
 ///
 /// The whole of a layout is this and its heap.
 #[test]
 #[cfg(target_pointer_width = "64")]
-fn a_layout_record_is_1152_bytes_at_most() {
+fn a_layout_record_is_960_bytes_at_most() {
     let record = size_of::<Layout>();
-    assert!(record <= 1152, "a layout's record is {record} bytes");
+    assert!(record <= 960, "a layout's record is {record} bytes");
 }
 
 /// A layout never built keeps nothing.

@@ -166,7 +166,7 @@ impl<'a> BoxFragment<'a> {
     pub(super) fn from_item(line: Line<'a>, item: &'a FragmentItem) -> Self {
         let left = item.inline;
         let layout = line.layout();
-        let kept = &line.stages().measured().kept_boxes;
+        let kept = line.stages().measured().kept_boxes();
         let scale = line.scale();
         let fitted = if scale == 1.0 {
             None
@@ -424,14 +424,14 @@ impl<'a> BoxFragments<'a> {
             .unwrap_or_else(|| lines.first_reaching(first));
         let kept = measured
             .text(FirstLineVariant::Standard)
-            .kept_boxes
+            .kept_boxes()
             .get(node)
             .is_some();
         let mut at = Answering {
             node,
             kept_in_text: kept,
             kept_in_first_line: match measured.first_line() {
-                Some(first) => first.kept_boxes.get(node).is_some(),
+                Some(first) => first.kept_boxes().get(node).is_some(),
                 None => kept,
             },
             annotated,
@@ -525,7 +525,7 @@ fn next_culled<'a>(
     });
     Some(BoxFragment {
         content: layout.content(),
-        kept: &line.stages().measured().kept_boxes,
+        kept: line.stages().measured().kept_boxes(),
         kept_box: None,
         fitted: None,
         node: at.node,

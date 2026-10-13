@@ -214,7 +214,6 @@ impl ContentWriter<'_> {
     /// is transformed as its container says. Where the first-line style
     /// transforms otherwise, the first line's text follows that style.
     pub(super) fn transform_text(&mut self, node: NodeId, text: &str, single: bool) {
-        self.reserve_text(text.len());
         let facts = self.text_facts(node);
         let (mode, wraps) = (facts.collapse, facts.has(TextFlags::WRAPS));
         let combined = facts.combine == TextCombineUpright::All;
@@ -490,7 +489,6 @@ impl ContentWriter<'_> {
         self.content_arrives(mask, false);
         let mut buffer = [0; 4];
         let mask: &str = mask.encode_utf8(&mut buffer);
-        self.reserve_text(text.len().saturating_mul(mask.len()));
         let Some(item) = self.open_item() else {
             self.room.report.drop_bytes(text.len());
             return;

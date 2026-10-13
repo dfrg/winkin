@@ -622,7 +622,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             range.start > level.clusters.start && glyphs.word(range.start).is_unsafe_to_break();
         let end_unsafe =
             range.end < level.clusters.end && glyphs.word(range.end).is_unsafe_to_break();
-        let mark = out.edges.mark();
+        let mark = out.edges().mark();
         let (window, head) = if start_unsafe {
             self.start_window(out, para, range.start, false).unzip()
         } else {
@@ -658,32 +658,32 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         let clusters = cut.from..end;
         let visible = self.visible_annotation(level, clusters.clone(), cut.item);
         let visible_end = visible.end;
-        let mark = out.edges.mark();
+        let mark = out.edges().mark();
         let mut width = self.visible_width(level, visible.clone());
-        let from = out.edges.shapes.next_id();
+        let from = out.edges().shapes.next_id();
         let pieces = self.annotation_edges(out, para, level, visible);
         for piece in pieces.iter() {
             let range = piece.shape.clusters();
-            let actual = out.edges.advance_sum(piece.shape.entries(range.clone()));
+            let actual = out.edges().advance_sum(piece.shape.entries(range.clone()));
             let original =
                 rubies.level_position(level, range.end) - rubies.level_position(level, range.start);
             width = width + (actual - original).to_layout();
             if retain {
-                out.edges.shapes.push_bounded(
+                out.edges_mut().shapes.push_bounded(
                     piece.shape,
                     "annotation edge shapes fit the cluster id space",
                 );
             }
         }
         if !retain {
-            out.edges.rewind(mark);
+            out.rewind_edges(mark);
         }
         PartLevel {
             level: cut.level,
             clusters,
             width,
             visible_end,
-            shapes: from..out.edges.shapes.next_id(),
+            shapes: from..out.edges().shapes.next_id(),
             item: cut.item,
         }
     }

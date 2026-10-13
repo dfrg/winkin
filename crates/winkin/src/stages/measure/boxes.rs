@@ -87,7 +87,7 @@ pub(super) fn prepare_boxes(
         if let Some(letter) = letter
             && letter.node == node
         {
-            out.kept_boxes.boxes.push_bounded(
+            out.rare_mut().kept_boxes.boxes.push_bounded(
                 (node, letter.extent),
                 "no more kept boxes than nodes, which a NodeId names",
             );
@@ -113,7 +113,7 @@ pub(super) fn prepare_boxes(
                 (metrics.ascent, metrics.descent)
             });
             let (over, under) = boxes.across;
-            out.kept_boxes.boxes.push_bounded(
+            out.rare_mut().kept_boxes.boxes.push_bounded(
                 (node, Extent::new(ascent + over, descent + under)),
                 "no more kept boxes than nodes, which a NodeId names",
             );

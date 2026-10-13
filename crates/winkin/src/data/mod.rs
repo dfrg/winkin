@@ -63,4 +63,4 @@ pub(crate) use runs::{Run, RunCursor, Runs};
 pub(crate) use sort::{sort_by_key, stable_sort_by_key};
 pub(crate) use sorted::{Keyed, SortedCursor, SortedTable, find_sorted};
 pub(crate) use sync::Mutex;
-pub(crate) use table::{Table, make_room, make_text_room};
+pub(crate) use table::{Staging, Table, make_room};
