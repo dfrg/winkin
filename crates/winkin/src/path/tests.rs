@@ -429,12 +429,12 @@ fn an_annotation_is_placed_over_its_base_along_a_path() {
     along(&mut cx, &mut layout, &[level], 0.0);
     let placed = glyphs_along(&layout, 0, &level, PastEnds::Hidden);
     assert_eq!(placed.len(), 3, "the base and its two-glyph reading");
-    // The reading is painted before the text it is over.
+    // The reading is painted after the text it is over.
     let keys: Vec<NodeKey> = placed.iter().map(|(run, _, _)| run.key()).collect();
-    assert_eq!(keys, [NodeKey(4), NodeKey(4), NodeKey(2)]);
-    let base = placed[2].2;
+    assert_eq!(keys, [NodeKey(2), NodeKey(4), NodeKey(4)]);
+    let base = placed[0].2;
     assert_eq!(base.y, 100.0, "the base on the path");
-    for (_, _, reading) in &placed[..2] {
+    for (_, _, reading) in &placed[1..] {
         assert!(near(reading.y, base.y - 27.0), "{reading:?}");
         assert_eq!(turn(reading), (1.0, 0.0));
     }

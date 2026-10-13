@@ -222,7 +222,7 @@ fn an_emphasis_mark_over_an_annotated_base_goes_past_the_annotation() {
     assert_eq!(run.baseline(), 36.0);
     let marks: Vec<(f32, f32)> = run.emphasis_marks().map(|m| (m.x, m.baseline)).collect();
     assert_eq!(marks, [(10.0, 8.0), (30.0, 8.0)]);
-    // Painted right after their run.
+    // Painted right after their run, and the annotation after the line.
     let order: Vec<&str> = line
         .paints(|_| Decorates::None)
         .map(|item| match item {
@@ -233,7 +233,7 @@ fn an_emphasis_mark_over_an_annotated_base_goes_past_the_annotation() {
         })
         .filter(|kind| *kind != "other")
         .collect();
-    assert_eq!(order, ["annotation", "text", "mark", "mark"]);
+    assert_eq!(order, ["text", "mark", "mark", "annotation"]);
 }
 
 /// A mark's middle along the line is its cluster's whatever the font's

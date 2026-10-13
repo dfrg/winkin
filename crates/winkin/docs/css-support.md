@@ -267,7 +267,7 @@ A box is opened with `LayoutBuilder::open_box` and closed with `close_box`.
 | `margin`, `border-width`, `padding` | lengths per physical side, and percentages for margins and padding | Supported | A percentage is of `BuildOptions::percentage_basis`, which `Layout::measure` changes without building again. The host snaps border widths as CSS does (below 1 px to 1, else down to a whole pixel). Each length is truncated onto the 1/64 px grid, as Chrome holds it. The sides along the line take room on it; the sides across it do not. | — |
 | `box-decoration-break` | `slice`, `clone` | Supported | Under `clone` every fragment takes both edges, and a line holds a cloned box's closing edge. Chrome 153 ships letting that edge overflow, a bug fixed behind a flag; winkin has the fix. | — |
 | Culling | — | Supported | A box with no edges, no `vertical-align`, nothing it paints and its parent's font metrics keeps no fragment, as Chrome culls one. Set `ComputedStyle::paints` for a box with a background, border or outline. `Layout::box_fragments` still answers for a culled box, from its descendants. | — |
-| Text decoration | — | Supported | Set `ComputedStyle::decorates` for a box whose text is underlined, overlined or struck through. `Line::paints` hands out each decoration bar with its baseline and the font's underline metrics; the host draws it. For `auto` a bar gives Chrome's thickness and gap (`underline_thickness`, `underline_gap`). For `text-decoration-thickness: from-font` and `text-underline-position: from-font` it gives the font's `post` underline, falling back to `auto` as Chrome does (`underline_thickness_from_font`, `underline_gap_from_font`), and the font's own lines as they are (`font_underline`, and `font_line_through` from `OS/2`, which Chrome never reads). | — |
+| Text decoration | — | Supported | Set `ComputedStyle::decorates` for a box whose text is underlined, overlined or struck through. `Line::paints` asks only those boxes, and the block, which lines they draw, and hands out one bar for each run of text a box or the block decorates, with its baseline and the font's underline metrics; the host draws it. For `auto` a bar gives Chrome's thickness and gap (`underline_thickness`, `underline_gap`). For `text-decoration-thickness: from-font` and `text-underline-position: from-font` it gives the font's `post` underline, falling back to `auto` as Chrome does (`underline_thickness_from_font`, `underline_gap_from_font`), and the font's own lines as they are (`font_underline`, and `font_line_through` from `OS/2`, which Chrome never reads). | — |
 | White space hanging in a box | — | Supported | A box covers the white space that hangs inside it, as Chrome draws it. | — |
 | `text-box-trim` on an inline box | — | Not supported | Accepted; it keeps the box from being culled and trims nothing. | — |
 | `line-fit-edge` | — | Not supported | Accepted and ignored. | — |
@@ -514,10 +514,14 @@ winkin lays out lines. The host does everything around them.
   `Context::with_shared_fonts` and clones of one `SharedFonts` parse each
   font once between them, on one thread or several.
 - **Painting.** Draw everything `Line::paints` hands out, in its order:
-  backgrounds, borders, text runs (glyph ids, positions and fonts),
-  decoration lines, emphasis marks, hyphens and ellipses, atomic inlines.
-  Colours, decoration styles, mark shapes and shadows stay with the host,
-  looked up by each item's `NodeKey`. Synthesized bold and oblique are the
+  the line's background, then its items left to right, each box's
+  background and borders before what it holds, each text run between its
+  underlines and overlines and its emphasis marks and lines through, and
+  atomic inlines, hyphens and ellipses where they stand; ruby annotations
+  last. A later box's background covers earlier text. Colours, decoration
+  styles, mark shapes and shadows stay with the host, looked up by each
+  item's `NodeKey`. Draw a run's text shadows just before its first
+  underline or overline, or before its text where it has none. Synthesized bold and oblique are the
   renderer's to draw.
 - **Atomic inlines and floats.** Lay out their contents first, and hand in
   their border box sizes and baselines.

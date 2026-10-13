@@ -434,15 +434,19 @@ fn an_indent_comes_before_an_initial_letter_and_inside_its_box() {
 /// The block's decoration skips the initial letter, which only its own
 /// draws under, as in `initial-letter-layout-text-decoration-underline`:
 /// Chrome's letter box is atomic, and the decorations around it do not
-/// reach in. In Ahem at 20 px on 24 px lines, the block's underline on the
-/// first line runs under `bc` alone, and the letter's under its 80 px.
+/// reach in. In Ahem at 20 px on 24 px lines, the letter's underline runs
+/// under its 80 px, and the block's on the first line under `bc` alone,
+/// each painted with its run.
 #[test]
 fn the_blocks_decoration_skips_an_initial_letter() {
     let mut cx = context();
     cx.set_config(Config::chrome_windows());
     let mut layout = Layout::new();
     let root = paragraph(Direction::Ltr);
-    let letter = dropped(&root);
+    let letter = ComputedStyle {
+        decorates: true,
+        ..dropped(&root)
+    };
     build(&mut cx, &mut layout, &ComputedBlockStyle::new(&root), |b| {
         b.set_first_letter(NodeKey(9), &letter, None);
         b.text(NodeKey(1), "Abc");
@@ -459,7 +463,7 @@ fn the_blocks_decoration_skips_an_initial_letter() {
         .collect();
     assert_eq!(
         bars,
-        [(NodeKey(0), (80.0, 120.0)), (NodeKey(9), (0.0, 80.0))]
+        [(NodeKey(9), (0.0, 80.0)), (NodeKey(0), (80.0, 120.0))]
     );
 }
 

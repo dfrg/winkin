@@ -484,8 +484,8 @@ pub struct ComputedStyle<'a> {
     /// Whether the box specifies an underline, overline or line-through.
     ///
     /// Not inherited. Does not retain a box fragment. [`Line::paints`](crate::Line::paints)
-    /// queries decoration styles for culled boxes only if this flag is set;
-    /// retained boxes are queried regardless.
+    /// queries decoration styles only for boxes that set this flag, culled
+    /// or retained.
     pub decorates: bool,
 }
 

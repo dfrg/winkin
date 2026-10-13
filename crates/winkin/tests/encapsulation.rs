@@ -169,7 +169,6 @@ const ALLOWED_DOORS: &[Entry] = &[
     ("src/selection/visual.rs", "place::line(", "entry: the lines holding a character step's ends, which tell the step on the screen from the one in text order without placing either caret"),
     ("src/selection/words.rs", "clusters_containing(", "entry: the paragraph around a word boundary, kept while a motion stays in it"),
     ("src/layout/boxes.rs", "first_reaching(", "entry: an atomic inline's line, read alone"),
-    ("src/layout/paint.rs", "first_from(", "entry: a line's paint starts its walk over the kept boxes at its first node, once a paint, where the line has no box item to start from"),
     ("src/layout/emphasis.rs", ".containing(", "entry: the font runs of a fragment whose item's fonts have no one em box, read alone, for its marks' em box"),
     ("src/stages/fragments/annotations.rs", "first_from(", "entry: an annotation line's walk over the kept boxes seeks its element once a level, then walks to its boxes in node order"),
     ("src/stages/fragments/annotations.rs", "line_edges_touching(", "entry: an annotation line's reshaped edges, sought once a level rather than once a cluster"),

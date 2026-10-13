@@ -2,28 +2,39 @@
 //!
 //! [`Line::paints`] yields [`Paint`] values. The host draws them using colors,
 //! backgrounds, borders and decoration styles retrieved by [`NodeKey`].
-//! Operations follow CSS 2.1 Appendix E:
+//! A line paints its inline content item by item, as CSS 2.1 Appendix E
+//! orders it and Chrome paints it:
 //!
 //! 1. The block background behind the line content.
-//! 2. Retained box fragments, outermost first in tree order.
-//! 3. Underlines and overlines: block first, then retained and culled boxes.
-//! 4. Ruby boxes and text, with emphasis marks after each run.
-//! 5. Text and atomic inlines in visual order, with emphasis marks after each run.
-//! 6. The generated hyphen. Ellipses appear with text at their visual position.
-//! 7. Line-through decorations.
+//! 2. The line's items in visual order, left to right, each box before the
+//!    items inside it:
+//!    - a retained box fragment: its background and borders;
+//!    - a run of text: the underlines and overlines over it, the block's
+//!      first and then each box's, outermost first; the text; its emphasis
+//!      marks; then its lines through, in the same order;
+//!    - an atomic inline;
+//!    - a hyphen or an ellipsis.
+//! 3. The ruby annotations: each annotation's boxes, then its text and
+//!    atomic inlines, with emphasis marks after each run.
 //!
-//! Decorations span runs of text within the decorating box. Box edges,
-//! objects, unrelated text and hanging whitespace split bars; color changes
-//! do not. Initial letters are objects to enclosing decorations, but retain
-//! their own and descendant decorations.
+//! So a later box's background covers earlier text, its decorations and
+//! earlier atomic inlines, and a later run's decorations cover earlier text.
+//! On a reordered line the order is visual, not the order of the content.
+//! A run's text shadows go under its decorations and its text, and over
+//! what is painted before the run.
+//!
+//! Each decoration bar spans one run of text. Hanging white space has none.
+//! An initial letter's text has the decorations of its own box and of the
+//! boxes inside it only.
 //!
 //! Each bar provides reference baseline and font metrics, Chrome-compatible
 //! underline helpers, and font underline/strikeout metrics for `from-font`.
-//! Culled boxes can decorate text without retaining fragments. Their bars use
-//! the parent baseline; block decorations use the line baseline.
+//! A box's bars use the baseline of its own fragment, where it keeps one, or
+//! else of the innermost retained box around it; block decorations use the
+//! line baseline.
 //!
-//! Only culled boxes marked by [`ComputedStyle::decorates`](crate::ComputedStyle::decorates)
-//! are queried for decorations. Retained boxes are always queried.
+//! Only boxes marked by [`ComputedStyle::decorates`](crate::ComputedStyle::decorates)
+//! are queried for decorations, retained or culled, and the block always is.
 //! Reading paint operations does not allocate.
 
 use core::fmt;
@@ -35,25 +46,19 @@ pub use super::emphasis::EmphasisMark;
 use super::emphasis::EmphasisMarks;
 use super::{BoxFragment, CrossExtents, Line, TextRun};
 use crate::data::{Id, Table};
-use crate::stages::analysis::{ClusterId, ParagraphFlags};
-use crate::stages::content::{
-    BoxFlags, Content, ContentFlags, ItemFlags, ItemId, ItemKind, NodeId, NodeKey, NodeKind,
-};
-use crate::stages::fonts::Generated;
+use crate::stages::content::{BoxFlags, ContentFlags, NodeId, NodeKey, NodeKind};
 use crate::stages::fragments::{FragmentItem, FragmentItemFlags, FragmentItemId, FragmentItemKind};
 use crate::stages::lines::InlineExtents;
-use crate::stages::measure::{KeptBoxId, KeptBoxes};
-use crate::style::FirstLineVariant;
 use crate::unit::{self, InlineLayoutUnit, LayoutUnit};
 
 use super::boxes::Atomic;
 use crate::work;
 
-/// Decoration lines grouped by paint phase.
+/// Decoration lines grouped by when they paint.
 ///
-/// CSS 2.1 Appendix E paints underlines and overlines before text and
-/// line-through after text. [`Line::paints`] queries the host-supplied
-/// style for the block and each box.
+/// Underlines and overlines paint before the text they decorate, and a line
+/// through it after. [`Line::paints`] asks the host which lines the block
+/// and each box draws.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub enum Decorates {
     /// No decoration line.
@@ -92,11 +97,13 @@ pub enum Paint<'a> {
     Box(BoxFragment<'a>),
     /// A decoration line painted before the text: an underline or overline.
     ///
-    /// An underline or overline for a run of box or block text.
+    /// The underline or overline of one decorating box or the block over the
+    /// [`Text`](Self::Text) run that follows.
     DecorationBeforeText(Decoration),
     /// A run of a ruby annotation's text, on its annotation's baseline.
     ///
-    /// See [`Line::annotations`].
+    /// Annotations paint after the rest of the line. See
+    /// [`Line::annotations`].
     Annotation(TextRun<'a>),
     /// A run of text.
     Text(TextRun<'a>),
@@ -106,13 +113,13 @@ pub enum Paint<'a> {
     Emphasis(EmphasisMark),
     /// An atomic inline, which the host paints.
     Atomic(Atomic<'a>),
-    /// Text the layout made: a hyphen or an ellipsis.
-    ///
-    /// A hyphen or an ellipsis follows the text of its line.
+    /// Text the layout made: a hyphen or an ellipsis, where it stands on the
+    /// line.
     Generated(TextRun<'a>),
     /// A decoration line painted after the text: a line through it.
     ///
-    /// A line-through for a run of box or block text.
+    /// The line through the [`Text`](Self::Text) run before it, of one
+    /// decorating box or the block.
     DecorationAfterText(Decoration),
 }
 
@@ -355,288 +362,111 @@ impl<'a> Iterator for DecorationRuns<'a> {
 }
 
 /// The phase a line's paint is in, with where it has got to.
-#[derive(Clone, Debug)]
+#[derive(Copy, Clone, Debug)]
 enum Phase {
     /// The block's background behind the line.
     Background,
-    /// The box parts, as line layout linked them: the next to paint, `None`
-    /// past the last.
-    Boxes(Option<FragmentItemId>),
-    /// Underlines and overlines.
-    BeforeText(Decorating),
+    /// The line's own items, from the next to look at.
+    Items(FragmentItemId),
+    /// The underlines and overlines of text run `run`, past the bar of
+    /// `last`: `None` before the first.
+    BeforeText {
+        run: FragmentItemId,
+        last: Option<NodeId>,
+    },
+    /// The lines through text run `run`, past the bar of `last`.
+    AfterText {
+        run: FragmentItemId,
+        last: Option<NodeId>,
+    },
     /// The annotations' items: the next to look at.
     Annotations(FragmentItemId),
-    /// The line's leaves, from the next to look at, with the items of the
-    /// hyphen the line owes, which the text phase passes and the hyphen
-    /// phase paints after the text: one a font, side by side. Empty until
-    /// the text phase meets them.
-    Text {
-        at: FragmentItemId,
-        hyphen: Range<FragmentItemId>,
-    },
-    /// The hyphen's items still to paint.
-    Hyphen(Range<FragmentItemId>),
-    /// Lines through the text.
-    AfterText(Decorating),
     /// Nothing more.
     Done,
 }
 
-/// Where a decoration phase has got to: the node it decorates and where
-/// that node's next bar is looked for.
-#[derive(Copy, Clone, Debug)]
-struct Decorating {
-    /// Whether the phase paints after the text.
-    after_text: bool,
-    /// The node being decorated, in tree order: `None` before the first,
-    /// which is the block.
-    node: Option<NodeId>,
-    /// Where among the line's items the next bar is looked for from.
-    at: FragmentItemId,
-    /// The first part of the next box to decorate: `None` past the last.
-    next: Option<FragmentItemId>,
-    /// Where the bars of the node being decorated end: one past the last
-    /// item of its last part, the line's end for the block.
-    end: FragmentItemId,
-    /// The baseline of the node being decorated: its parts', or the
-    /// line's for the block.
-    baseline: LayoutUnit,
-    /// Where the phase's walk over the line's culled boxes has got to, once
-    /// the kept boxes are done.
-    culled: Option<CulledBoxes>,
-    /// Where the bars of the culled box being decorated end, where the line
-    /// sets its leaves in the order of their clusters: the cluster its text
-    /// ends at.
-    until: Option<ClusterId>,
-}
-
-impl Decorating {
-    /// Returns the start of the phase painted after the text where
-    /// `after_text`, and before it otherwise.
-    #[inline]
-    fn new(own: &Range<FragmentItemId>, after_text: bool) -> Self {
-        Self {
-            after_text,
-            node: None,
-            at: own.start,
-            next: None,
-            end: own.end,
-            baseline: LayoutUnit::ZERO,
-            culled: None,
-            until: None,
-        }
-    }
-}
-
 /// A line's paint, in Chrome's order: what [`Line::paints`] walks.
 ///
-/// **Linear in the line's items**, however deep its boxes nest or the
-/// reordering splits them. Line layout links each box item to the one painted
-/// after it (by box in tree order, a box's parts left to right). So the
-/// boxes are walked by following the links, and each decorating box's bars
-/// are looked for among its own parts' items only. A line's decorations
-/// cost the items each decorating box holds, as Chrome's propagated
-/// decorations cost each text fragment every decorating box around it.
+/// It walks the line's items once, left to right, each box part before the
+/// items inside it, as Chrome's `BoxFragmentPainter` walks a line's
+/// fragment items. A text run's bars are those of the block and of each box
+/// around it that decorates, found by walking up from the run's node; that
+/// walk runs only in content where a box decorates.
 pub(super) struct PaintWalk<'a, F> {
-    /// The line and the items its phases read.
+    /// The line and the items it reads.
     painted: PaintedLine<'a>,
     decorates: F,
     /// The emphasis marks of the run painted last, still to hand out.
     marks: Option<EmphasisMarks<'a>>,
     phase: Phase,
-    /// What both decoration phases read of the line's culled boxes, found
-    /// by the first phase that looks for one.
-    culled: Option<CulledLine<'a>>,
+    /// The bars made last, each with the node it decorates for: a run's bars
+    /// differ from the run before's only in where they lie.
+    held: [Option<(NodeId, Decoration)>; 2],
 }
 
-/// The line a paint walks, and the items its phases read.
+/// The line a paint walks, and what its bars read.
 struct PaintedLine<'a> {
     line: Line<'a>,
-    /// Every item of the layout, of which the phases read the line's.
+    /// Every item of the layout, of which the walk reads the line's.
     items: &'a Table<FragmentItemId, FragmentItem>,
     /// The line's own items.
     own: Range<FragmentItemId>,
     /// The line's annotation lines, each heading its text.
     annotations: Range<FragmentItemId>,
-    /// The line's box item painted first, where it has one: the head of
-    /// the links its box items are painted by.
-    first: Option<FragmentItemId>,
-}
-
-/// Where a decoration phase's walk over a line's culled boxes stands: how
-/// many of the decorating ones open across the line's start are still to
-/// hand out, outermost first, and then the next item of the line to look
-/// for a culled box opening at.
-#[derive(Copy, Clone, Debug)]
-struct CulledBoxes {
-    /// How many of the boxes open across the line's start that draw are
-    /// still to hand out: the outermost of them next.
-    above: usize,
-    /// The next item that may open a box on the line.
-    item: ItemId,
-    /// The first leaf of the last box opening on the line, where the next
-    /// one's bars are looked for from.
-    resume: FragmentItemId,
-}
-
-/// What both decoration phases read of a line's culled boxes: where they
-/// start, found once, and what says which of them draw.
-struct CulledLine<'a> {
-    /// What says which boxes draw, its walk over the kept boxes carried
-    /// from the phase before the text to the one after it.
-    drawing: CulledDrawing<'a>,
-    /// The node of the item holding the line's first cluster, which the
-    /// boxes open across its start are around.
-    start: NodeId,
-    /// How many of those draw before the text, and how many after it.
-    above_before: usize,
-    above_after: usize,
-    /// The first item after the start's, which may open a box on the line.
-    item: ItemId,
-    /// The line sets its leaves left to right in the order of their
-    /// clusters: every cluster of the text is at its paragraph's level,
-    /// which reads left to right. A culled box's bars are then looked for
-    /// from the first leaf of the box handed out before it, which opens
-    /// before it, to where its text ends.
-    in_order: bool,
-}
-
-/// What says whether a culled box draws in a decoration phase: the line's
-/// tables, and a walk over its kept boxes.
-struct CulledDrawing<'a> {
-    content: &'a Content,
-    kept: &'a KeptBoxes,
-    /// Where the walk over `kept` stands, moved to each box asked.
-    at: KeptBoxId,
-    variant: FirstLineVariant,
-}
-
-impl CulledDrawing<'_> {
-    /// Returns the lines `node` draws where it is a culled box that
-    /// decorates, as `decorates` says, and `Decorates::None` otherwise.
-    ///
-    /// Only a box that decorates is looked for among the kept boxes, by the
-    /// walk, which the boxes asked keep near one another.
-    fn sides(&mut self, node: NodeId, decorates: &dyn Fn(NodeKey) -> Decorates) -> Decorates {
-        let (nodes, facts) = (&self.content.nodes, &self.content.facts);
-        let decorating = nodes.kind(node).is_some_and(NodeKind::is_inline_box)
-            && node != NodeId::BLOCK
-            && facts
-                .box_facts(nodes.box_facts(node, self.variant))
-                .has(BoxFlags::DECORATES);
-        if !decorating {
-            return Decorates::None;
-        }
-        self.at = self.kept.walk_to(self.at, node);
-        if self.kept.node(self.at) == Some(node) {
-            return Decorates::None;
-        }
-        decorates(nodes.key(node))
-    }
-
-    /// Returns whether `node` is a culled box that decorates, and draws in
-    /// the phase painted after the text where `after_text`, before it
-    /// otherwise.
-    fn draws(
-        &mut self,
-        node: NodeId,
-        decorates: &dyn Fn(NodeKey) -> Decorates,
-        after_text: bool,
-    ) -> bool {
-        let sides = self.sides(node, decorates);
-        if after_text {
-            sides.after_text()
-        } else {
-            sides.before_text()
-        }
-    }
-
-    /// Returns the `k`th of the boxes around `start` that draw in the phase,
-    /// the innermost first, or `None` where there are fewer.
-    fn around(
-        &mut self,
-        start: NodeId,
-        k: usize,
-        decorates: &dyn Fn(NodeKey) -> Decorates,
-        after_text: bool,
-    ) -> Option<NodeId> {
-        let mut count = 0;
-        self.walk_up(start, |drawing, node| {
-            if drawing.draws(node, decorates, after_text) {
-                count += 1;
-            }
-            count == k
-        })
-    }
-
-    /// Returns how many of the boxes around `start` draw before the text,
-    /// and how many after it, in one walk up.
-    fn count_around(
-        &mut self,
-        start: NodeId,
-        decorates: &dyn Fn(NodeKey) -> Decorates,
-    ) -> (usize, usize) {
-        let (mut before, mut after) = (0, 0);
-        self.walk_up(start, |drawing, node| {
-            let sides = drawing.sides(node, decorates);
-            before += usize::from(sides.before_text());
-            after += usize::from(sides.after_text());
-            false
-        });
-        (before, after)
-    }
-
-    /// Walks from `start` up through its parents, to the first `stop`
-    /// says to stop at, and returns that one; `None` past the root.
-    ///
-    /// It walks up at most one step a node, whatever the parents say.
-    fn walk_up(
-        &mut self,
-        start: NodeId,
-        mut stop: impl FnMut(&mut Self, NodeId) -> bool,
-    ) -> Option<NodeId> {
-        let nodes = &self.content.nodes;
-        let mut node = start;
-        for _ in 0..nodes.len() {
-            work::step();
-            if stop(self, node) {
-                return Some(node);
-            }
-            let parent = nodes.parent(node);
-            if parent == node {
-                break;
-            }
-            node = parent;
-        }
-        None
-    }
+    /// The lines the block draws.
+    block: Decorates,
+    /// Whether a box around a run may decorate it: the content has a box
+    /// that decorates, and an inline box holds some of the line or is open
+    /// across it.
+    boxes: bool,
+    /// The initial letter's box: the decorations of the boxes around it do
+    /// not reach its text.
+    letter: Option<NodeId>,
 }
 
 impl<'a, F: Fn(NodeKey) -> Decorates> PaintWalk<'a, F> {
     /// What `line` paints, asking `decorates` which decoration lines each key draws.
     pub(super) fn new(line: &Line<'a>, decorates: F) -> Self {
-        let fragments = line.layout().fragments();
+        let layout = line.layout();
+        let fragments = layout.fragments();
+        let content = layout.content();
+        let boxed = line
+            .head()
+            .is_some_and(|head| head.flags.contains(FragmentItemFlags::BOXED));
+        let block = decorates(content.nodes.key(NodeId::BLOCK));
         Self {
             painted: PaintedLine {
                 line: *line,
                 items: &fragments.items,
                 own: fragments.line_item_ids(line.id()),
                 annotations: fragments.annotation_ids(line.id()),
-                first: line.head().and_then(FragmentItem::painted_next),
+                block,
+                boxes: content.flags.contains(ContentFlags::DECORATED_BOXES)
+                    && (boxed || !work::fast_paths()),
+                letter: line
+                    .stages()
+                    .measured()
+                    .initial_letter()
+                    .map(|letter| letter.node),
             },
             decorates,
             marks: None,
             phase: Phase::Background,
-            culled: None,
+            held: [None; 2],
         }
     }
 }
 
+/// Returns the item after `at`.
+#[inline]
+fn after(at: FragmentItemId) -> FragmentItemId {
+    FragmentItemId::new(at.get() + 1)
+}
+
 // The walk is generic, so it is built in the crate that calls it, which
-// inlines only what is marked `#[inline]`: each step it takes is. The
-// culled boxes' steps ask `decorates` through a `&dyn Fn` and are built
-// once, here. `next_decoration` stays generic: asking through a `&dyn Fn`
-// for the block and every kept box slows a boxed article's paint by 2–3%.
+// inlines only what is marked `#[inline]`: each step it takes is. The walk
+// up a run's boxes asks `decorates` through a `&dyn Fn` and is built once,
+// here.
 impl<'a> PaintedLine<'a> {
     /// Whether `item` is a leaf that is painted, and not what hangs.
     #[inline]
@@ -648,8 +478,7 @@ impl<'a> PaintedLine<'a> {
             && !item.flags.contains(FragmentItemFlags::HANGS)
     }
 
-    /// Item `at` where it is one of the line's own, which every phase but
-    /// the annotations' walks.
+    /// Item `at` where it is one of the line's own.
     #[inline]
     fn line_item(&self, at: FragmentItemId) -> Option<&'a FragmentItem> {
         if self.own.contains(&at) {
@@ -680,357 +509,170 @@ impl<'a> PaintedLine<'a> {
         })
     }
 
-    /// The next box part to paint, `next`, moving `next` on: the box items in
-    /// tree order, each box's left to right, as line layout linked them.
+    /// The next of the line's items from `at`, moving `at` past it: a paint,
+    /// or `Err` with a text run, whose bars go around it.
     #[inline]
-    fn next_box_part(&self, next: &mut Option<FragmentItemId>) -> Option<Paint<'a>> {
-        work::step();
-        let at = (*next)?;
-        let item = self
-            .line_item(at)
-            .filter(|item| item.kind() == FragmentItemKind::Box)?;
-        *next = item.painted_next();
-        Some(Paint::Box(BoxFragment::from_item(self.line, item)))
-    }
-
-    /// The next decoration bar of the phase `decorating`, of the block and
-    /// then each box in tree order that `decorates` says draws one.
-    ///
-    /// The line's culled boxes are found in `culled` the first time a phase
-    /// looks for one.
-    fn next_decoration<F: Fn(NodeKey) -> Decorates>(
-        &self,
-        decorating: &mut Decorating,
-        culled: &mut Option<CulledLine<'a>>,
-        decorates: &F,
-    ) -> Option<Decoration> {
-        let nodes = &self.line.layout().content().nodes;
-        loop {
+    fn next_item(&self, at: &mut FragmentItemId) -> Option<Result<Paint<'a>, FragmentItemId>> {
+        while let Some(item) = self.line_item(*at) {
             work::step();
-            let node = match decorating.node {
-                Some(node) => node,
-                None => {
-                    // The block: its bars are the whole line's, on its
-                    // baseline.
-                    decorating.node = Some(NodeId::BLOCK);
-                    decorating.at = self.own.start;
-                    decorating.end = self.own.end;
-                    decorating.baseline = self.line.record().ascent();
-                    decorating.next = self.first;
-                    continue;
-                }
-            };
-            let asked = decorates(nodes.key(node));
-            let draws = if decorating.after_text {
-                asked.after_text()
-            } else {
-                asked.before_text()
-            };
-            if draws && let Some(bar) = self.bar(decorating, node) {
-                return Some(bar);
-            }
-            // The next box, its parts following one another in the
-            // links: its bars are among their items, on their baseline.
-            let Some(first) = decorating.next else {
-                // Then each culled box that decorates, across the line, on
-                // its parent's baseline.
-                if !self.has_culled() {
-                    return None;
-                }
-                let (node, from, until) = self.next_culled(decorating, culled, decorates)?;
-                decorating.node = Some(node);
-                decorating.at = from;
-                decorating.end = self.own.end;
-                decorating.until = until;
-                decorating.baseline = (self.line.layout().fragments())
-                    .culled_baseline(nodes, self.line.id(), node, false)
-                    .unwrap_or_else(|| self.line.record().ascent());
+            let here = *at;
+            *at = after(here);
+            if item.is_leaf() && item.flags.contains(FragmentItemFlags::HIDDEN) {
                 continue;
-            };
-            let head = self.line_item(first)?;
-            let mut last = first;
-            let mut after = head.painted_next();
-            while let Some(at) = after
-                && let Some(item) = self.line_item(at)
-                && item.node == head.node
-            {
-                work::step();
-                last = at;
-                after = item.painted_next();
             }
-            decorating.next = after;
-            decorating.node = Some(head.node);
-            decorating.until = None;
-            decorating.at = first;
-            decorating.end = self.line_item(last).map_or(last, |item| {
-                FragmentItemId::new(last.get() + 1 + item.descendants()).min(self.own.end)
-            });
-            decorating.baseline = head.block;
-        }
-    }
-
-    /// Whether the line may hold a culled box that decorates.
-    ///
-    /// Content with no box that decorates has none to look for, and a line
-    /// no inline box holds any of, none of its own.
-    #[inline]
-    fn has_culled(&self) -> bool {
-        let content = self.line.layout().content();
-        let boxed = self
-            .line
-            .head()
-            .is_some_and(|head| head.flags.contains(FragmentItemFlags::BOXED));
-        content.flags.contains(ContentFlags::DECORATED_BOXES) && (boxed || !work::fast_paths())
-    }
-
-    /// The next culled box of the line that draws a decoration of the
-    /// phase `decorating`: those open across the line's start first,
-    /// outermost first, then those opening on it, in tree order (see the
-    /// module documentation).
-    fn next_culled(
-        &self,
-        decorating: &mut Decorating,
-        culled: &mut Option<CulledLine<'a>>,
-        decorates: &dyn Fn(NodeKey) -> Decorates,
-    ) -> Option<(NodeId, FragmentItemId, Option<ClusterId>)> {
-        let after_text = decorating.after_text;
-        let line = culled.get_or_insert_with(|| self.start_culled(decorates));
-        let mut boxes = decorating.culled.unwrap_or(CulledBoxes {
-            above: if after_text {
-                line.above_after
-            } else {
-                line.above_before
-            },
-            item: line.item,
-            resume: self.own.start,
-        });
-        // A box open across the line's start is looked for from it.
-        let found = if boxes.above > 0 {
-            let node = line
-                .drawing
-                .around(line.start, boxes.above, decorates, after_text);
-            boxes.above -= 1;
-            node.map(|node| (node, self.own.start))
-        } else {
-            self.next_opening(line, &mut boxes, decorates, after_text)
-        };
-        let in_order = line.in_order;
-        let found = found.map(|(node, from)| self.bars_from(in_order, &mut boxes, node, from));
-        decorating.culled = Some(boxes);
-        found
-    }
-
-    /// Returns what both decoration phases read of the line's culled boxes:
-    /// the node of the item holding the line's first cluster, and how many
-    /// of the boxes around it draw on each side of the text.
-    ///
-    /// The walk over the kept boxes starts at the line's first box item's
-    /// row, where it has one, and otherwise at the line's first node, sought
-    /// once.
-    fn start_culled(&self, decorates: &dyn Fn(NodeKey) -> Decorates) -> CulledLine<'a> {
-        let layout = self.line.layout();
-        let (content, analysis) = (layout.content(), layout.analysis());
-        let kept = self.line.stages().measured().kept_boxes();
-        let record = self.line.record();
-        let at = self
-            .first
-            .and_then(|at| self.line_item(at))
-            .and_then(FragmentItem::kept_box)
-            .unwrap_or_else(|| {
-                let start = content
-                    .items
-                    .get(record.first_item)
-                    .map_or(NodeId::BLOCK, |item| item.node);
-                kept.first_from(start)
-            });
-        let mut drawing = CulledDrawing {
-            content,
-            kept,
-            at,
-            variant: self.line.variant(),
-        };
-        let clusters = record.clusters();
-        let in_order = work::fast_paths()
-            && !analysis.flags.contains(ParagraphFlags::MIXED_LEVELS)
-            && !self.line.level().is_rtl();
-        // The item holding the line's first cluster: from the line's first
-        // item, past those sitting at its start, the last whose first
-        // cluster is not past it.
-        let mut first = record.first_item;
-        let mut next = ItemId::new(first.get() + 1);
-        while content.items.get(next).is_some()
-            && analysis.item_clusters.start(next) <= clusters.start
-        {
-            work::step();
-            first = next;
-            next = ItemId::new(next.get() + 1);
-        }
-        let start = content
-            .items
-            .get(first)
-            .map_or(NodeId::BLOCK, |item| item.node);
-        // How many around the start draw on each side: one walk up, past
-        // the outermost.
-        let (above_before, above_after) = drawing.count_around(start, decorates);
-        CulledLine {
-            drawing,
-            start,
-            above_before,
-            above_after,
-            item: ItemId::new(first.get() + 1),
-            in_order,
-        }
-    }
-
-    /// Returns the next culled box opening on the line that draws in the
-    /// phase painted after the text where `after_text`, with the item its
-    /// bars are looked for from, moving `boxes` past it.
-    fn next_opening(
-        &self,
-        line: &mut CulledLine<'a>,
-        boxes: &mut CulledBoxes,
-        decorates: &dyn Fn(NodeKey) -> Decorates,
-        after_text: bool,
-    ) -> Option<(NodeId, FragmentItemId)> {
-        let layout = self.line.layout();
-        let (content, analysis) = (layout.content(), layout.analysis());
-        let clusters = self.line.record().clusters();
-        while let Some(item) = content.items.get(boxes.item) {
-            work::step();
-            if analysis.item_clusters.start(boxes.item) >= clusters.end {
-                break;
-            }
-            boxes.item = ItemId::new(boxes.item.get() + 1);
-            let opens = item.kind == ItemKind::Open && !item.flags.contains(ItemFlags::ANNOTATION);
-            if opens && line.drawing.draws(item.node, decorates, after_text) {
-                return Some((item.node, boxes.resume));
+            match item.kind() {
+                FragmentItemKind::Box => {
+                    return Some(Ok(Paint::Box(BoxFragment::from_item(self.line, item))));
+                }
+                FragmentItemKind::Text => return Some(Err(here)),
+                FragmentItemKind::Atomic => {
+                    return Some(Ok(Paint::Atomic(Atomic::new(self.line, item))));
+                }
+                FragmentItemKind::Generated => {
+                    return Some(Ok(Paint::Generated(TextRun::new(self.line, item))));
+                }
+                FragmentItemKind::Line | FragmentItemKind::AnnotationLine => {}
             }
         }
         None
     }
 
-    /// Returns where the bars of culled box `node`, found from `from`, are
-    /// looked for: from its first leaf, to the cluster its text ends at.
+    /// The next bar over text run `run` past the bar of `last`, painted after
+    /// the text where `after_text` and before it otherwise, moving `last` to
+    /// it.
     ///
-    /// On a line `in_order`, the box after it is looked for from that leaf.
-    /// Otherwise its bars are looked for over the whole line.
+    /// Its bars are the block's, then those of each box around it that
+    /// `decorates` says draws one, outermost first. Text that hangs has none,
+    /// and an initial letter's text none of the boxes around the letter.
     #[inline]
-    fn bars_from(
+    fn next_bar<F: Fn(NodeKey) -> Decorates>(
         &self,
-        in_order: bool,
-        boxes: &mut CulledBoxes,
-        node: NodeId,
-        from: FragmentItemId,
-    ) -> (NodeId, FragmentItemId, Option<ClusterId>) {
-        if !in_order {
-            return (node, self.own.start, None);
+        run: FragmentItemId,
+        last: &mut Option<NodeId>,
+        after_text: bool,
+        decorates: &F,
+        held: &mut [Option<(NodeId, Decoration)>; 2],
+    ) -> Option<Decoration> {
+        let item = self.line_item(run)?;
+        if item.flags.contains(FragmentItemFlags::HANGS) {
+            return None;
         }
-        let layout = self.line.layout();
-        let nodes = &layout.content().nodes;
-        let ends = layout.analysis().item_clusters.span(nodes.items(node)).end;
-        let first = (from.get()..self.own.end.get())
-            .map(FragmentItemId::new)
-            .find(|&at| {
-                work::step();
-                self.items
-                    .get(at)
-                    .is_some_and(|item| item.is_painted_leaf() && nodes.contains(node, item.node))
-            })
-            .unwrap_or(self.own.end);
-        if boxes.above == 0 && first < self.own.end {
-            boxes.resume = first;
-        }
-        (node, first, Some(ends))
+        let draws = |sides: Decorates| {
+            if after_text {
+                sides.after_text()
+            } else {
+                sides.before_text()
+            }
+        };
+        let block = last.is_none() && draws(self.block);
+        let node = if block && self.letter.is_none() {
+            NodeId::BLOCK
+        } else if self.boxes || self.letter.is_some() {
+            let nodes = &self.line.layout().content().nodes;
+            self.decorating_box(item.node, *last, block, &|node| {
+                draws(decorates(nodes.key(node)))
+            })?
+        } else {
+            return None;
+        };
+        *last = Some(node);
+        Some(self.bar(node, run, item, held))
     }
 
-    /// The next bar of `node`'s decoration from where the phase
-    /// `decorating` has got to: a run of its text and its descendants' that
-    /// nothing else splits.
-    #[inline]
-    fn bar(&self, decorating: &mut Decorating, node: NodeId) -> Option<Decoration> {
-        let layout = self.line.layout();
-        let nodes = &layout.content().nodes;
-        // The initial letter's box, where `node` is outside it. Chrome sets
-        // the box as an atomic inline, which the decorations of the boxes
-        // around it do not reach (`AppliedTextDecorations`).
-        let letter = self
-            .line
-            .stages()
-            .measured()
-            .initial_letter()
-            .map(|letter| letter.node)
-            .filter(|&letter| !nodes.contains(letter, node));
-        let mut run: Option<(InlineLayoutUnit, InlineLayoutUnit)> = None;
-        // The first and last items the run decorates.
-        let (mut first, mut last) = (decorating.at, decorating.at);
-        // Only its parts hold its text, so its bars are found among
-        // their items: what lies outside them would start none of its bars
-        // and add to none.
-        while decorating.at < decorating.end
-            && let Some(item) = self.line_item(decorating.at)
-        {
+    /// Returns the outermost box around `node`, or `node` itself, past `last`
+    /// that decorates and that `draws`; the block where `block` says it draws
+    /// and the run is not an initial letter's.
+    ///
+    /// The walk up from `node` stops at `last`, and at the initial letter's
+    /// box, which the decorations around it do not reach.
+    fn decorating_box(
+        &self,
+        node: NodeId,
+        last: Option<NodeId>,
+        block: bool,
+        draws: &dyn Fn(NodeId) -> bool,
+    ) -> Option<NodeId> {
+        let content = self.line.layout().content();
+        let (nodes, facts) = (&content.nodes, &content.facts);
+        let variant = self.line.variant();
+        let mut found = None;
+        let mut at = node;
+        for _ in 0..nodes.len() {
             work::step();
-            let leaf = item.is_painted_leaf();
-            if !leaf {
-                decorating.at = FragmentItemId::new(decorating.at.get() + 1);
-                continue;
+            if at == NodeId::BLOCK {
+                return if block { Some(NodeId::BLOCK) } else { found };
             }
-            // A culled box's text ends here, on a line in order: nothing of
-            // it is further on.
-            if decorating
-                .until
-                .is_some_and(|until| item.clusters().start >= until)
-            {
-                decorating.at = decorating.end;
+            if last.is_some_and(|last| at <= last) {
                 break;
             }
-            let left = item.inline;
-            let right = left + item.advance();
-            let decorated = item.kind() == FragmentItemKind::Text
-                && !item.flags.contains(FragmentItemFlags::HANGS)
-                && nodes.contains(node, item.node)
-                && letter.is_none_or(|letter| !nodes.contains(letter, item.node));
-            match run {
-                None if decorated => {
-                    run = Some((left, right));
-                    first = decorating.at;
-                    last = decorating.at;
-                }
-                None => {}
-                // Text of its own right after the run, with no room
-                // between: the run goes on.
-                Some((from, to)) if decorated && left == to => {
-                    run = Some((from, right));
-                    last = decorating.at;
-                }
-                // Something that takes no room splits nothing.
-                Some(_) if !decorated && left == right => {}
-                // Anything else ends it here, and is looked at again for
-                // the next.
-                Some(_) => break,
+            let decorating = self.boxes
+                && nodes.kind(at).is_some_and(NodeKind::is_inline_box)
+                && facts
+                    .box_facts(nodes.box_facts(at, variant))
+                    .has(BoxFlags::DECORATES);
+            if decorating && draws(at) {
+                found = Some(at);
             }
-            decorating.at = FragmentItemId::new(decorating.at.get() + 1);
+            if self.letter == Some(at) {
+                break;
+            }
+            let parent = nodes.parent(at);
+            if parent == at {
+                break;
+            }
+            at = parent;
         }
-        let (from, to) = run?;
-        let items = first..FragmentItemId::new(last.get() + 1);
-        Some(self.decoration(node, decorating.baseline, (from, to), items))
+        found
     }
 
-    /// The bar of `node`'s decoration from `from` to `to`, on `baseline`,
-    /// with its box's font, found over `items`.
-    ///
-    /// A box's baseline is its items', and the block's the line's, found
-    /// when its bars were.
+    /// The bar of `node`'s decoration over text run `run`, `item`, made from
+    /// the one `held` keeps for `node` where it keeps one.
     #[inline]
-    fn decoration(
+    fn bar(
         &self,
         node: NodeId,
-        baseline: LayoutUnit,
-        (from, to): (InlineLayoutUnit, InlineLayoutUnit),
-        items: Range<FragmentItemId>,
+        run: FragmentItemId,
+        item: &FragmentItem,
+        held: &mut [Option<(NodeId, Decoration)>; 2],
     ) -> Decoration {
+        let made = held
+            .iter()
+            .flatten()
+            .find(|(of, _)| *of == node)
+            .map(|&(_, bar)| bar);
+        let bar = made.unwrap_or_else(|| {
+            let bar = self.decoration(node);
+            held.rotate_right(1);
+            if let Some(slot) = held.first_mut() {
+                *slot = Some((node, bar));
+            }
+            bar
+        });
+        Decoration {
+            inline: InlineExtents::from_exact(item.inline, item.inline + item.advance()),
+            first: run,
+            end: after(run),
+            ..bar
+        }
+    }
+
+    /// The bar of `node`'s decoration, with its box's font, on its baseline,
+    /// over no run yet.
+    ///
+    /// The block's baseline is the line's. A box's is that of the innermost
+    /// box part on the line around it, its own where it keeps one.
+    fn decoration(&self, node: NodeId) -> Decoration {
         let layout = self.line.layout();
         let content = layout.content();
+        let ascent = self.line.record().ascent();
+        let baseline = if node == NodeId::BLOCK {
+            ascent
+        } else {
+            layout
+                .fragments()
+                .culled_baseline(&content.nodes, self.line.id(), node, false)
+                .unwrap_or(ascent)
+        };
         // The block's first line decorates in its first-line fonts.
         let text = content.nodes.text_facts(node, self.line.variant());
         let request = content.facts.text_request(text);
@@ -1071,68 +713,16 @@ impl<'a> PaintedLine<'a> {
         });
         Decoration {
             key: content.nodes.key(node),
-            inline: InlineExtents::from_exact(from, to),
+            inline: InlineExtents::default(),
             baseline: baseline.to_px(),
             size,
             ascent,
             descent,
             underline,
             line_through,
-            first: items.start,
-            end: items.end,
+            first: self.own.start,
+            end: self.own.start,
         }
-    }
-
-    /// The next leaf of the text phase from `at`, moving `at` past it: not
-    /// the hyphen's items, which it adds to `hyphen` as it passes them, for
-    /// the hyphen phase.
-    #[inline]
-    fn next_leaf(
-        &self,
-        at: &mut FragmentItemId,
-        hyphen: &mut Range<FragmentItemId>,
-    ) -> Option<Paint<'a>> {
-        while let Some(item) = self.line_item(*at) {
-            work::step();
-            let here = *at;
-            *at = FragmentItemId::new(here.get() + 1);
-            if item.flags.contains(FragmentItemFlags::HIDDEN) {
-                continue;
-            }
-            match item.kind() {
-                FragmentItemKind::Text => {
-                    return Some(Paint::Text(TextRun::new(self.line, item)));
-                }
-                FragmentItemKind::Atomic => {
-                    return Some(Paint::Atomic(Atomic::new(self.line, item)));
-                }
-                FragmentItemKind::Generated => {
-                    let run = TextRun::new(self.line, item);
-                    if run.generated() != Some(Generated::Hyphen) {
-                        return Some(Paint::Generated(run));
-                    }
-                    if hyphen.is_empty() {
-                        hyphen.start = here;
-                    }
-                    hyphen.end = *at;
-                }
-                _ => {}
-            }
-        }
-        None
-    }
-
-    /// The next of the hyphen's items, `hyphen`, which the text phase
-    /// passed, moving `hyphen` past it.
-    #[inline]
-    fn next_hyphen(&self, hyphen: &mut Range<FragmentItemId>) -> Option<Paint<'a>> {
-        let at = hyphen.start;
-        if at >= hyphen.end {
-            return None;
-        }
-        hyphen.start = FragmentItemId::new(at.get() + 1);
-        let item = self.line_item(at)?;
-        Some(Paint::Generated(TextRun::new(self.line, item)))
     }
 
     /// The next of the line's annotations' boxes, runs of text or atomic
@@ -1144,7 +734,7 @@ impl<'a> PaintedLine<'a> {
             && let Some(item) = self.items.get(*at)
         {
             work::step();
-            *at = FragmentItemId::new(at.get() + 1);
+            *at = after(*at);
             match item.kind() {
                 FragmentItemKind::Box => {
                     return Some(Paint::Box(BoxFragment::from_item(self.line, item)));
@@ -1177,19 +767,38 @@ impl<'a, F: Fn(NodeKey) -> Decorates> Iterator for PaintWalk<'a, F> {
             let painted = &self.painted;
             match &mut self.phase {
                 Phase::Background => {
-                    self.phase = Phase::Boxes(painted.first);
+                    self.phase = Phase::Items(painted.own.start);
                     if let Some(background) = painted.background() {
                         return Some(Paint::Background(background));
                     }
                 }
-                Phase::Boxes(next) => match painted.next_box_part(next) {
-                    Some(part) => return Some(part),
-                    None => self.phase = Phase::BeforeText(Decorating::new(&painted.own, false)),
+                Phase::Items(at) => match painted.next_item(at) {
+                    Some(Ok(paint)) => return Some(paint),
+                    Some(Err(run)) => self.phase = Phase::BeforeText { run, last: None },
+                    None => self.phase = Phase::Annotations(painted.annotations.start),
                 },
-                Phase::BeforeText(decorating) => {
-                    match painted.next_decoration(decorating, &mut self.culled, &self.decorates) {
-                        Some(bar) => return Some(Paint::DecorationBeforeText(bar)),
-                        None => self.phase = Phase::Annotations(painted.annotations.start),
+                Phase::BeforeText { run, last } => {
+                    let run = *run;
+                    if let Some(bar) =
+                        painted.next_bar(run, last, false, &self.decorates, &mut self.held)
+                    {
+                        return Some(Paint::DecorationBeforeText(bar));
+                    }
+                    self.phase = Phase::AfterText { run, last: None };
+                    if let Some(item) = painted.line_item(run) {
+                        let text = TextRun::new(painted.line, item);
+                        // A run's marks come right after it.
+                        if item.is_marked() {
+                            self.marks = Some(EmphasisMarks::new(&text));
+                        }
+                        return Some(Paint::Text(text));
+                    }
+                }
+                Phase::AfterText { run, last } => {
+                    let run = *run;
+                    match painted.next_bar(run, last, true, &self.decorates, &mut self.held) {
+                        Some(bar) => return Some(Paint::DecorationAfterText(bar)),
+                        None => self.phase = Phase::Items(after(run)),
                     }
                 }
                 Phase::Annotations(at) => match painted.next_annotation(at) {
@@ -1202,35 +811,8 @@ impl<'a, F: Fn(NodeKey) -> Decorates> Iterator for PaintWalk<'a, F> {
                         }
                         return Some(paint);
                     }
-                    None => {
-                        let start = painted.own.start;
-                        self.phase = Phase::Text {
-                            at: start,
-                            hyphen: start..start,
-                        };
-                    }
+                    None => self.phase = Phase::Done,
                 },
-                Phase::Text { at, hyphen } => match painted.next_leaf(at, hyphen) {
-                    Some(paint) => {
-                        if let Paint::Text(run) = &paint
-                            && run.item().is_marked()
-                        {
-                            self.marks = Some(EmphasisMarks::new(run));
-                        }
-                        return Some(paint);
-                    }
-                    None => self.phase = Phase::Hyphen(hyphen.clone()),
-                },
-                Phase::Hyphen(hyphen) => match painted.next_hyphen(hyphen) {
-                    Some(paint) => return Some(paint),
-                    None => self.phase = Phase::AfterText(Decorating::new(&painted.own, true)),
-                },
-                Phase::AfterText(decorating) => {
-                    match painted.next_decoration(decorating, &mut self.culled, &self.decorates) {
-                        Some(bar) => return Some(Paint::DecorationAfterText(bar)),
-                        None => self.phase = Phase::Done,
-                    }
-                }
                 Phase::Done => return None,
             }
         }

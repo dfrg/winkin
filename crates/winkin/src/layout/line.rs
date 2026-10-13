@@ -133,11 +133,14 @@ impl<'a> Line<'a> {
 
     /// Returns paint operations in Chrome paint order.
     ///
-    /// Includes the background, outermost boxes first, decorations before
-    /// text, ruby text, text and atomic inlines, emphasis marks after each
-    /// run, the generated hyphen, and decorations after text.
+    /// Starts with the background, then hands out the items in visual
+    /// order, each box before what it holds. Each text run comes with its
+    /// underlines and overlines before it, and its emphasis marks and lines
+    /// through after it. Ruby annotations come last. See
+    /// [`paint`](crate::paint) for the full order.
     ///
-    /// `decorates` specifies decoration lines for the block and each box.
+    /// `decorates` specifies decoration lines for the block and each box
+    /// that sets [`ComputedStyle::decorates`](crate::ComputedStyle::decorates).
     /// Does not allocate.
     pub fn paints<F: Fn(NodeKey) -> Decorates>(
         &self,

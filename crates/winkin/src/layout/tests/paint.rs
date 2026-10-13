@@ -1,69 +1,86 @@
 //! Paint tests. They pin:
-//! - a line's paint phases in Chrome's order;
+//! - a line's paint order, item by item, as Chrome 155 paints it;
 //! - decorations of culled boxes, as kept ones draw them;
-//! - decorations cut by what takes room;
+//! - decorations, one bar a run;
 //! - the font's own decoration lines a bar hands out for `from-font`.
 
 use super::*;
 use crate::paint::FontDecorationLine;
 
-/// A line paints in Chrome's phases: its
-/// background, its boxes outermost first in tree order whatever the reordering,
-/// the decorations under the text, the block's first, then the text, then the
-/// lines through it. At 20 px, `XX<span>YY</span>` has its
-/// background 0 to 80, and a box inside another after it.
+/// What `layout`'s line `at` paints, one string an operation, with
+/// `decorates` saying which lines each key draws.
+fn painted(layout: &Layout, at: usize, decorates: &dyn Fn(NodeKey) -> Decorates) -> Vec<String> {
+    let Some(line) = layout.line(at) else {
+        return Vec::new();
+    };
+    line.paints(decorates)
+        .map(|item| match item {
+            Paint::Background(background) => {
+                format!("background {:?}", ends(background.inline()))
+            }
+            Paint::Box(piece) => format!("box {} {:?}", piece.key().0, ends(piece.inline())),
+            Paint::DecorationBeforeText(bar) => {
+                format!("under {} {:?}", bar.key().0, ends(bar.inline()))
+            }
+            Paint::Annotation(run) => format!("annotation at {}", run.inline().left),
+            Paint::Text(run) => format!("text at {}", run.inline().left),
+            Paint::Emphasis(mark) => format!("mark at {}", mark.x),
+            Paint::Atomic(atomic) => format!("atomic at {}", atomic.inline().left),
+            Paint::Generated(run) => format!("generated at {}", run.inline().left),
+            Paint::DecorationAfterText(bar) => {
+                format!("through {} {:?}", bar.key().0, ends(bar.inline()))
+            }
+        })
+        .collect()
+}
+
+/// Says every key draws every line.
+fn everything(_: NodeKey) -> Decorates {
+    Decorates::Both
+}
+
+/// A line paints item by item, as Chrome paints a line's fragment items:
+/// each text run with its underlines and overlines before it, the block's
+/// first and then each box's outermost first, and its lines through after
+/// it; a box's background where the box starts. So a later box's background
+/// covers the text before it and that text's decorations. Chrome 155, 40px
+/// Ahem: in `AA<span style="margin-left:-50px;background:red">B</span>`
+/// the red covers the second A, its underline, its overline and its line
+/// through; an outer box's 6px underline lies under an inner box's 2px one.
 #[test]
-fn a_line_paints_in_chromes_order() {
+fn a_line_paints_its_items_one_by_one_in_chromes_order() {
     let mut cx = context();
     let mut layout = Layout::new();
     let root = sized(&AHEM_FAMILY, 20.0);
-    let paints = ComputedStyle {
+    let span = ComputedStyle {
         paints: true,
+        decorates: true,
         ..root
     };
-    let describe = |layout: &Layout, decorates: &dyn Fn(NodeKey) -> Decorates| {
-        let line = layout.line(0).expect("a line");
-        line.paints(decorates)
-            .map(|item| match item {
-                Paint::Background(background) => {
-                    alloc::format!("background {:?}", ends(background.inline()))
-                }
-                Paint::Box(piece) => {
-                    alloc::format!("box {} {:?}", piece.key().0, ends(piece.inline()))
-                }
-                Paint::DecorationBeforeText(bar) => {
-                    alloc::format!("under {} {:?}", bar.key().0, ends(bar.inline()))
-                }
-                Paint::Annotation(run) => alloc::format!("annotation at {}", run.inline().left),
-                Paint::Text(run) => alloc::format!("text at {}", run.inline().left),
-                Paint::Emphasis(mark) => alloc::format!("mark at {}", mark.x),
-                Paint::Atomic(atomic) => alloc::format!("atomic at {}", atomic.inline().left),
-                Paint::Generated(run) => alloc::format!("generated at {}", run.inline().left),
-                Paint::DecorationAfterText(bar) => {
-                    alloc::format!("through {} {:?}", bar.key().0, ends(bar.inline()))
-                }
-            })
-            .collect::<Vec<_>>()
-    };
-    let everything = |_: NodeKey| Decorates::Both;
     build(&mut cx, &mut layout, &ComputedBlockStyle::new(&root), |b| {
         b.text(NodeKey(1), "XX");
-        b.open_box(NodeKey(2), &paints, None);
+        b.open_box(NodeKey(2), &span, None);
         b.text(NodeKey(3), "YY");
         b.close_box();
+        b.text(NodeKey(4), "ZZ");
     });
     layout.break_lines(&mut cx, Area::new(400.0), &mut NoExclusions);
     assert_eq!(
-        describe(&layout, &everything),
+        painted(&layout, 0, &everything),
         [
-            "background (0.0, 80.0)",
-            "box 2 (40.0, 80.0)",
-            "under 0 (0.0, 80.0)",
-            "under 2 (40.0, 80.0)",
+            "background (0.0, 120.0)",
+            "under 0 (0.0, 40.0)",
             "text at 0",
+            "through 0 (0.0, 40.0)",
+            "box 2 (40.0, 80.0)",
+            "under 0 (40.0, 80.0)",
+            "under 2 (40.0, 80.0)",
             "text at 40",
-            "through 0 (0.0, 80.0)",
+            "through 0 (40.0, 80.0)",
             "through 2 (40.0, 80.0)",
+            "under 0 (80.0, 120.0)",
+            "text at 80",
+            "through 0 (80.0, 120.0)",
         ]
     );
     // Only what the caller says decorates is decorated.
@@ -75,17 +92,141 @@ fn a_line_paints_in_chromes_order() {
         }
     };
     assert_eq!(
-        describe(&layout, &underlined),
+        painted(&layout, 0, &underlined),
         [
-            "background (0.0, 80.0)",
+            "background (0.0, 120.0)",
+            "text at 0",
             "box 2 (40.0, 80.0)",
             "under 2 (40.0, 80.0)",
+            "text at 40",
+            "text at 80",
+        ]
+    );
+    // A box that does not set `decorates` is not asked, kept or not.
+    let quiet = ComputedStyle {
+        paints: true,
+        ..root
+    };
+    build(&mut cx, &mut layout, &ComputedBlockStyle::new(&root), |b| {
+        b.open_box(NodeKey(1), &quiet, None);
+        b.text(NodeKey(2), "XX");
+        b.close_box();
+    });
+    layout.break_lines(&mut cx, Area::new(400.0), &mut NoExclusions);
+    let skip_block = |key: NodeKey| {
+        if key == NodeKey(0) {
+            Decorates::None
+        } else {
+            Decorates::Both
+        }
+    };
+    assert_eq!(
+        painted(&layout, 0, &skip_block),
+        ["background (0.0, 40.0)", "box 1 (0.0, 40.0)", "text at 0"]
+    );
+}
+
+/// An atomic inline paints where it stands among the items, so a later
+/// box's background covers it and it covers the text before it. Chrome
+/// 155: a span's background pulled back over an inline-block before it
+/// covers it, also where the inline-block sits in a box of its own; an
+/// inline-block pulled back over text covers the text.
+#[test]
+fn an_atomic_inline_paints_where_it_stands() {
+    let mut cx = context();
+    let mut layout = Layout::new();
+    let root = sized(&AHEM_FAMILY, 20.0);
+    let span = ComputedStyle {
+        paints: true,
+        ..root
+    };
+    let size = BoxSize {
+        inline: 20.0,
+        block: 20.0,
+        baseline: None,
+    };
+    build(&mut cx, &mut layout, &ComputedBlockStyle::new(&root), |b| {
+        b.atomic(NodeKey(1), &root, None, size);
+        b.open_box(NodeKey(2), &span, None);
+        b.text(NodeKey(3), "X");
+        b.atomic(NodeKey(4), &root, None, size);
+        b.close_box();
+        b.text(NodeKey(5), "Y");
+        b.open_box(NodeKey(6), &span, None);
+        b.text(NodeKey(7), "Z");
+        b.close_box();
+    });
+    layout.break_lines(&mut cx, Area::new(400.0), &mut NoExclusions);
+    assert_eq!(
+        painted(&layout, 0, &|_| Decorates::None),
+        [
+            "background (0.0, 100.0)",
+            "atomic at 0",
+            "box 2 (20.0, 60.0)",
+            "text at 20",
+            "atomic at 40",
+            "text at 60",
+            "box 6 (80.0, 100.0)",
+            "text at 80",
+        ]
+    );
+}
+
+/// A run's emphasis marks follow its text and come before its lines
+/// through, as Chrome paints the marks with the text and the lines through
+/// after both. Chrome 155: an 80px line through covers the run's own marks,
+/// and a later span's background covers them.
+#[test]
+fn a_runs_marks_come_between_its_text_and_its_lines_through() {
+    let mut cx = context();
+    let mut layout = Layout::new();
+    let root = sized(&AHEM_FAMILY, 20.0);
+    let marked = ComputedStyle {
+        decorates: true,
+        ..marked(20.0, EmphasisSkip::INITIAL)
+    };
+    build(&mut cx, &mut layout, &ComputedBlockStyle::new(&root), |b| {
+        b.open_box(NodeKey(1), &marked, None);
+        b.text(NodeKey(2), "XX");
+        b.close_box();
+        b.text(NodeKey(3), "Y");
+    });
+    layout.break_lines(&mut cx, Area::new(400.0), &mut NoExclusions);
+    let box_only = |key: NodeKey| {
+        if key == NodeKey(1) {
+            Decorates::Both
+        } else {
+            Decorates::None
+        }
+    };
+    assert_eq!(
+        painted(&layout, 0, &box_only),
+        [
+            "background (0.0, 60.0)",
+            "under 1 (0.0, 40.0)",
             "text at 0",
+            "mark at 10",
+            "mark at 30",
+            "through 1 (0.0, 40.0)",
             "text at 40",
         ]
     );
-    // Outermost first, and a box reordering parts painted whole before the
-    // next, in tree order.
+}
+
+/// A reordered line paints left to right, each box part before what it
+/// holds, as Chrome paints its fragment items in visual order. Chrome 155,
+/// in a left-to-right and a right-to-left block alike: of two spans
+/// reordered right to left, the one first in the content, which lies to the
+/// right, paints over the other where a negative margin pulls it across.
+#[test]
+fn a_reordered_line_paints_left_to_right() {
+    let mut cx = context();
+    let mut layout = Layout::new();
+    let root = sized(&AHEM_FAMILY, 20.0);
+    let paints = ComputedStyle {
+        paints: true,
+        ..root
+    };
     let overriding = ComputedStyle {
         bidi: BidiGroup {
             direction: Direction::Rtl,
@@ -109,18 +250,66 @@ fn a_line_paints_in_chromes_order() {
         b.close_box();
     });
     layout.break_lines(&mut cx, Area::new(400.0), &mut NoExclusions);
-    let boxes: Vec<String> = describe(&layout, &|_| Decorates::None)
-        .into_iter()
-        .filter(|item| item.starts_with("box"))
-        .collect();
     assert_eq!(
-        boxes,
+        painted(&layout, 0, &|_| Decorates::None),
         [
+            "background (0.0, 120.0)",
             "box 1 (0.0, 120.0)",
+            "text at 0",
             "box 3 (20.0, 40.0)",
+            "text at 20",
+            "box 7 (40.0, 80.0)",
+            "text at 40",
             "box 3 (80.0, 120.0)",
             "box 5 (80.0, 120.0)",
-            "box 7 (40.0, 80.0)",
+            "text at 80",
+        ]
+    );
+}
+
+/// The first line paints in the same order as any other, its background
+/// first. Chrome 155: a `::first-line` background lies under a span's, and
+/// a `::first-line` underline under a later span's background.
+#[test]
+fn the_first_line_paints_in_the_same_order() {
+    let mut cx = context();
+    let mut layout = Layout::new();
+    let root = sized(&AHEM_FAMILY, 20.0);
+    let first_line = sized(&AHEM_FAMILY, 20.0);
+    let span = ComputedStyle {
+        paints: true,
+        ..root
+    };
+    let block = ComputedBlockStyle {
+        first_line: Some(&first_line),
+        ..ComputedBlockStyle::new(&root)
+    };
+    build(&mut cx, &mut layout, &block, |b| {
+        b.text(NodeKey(1), "X ");
+        b.open_box(NodeKey(2), &span, None);
+        b.text(NodeKey(3), "Y");
+        b.close_box();
+    });
+    layout.break_lines(&mut cx, Area::new(20.0), &mut NoExclusions);
+    assert_eq!(layout.lines().len(), 2);
+    let block_only = |key: NodeKey| {
+        if key == NodeKey(0) {
+            Decorates::BeforeText
+        } else {
+            Decorates::None
+        }
+    };
+    assert_eq!(
+        painted(&layout, 0, &block_only),
+        ["background (0.0, 20.0)", "under 0 (0.0, 20.0)", "text at 0"]
+    );
+    assert_eq!(
+        painted(&layout, 1, &block_only),
+        [
+            "background (0.0, 20.0)",
+            "box 2 (0.0, 20.0)",
+            "under 0 (0.0, 20.0)",
+            "text at 0",
         ]
     );
 }
@@ -238,10 +427,10 @@ fn a_culled_box_decorates_as_one_kept_would() {
     assert_eq!(both.first(), both.last());
 }
 
-/// A decoration is drawn under its box's text only, one bar a run of it:
-/// cut by an edge that takes room, an object, and what hangs, and not by a
-/// box that only paints, at 40 px. Each bar knows its baseline and its
-/// font, and Chrome's underline thickness and gap.
+/// A decoration is drawn under its box's text only, one bar a run of it,
+/// as Chrome decorates each text fragment: a box's edges and an object lie
+/// between bars, and what hangs has none, at 40 px. Each bar knows its
+/// baseline and its font, and Chrome's underline thickness and gap.
 #[test]
 fn a_decoration_is_cut_by_what_takes_room() {
     let mut cx = context();
@@ -285,7 +474,10 @@ fn a_decoration_is_cut_by_what_takes_room() {
             &padded,
             &[along(0.0, 80.0), along(100.0, 180.0), along(200.0, 280.0)][..],
         ),
-        (&painted, &[along(0.0, 240.0)][..]),
+        (
+            &painted,
+            &[along(0.0, 80.0), along(80.0, 160.0), along(160.0, 240.0)][..],
+        ),
     ] {
         build(&mut cx, &mut layout, &ComputedBlockStyle::new(&root), |b| {
             b.text(NodeKey(1), "XX");
@@ -298,8 +490,12 @@ fn a_decoration_is_cut_by_what_takes_room() {
         assert_eq!(bars(&layout, 0), want);
     }
     // The padded box's own bar is inside its own sides.
+    let decorated = ComputedStyle {
+        decorates: true,
+        ..padded
+    };
     build(&mut cx, &mut layout, &ComputedBlockStyle::new(&root), |b| {
-        b.open_box(NodeKey(1), &padded, None);
+        b.open_box(NodeKey(1), &decorated, None);
         b.text(NodeKey(2), "XXXX");
         b.close_box();
     });

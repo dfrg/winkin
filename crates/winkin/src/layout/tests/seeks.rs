@@ -280,16 +280,15 @@ fn plain_prose_is_laid_out_painted_and_read_without_a_search() {
     );
 }
 
-/// Boxed prose is laid out without a search, and painted and read without
+/// Boxed prose is laid out and painted without a search, and read without
 /// one a fragment.
 ///
 /// Line layout walks the kept boxes and their shifts as it opens them. A
 /// box part names its kept box, so its extent is a load, and a text item's
-/// ends find their items by walking from its own. A line's paint walks the
-/// kept boxes to tell the culled ones that decorate. It starts at the
-/// line's first box part, or where the line has none, seeks once.
+/// ends find their items by walking from its own. A line's paint walks up
+/// from each run to the boxes that decorate it.
 #[test]
-fn boxed_prose_is_laid_out_without_a_search_and_painted_with_one_a_line_at_most() {
+fn boxed_prose_is_laid_out_and_painted_without_a_search() {
     let mut cx = context();
     let layout = boxed(&mut cx);
     assert_eq!(placing_seeks(&mut cx, &layout, 180.0), 0);
@@ -299,9 +298,11 @@ fn boxed_prose_is_laid_out_without_a_search_and_painted_with_one_a_line_at_most(
         seeks.fragments > 3 * seeks.lines && seeks.marks > 20,
         "{seeks:?}"
     );
-    assert_eq!((seeks.paint, seeks.readers), (0, 0), "{seeks:?}");
-    assert!(seeks.paints > 0 && seeks.paints < seeks.lines, "{seeks:?}");
-    assert_eq!(seeks.path, seeks.paints, "{seeks:?}");
+    assert_eq!(
+        (seeks.paint, seeks.paints, seeks.path, seeks.readers),
+        (0, 0, 0, 0),
+        "{seeks:?}"
+    );
 }
 
 /// Vertical text is laid out, painted and read without a search, but for

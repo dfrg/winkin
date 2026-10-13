@@ -137,8 +137,8 @@ fn a_line_reads_and_paints_its_hyphen_and_its_ellipsis() {
         [
             "background (0.0, 40.0)",
             "text at 0",
-            "Some(Ellipsis) at 60",
             "Some(Hyphen) at 40",
+            "Some(Ellipsis) at 60",
         ]
     );
     // An overflowing line cut for an ellipsis hides its tail: read by

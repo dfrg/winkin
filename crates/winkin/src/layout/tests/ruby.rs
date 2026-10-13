@@ -18,7 +18,8 @@ use super::*;
 /// reaches 10 past the line box, which grows by that, as Chrome's does:
 /// the baseline goes to 26 and the annotation's to 8. The line's items are
 /// its bases' and its own text; the annotation is read apart, and painted
-/// after the ruby container's box and before the line's text.
+/// after the line's items, as Chrome 155 paints a `<rt>` over a later
+/// span's background and over a later inline-block pulled back under it.
 #[test]
 fn a_line_reads_its_ruby_annotations_apart_from_its_items() {
     let mut cx = context();
@@ -67,8 +68,7 @@ fn a_line_reads_its_ruby_annotations_apart_from_its_items() {
     assert_eq!(xs, [15.0, 25.0, 35.0, 45.0]);
     let clusters: Vec<InlineExtents> = text[0].clusters().map(|c| c.inline()).collect();
     assert_eq!(clusters.get(3).copied(), Some(along(45.0, 55.0)));
-    // Painted after the background and the container's box, before the
-    // line's own text.
+    // Painted after the line's own items.
     let kinds: Vec<&str> = line
         .paints(|_| Decorates::None)
         .map(|item| match item {
@@ -81,7 +81,7 @@ fn a_line_reads_its_ruby_annotations_apart_from_its_items() {
         .collect();
     assert_eq!(
         kinds,
-        ["background", "box", "annotation", "text", "text", "text"]
+        ["background", "text", "box", "text", "text", "annotation"]
     );
 }
 
@@ -791,16 +791,17 @@ fn a_box_inside_an_annotation_has_its_own_fragment() {
         })
         .filter(|kind| *kind != "other")
         .collect();
-    // The ruby container's box, then the span's.
+    // The ruby container's box and its base, then the annotation's span and
+    // text.
     assert_eq!(
         order,
         [
             "box",
+            "text",
             "box",
             "annotation",
             "annotation",
-            "annotation",
-            "text"
+            "annotation"
         ]
     );
     // Nested: a painted box with no edges around `B` and a padded one
