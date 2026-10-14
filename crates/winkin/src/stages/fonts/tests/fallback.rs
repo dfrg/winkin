@@ -1,15 +1,18 @@
-//! Primary font and fallback tests: the first installed family, the used
-//! size, fallback per cluster and where a fallback run ends, the
-//! default language, the Standard font, and divided graphemes.
+//! Primary font and fallback tests:
+//! - the first installed family and the used size;
+//! - fallback per cluster, and where a fallback run ends;
+//! - the default language and the Standard font;
+//! - sizes and `letter-spacing` as separate used fonts;
+//! - clusters that draw nothing, and divided graphemes.
 
 use super::*;
 use crate::style::LengthPercentage;
 
 // The primary font -----------------------------------------------------------
 
-/// The first available font is the first family listed that is installed,
-/// and a style naming nothing installed has the user agent's default, which
-/// fallback's policy names: Ahem here.
+/// The first available font is the first listed family that is installed.
+/// A style naming nothing installed gets the user agent's default, which
+/// the fallback policy names: Ahem here.
 #[test]
 fn the_primary_font_is_the_first_listed_family_installed() {
     let mut fixture = fixture_with(&[han()]);
@@ -31,9 +34,9 @@ fn the_primary_font_is_the_first_listed_family_installed() {
     assert_eq!(fixture.families(&layout), ["Ahem"; 3]);
 }
 
-/// A style's primary font is at its used size, which is the computed size,
-/// sanitized: a size that is not a number or is negative is zero, and one
-/// past Chrome's largest is that.
+/// A style's primary font is at its used size, the computed size sanitized.
+/// A size that is NaN, negative or infinite becomes zero, and one past
+/// Chrome's largest, 10,000 px, is clamped to it.
 #[test]
 fn the_used_size_is_the_computed_size_sanitized() {
     let mut fixture = fixture_with(&[]);
@@ -57,7 +60,7 @@ fn the_used_size_is_the_computed_size_sanitized() {
 
 // Fallback -----------------------------------------------------------------
 
-/// Each cluster the style's font lacks falls back on its own, to the first
+/// Each cluster the style's font lacks falls back on its own to the first
 /// font of the chain that has it.
 #[test]
 fn each_cluster_falls_back_on_its_own() {
@@ -72,9 +75,9 @@ fn each_cluster_falls_back_on_its_own() {
     assert_eq!(text_runs(&layout).len(), 3);
 }
 
-/// Every cluster is owed to the first font that has it: the Han fallback
-/// has digits and spaces too, and takes none of them from Ahem, so its run
-/// ends where Ahem covers again.
+/// Every cluster goes to the first font that has it. The Han fallback has
+/// digits and a space too but takes none of them from Ahem, so its run ends
+/// where Ahem covers again.
 #[test]
 fn a_fallback_run_ends_where_an_earlier_font_covers_again() {
     let mut fixture = fixture_with(&[han()]);
@@ -97,9 +100,10 @@ fn a_fallback_run_ends_where_an_earlier_font_covers_again() {
     );
 }
 
-/// A platform's tables as fontwich reads them, for the default language:
-/// every generic is Test Plain Hyphen where the language is not a Han tradition's
-/// and Test Han Acute where it is, and Test Han Acute is Han's script font.
+/// A platform's fallback tables, for the default-language test.
+///
+/// Every generic is Test Han Acute for a Han tradition's language and Test
+/// Plain Hyphen otherwise. Test Han Acute is Han's script font.
 struct Generics;
 
 impl FallbackOverride for Generics {
@@ -123,12 +127,15 @@ impl FallbackOverride for Generics {
 }
 
 /// Text whose style names no language chooses its fonts in the config's
-/// default language, as Chrome chooses in its default locale: under
-/// English, every preset's, a Han run's `serif` is the Latin one, which
-/// takes the run's space, and the ideographs fall back from it; under `und`
-/// the run chooses by its own script, whose `serif` sets all of it; and a
-/// style's own language wins over the default. The primary font follows
-/// the default too.
+/// default language, as Chrome chooses in its default locale.
+///
+/// - Under English, every preset's default, a Han run's `serif` is the
+///   Latin font. It takes the run's space, and the ideographs fall back.
+/// - Under `und`, the run chooses by its own script, whose `serif` sets all
+///   of it.
+/// - A style's own language wins over the default.
+///
+/// The primary font follows the default too.
 #[test]
 fn a_style_naming_no_language_chooses_its_fonts_in_the_default() {
     let mut layer = LayerBuilder::new(Role::Application);
@@ -183,10 +190,16 @@ fn a_style_naming_no_language_chooses_its_fonts_in_the_default() {
 
 /// Chrome's generic settings on Windows, in miniature, as measured in Chrome.
 ///
-/// Simplified Chinese `serif` is SimSun and `sans-serif` Microsoft YaHei, its `cursive` KaiTi and
-/// Traditional `monospace` MingLiU are not installed, and the Common
-/// `serif` is Times New Roman and `monospace` Consolas. Every script's
-/// fallback is Test Kana, then Test Courier, standing in for the system's.
+/// - Simplified Chinese: `serif` is SimSun, `sans-serif` Microsoft YaHei,
+///   and `cursive` KaiTi, which is not installed.
+/// - Traditional Chinese: `serif` and `sans-serif` are Microsoft JhengHei,
+///   and `monospace` MingLiU, which is not installed.
+/// - Common: `serif` is Times New Roman and `monospace` Consolas.
+/// - The Standard fonts are Microsoft YaHei, Microsoft JhengHei and Times
+///   New Roman.
+///
+/// Every script's fallback is Test Kana, then Test Courier, standing in for
+/// the system's.
 struct StandardFonts;
 
 impl FallbackOverride for StandardFonts {
@@ -224,16 +237,18 @@ impl FallbackOverride for StandardFonts {
 }
 
 /// After every `font-family` list, before any system fallback, Chrome tries
-/// the Standard font of the content language (`font_fallback_list.cc:177–187`),
-/// which is not `serif`. As the probes measured on Windows: `・` under
-/// `zh-CN` `serif` draws in Microsoft YaHei, the Simplified Standard, where
-/// SimSun lacks it and the Katakana font has it; a generic whose font is
-/// not installed (Simplified `cursive` KaiTi, Traditional `monospace`
-/// MingLiU) shows the Standard font, as the style's primary font too; and
-/// `monospace` Hebrew under English draws in Times New Roman, the Common
-/// Standard, where Consolas lacks it, not in the Courier New fallback has.
-/// The initial `font-family` is the Standard font alone: Microsoft YaHei
-/// under `zh-CN`, where `serif` would be SimSun.
+/// the Standard font of the content language
+/// (`font_fallback_list.cc:177–187`), which is not `serif`. The probes
+/// measured on Windows:
+/// - `・` under `zh-CN` `serif` draws in Microsoft YaHei, the Simplified
+///   Standard, where SimSun lacks it and the Katakana font has it;
+/// - a generic whose font is not installed (Simplified `cursive` KaiTi,
+///   Traditional `monospace` MingLiU) shows the Standard font, which is
+///   the style's primary font too;
+/// - `monospace` Hebrew under English draws in Times New Roman, the Common
+///   Standard, where Consolas lacks it, not in the Courier New fallback;
+/// - the initial `font-family` is the Standard font alone: Microsoft YaHei
+///   under `zh-CN`, where `serif` would be SimSun.
 #[test]
 fn the_standard_font_follows_every_list() {
     let fonts = [
@@ -295,9 +310,8 @@ fn the_standard_font_follows_every_list() {
     }
 }
 
-/// The same font at two sizes is two used fonts and two runs; the same font
-/// at one size in two boxes is one used font and one run, since a box that
-/// only paints does not end shaping.
+/// The same font at two sizes is two used fonts and two runs. The same font
+/// at one size in two boxes is one used font and one run.
 #[test]
 fn the_same_font_at_two_sizes_is_two_runs() {
     let mut fixture = fixture_with(&[]);
@@ -319,13 +333,12 @@ fn the_same_font_at_two_sizes_is_two_runs() {
     assert_eq!(sizes, [16.0, 20.0]);
 }
 
-/// Text under a `letter-spacing` that is not nothing is set in an instance
-/// with the common ligatures and the contextual alternates off, `liga`,
-/// `clig` and `calt` at 0, as Blink's `FontFeatureRange` turns them off;
-/// other text in the same font keeps the
-/// shaper's defaults. So the two are two used fonts and two runs, its
-/// primary font the spaced instance too, and a spacing too small to round
-/// to anything turns nothing off.
+/// Text under a nonzero `letter-spacing` is set in an instance with `liga`,
+/// `clig` and `calt` at 0, as Blink's `FontFeatureRange` turns them off.
+/// Other text in the same font keeps the shaper's defaults, so the two are
+/// separate used fonts and runs. The spaced text's primary font is the
+/// spaced instance too. A spacing too small to round to anything turns
+/// nothing off.
 #[test]
 fn letter_spacing_turns_the_common_ligatures_off() {
     let mut fixture = fixture_with(&[]);
@@ -341,8 +354,8 @@ fn letter_spacing_turns_the_common_ligatures_off() {
         &plain,
         &[(&plain, "ab"), (&spaced, "cd"), (&tiny, "ef")],
     );
-    // Every one but the `chws` every style asks for under `text-spacing-trim:
-    // normal`.
+    // Every feature but the `chws` that `text-spacing-trim: normal` turns
+    // on.
     let features = |font: UsedFontId| {
         let used = used_font(&layout, font);
         let drawn = used.instance.as_ref().expect("an instance");
@@ -378,9 +391,9 @@ fn letter_spacing_turns_the_common_ligatures_off() {
     assert_eq!(features(primary).len(), 3);
 }
 
-/// A cluster that draws nothing -- an atomic inline, a `<br>`, a lone joiner
-/// -- takes the font of the text before it, so it neither ends a fallback
-/// run nor sends the walk to fallback for a character no font maps.
+/// A cluster that draws nothing (an atomic inline, a `<br>`, a lone joiner)
+/// takes the font of the text before it. It neither ends a fallback run nor
+/// sends the walk to fallback for a character no font maps.
 #[test]
 fn a_cluster_that_draws_nothing_keeps_the_font_before_it() {
     let mut fixture = fixture_with(&[han()]);
@@ -413,12 +426,11 @@ fn a_cluster_that_draws_nothing_keeps_the_font_before_it() {
     );
 }
 
-/// A grapheme a box boundary divides where nothing that shapes differs --
-/// a bare span, a span that only paints -- is chosen for whole, as Chrome
-/// chooses. The first font covering all of it
-/// sets every part. Test Plain Hyphen has the `e` and not the acute, so the
-/// grapheme goes to Test Acute Marks, which has both, and not the `e` alone to Test
-/// Plain with the mark sent after it.
+/// A grapheme divided by a box boundary where nothing that shapes differs
+/// (a bare span, a span that only paints) is chosen for whole, as Chrome
+/// chooses. The first font covering all of it sets every part. Test Plain
+/// Hyphen has the `e` and not the acute, so the whole grapheme goes to Test
+/// Acute Marks, which has both.
 #[test]
 fn a_grapheme_divided_where_nothing_shapes_differently_is_chosen_whole() {
     let mut fixture = fixture_with(&[plain(), marks()]);
@@ -449,11 +461,9 @@ fn a_grapheme_divided_where_nothing_shapes_differently_is_chosen_whole() {
 }
 
 /// A grapheme divided into three parts by two box boundaries, where nothing
-/// shapes differently, is chosen for whole too: the unit reaches past the
-/// item after its first part's into the one after that. Test Acute Marks has the
-/// `e` and the acute and not the circumflex, so the grapheme goes to the
-/// second family, which has all three, and not its first two parts to Test
-/// Marks.
+/// shapes differently, is chosen for whole too, across both later items.
+/// Test Acute Marks has the `e` and the acute and not the circumflex, so the
+/// whole grapheme goes to Test Both Marks, which has all three.
 #[test]
 fn a_grapheme_divided_twice_is_chosen_whole() {
     let all = TestFont::new(
@@ -479,10 +489,10 @@ fn a_grapheme_divided_twice_is_chosen_whole() {
     );
 }
 
-/// A grapheme a box boundary divides where a shaping property changes is two
-/// units, as in Chrome: the later part chooses by its own style, and a mark
-/// may leave its base. Another family sets the acute in that family's font;
-/// another size sets it in the same font at its own size.
+/// A grapheme divided by a box boundary where a shaping property changes is
+/// two units, as in Chrome. The later part chooses by its own style, and a
+/// mark may leave its base. Another family sets the acute in that family's
+/// font; another size sets it in the same font at its own size.
 #[test]
 fn a_grapheme_divided_by_a_shaping_property_is_chosen_for_by_part() {
     let mut fixture = fixture_with(&[han(), marks()]);

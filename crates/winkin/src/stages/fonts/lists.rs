@@ -10,8 +10,9 @@
 //!   before a cluster needs it. Beside the lists it keeps the characters no
 //!   font maps.
 //!
-//! Each list is made whole from fontwich's answers the first time a span
-//! asks for it, and grows only at its end.
+//! A candidate list's families are found the first time a span or a primary
+//! font asks for it. The list grows only at its end, as families match and
+//! misses add families.
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -39,8 +40,8 @@ define_id! {
 impl NamedListId {
     /// The initial `font-family`, the empty list: the Standard font alone.
     ///
-    /// The table never stores it, and never hands out its id, the one past
-    /// the most it holds.
+    /// The table never stores it. Its id, `u16::MAX`, is one the table never
+    /// hands out.
     pub(crate) const INITIAL: Self = Self(u16::MAX);
 }
 
@@ -58,14 +59,14 @@ define_id! {
     pub(super) struct CandidateId(u32);
 }
 
-/// One entry of a stored family list, as the caller named it.
+/// One entry of a stored family list, as the style named it.
 #[derive(Clone, Debug)]
 enum StoredName {
     Generic(GenericFamily),
     Named(Box<str>),
 }
 
-/// Whether `stored` was given as `names`.
+/// Returns whether `stored` holds the same entries as `names`.
 fn is_named(stored: &[StoredName], names: &[FontFamilyName<'_>]) -> bool {
     stored.len() == names.len()
         && stored
@@ -82,10 +83,9 @@ fn is_named(stored: &[StoredName], names: &[FontFamilyName<'_>]) -> bool {
 ///
 /// A [`CandidateList`] is keyed by it, so every layout naming a list shares
 /// its fonts. The empty list, the initial `font-family`, is never stored:
-/// it is [`NamedListId::INITIAL`]. The table is trimmed when a build starts
-/// to the lists used last, and the candidate lists keyed by a list it drops
-/// go with it. A build only adds, so every id it hands out holds until it
-/// ends.
+/// it is [`NamedListId::INITIAL`]. A trim before each build keeps the lists
+/// used last, and the candidate lists keyed by a list it drops go with it.
+/// A build only adds, so every id it hands out holds until it ends.
 pub(super) struct NamedLists {
     lists: LruCache<NamedListId, Box<[StoredName]>>,
 }
@@ -111,32 +111,32 @@ impl NamedLists {
         dropped
     }
 
-    /// Whether list `id` is `names`, for tests.
+    /// Returns whether list `id` is `names`, for tests.
     #[cfg(test)]
     pub(super) fn is_named(&self, id: NamedListId, names: &[FontFamilyName<'_>]) -> bool {
         is_named(self.get(id), names)
     }
 
-    /// How many lists are held, for tests to see them bounded.
+    /// Returns how many lists are held, for tests to see them bounded.
     #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.lists.len()
     }
 
-    /// Whether list `id` is held. The initial list always is.
+    /// Returns whether list `id` is held. The initial list always is.
     fn contains(&self, id: NamedListId) -> bool {
         id == NamedListId::INITIAL || self.lists.get(id).is_some()
     }
 
-    /// Returns the names of list `id`, or none for the initial list or an
-    /// id this cache did not hand out.
+    /// Returns the names of list `id`; empty for the initial list or an id
+    /// this cache did not hand out.
     fn get(&self, id: NamedListId) -> &[StoredName] {
         self.lists.get(id).map_or(&[], |names| names)
     }
 
     /// Returns the id of the list `names`, storing its names if it is new.
     ///
-    /// Returns `None` if it does not fit.
+    /// Returns `None` where every id is taken.
     pub(super) fn find_or_make(&mut self, names: &[FontFamilyName<'_>]) -> Option<NamedListId> {
         if names.is_empty() {
             return Some(NamedListId::INITIAL);
@@ -197,8 +197,8 @@ impl HeapBytes for NamedLists {
 style_struct! {
     /// What a font request asks of a family's fonts.
     ///
-    /// It holds CSS matching's attributes, and `font-synthesis-style`:
-    /// whether an oblique may be faked, which changes what matches.
+    /// It holds CSS matching's attributes and `font-synthesis-style`.
+    /// Whether an oblique may be synthesized changes what matches.
     pub(super) struct MatchRequest {
         weight: FontWeight,
         width: FontWidth,
@@ -208,7 +208,6 @@ style_struct! {
 }
 
 impl From<&FontRequest> for MatchRequest {
-    /// What `request` asks.
     fn from(request: &FontRequest) -> Self {
         let font = &request.font;
         Self {
@@ -221,7 +220,7 @@ impl From<&FontRequest> for MatchRequest {
 }
 
 impl MatchRequest {
-    /// The attributes fontwich matches by.
+    /// Returns the attributes fontwich matches by.
     fn attributes(self) -> Attributes {
         Attributes {
             width: self.width,
@@ -251,9 +250,9 @@ pub(super) struct ListKey {
 
 /// A font to try, as its family and its index there.
 ///
-/// It holds a reference count and a number, since cloning a variable
-/// [`Font`] allocates. The font itself says whether it draws in color and
-/// whether it is pending.
+/// It holds the family handle and an index rather than the [`Font`], since
+/// cloning a variable font allocates. The font says whether it draws in
+/// color and whether it is pending.
 #[derive(Clone, Debug)]
 pub(super) struct Candidate {
     family: Family,
@@ -276,7 +275,8 @@ impl Candidate {
         &self.family
     }
 
-    /// Whether its bytes could not be had, so it is never tried again.
+    /// Returns whether its bytes could not be had, so it is never tried
+    /// again.
     pub(super) fn is_unusable(&self) -> bool {
         self.unusable
     }
@@ -290,9 +290,9 @@ impl Candidate {
 /// - fallback's families for the run;
 /// - the families a missed character's walk added.
 ///
-/// From each family come every font tied for the best match. Families match
-/// one at a time, when the walk first reaches past what is matched. So a
-/// family loads when a cluster needs it, and then once per context.
+/// Each family gives every font tied for the best match. Families match one
+/// at a time, when the walk first reaches past what is matched. So a family
+/// loads when a cluster needs it, and then once per context.
 pub(super) struct CandidateList {
     key: ListKey,
     /// The fallback request for the run: its script, language and class.
@@ -319,14 +319,14 @@ impl CandidateList {
     ///
     /// It holds each named family the collection has, with a generic
     /// resolved for the run. Then come the Standard font of the language,
-    /// the emoji fonts for emoji, and the run key's families. Nothing is
-    /// matched yet.
+    /// the emoji fonts for an emoji list, and fallback's families for the
+    /// run. Nothing is matched yet.
     fn new(collection: &Collection, names: &[StoredName], key: ListKey) -> Self {
         let language = (key.language != Language::UND).then_some(key.language);
         // The first generic the list names is the class fallback reads (serif
         // fallbacks, Windows' monospace Arabic), as Chrome's
-        // `GenericFamily()` is the first generic keyword. With none, it is
-        // the Standard font's, which is no class.
+        // `GenericFamily()` is the first generic keyword. With none, the
+        // class is `Plain`, the Standard font's.
         let class = names
             .iter()
             .find_map(|name| match name {
@@ -341,8 +341,7 @@ impl CandidateList {
         };
         let mut families: Vec<Family> = Vec::with_capacity(names.len() + 1);
         for name in names {
-            // A name the collection does not have is skipped, as CSS skips
-            // it.
+            // CSS skips a name the collection does not have.
             let family = match name {
                 StoredName::Named(name) => collection.family(name),
                 StoredName::Generic(generic) => {
@@ -395,9 +394,8 @@ impl CandidateList {
     /// Returns how many candidates come from the listed families and the
     /// Standard font, or `usize::MAX` while some of those are unmatched.
     ///
-    /// Candidates are matched a family at a time, in order, so those first
-    /// are theirs. Only a grapheme of private use asks, so the count is not
-    /// kept.
+    /// Candidates are matched a family at a time, in order, so these come
+    /// first. Only a private-use grapheme asks, so the count is not kept.
     #[cold]
     pub(super) fn listed_candidates(&self) -> usize {
         if self.matched < self.listed {
@@ -410,7 +408,7 @@ impl CandidateList {
             .count()
     }
 
-    /// Whether every family it has is matched.
+    /// Returns whether every family it has is matched.
     ///
     /// An exhausted list holds all its candidates until a miss adds a
     /// family.
@@ -425,7 +423,7 @@ impl CandidateList {
         while let Some(family) = self.families.get(self.matched) {
             self.matched = self.matched.saturating_add(1);
             let before = self.candidates.len();
-            // Loads the family: this is where a font is first read.
+            // Loads the family, where a font is first read.
             let fonts = family.fonts();
             for index in family.matching_indices(request.attributes(), request.synthesize_style) {
                 if fonts.get(index).is_none() {
@@ -436,8 +434,8 @@ impl CandidateList {
                     index,
                     unusable: false,
                 });
-                // The table is past what a candidate id names, which no
-                // family reaches. The fonts matched so far are the list.
+                // Every candidate id is taken, which no family reaches. The
+                // fonts matched so far are the list.
                 if pushed.is_none() {
                     break;
                 }
@@ -453,7 +451,8 @@ impl CandidateList {
     /// Adds the first family that maps `c` and is not already in the list,
     /// loading families as the walk reaches them. A list walks each
     /// character once. Where no family maps `c` at all, it goes into
-    /// `unmapped`, and no list walks it again.
+    /// `unmapped`, and no list walks it again. Fallback is never asked for a
+    /// private-use character or a noncharacter in text presentation.
     fn miss(
         &mut self,
         collection: &Collection,
@@ -466,8 +465,8 @@ impl CandidateList {
         };
         self.missed.insert(at, c);
         // Only the listed families draw a private-use character or a
-        // noncharacter in text, as Blink's `FallbackFontForCharacter` asks
-        // the platform for no font for one. CSS Fonts 4, section 5.4, asks
+        // noncharacter in text. Blink's `FallbackFontForCharacter` asks the
+        // platform for no font for one, and CSS Fonts 4, section 5.4, asks
         // the same of private use.
         if matches!(presentation, Presentation::Text | Presentation::TextOnly)
             && is_private_or_noncharacter(c)
@@ -550,8 +549,8 @@ fn add_each<'a>(list: &mut Vec<Family>, families: impl IntoIterator<Item = &'a F
     }
 }
 
-/// Whether `c` is a variation selector or a joiner: no font is chosen for
-/// one alone.
+/// Returns whether `c` is a variation selector or a joiner, for which alone
+/// no font is chosen.
 fn is_joining(c: char) -> bool {
     matches!(
         u32::from(c),
@@ -559,8 +558,8 @@ fn is_joining(c: char) -> bool {
     )
 }
 
-/// Whether `c` is a private-use character or a noncharacter, as Blink's
-/// `Character::IsPrivateUse` and `Character::IsNonCharacter` test it.
+/// Returns whether `c` is a private-use character or a noncharacter, as
+/// Blink's `Character::IsPrivateUse` and `Character::IsNonCharacter` test it.
 pub(super) fn is_private_or_noncharacter(c: char) -> bool {
     let c = u32::from(c);
     matches!(c, 0xE000..=0xF8FF | 0xF0000..=0x10FFFF | 0xFDD0..=0xFDEF) || c & 0xFFFE == 0xFFFE
@@ -574,10 +573,11 @@ heap_bytes! {
 
 /// The lists of fonts to try, and the characters no font maps.
 ///
-/// There is one list for each list, script, language, matching request and
-/// presentation a span or a primary font has asked for, trimmed between
-/// builds to those asked for last. The unmapped memo holds the characters
-/// no font of the collection maps, whose miss no list walks again.
+/// There is one list for each family list, script, language, matching
+/// request and presentation a span or a primary font has asked for, trimmed
+/// between builds to those asked for last. The unmapped memo holds the
+/// characters no font of the collection maps, whose miss no list walks
+/// again.
 pub(super) struct CandidateLists {
     lists: LruCache<CandidateListId, CandidateList>,
     /// The unmapped memo, sorted.
@@ -603,7 +603,7 @@ impl CandidateLists {
         self.lists.trim(|_, _| {});
     }
 
-    /// Drops the lists keyed by a family list `names` no longer holds.
+    /// Drops the lists keyed by a family list that `names` does not hold.
     pub(super) fn retain_named(&mut self, names: &NamedLists) {
         self.lists
             .retain(|_, list| names.contains(list.key.list), |_, _| {});
@@ -616,14 +616,15 @@ impl CandidateLists {
         self.unmapped.clear();
     }
 
-    /// How many lists are held, for tests to see which a collection drops.
+    /// Returns how many lists are held, for tests to see which a collection
+    /// drops.
     #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.lists.len()
     }
 
-    /// How many lists have walked the miss of `c`, and whether it is noted
-    /// as mapped by no font, for tests to see a miss walked once.
+    /// Returns how many lists have walked the miss of `c`, and whether it is
+    /// noted as mapped by no font, for tests to see a miss walked once.
     #[cfg(test)]
     pub(super) fn walked(&self, c: char) -> (usize, bool) {
         let lists = self.lists.iter();
@@ -637,7 +638,7 @@ impl CandidateLists {
         self.lists.get(id)
     }
 
-    /// Returns the list for `key`, or `None` if it does not fit.
+    /// Returns the list for `key`, or `None` where every id is taken.
     ///
     /// The first time, it is made in `collection` from the names `names`
     /// holds for its family list.
@@ -694,8 +695,8 @@ impl CandidateLists {
         }
     }
 
-    /// Notes that candidate `candidate` of list `id` cannot be set in,
-    /// because its bytes could not be had.
+    /// Marks candidate `candidate` of list `id` unusable, because its bytes
+    /// could not be had.
     pub(super) fn mark_unusable(&mut self, id: CandidateListId, candidate: CandidateId) {
         if let Some(candidate) = self
             .lists
@@ -710,10 +711,8 @@ impl CandidateLists {
     /// its index there.
     ///
     /// Returns `None` where the collection has none, or the id is not one
-    /// this cache handed out.
-    ///
-    /// The family is a handle, a count taken on its layer, so a warm build
-    /// allocates nothing.
+    /// this cache handed out. The family is a handle, a count taken on its
+    /// layer, so a warm build allocates nothing.
     pub(super) fn first_available(&self, id: CandidateListId) -> Option<(Family, usize)> {
         self.lists.get(id)?.first_available()
     }

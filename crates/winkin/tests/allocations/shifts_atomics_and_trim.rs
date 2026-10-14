@@ -18,13 +18,12 @@ fn collection() -> Collection {
     test_fonts::collection(&[latin], ahem_fallback())
 }
 
-/// Paragraphs whose boxes and atomic inlines take every value of
-/// `vertical-align`, nested and pinned to the line inside each other,
-/// with edges, in another font and at other sizes, some on their
-/// `dominant-baseline`, `repeat` times over, in a block that trims both
-/// its ends: so the measure stage writes shifts, the breaker walks lines
-/// box by box and settles what waits, and line layout places each item
-/// on its box's baseline.
+/// Builds paragraphs `repeat` times in a block that trims both ends.
+///
+/// Boxes and atomic inlines take every `vertical-align`, nested inside each
+/// other, with edges, in another font and other sizes, some aligned by
+/// `dominant-baseline`. Measurement writes shifts, the breaker sizes lines
+/// box by box, and line layout places each item on its box's baseline.
 fn document(layout: &mut Layout, cx: &mut Context, repeat: usize) {
     let families = [
         FontFamilyName::named("Ahem"),
@@ -156,10 +155,11 @@ fn read(layout: &Layout) -> f32 {
 }
 
 /// A warm rebuild of shifted boxes, atomic inlines and a trimmed block
-/// allocates nothing, and nor does breaking it again at any width broken
-/// at before, nor reading it back, whether `dominant-baseline` moves
-/// boxes or not: the shifts, the breaker's stack of open boxes and what
-/// waits in it, and the lines' settled shifts keep their capacity.
+/// allocates nothing, with `dominant-baseline` applied or not.
+///
+/// Nor does breaking it again at any width used before, or reading it back.
+/// The shifts, the breaker's stack of open boxes and the lines' settled
+/// shifts keep their capacity.
 #[test]
 fn shifted_boxes_atomics_and_trim_allocate_nothing_warm() {
     let widths = [40.0, 95.5, 230.0, 700.0, 3.0];
@@ -212,9 +212,9 @@ fn atomic_keys(repeat: usize) -> Vec<(NodeKey, f32)> {
     keys
 }
 
-/// Measures every atomic inline in `keys` in one call: those 12 wide to
-/// block size `block`, those 20 wide to half as much, each `wider` pixels
-/// wider.
+/// Measures every atomic inline in `keys` in one call: those 12 px wide get
+/// block size `block`, those 20 px wide half as much, and each grows
+/// `wider` px wider.
 fn resize(
     layout: &mut Layout,
     cx: &mut Context,

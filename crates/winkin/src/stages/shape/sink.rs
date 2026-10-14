@@ -14,11 +14,10 @@ use crate::work;
 /// Where a [`GlyphSink`] appends its advances, one for each word it keeps.
 ///
 /// Each advance is the sum of the cluster's glyph advances along the line,
-/// in 16.16, saturating. A cluster wider than 32,767 px, which a few glyphs
-/// at ten thousand pixels can be, measures as wide as it can.
+/// in 16.16. A cluster wider than 32,767 px saturates.
 ///
 /// The shaping pass uses a list, which measurement sums into 48.16 prefix
-/// sums. A line's reshaped edges use a table indexed like the words.
+/// sums. Lines' reshaped edges use a table indexed like the words.
 pub(crate) trait AdvanceStore {
     /// Appends the advance of the word just kept.
     fn push_advance(&mut self, advance: TextUnit);
@@ -32,8 +31,8 @@ impl AdvanceStore for Vec<TextUnit> {
 }
 
 impl<I: Id> AdvanceStore for Table<I, TextUnit> {
-    /// Kept in step with the words' table, which has the same id and has
-    /// just taken the word. This table is never longer, so it has room too.
+    /// Pushed right after the word, into a table with the same id type that
+    /// is never longer than the words', so it has room too.
     #[inline]
     fn push_advance(&mut self, advance: TextUnit) {
         let kept = self.push(advance);
@@ -44,28 +43,26 @@ impl<I: Id> AdvanceStore for Table<I, TextUnit> {
 /// Where [`shape_range`](super::shape_range) writes, one cluster at a time.
 ///
 /// It writes a word and an advance per cluster, and the glyphs of expanded
-/// clusters. The tables are the caller's: the shaped text's for the shaping
-/// pass, or a line's for the breaker's reshaped edges. Each has its own id
-/// type and advance store ([`AdvanceStore`]). Each call appends exactly one
-/// word and one advance per cluster shaped.
+/// clusters. The tables are the shaped text's for the shaping pass, or the
+/// reshaped edges' for the breaker, each with its own id type and
+/// [`AdvanceStore`]. A cluster the words table cannot take gets neither.
 pub(crate) struct GlyphSink<'a, I: Id, S: AdvanceStore = Vec<TextUnit>> {
     words: &'a mut Table<I, GlyphWord>,
     /// The first word this sink writes.
     first: I,
     sidecar: &'a mut Table<SidecarGlyphId, SidecarGlyph>,
-    /// Along the line.
+    /// Each cluster's advance along the line.
     advances: &'a mut S,
     unsafe_seen: bool,
     dropped: usize,
-    /// Every cluster is written expanded, its glyphs' advances kept in the
-    /// sidecar. Ruby annotations need this, since the prefix sums do not
-    /// hold their advances.
+    /// Whether every cluster is written expanded, with its glyphs' advances
+    /// in the sidecar, as the method `keep_advances` sets.
     keep_advances: bool,
     /// Where a cluster expanded to one glyph finds a sidecar entry already
     /// holding that glyph, to point at rather than write again.
     ///
-    /// Only the paragraph's sink has it, not a line's, and only while
-    /// `share` allows.
+    /// Only the shaping pass's sink has it, never a line's, and uses it only
+    /// while `share` allows.
     shared: Option<&'a mut SharedGlyphs>,
     share: bool,
 }
@@ -84,8 +81,8 @@ pub(crate) struct GlyphSink<'a, I: Id, S: AdvanceStore = Vec<TextUnit>> {
 /// The context owns it and keeps it between builds only for its capacity.
 ///
 /// Slots are filled the first time a cluster asks for one, not on clear.
-/// Most text expands no cluster to one glyph, and a fill writes 8 KiB,
-/// which a small layout would otherwise pay on every build.
+/// Most text expands no cluster to one glyph, and a fill writes 8 KiB, which
+/// a small layout would otherwise pay on every build.
 pub(super) struct SharedGlyphs {
     /// Every slot's sidecar entry, `u32::MAX` for none, or no slots since the
     /// last [`clear`](Self::clear). A sidecar entry's id is below 2^28.
@@ -97,7 +94,7 @@ impl SharedGlyphs {
     /// glyphs a paragraph of Japanese draws.
     const SLOTS: usize = 2048;
 
-    /// None, allocating nothing until the first use.
+    /// Returns empty slots, allocating nothing until the first use.
     pub(super) const fn new() -> Self {
         Self { slots: Vec::new() }
     }
@@ -124,7 +121,7 @@ heap_bytes! {
 }
 
 impl<'a, I: Id, S: AdvanceStore> GlyphSink<'a, I, S> {
-    /// A sink appending to these.
+    /// Returns a sink that appends to `words`, `sidecar` and `advances`.
     pub(crate) fn new(
         words: &'a mut Table<I, GlyphWord>,
         sidecar: &'a mut Table<SidecarGlyphId, SidecarGlyph>,
@@ -143,10 +140,10 @@ impl<'a, I: Id, S: AdvanceStore> GlyphSink<'a, I, S> {
         }
     }
 
-    /// Returns the same sink, which points a cluster expanded to one glyph
-    /// at an entry `shared` finds already holding it (see [`SharedGlyphs`]).
+    /// Returns the sink, pointing a cluster expanded to one glyph at an entry
+    /// `shared` finds already holding it ([`SharedGlyphs`]).
     ///
-    /// It does so only while [`share`](Self::share) allows.
+    /// It shares only while [`share`](Self::share) allows.
     pub(super) fn with_shared(self, shared: &'a mut SharedGlyphs) -> Self {
         Self {
             shared: Some(shared),
@@ -166,28 +163,30 @@ impl<'a, I: Id, S: AdvanceStore> GlyphSink<'a, I, S> {
     /// Sets whether later clusters are written expanded, with their glyphs'
     /// advances in the sidecar.
     ///
-    /// A ruby annotation's text needs this. Line layout sets it on a line of
-    /// its own by its glyphs' advances, since the prefix sums give none.
+    /// Ruby annotation text needs this: line layout sets it on a line of its
+    /// own by its glyphs' advances, which the prefix sums lack. Combined
+    /// text needs it to set its glyphs across its em.
     pub(super) fn keep_advances(&mut self, keep: bool) {
         self.keep_advances = keep;
     }
 
-    /// Whether any cluster written was unsafe to break before.
+    /// Returns whether any cluster written was unsafe to break before.
     pub(super) fn any_unsafe(&self) -> bool {
         self.unsafe_seen
     }
 
-    /// Returns how many words it has written: one per cluster the tables
-    /// took.
+    /// Returns how many words it has written: one per cluster the words
+    /// table took.
     pub(crate) fn words_written(&self) -> usize {
         self.words.next_id().get().saturating_sub(self.first.get())
     }
 
-    /// How many glyphs were left out.
+    /// Returns how many glyphs were left out.
     ///
     /// Glyphs are left out past what a word can point into the sidecar,
-    /// 2^28 − 1 glyphs, or past what the tables can take. Their clusters are
-    /// written with no glyphs, and keep their advances.
+    /// 2^28 − 1 glyphs, or past what the sidecar can take. Their cluster is
+    /// written with no glyphs and keeps its advance. A cluster the words
+    /// table cannot take counts as one, with no word and no advance.
     pub(crate) fn dropped(&self) -> usize {
         self.dropped
     }
@@ -195,10 +194,10 @@ impl<'a, I: Id, S: AdvanceStore> GlyphSink<'a, I, S> {
     /// Copies `cluster` from `glyphs`, with an advance of `advance`
     /// 1/65536 px.
     ///
-    /// This serves a line's last cluster that gives a seam's room back. It
-    /// is copied rather than shaped again, as Chrome's `UnapplyAutoSpacing`
-    /// copies its line's last glyph. Its glyphs are copied into this sink's
-    /// sidecar, and its word keeps its bits.
+    /// This serves a line's last cluster that gives a seam's room back,
+    /// copied rather than shaped again, as Chrome's `UnapplyAutoSpacing`
+    /// copies its line's last glyph. Its glyphs go into this sink's sidecar,
+    /// and its word keeps its flags.
     pub(crate) fn copy(&mut self, glyphs: &GlyphStore, cluster: ClusterId, advance: i64) {
         let word = glyphs.word(cluster);
         let copied = match word.glyphs(&glyphs.sidecar) {
@@ -239,11 +238,11 @@ impl<'a, I: Id, S: AdvanceStore> GlyphSink<'a, I, S> {
         }
     }
 
-    /// Writes one cluster drawn by `glyph` alone, at `position` along a
-    /// horizontal line, unmoved, with `flags`.
+    /// Writes a cluster drawn by `glyph` alone at `position`, across a
+    /// horizontal line and untrimmed, with `flags`.
     ///
-    /// It writes as [`cluster`](Self::cluster) does, but takes the compact
-    /// form where it can without further checks.
+    /// It writes as [`cluster`](Self::cluster) does, trying the compact form
+    /// first.
     #[inline]
     pub(super) fn one(&mut self, glyph: &GlyphInfo, position: &GlyphPosition, flags: Flags) {
         if let Some(word) = self.compact(glyph, position) {
@@ -254,7 +253,7 @@ impl<'a, I: Id, S: AdvanceStore> GlyphSink<'a, I, S> {
         self.cluster(glyphs, positions, false, flags, Halved::default());
     }
 
-    /// Writes one cluster drawn by `glyphs`, laid `vertical`ly or not, with
+    /// Writes a cluster drawn by `glyphs`, shaped `vertical`ly or not, with
     /// `flags`, moved as `halved` says.
     pub(super) fn cluster(
         &mut self,
@@ -366,8 +365,8 @@ impl<I: Id, S: AdvanceStore> GlyphSink<'_, I, S> {
         word
     }
 
-    /// The slot of [`SharedGlyphs`] a glyph of id `id` finds its entry in,
-    /// where the sink shares entries.
+    /// Returns the [`SharedGlyphs`] slot for glyph `id`, or `None` where the
+    /// sink has no shared entries.
     fn shared_slot(&mut self, id: u32) -> Option<&mut u32> {
         self.shared.as_mut().and_then(|shared| shared.slot(id))
     }
@@ -406,8 +405,8 @@ pub(super) fn along(position: &GlyphPosition, vertical: bool) -> i64 {
 ///
 /// The glyph is shaped `vertical`ly or not, moved as `halved` says, and is
 /// its cluster's last where `last`. Its offsets are in the line's terms (see
-/// [`GlyphSink::expand`]). The last glyph's advance gives back what the
-/// cluster gives back.
+/// [`GlyphSink::expand`]). The last glyph's advance includes the cluster's
+/// trim.
 pub(super) fn sidecar_glyph(
     glyph: &GlyphInfo,
     position: &GlyphPosition,
@@ -433,7 +432,7 @@ pub(super) fn sidecar_glyph(
     }
 }
 
-/// Where a shaping sink's tables stood.
+/// A position in a shaping sink's tables.
 ///
 /// A combined unit shaped again in a narrower form rewinds to it.
 #[derive(Copy, Clone, Debug)]
@@ -444,7 +443,7 @@ pub(super) struct SinkMark {
 }
 
 impl GlyphSink<'_, ClusterId> {
-    /// Where the tables stand.
+    /// Returns where the tables stand.
     pub(super) fn mark(&self) -> SinkMark {
         SinkMark {
             words: self.words.next_id(),
@@ -453,7 +452,7 @@ impl GlyphSink<'_, ClusterId> {
         }
     }
 
-    /// Takes back everything written since `mark`.
+    /// Removes everything written since `mark`.
     pub(super) fn rewind(&mut self, mark: SinkMark) {
         self.words.truncate(mark.words);
         self.sidecar.truncate(mark.sidecar);
@@ -461,8 +460,8 @@ impl GlyphSink<'_, ClusterId> {
         self.dropped = mark.dropped;
     }
 
-    /// How far the glyphs written since `mark` reach across as horizontal
-    /// text, in 1/65536 px.
+    /// Returns how far the glyphs written since `mark` reach across as
+    /// horizontal text, in 1/65536 px.
     ///
     /// This is the combined unit's width, as Blink's
     /// `CalculateWidthForTextCombine` sums it.
@@ -478,7 +477,7 @@ impl GlyphSink<'_, ClusterId> {
     /// Sets the combined unit written since `mark` into its one em, `em`
     /// along the line, as `fit` says.
     ///
-    /// The unit was shaped as horizontal text. Its glyphs now stand upright:
+    /// The unit is shaped as horizontal text, then set upright:
     /// - their baseline sits `baseline` down the em;
     /// - they are laid across the em from its left, narrowed by the fit's
     ///   scale, and centred on the fit's middle over the line's baseline;

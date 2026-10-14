@@ -6,22 +6,24 @@
 //! attributes. There are five caches, each a type of its own:
 //! - the **named** and **candidate lists** (`lists`): the families and fonts
 //!   to try, in order, and the characters no font maps;
-//! - **instances** (`instance`), keyed by font, variations and features,
-//!   with the faces they are cut from;
-//! - **offers** (`features`): which synthesized features a font offers
-//!   under a script;
+//! - **instances** (`instance`), keyed by font, variations, synthesis and
+//!   features, with the faces they are cut from;
+//! - **offers** (`features`): which features that are synthesized where
+//!   missing a font has under a script;
 //! - **feature coverages** (`positions`): what a font's `sups` or `subs`
 //!   covers under a script.
 //!
-//! The candidate lists hold fontwich family handles, so a collection change
-//! drops them. The instances and faces of fonts the new collection lacks go
-//! too, which releases their bytes. The rest are keyed by names or by the
-//! bytes' id, which fontwich keeps stable. A cache whose ids are all taken,
-//! which takes four billion live entries, starts again rather than
-//! panicking.
+//! The candidate lists hold fontwich family handles, so a collection with
+//! other layer snapshots drops them. The instances and faces of fonts the
+//! new collection lacks go too, which releases their bytes. The rest are
+//! keyed by names or by the bytes' id, which fontwich keeps stable. A cache
+//! whose ids are all taken refuses new entries rather than panicking; the
+//! feature coverages clear and start again.
 //!
-//! **All of it is a cache.** No layout holds an id into it, since a layout's
-//! used fonts share what they shape and draw with. So any of it may be
+//! **All of it is a cache.** A layout's font requests name their family
+//! lists by id, but only font selection reads those ids, during the build
+//! that named them. No layout holds any other id into the context, since
+//! its used fonts share what they shape and draw with. So any of it may be
 //! dropped between calls, and the next build finds or makes it again. Each
 //! cache keeps at most its capacity: [`FontContext::trim`] drops the entries
 //! used longest ago before every build, when no id is held.
@@ -47,7 +49,8 @@ use crate::stages::content::FontRequest;
 /// locale, not by the text. fontwich resolves a generic by the language's
 /// script wherever there is a language. So this counts only where the style
 /// names no language and the config's default is `und`. It is Latin, as
-/// Chrome's default locale gives on an English system.
+/// Chrome's default locale gives on an English system. The primary's small
+/// capitals are also read under it.
 pub(super) const PRIMARY_SCRIPT: Script = Script::from_bytes(*b"Latn");
 
 /// A change to the context's caches that the run loop's walk stops for.
@@ -59,8 +62,8 @@ pub(super) const PRIMARY_SCRIPT: Script = Script::from_bytes(*b"Latn");
 pub(super) enum CacheChange {
     /// The candidate list needs its next family matched.
     Match(CandidateListId),
-    /// The candidate list needs a character's miss walked, to add the
-    /// family that maps it.
+    /// The candidate list needs fallback walked for a character it misses,
+    /// to add the family that maps it.
     Miss {
         list: CandidateListId,
         c: char,
@@ -85,9 +88,9 @@ pub(super) enum CacheChange {
 
 /// The caches that turn a chosen font into an instance and a used font.
 ///
-/// They are the instances and the offers, borrowed apart from the context.
-/// Choosing a font reads both while the walk keeps its candidate lists
-/// borrowed.
+/// They are the instances and the offers, borrowed apart from the rest of
+/// the context, so a font is chosen while the walk borrows the candidate
+/// lists.
 pub(super) struct FontCaches<'a> {
     pub(super) instances: &'a mut Instances,
     pub(super) offers: &'a mut ScriptOffers,
@@ -100,7 +103,7 @@ pub(crate) struct FontContext {
     candidates: CandidateLists,
     instances: Instances,
     offers: ScriptOffers,
-    /// What each font's `sups` and `subs` cover, which the run loop reads
+    /// What each font's `sups` and `subs` cover. The run loop reads them
     /// while it makes instances.
     coverages: FeatureCoverages,
 }
@@ -128,8 +131,8 @@ impl FontContext {
 
     /// Sets how many entries each cache keeps from the next trim on.
     ///
-    /// The offers and coverages, a few bytes each and read per font, keep
-    /// as many as the instances.
+    /// The offers and coverages, read per font, keep as many as the
+    /// instances.
     pub(crate) fn set_limits(&mut self, limits: &CacheLimits) {
         let instances = limits.font_instances;
         self.names.set_capacity(limits.family_lists);
@@ -142,9 +145,9 @@ impl FontContext {
     /// Drops the entries used longest ago from each cache down to its
     /// capacity.
     ///
-    /// The context calls it between calls, when no id is held. The candidate
-    /// lists keyed by a dropped family list go with it, since their key names
-    /// it by id.
+    /// Runs between calls, when no id is held: before each build and when
+    /// the limits change. The candidate lists keyed by a dropped family list
+    /// go with it, since their key names it by id.
     pub(crate) fn trim(&mut self) {
         if self.names.trim() {
             self.candidates.retain_named(&self.names);
@@ -157,11 +160,11 @@ impl FontContext {
 
     /// Sets text in `collection` from now on.
     ///
-    /// The candidate lists hold family handles, so they are dropped unless
-    /// it is the same stack of snapshots. So are the faces and instances of
+    /// Where the stack of snapshots changes, the candidate lists, which
+    /// hold family handles, are dropped. So are the faces and instances of
     /// fonts `collection` lacks, which releases their bytes. The named
-    /// lists, offers and coverages stay, and so do the instances of the
-    /// fonts both collections have, so a rebuild in one reads nothing again.
+    /// lists, offers and coverages stay, as do the instances of fonts both
+    /// collections have, so a rebuild reads none of those fonts again.
     ///
     /// Returns whether the stack of snapshots changed.
     pub(crate) fn set_collection(&mut self, collection: Collection) -> bool {
@@ -174,8 +177,9 @@ impl FontContext {
         changed
     }
 
-    /// Drops every cache, keeping the collection and the shared fonts, each
-    /// cache keeping what `limits` says from now on.
+    /// Drops every cache, keeping the collection and the shared fonts.
+    ///
+    /// Each cache keeps what `limits` says from now on.
     pub(crate) fn clear(&mut self, limits: &CacheLimits) {
         let instances = limits.font_instances;
         self.names = NamedLists::new(limits.family_lists);
@@ -185,7 +189,7 @@ impl FontContext {
         self.coverages = FeatureCoverages::new(instances);
     }
 
-    /// Whether a face of the font `key` names is held.
+    /// Returns whether a face of the font `key` names is held.
     pub(crate) fn has_face(&self, key: fontwich::FontKey) -> bool {
         self.instances.has_face(key)
     }
@@ -201,33 +205,34 @@ impl FontContext {
         &self.collection
     }
 
-    /// The font instances, for tests to look at: a layout names none.
+    /// Returns the font instances, for tests.
     #[cfg(test)]
     pub(crate) fn instances(&self) -> &Instances {
         &self.instances
     }
 
-    /// Whether family list `id` is `families`, for tests to see a list
-    /// named once.
+    /// Returns whether family list `id` is `families`, for tests to see a
+    /// list named once.
     #[cfg(test)]
     pub(crate) fn is_named(&self, id: NamedListId, families: &[FontFamilyName<'_>]) -> bool {
         self.names.is_named(id, families)
     }
 
-    /// The candidate lists, for tests to see which a collection drops.
+    /// Returns the candidate lists, for tests to see which a collection
+    /// drops.
     #[cfg(test)]
     pub(super) fn candidate_lists(&self) -> &CandidateLists {
         &self.candidates
     }
 
-    /// The feature coverages, for tests to see each made once.
+    /// Returns the feature coverages, for tests to see each made once.
     #[cfg(test)]
     pub(super) fn coverages(&self) -> &FeatureCoverages {
         &self.coverages
     }
 
-    /// How many family lists, candidate lists, instances, faces, offers and
-    /// coverages are held, in that order, for tests to see each bounded.
+    /// Returns how many family lists, candidate lists, instances, faces,
+    /// offers and coverages are held, in that order, for tests.
     #[cfg(test)]
     pub(crate) fn counts(&self) -> [usize; 6] {
         [
@@ -244,8 +249,8 @@ impl FontContext {
     /// `None` where every id is taken.
     ///
     /// The builder names each style's list as it keys the style. Nothing
-    /// trims the lists until the next build starts, so the id holds for
-    /// the whole build, however many lists it names.
+    /// trims the lists until the next build starts, so the id holds for the
+    /// whole build.
     pub(crate) fn family_list(&mut self, families: &[FontFamilyName<'_>]) -> Option<NamedListId> {
         self.names.find_or_make(families)
     }
@@ -253,10 +258,9 @@ impl FontContext {
     /// Returns `request`'s first available font, as its family and its
     /// index there.
     ///
-    /// It looks in the context's family list `list`, under `language`, the
-    /// language the request chooses its fonts in. It asks under
-    /// [`PRIMARY_SCRIPT`], as Chrome asks by the element's locale or its
-    /// default. Returns `None` where the collection has no font for it.
+    /// Looks in family list `list` under `language`, the language the
+    /// request chooses its fonts in, and under [`PRIMARY_SCRIPT`]. Returns
+    /// `None` where the collection has no font for it.
     pub(super) fn primary_font(
         &mut self,
         list: NamedListId,
@@ -267,9 +271,9 @@ impl FontContext {
         self.candidates.first_available(id)
     }
 
-    /// Returns the first font a primary font is looked for among, as
-    /// [`primary_font`](Self::primary_font) looks, that maps U+0020: the font
-    /// a space falls back to. `None` where no listed font maps one.
+    /// Returns the first font that maps U+0020 among those
+    /// [`primary_font`](Self::primary_font) looks through: the font a space
+    /// falls back to. `None` where no listed font maps one.
     pub(super) fn space_font(
         &mut self,
         list: NamedListId,
@@ -300,7 +304,7 @@ impl FontContext {
     }
 
     /// Finds or makes the candidate list `key` names, which a span's
-    /// clusters try. Returns `None` where the table cannot take one.
+    /// clusters try. Returns `None` where every id is taken.
     pub(super) fn span_list(&mut self, key: ListKey) -> Option<CandidateListId> {
         self.candidates
             .find_or_make(&self.collection, &self.names, key)
@@ -310,7 +314,7 @@ impl FontContext {
     ///
     /// Each change is made at most once per context, so a warm build stops
     /// only where a span first meets emoji presentation. The span's walk
-    /// makes that change itself.
+    /// makes that change itself, so `EmojiList` never reaches here.
     pub(super) fn apply(&mut self, change: CacheChange) {
         match change {
             CacheChange::Match(list) => self.candidates.match_next_family(list),
@@ -362,8 +366,8 @@ impl FontContext {
     ///
     /// The walk reads the candidate lists and the feature coverages without
     /// changing them, and fills the font caches as it chooses fonts. So a
-    /// candidate's charset pages stay borrowed from its list while instances
-    /// are made.
+    /// candidate's charset stays borrowed from its list while instances are
+    /// made.
     pub(super) fn walk_caches(&mut self) -> (&CandidateLists, &FeatureCoverages, FontCaches<'_>) {
         (
             &self.candidates,
@@ -379,18 +383,18 @@ impl FontContext {
 heap_bytes! {
     /// Its caches' tables. The collection, which the host holds, does not
     /// count. Family handles and character sets count at their own size,
-    /// not what fontwich keeps inside them.
+    /// without what fontwich keeps inside them.
     FontContext {
         names, candidates, instances, offers, coverages;
         collection
     }
 }
 
-/// Whether two collections are the same stack of layer snapshots.
+/// Returns whether two collections are the same stack of layer snapshots.
 ///
-/// A snapshot never changes, so the same snapshots answer the same, and the
-/// caches holding their families stay good. Compared while the old
-/// collection is still held, so no address can have been reused.
+/// A snapshot never changes, so the caches holding its families stay good.
+/// The old collection is still held during the comparison, so no address
+/// can have been reused.
 fn same_layers(a: &Collection, b: &Collection) -> bool {
     let (mut a, mut b) = (a.layers(), b.layers());
     loop {

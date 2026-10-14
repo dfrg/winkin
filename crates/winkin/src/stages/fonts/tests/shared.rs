@@ -9,8 +9,8 @@ use std::thread;
 use super::*;
 use crate::{Area, NoExclusions, SharedFonts};
 
-/// Ahem, Test Han Acute and Test Three Axes; and those under a web font,
-/// Test Plain Hyphen, in a document layer.
+/// Returns two collections: Ahem, Test Han Acute and Test Three Axes; and
+/// the same with a document layer holding the web font Test Plain Hyphen.
 fn test_fonts() -> (Collection, Collection) {
     let base = collection(&[han(), variable()], han_fallback("Test Han Acute"));
     let mut document = LayerBuilder::new(Role::Document);
@@ -19,11 +19,11 @@ fn test_fonts() -> (Collection, Collection) {
     (base, with_web)
 }
 
-/// Every glyph's id, position and advance.
+/// Every glyph's id, x and y position, and advance.
 type Glyphs = Vec<(u32, f32, f32, f32)>;
 
 /// Sets Latin, Han, a bold variable font and the web font in `cx`, in lines
-/// 120 pixels long, and returns every glyph.
+/// 120 px long, and returns every glyph.
 fn set(cx: &mut Context) -> Glyphs {
     let ahem = [FontFamilyName::named("Ahem")];
     let axes = [FontFamilyName::named("Test Three Axes")];
@@ -59,7 +59,7 @@ fn set(cx: &mut Context) -> Glyphs {
 }
 
 /// Two contexts sharing fonts set text as a private context does, glyph for
-/// glyph, whichever parsed the fonts.
+/// glyph, whichever one parsed the fonts.
 #[test]
 fn contexts_sharing_fonts_set_text_as_private_ones_do() {
     let (_, fonts) = test_fonts();
@@ -96,7 +96,7 @@ fn contexts_on_two_threads_share_fonts() {
 }
 
 /// A second context sharing fonts with one that set the same text parses
-/// no font: it cuts its instances from the faces the first made.
+/// no font. It cuts its instances from the faces the first one made.
 #[test]
 fn a_second_sharing_context_parses_no_font() {
     let (_, fonts) = test_fonts();
@@ -121,7 +121,7 @@ fn a_second_sharing_context_parses_no_font() {
 }
 
 /// The set keeps at most its limit, dropping the fonts asked for longest
-/// ago; a context still sets text in every font.
+/// ago. A context still sets text in every font, even with a limit of zero.
 #[test]
 fn shared_fonts_keep_at_most_their_limit() {
     let (_, fonts) = test_fonts();
@@ -138,8 +138,9 @@ fn shared_fonts_keep_at_most_their_limit() {
     assert_eq!(none.counts(), (0, 4));
 }
 
-/// Retaining a collection without a web font drops that font from the set,
-/// and keeps the rest.
+/// Retaining a collection without a web font drops that font from the set
+/// and keeps the rest. Retaining another layer of the same fonts keeps
+/// none.
 #[test]
 fn retaining_a_collection_drops_a_removed_web_font() {
     let shared = SharedFonts::default();

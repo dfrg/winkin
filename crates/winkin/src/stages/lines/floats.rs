@@ -1,26 +1,24 @@
-//! Placing floats, as more of [`Breaker`]'s `impl`.
+//! Float placement, as more of [`Breaker`]'s `impl`.
 //!
-//! The fit never calls the host: it is a pure function of a band.
-//! `Breaker::line` in `fit` wraps it and places the floats the chosen line
-//! reaches, as Blink's breaker and `InlineLayoutAlgorithm` do between them.
-//! - Floats anchored at a paragraph's start are placed at the line's top
-//!   before it is fitted, fit or not (`PositionLeadingFloats`).
-//! - A float anchored on the line is placed at its top where it fits beside
-//!   the text before its anchor and no earlier float waits. The line is then
-//!   fitted again in what is left.
-//! - Otherwise that float and every later one on the line go below the line
-//!   once it is kept (`ShouldPushFloatAfterLine`, `PlaceFloatingObjects`).
-//! - A line whose own box reaches a narrower band is fitted again there.
-//! - In a wrapping block, a line the floats narrow until it overflows moves
-//!   down to where the bands next change.
+//! Fitting is a pure function of a band; `Breaker::line` in `fit` places the
+//! floats around it, as Blink's breaker and `InlineLayoutAlgorithm` do:
+//! - Floats anchored at a paragraph's start go at its first line's top
+//!   before it is fitted (`PositionLeadingFloats`).
+//! - A float anchored on the line goes at its top where it fits beside the
+//!   text before its anchor; the line is then refitted.
+//! - Otherwise it and every later float on the line go below the line
+//!   (`ShouldPushFloatAfterLine`, `PlaceFloatingObjects`).
+//! - A line taller than its band's query height is refitted at its height.
+//! - In a wrapping block, a line that floats squeeze into overflow moves down
+//!   to where the bands next change.
 //!
-//! A rejected trial rewinds what it placed through the host's checkpoint,
-//! as Chrome's `RewindFloats` does. The driver is generic over whether the
-//! content has floats. Without them it still refits and moves down past the
-//! host's floats, but asks for no checkpoint and places nothing. An initial
-//! letter alone is such content.
+//! A rejected trial rewinds through the host's checkpoint (Chrome's
+//! `RewindFloats`). Without `FLOATS`, set where the content has floats, the
+//! driver still avoids the host's floats but takes no checkpoint and places
+//! nothing. An initial letter is not a content float.
 
 use super::fit::{LineTrial, MAX_MOVES_DOWN, moves_to};
+use super::reshape::EndSpaces;
 use super::{
     Breaker, BreakerParagraph, Cursor, Exclusions, ExclusionsCheckpoint, Fitted, FloatRequest,
     LineBand, LineFloatId, LineHead, LineStart, Lines, PlacedFloat,
@@ -32,18 +30,16 @@ use crate::stages::content::{BreakClearanceId, FloatId, NodeKey};
 use crate::stages::measure::InitialLetter;
 use crate::unit::{InlineLayoutUnit, LayoutUnit};
 
-/// Returns whether the line fitted as `fitted` from `start` holds the float
+/// Returns whether the line fitted as `fitted` from `start` reaches the float
 /// anchored at `at`.
 ///
-/// It does if the anchor is inside the line, or at its end, where Blink
-/// treats the float as a trailing item. An anchor after a forced break
-/// belongs to the next line.
+/// An anchor at the line's end counts, as Blink treats the float as a
+/// trailing item, unless a forced break ends the paragraph there.
 fn holds(para: &BreakerParagraph, start: ClusterId, fitted: &Fitted, at: ClusterId) -> bool {
     at >= start && (at < fitted.end || (at == fitted.end && !(at == para.end && para.forced)))
 }
 
-/// Where a trial started, which a rejected trial rewinds to: the host's
-/// checkpoint, the floats kept, and the first float not yet placed.
+/// The float state a rejected trial rewinds to.
 #[derive(Copy, Clone, Debug)]
 pub(super) struct Placing {
     checkpoint: ExclusionsCheckpoint,
@@ -52,8 +48,7 @@ pub(super) struct Placing {
 }
 
 impl Placing {
-    /// Returns where placing stands now, `next` being the first float not
-    /// yet placed.
+    /// Returns the current state, `next` being the first float not yet placed.
     pub(super) fn new(exclusions: &dyn Exclusions, out: &Lines, next: FloatId) -> Self {
         Self {
             checkpoint: exclusions.checkpoint(),
@@ -62,13 +57,12 @@ impl Placing {
         }
     }
 
-    /// Returns whether a float has been kept since.
+    /// Returns whether a float has been recorded since this state.
     pub(super) fn placed_since(&self, out: &Lines) -> bool {
         out.float_end() != self.kept
     }
 
-    /// Takes back every float placed since, as Chrome's `RewindFloats`
-    /// does for a line it tries again.
+    /// Takes back every float placed since this state (Chrome's `RewindFloats`).
     pub(super) fn rewind(
         self,
         exclusions: &mut dyn Exclusions,
@@ -81,23 +75,20 @@ impl Placing {
     }
 }
 
-/// A float as the breaker places it: which, where its anchor is, and what
-/// the host is asked to place.
+/// A content float with its anchor and margin-box sizes.
 #[derive(Copy, Clone, Debug)]
 struct Anchor {
     id: FloatId,
-    /// The boundary its anchor sits at.
+    /// The cluster boundary of the anchor.
     at: ClusterId,
     key: NodeKey,
     side: FloatSide,
-    /// Its margin box along the line.
     inline: LayoutUnit,
-    /// Its margin box across the block.
     block: LayoutUnit,
 }
 
 impl Anchor {
-    /// Returns the request that places it from `block_start`.
+    /// Returns the request that places the float from `block_start`.
     fn request(&self, block_start: LayoutUnit) -> FloatRequest {
         FloatRequest {
             key: self.key,
@@ -110,21 +101,15 @@ impl Anchor {
 }
 
 impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
-    /// Moves `cursor` below the floats that the forced break ending the line
-    /// kept before `end` clears, where it clears any.
+    /// Moves `cursor` below the floats cleared by a forced break that ends the
+    /// line at `end`.
     ///
-    /// The next line, or the block's end, starts where the host's band in
-    /// `area` no longer narrows on a cleared side, as Chrome applies a
-    /// `<br>`'s clearance after its line. The cursor passes each clearing
-    /// break once, in order, and a trial rewinds it with the rest.
-    ///
-    /// The clearance runs from the line box's bottom. What the line's
-    /// annotations reach past it is cut by the clearance: Chrome moves what
-    /// follows by the greater of the two, and lends back only the reach past
-    /// the clearance (`AddAnyClearanceAfterLine`, `BlockLayoutAlgorithm`).
-    ///
-    /// The test for clearing breaks is inlined, so content with none makes
-    /// no call a line.
+    /// The next line, or the block's end, starts where the band in `area` no
+    /// longer narrows on a cleared side, as Chrome applies a `<br>`'s clearance
+    /// after its line. Clearance runs from the line box's bottom; annotations
+    /// reaching further carry over only their reach past it
+    /// (`AddAnyClearanceAfterLine`). Inlined, so content without clearing breaks
+    /// makes no call.
     #[inline]
     pub(super) fn clear_floats(
         &mut self,
@@ -138,9 +123,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         }
     }
 
-    /// Moves `cursor` below the floats the clearing breaks before `end`
-    /// clear, as [`clear_floats`](Self::clear_floats) does where the content
-    /// has some.
+    /// Does the work of [`clear_floats`](Self::clear_floats).
     #[inline(never)]
     fn clear_past_break(
         &mut self,
@@ -168,8 +151,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         let Some(clear) = found else {
             return;
         };
-        // The carry is negative by what the annotations reach past the line
-        // box, which the cursor already stands below.
+        // A negative carry is the annotations' reach past the line box, which the
+        // cursor already stands below.
         let reach = (-self.carry).max(LayoutUnit::ZERO);
         let line_end = cursor.top - reach;
         let top = self.clear_band(out, clear, area, line_end - cursor.trimmed);
@@ -185,13 +168,11 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         }
     }
 
-    /// Keeps the block's end below the floats `clear` clears where the
-    /// break needs no clearance past its line, which ends at `line_end` in
-    /// the host's positions, but `text-box-trim` pulls the end up into them.
+    /// Keeps the block's end below the floats `clear` clears where
+    /// `text-box-trim` pulls it up into them, `line_end` being the line's end.
     ///
-    /// Chrome adds the clearance after the trim, so the end stops at the
-    /// floats' bottom: a 100 px float beside a 100 px line trimmed to 80 at
-    /// `alphabetic` leaves the block 100 tall.
+    /// Chrome adds the clearance after the trim: a 100 px float beside a 100 px
+    /// line trimmed to 80 at `alphabetic` leaves the block 100 px tall.
     #[cold]
     fn clear_past_trimmed_end(
         &mut self,
@@ -218,8 +199,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         }
     }
 
-    /// Returns the first position from `top` down where the host's band in
-    /// `area` no longer narrows on a side `clear` clears.
+    /// Returns the first position from `top` down where the band in `area` no
+    /// longer narrows on a side `clear` clears, within [`MAX_MOVES_DOWN`] moves.
     fn clear_band(
         &self,
         out: &Lines,
@@ -242,8 +223,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         top
     }
 
-    /// Returns the content's float `id` as the breaker places it, or `None`
-    /// past the last.
+    /// Returns the content's float `id`, or `None` past the last.
     fn anchor(&self, id: FloatId) -> Option<Anchor> {
         let content = self.stages.content;
         let float = content.floats().get(id)?;
@@ -260,8 +240,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         })
     }
 
-    /// Places the float `anchor` from `block_start`, and records where the
-    /// host puts it.
+    /// Places `anchor` from `block_start` and records where the host puts it.
     fn place(&mut self, out: &mut Lines, anchor: &Anchor, block_start: LayoutUnit) {
         let placed = self.exclusions.place(anchor.request(block_start));
         self.record(out, anchor.id, placed);
@@ -273,12 +252,11 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         out.push_float(float, left, LayoutUnit::from_px(placed.block.start));
     }
 
-    /// Places the floats anchored at or before a line's `start` at its
-    /// `top`, fit or not, as Blink's `PositionLeadingFloats` does.
+    /// Places the floats anchored at or before `start` at the line's `top`, fit
+    /// or not, as Blink's `PositionLeadingFloats` does.
     ///
-    /// Only a line opening a paragraph has any, since a float at a soft
-    /// break belongs to the line before. They are placed once, before any
-    /// trial, so moving the line down leaves them in place, as in Blink.
+    /// Only a paragraph's first line has any; a float at a soft break belongs to
+    /// the line before. They stay put when the line moves down.
     pub(super) fn place_leading(
         &mut self,
         out: &mut Lines,
@@ -289,21 +267,14 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         self.place_reached(out, top, floats, |anchor| anchor.at <= start);
     }
 
-    /// Places the floats anchored on the fitted line beside it where each
-    /// fits, and fits the line again in the band each leaves.
+    /// Places the fitted line's floats beside it where each fits, refitting the
+    /// line in the band each leaves.
     ///
-    /// This follows Blink's `HandleFloat` and `ShouldPushFloatAfterLine`. A
-    /// float goes at the line's top where all of these hold:
-    /// - its margin box fits beside the text before its anchor, perhaps less
-    ///   a trailing collapsible space;
-    /// - the host puts it no lower, as clearance or an earlier float could;
-    /// - no earlier float of the line went below it.
-    ///
-    /// The first float that fails stops the placing. It and every later float
-    /// go below the line ([`place_after`](Self::place_after)). A float the
-    /// refitted line no longer reaches is taken back for the next line, as
-    /// Blink does. Each refit takes the edge tables back to the line's
-    /// `head`.
+    /// As in Blink's `HandleFloat` and `ShouldPushFloatAfterLine`, a float goes
+    /// at the line's top where its margin box fits beside the text before its
+    /// anchor (less a trailing collapsible space), and the host puts it no lower.
+    /// The first that fails, and every later one, go below the line. A float the
+    /// refitted line no longer reaches is taken back.
     pub(super) fn place_on_line(
         &mut self,
         out: &mut Lines,
@@ -334,8 +305,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             out.rewind_edges(head.after());
             *fitted = self.fit(out, line, *band, head);
             if !holds(line.para, line.start, fitted, anchor.at) {
-                // The line keeps its break, which fits the narrower band and
-                // so fits the wider one left once the float is taken back.
+                // The break fits the narrower band, so it fits once the float is gone.
                 before.rewind(self.exclusions, out, floats);
                 *band = line.area.meet(self.band(out, line.top, line.reserve));
                 return;
@@ -344,8 +314,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         }
     }
 
-    /// Places the kept line's remaining floats below it, from its line box's
-    /// `bottom`, as Blink's `PlaceFloatingObjects` does.
+    /// Places the kept line's remaining floats from its line box's `bottom`, as
+    /// Blink's `PlaceFloatingObjects` does.
     pub(super) fn place_after(
         &mut self,
         out: &mut Lines,
@@ -360,12 +330,9 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         });
     }
 
-    /// Places the floats no line reaches at `top`, where the next line would
-    /// start.
+    /// Places the floats no line reaches at `top`, after every line's floats.
     ///
-    /// These are anchored after a final forced break, or in text with no
-    /// line. Blink places them as a line with nothing else on it. They come
-    /// after every line's floats.
+    /// Their anchors follow a final forced break or lie in text with no line.
     pub(super) fn place_unreached(
         &mut self,
         out: &mut Lines,
@@ -375,8 +342,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         self.place_reached(out, top, floats, |_| true);
     }
 
-    /// Places each float from `floats` on, from `block_start`, while
-    /// `reached` holds of its anchor, and moves `floats` past them.
+    /// Places floats from `floats` on at `block_start` while `reached` accepts
+    /// them, and moves `floats` past them.
     fn place_reached(
         &mut self,
         out: &mut Lines,
@@ -392,18 +359,15 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         }
     }
 
-    /// Returns how far the text before the anchor at `at` reaches on the
-    /// line, and the width of a collapsible space just before it.
+    /// Returns how far the text before the anchor at `at` reaches on the line,
+    /// and the width of a collapsible space just before it.
     ///
-    /// The reach includes the indent and start cost, as fitting measures it:
-    /// Blink's `position_` when its breaker meets the float. Blink takes the
-    /// space off where the float does not fit with it
-    /// (`TrailingCollapsibleSpaceWidth`). The start is measured with its
-    /// window and nothing reshaped.
+    /// The reach includes the indent and start cost, as Blink's `position_`
+    /// does. Blink drops the space where the float does not fit with it
+    /// (`TrailingCollapsibleSpaceWidth`).
     fn anchor_reach(&self, line: &LineStart<'_>, at: ClusterId) -> (LayoutUnit, LayoutUnit) {
         let (para, start) = (line.para, line.start);
-        // The start's reshape moves what follows its window. A float ends a
-        // shaping run, so its anchor never falls inside the window.
+        // A float ends a shaping run, so its anchor is never inside the window.
         let moved = line
             .window
             .filter(|window| window.end <= at)
@@ -421,7 +385,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             .filter(|&last| {
                 last >= start
                     && self.clusters.class(last) == Some(ClusterClass::Space)
-                    && self.spaces_collapse(last..at)
+                    && self.end_spaces(last..at) == EndSpaces::Collapse
             })
             .map_or(LayoutUnit::ZERO, |last| {
                 self.stages.cluster_advance(last).to_layout()
@@ -429,17 +393,12 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         (reach, space)
     }
 
-    /// Reports the initial letter's room to the host once the first line is
-    /// kept, the host's positions standing `trimmed` above the records.
+    /// Places the initial letter's exclusion with the host once the first line
+    /// is kept, the host's positions standing `trimmed` above the records.
     ///
-    /// The margin box follows Chrome's
-    /// `CreateExclusionSpaceForInitialLetterBox`. Across the lines, it runs
-    /// from where measurement put it to its box's end, ink included. Along
-    /// them, it starts on the paragraph's start side and grows by a positive
-    /// first-line `text-indent`.
-    ///
-    /// It is not a content float, so no line records it. The host keeps it
-    /// with its own floats, and later lines and blocks make room for it.
+    /// The margin box follows Chrome's `CreateExclusionSpaceForInitialLetterBox`:
+    /// down to the letter's ink, on the paragraph's start side, widened by a
+    /// positive first-line `text-indent`. No line records it.
     pub(super) fn sink_initial_letter(
         &mut self,
         out: &mut Lines,
@@ -452,9 +411,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         let Some(facts) = self.scratch.placements.as_slice().first() else {
             return;
         };
-        // The first line's annotations move the letter down, and its
-        // exclusion's end with it. Its start stays at the line's top unless
-        // the letter's margin box starts above it.
+        // The first line's annotations shift the letter, and the exclusion's end,
+        // down.
         let shift = out.letter_shift();
         let top = (letter.exclusion_top + shift).min(LayoutUnit::ZERO);
         let height = letter.exclusion_top + letter.exclusion_height + shift - top;

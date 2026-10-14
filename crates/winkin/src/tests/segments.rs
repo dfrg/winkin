@@ -1,17 +1,16 @@
-//! Segment walk tests: the walk held to the lookups it stands in for. They pin:
-//! - each segment's paragraph, item, script run and shaping run, for each of
-//!   its clusters, as the by-cluster lookups find them by search;
-//! - segments tiling the clusters walked exactly, each as long as all four
-//!   runs are one;
-//! - the items holding no cluster between them, in reading order, at the
-//!   boundary each sits at;
-//! - a walk sought in the middle, from a line's first item, or copied half
-//!   way, agreeing with the whole walk cut there, and none allocating.
+//! Segment walk tests: the walk agrees with the by-cluster lookups.
+//! - Each segment's paragraph, item, script run and shaping run are those
+//!   the lookups find for each of its clusters.
+//! - Segments tile the clusters walked, each ending where one of its four
+//!   runs ends.
+//! - Items holding no cluster come in reading order, at their boundaries.
+//! - A walk sought in the middle, started at a line's first item, or copied
+//!   half way agrees with the whole walk cut there, and none allocates.
 //!
-//! The content is drawn at random as `fast.rs` draws it, with what the walk
-//! must step over: empty paragraphs, atomic inlines, floats, ruby, `<wbr>`,
-//! empty boxes, a generated `::first-letter`, bidi and CJK text, and first
-//! lines restyled.
+//! The content is drawn at random as in `fast.rs`, with what the walk must
+//! step over: empty paragraphs, atomic inlines, floats, ruby, `<wbr>`, empty
+//! boxes, a generated `::first-letter`, bidi and CJK text, and restyled
+//! first lines.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -53,8 +52,10 @@ fn walk(walk: Segments<'_>) -> Vec<Seen> {
     walk.map(seen).collect()
 }
 
-/// The steps of `whole`, a walk over every cluster, that a walk over
-/// `range` takes: the segments cut to it, and the items at its boundaries
+/// Returns the steps of `whole`, a walk over every cluster, that a walk over
+/// `range` takes.
+///
+/// These are the segments cut to the range and the items at its boundaries
 /// before its end, and at its end too where that is `text_end`.
 fn cut(whole: &[Seen], range: &Range<ClusterId>, text_end: ClusterId) -> Vec<Seen> {
     let (s, e) = (range.start, range.end);
@@ -72,9 +73,9 @@ fn cut(whole: &[Seen], range: &Range<ClusterId>, text_end: ClusterId) -> Vec<See
         .collect()
 }
 
-/// One case's content: words, spans, forced breaks, empty paragraphs,
-/// atomic inlines, floats, `<wbr>`, ruby, empty boxes and now and then a
-/// `::first-letter`, built into `b`.
+/// Builds one case's content into `b`: words, spans, forced breaks, empty
+/// paragraphs, atomic inlines, floats, `<wbr>`, ruby, empty boxes and
+/// sometimes a `::first-letter`.
 fn content(
     rng: &mut Rng,
     b: &mut LayoutBuilder<'_>,
@@ -164,13 +165,16 @@ fn content(
     }
 }
 
-/// The walk over `range` in `stages` agrees with the lookups: every segment's
-/// runs are those found for each of its clusters, and so the rows its
-/// accessors read, the script run's by the shaping run's link; the segments
-/// tile the range, each as long as its runs are one; and the items come
-/// once each, in order, an item holding no cluster at the boundary it sits
-/// at. Its paragraph, moved only where a shaping run ends, is each
-/// cluster's: no shaping run crosses a paragraph.
+/// Checks that the walk over `range` in `stages` agrees with the lookups.
+///
+/// - Each segment's runs are those found for each of its clusters, and its
+///   accessors read their rows; the script run comes by the shaping run's
+///   link.
+/// - The segments tile the range, each ending where one of its runs ends.
+/// - Each item comes once, in order; an item holding no cluster comes at
+///   its boundary.
+/// - The paragraph changes only where a shaping run ends, since no shaping
+///   run crosses a paragraph.
 fn agrees(stages: &LineStages<'_>, range: Range<ClusterId>, case: u64) {
     let analysis = stages.analysis;
     let items = &stages.content.items;
@@ -246,9 +250,8 @@ fn agrees(stages: &LineStages<'_>, range: Range<ClusterId>, case: u64) {
         }
     }
     assert_eq!(at, range.end, "case {case}: the walk reaches its end");
-    // Every item with a cluster in the range, and every one holding none
-    // that sits at a boundary before its end, or at the text's end, once,
-    // in order.
+    // Each item with a cluster in the range, and each holding none at a
+    // boundary before the range's end or at the text's end: once, in order.
     let expected: Vec<_> = items
         .iter()
         .map(|(id, _)| id)
@@ -265,11 +268,13 @@ fn agrees(stages: &LineStages<'_>, range: Range<ClusterId>, case: u64) {
     assert_eq!(seen_items, expected, "case {case}: the items, in order");
 }
 
-/// Random contents: the whole walk in each variant agrees with the lookups; a
-/// walk sought anywhere is the whole walk cut there; each line's walk from
-/// its first item is the one sought at its start, the breaker's cursor
-/// standing where the seek finds; a copy taken half way walks on as the
-/// walk does; and no walk allocates.
+/// Over random contents:
+/// - the whole walk in each variant agrees with the lookups;
+/// - a walk sought anywhere is the whole walk cut there;
+/// - each line's walk from its first item equals the one sought at its
+///   start, with the breaker's cursor where the seek puts it;
+/// - a copy taken half way walks on as the walk does;
+/// - no walk allocates.
 #[test]
 fn a_walk_holds_the_runs_each_cluster_is_in() {
     let mut fixture = Fixture::new(
@@ -315,7 +320,7 @@ fn a_walk_holds_the_runs_each_cluster_is_in() {
                 cut(&whole, &range, text_end),
                 "case {case}: {range:?}"
             );
-            // From the paragraph and the item a caller holds, no search.
+            // From the paragraph and item a caller holds, with no search.
             if let Some(paragraph) = analysis.paragraphs.containing(range.start) {
                 let item = analysis_cursor(&layout, range.start);
                 assert_eq!(
@@ -385,16 +390,18 @@ fn a_walk_holds_the_runs_each_cluster_is_in() {
     }
 }
 
-/// Where a walk from boundary `at` starts among `layout`'s items, by search.
+/// Returns where a walk from boundary `at` starts among `layout`'s items,
+/// found by search.
 fn analysis_cursor(layout: &Layout, at: ClusterId) -> ItemId {
     layout.analysis().item_clusters.cursor_containing(at).id()
 }
 
 /// A walk over a box's edges, an atomic inline, a ruby with its annotation,
-/// a forced break and the empty paragraph after it: the items holding no
-/// cluster at their boundaries, before the clusters after them, the
-/// annotation's text a segment of its own item, and the text's last items,
-/// at its end, the walk's.
+/// a forced break and the empty paragraph after it.
+///
+/// Items holding no cluster come at their boundaries, before the clusters
+/// after them. The annotation's text is a segment of its own item. The
+/// text's last items, at its end, belong to the walk.
 #[test]
 fn a_walk_meets_the_items_between_its_segments() {
     let mut fixture = Fixture::new(
@@ -468,9 +475,9 @@ fn a_walk_meets_the_items_between_its_segments() {
     ));
 }
 
-/// Content with no text walks no segment, and the items it has, every one
-/// at the text's end, which is its start, are the walk's; a cleared layout
-/// walks nothing.
+/// Content with no text walks no segment, but its items, all at the text's
+/// end (which is its start), belong to the walk. A cleared layout walks
+/// nothing.
 #[test]
 fn a_walk_over_no_text_meets_only_its_items() {
     let mut fixture = Fixture::new(
@@ -495,8 +502,8 @@ fn a_walk_over_no_text_meets_only_its_items() {
     assert_eq!(Segments::new(&text, zero..ClusterId::new(3)).count(), 0);
 }
 
-/// A segment is its ends and three ids, and a step one with its tag, which
-/// a walk hands out in registers; the walk two references and three
+/// A segment is its ends and three ids, and a step is one with a tag, small
+/// enough to pass in registers. The walk is two references and three
 /// cursors, which a look-ahead copies.
 #[test]
 fn a_walk_and_its_segments_are_small() {

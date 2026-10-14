@@ -86,9 +86,9 @@ fn a_line_reads_its_ruby_annotations_apart_from_its_items() {
 }
 
 /// A ruby container broken between its columns sets each column's
-/// annotation over its base on the base's line: the column starting the
-/// next line keeps its annotation, which the line before once took and
-/// never set. Chrome 154 (153 agrees), 20px Ahem on lines of 20 with 10px
+/// annotation over its base on the base's line, so the column starting the
+/// next line keeps its annotation. Chrome 154 (153 agrees), 20px Ahem on
+/// lines of 20 with 10px
 /// annotations, 200 wide, `一二三四五六七<ruby>八<rt>xx</rt>九<rt>xxx</rt>
 /// 十<rt>xx</rt>土<rt>xx</rt></ruby>木`: the first line's annotations from
 /// 140 to 160 and 160 to 190, the second's from 0 to 20 and 20 to 40; with
@@ -528,8 +528,9 @@ fn a_justified_line_justifies_a_ruby_base_as_chrome_does() {
 
 /// On a justified line a ruby column at the line's edge sits with its base
 /// flush to it, all its room on the other side, as Chrome's `ApplyRubyAlign`
-/// places it with `on_start_edge` and `on_end_edge`. Measured with Chrome 153, 20px Ahem under 10px
-/// annotations 200 wide, where each base's ink is: `X` under `AAAAAA`
+/// places it with `on_start_edge` and `on_end_edge`. Measured with Chrome
+/// 153, 20px Ahem under 10px annotations 200 wide, where each base's ink
+/// is: `X` under `AAAAAA`
 /// starting a justified line at 0, and at 20 under `text-align: left` or
 /// `ruby-align: center`; starting the last line, `text-align-last` being
 /// start, at 0 too; `XX` under eight `A`s at 0; `X X` under ten at 0 and
@@ -659,8 +660,9 @@ fn a_ruby_column_at_a_justified_line_edge_sits_flush_with_it() {
 }
 
 /// A box inside a ruby annotation has a fragment of its own on the
-/// annotation line, and its edges take room there. Measured with Chrome 153, 20px Ahem bases and
-/// 10px annotations: `A<span>B</span>C` over `XXXX`, the span with a 4px
+/// annotation line, and its edges take room there. Measured with Chrome
+/// 153, 20px Ahem bases and 10px annotations: `A<span>B</span>C` over
+/// `XXXX`, the span with a 4px
 /// left margin, a 3px left border and 2px of left padding, sets `A` at
 /// 20.5, `B` at 39.5 and `C` at 49.5, and the span's border box from 34.5
 /// to 49.5; with a 2px border all round, 3px of padding and 1px of margin
@@ -855,8 +857,9 @@ fn a_box_inside_an_annotation_has_its_own_fragment() {
 
 /// An annotation over a base whose text is shifted stands on the shifted
 /// text's em boxes, not on the line's baseline, as Chrome's
-/// `ComputeEmHeight` takes each item where it is placed. Measured with Chrome 153, 20px Ahem under 10px
-/// annotations: `XX` raised 10 in a span, with 30 of room over the line,
+/// `ComputeEmHeight` takes each item where it is placed. Measured with
+/// Chrome 153, 20px Ahem under 10px annotations: `XX` raised 10 in a span,
+/// with 30 of room over the line,
 /// makes a line 30 tall, the annotation's em box from -10 to 0 over the
 /// raised text's top, its baseline at -2; raising only the second `X` puts
 /// it over the higher; lowered 10, with no room over it, the annotation
@@ -1341,8 +1344,8 @@ fn a_ruby_splits_across_lines_in_every_writing_mode() {
     assert_eq!(layout.lines().count(), 1);
 }
 
-/// Sliced annotation boxes rebuild their open-box context on continuation
-/// lines, charging their opening and closing padding only at the real edges.
+/// Annotation boxes split across lines reopen on each continuation line,
+/// taking their opening and closing padding only at their true edges.
 /// Under `ruby-align: start` each part reaches the column's end, over the
 /// room after its text, as Chrome's client rects do.
 #[test]
@@ -2913,7 +2916,7 @@ fn a_culled_box_in_a_spread_annotation_takes_in_the_room_beside_its_text() {
 }
 
 /// An annotation's text runs take in the room `ruby-align` spreads beside
-/// their text, and their glyphs stay where they were.
+/// their text, and their glyphs keep their positions.
 ///
 /// `AAAAAAAA` in 40px Ahem under `aa bb cc` at 20px. Chrome's range over
 /// the text has one client rect, from 0 to 320: its fragment takes in the

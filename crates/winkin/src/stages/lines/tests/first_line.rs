@@ -16,7 +16,7 @@ use crate::style::LengthPercentage;
 use crate::style::{LineHeight, TextCase};
 
 /// Builds `text` in `root` into `layout` with `first` as the block's
-/// `::first-line` style, and breaks it `width` wide.
+/// `::first-line` style, and lays it out `width` pixels wide.
 fn first_line(
     fixture: &mut Fixture,
     layout: &mut Layout,
@@ -39,8 +39,7 @@ fn first_line(
     fixture.lay_out(layout, width);
 }
 
-/// Returns line `n`'s glyphs: id, place along the line and advance, in
-/// pixels.
+/// Returns line `n`'s glyphs as id, inline position and advance, in pixels.
 fn line_glyphs(layout: &Layout, n: usize) -> Vec<(u32, f32, f32)> {
     let mut out = Vec::new();
     for item in layout.line(n).expect("a line").items() {
@@ -60,8 +59,7 @@ fn heights(layout: &Layout) -> Vec<f32> {
 
 /// The first line alone is fitted and set in its own styles.
 ///
-/// 40px Ahem holds nine characters of a 400px line where 20px holds twenty.
-/// Its line box is as tall as its font.
+/// The first line box is as tall as its 40px font.
 #[test]
 fn the_first_line_is_fitted_in_its_own_styles() {
     let mut fixture = fixture();
@@ -86,7 +84,7 @@ fn the_first_line_is_fitted_in_its_own_styles() {
         .map(|line| line.flags.contains(LineFlags::FIRST_LINE))
         .collect();
     assert_eq!(flags, [true, false, false]);
-    // Its glyphs are drawn at its size.
+    // Its glyphs are drawn at its font size.
     let glyphs = line_glyphs(&layout, 0);
     assert_eq!(glyphs.len(), 8);
     assert!(glyphs.iter().all(|&(_, _, advance)| advance == 40.0));
@@ -101,9 +99,8 @@ fn the_first_line_is_fitted_in_its_own_styles() {
 /// The first line's end moves with the width, and the lines after it start
 /// where it ends.
 ///
-/// A relayout at every width equals a fresh layout. Each first line matches
-/// the text set whole in the first line's styles, glyph for glyph. The font
-/// has ligatures and a kern, reshaped where a line breaks inside them.
+/// A relayout at every width equals a fresh layout, and each first line
+/// matches the text set whole in its styles, glyph for glyph.
 #[test]
 fn the_first_line_moves_with_the_width() {
     let mut fixture = fixture();
@@ -123,7 +120,7 @@ fn the_first_line_moves_with_the_width() {
         fixture.lay_out(&mut relaid, width);
         assert_eq!(texts(&relaid), texts(&fresh), "at {width}");
         assert_eq!(widths(&relaid), widths(&fresh), "at {width}");
-        // The first line, as the text set whole in its styles sets it.
+        // The first line matches the text set whole in its styles.
         let mut whole = Layout::new();
         fixture.text(&mut whole, &first, text);
         fixture.lay_out(&mut whole, width);
@@ -137,10 +134,8 @@ fn the_first_line_moves_with_the_width() {
     }
 }
 
-/// A first line restyled only in its line height uses the text's glyphs and
-/// is taller.
-///
-/// It has no shaping of its own.
+/// A first line restyled only in its line height reuses the text's shaping
+/// and is taller.
 #[test]
 fn a_first_line_restyled_in_height_keeps_the_texts_glyphs() {
     let mut fixture = fixture();
@@ -161,11 +156,10 @@ fn a_first_line_restyled_in_height_keeps_the_texts_glyphs() {
 }
 
 /// A first-line transform draws its own characters on the first line, and
-/// the element's on the rest, both from the caller's text.
+/// the element's on the rest, both from the text as given.
 ///
-/// Capitalize over an element in lower case sets the text as written, not
-/// its lower case capitalized. Chrome composes the two, and its own source
-/// marks that as broken where the element has a transform.
+/// Capitalize over a lower-case element capitalizes the text as written.
+/// Chrome composes the two transforms, which its source marks as broken.
 #[test]
 fn a_first_line_transform_draws_its_own_characters() {
     let mut fixture = fixture();
@@ -177,13 +171,12 @@ fn a_first_line_transform_draws_its_own_characters() {
     let mut layout = Layout::new();
     first_line(&mut fixture, &mut layout, &root, &first, text, 100.0);
     assert_eq!(layout.text(), text.to_lowercase());
-    // The first line draws as the text written in capitals, and the second
-    // as it is in lower case.
+    // The first line draws the text as written, which is in capitals.
     let mut written = Layout::new();
     fixture.text(&mut written, &sized(&LATIN, 20.0), text);
     fixture.lay_out(&mut written, 100.0);
     assert_eq!(line_glyphs(&layout, 0), line_glyphs(&written, 0));
-    // The second line's text in lower case, set on a line of its own.
+    // The second line draws as its text in lower case, set alone.
     let second = layout.line(1).expect("a second line");
     let rest = String::from(&layout.text()[second.text_range()]);
     let mut lower = Layout::new();
@@ -196,9 +189,8 @@ fn a_first_line_transform_draws_its_own_characters() {
 /// The intrinsic sizes measure the first line in its own styles, as Chrome
 /// does.
 ///
-/// Max-content sets the first paragraph on one line in the first line's
-/// styles. Min-content measures its first unbreakable part in them. Every
-/// other paragraph and part uses the text's styles.
+/// Max-content sets the first paragraph, and min-content its first
+/// unbreakable part, in the first line's styles.
 #[test]
 fn the_intrinsic_sizes_measure_the_first_line_in_its_styles() {
     let mut fixture = fixture();
@@ -212,8 +204,8 @@ fn the_intrinsic_sizes_measure_the_first_line_in_its_styles() {
         400.0,
     );
     let sizes = layout.intrinsic_sizes();
-    // The whole paragraph is at 40px. The widest unbreakable part is the
-    // last word at 20px, wider than the first at 40px.
+    // Max-content sets the whole paragraph at 40px. The widest unbreakable
+    // part is the last word at 20px, wider than the first word at 40px.
     assert_eq!(sizes.max_content, 16.0 * 40.0);
     assert_eq!(sizes.min_content, 9.0 * 20.0);
     let mut layout = Layout::new();

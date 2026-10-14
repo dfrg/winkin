@@ -4,20 +4,20 @@
 //! - a platform font's variations under each config;
 //! - faux bold and oblique gated by `font-synthesis`;
 //! - features merged in Chrome's order, `chws` among them;
-//! - small capitals the font has, synthesized, and falling back as Blink's;
+//! - small capitals from the font, synthesized, and falling back as Blink's;
 //! - `font-size-adjust`, and an initial letter sized to the lines it spans;
 //! - a face's `size-adjust` and overrides;
 //! - broken tables drawing the default;
-//! - generated text and the fonts it falls back to.
+//! - generated text, its string and the fonts it falls back to.
 
 use super::*;
 use crate::style::FontGroup;
 use crate::tests::TestFallback;
 
 /// `font-weight` sets the weight axis of a variable font, as font matching
-/// asks for it; `font-variation-settings` sets it over that, as it does in
-/// Chrome and CSS; and a setting for an axis the font lacks, a value past an
-/// axis's end or one that is not a number sets nothing beyond the axis.
+/// asks for it. `font-variation-settings` overrides it, as in Chrome and
+/// CSS. A setting for an axis the font lacks sets nothing, a value past an
+/// axis's end is clamped, and a NaN value sets nothing.
 #[test]
 fn font_weight_sets_the_weight_axis_and_the_settings_win() {
     let mut fixture = fixture_with(&[variable()]);
@@ -74,7 +74,7 @@ fn font_weight_sets_the_weight_axis_and_the_settings_win() {
 }
 
 /// `opsz` follows the used size under `font-optical-sizing: auto`, and stays
-/// at the font's default under `none`; a setting of `opsz` wins over the
+/// at the font's default under `none`. A setting of `opsz` wins over the
 /// size (Blink's `FontCustomPlatformData`).
 #[test]
 fn the_optical_size_follows_the_used_size() {
@@ -99,9 +99,9 @@ fn the_optical_size_follows_the_used_size() {
 
 /// A `@font-face` descriptor's variations come after the axes font matching
 /// sets and before the element's own settings, which win where both name an
-/// axis, as Chrome merges them (`MergeFontVariationSettingsWithDescriptor`),
-/// measured with Chrome 153; its features come before the element's, which
-/// win likewise.
+/// axis. Chrome 153 merges them so
+/// (`MergeFontVariationSettingsWithDescriptor`). The descriptor's features
+/// likewise come before the element's, which win.
 #[test]
 fn a_faces_descriptors_come_between_matching_and_the_element() {
     let mut document = LayerBuilder::new(Role::Document);
@@ -142,11 +142,11 @@ fn a_faces_descriptors_come_between_matching_and_the_element() {
     assert_eq!(cluster_features(&layout, 0), [("onum", 0), ("ss01", 1)]);
 }
 
-/// Every preset applies every variation CSS sets to a platform font too;
-/// under [`PlatformFontVariations::MatchingOnly`], which reproduces Chrome on
-/// Windows and Linux, a platform font takes the axes font matching sets and
-/// nothing else, as Chrome 153 on Windows draws Bahnschrift at `'wdth' 75`
-/// as wide as at 100.
+/// Every preset applies every variation CSS sets to a platform font too.
+/// Under [`PlatformFontVariations::MatchingOnly`], which reproduces Chrome on
+/// Windows and Linux, a platform font takes only the axes font matching
+/// sets. Chrome 153 on Windows draws Bahnschrift at `'wdth' 75` as wide as
+/// at 100.
 #[test]
 fn a_platform_font_takes_every_variation_unless_matched() {
     let mut system = LayerBuilder::new(Role::System);
@@ -186,8 +186,8 @@ fn a_platform_font_takes_every_variation_unless_matched() {
     assert_eq!(cluster_coords(&layout, 0), [16384, 0, 0], "weight alone");
 }
 
-/// Faux bold and a faux oblique are the instance's, where the font lacks the
-/// weight or the slope, and `font-synthesis` turns each off; faux bold
+/// The instance synthesizes bold and oblique where the font lacks the
+/// weight or the slope, and `font-synthesis` turns each off. Faux bold
 /// widens no advance, as Chrome 153 sets Ahem at 700 as wide as at 400.
 #[test]
 fn faux_bold_and_oblique_are_gated_by_font_synthesis() {
@@ -212,12 +212,13 @@ fn faux_bold_and_oblique_are_gated_by_font_synthesis() {
     assert_eq!(cluster_used_font(&layout, 0).size.to_px(), 16.0);
 }
 
-/// The features a style asks for are Chrome's, in Chrome's order, and each
-/// tag is kept once, at the value set last: `font-kerning: none` turns off
-/// `kern` and `vkrn`; the variants name their features;
-/// `font-feature-settings` comes after them and wins; and
-/// `font-variant-position`'s `sups` comes after the settings, so it wins
-/// over them, as Chrome 153 draws superscripts under `'sups' 0`.
+/// The features a style asks for are merged in Chrome's order, each tag
+/// once, at the value set last:
+/// - `font-kerning: none` turns off `kern` and `vkrn`;
+/// - the variants name their features;
+/// - `font-feature-settings` comes after them and wins;
+/// - `font-variant-position`'s `sups` comes after the settings and wins, as
+///   Chrome 153 draws superscripts under `'sups' 0`.
 #[test]
 fn features_are_merged_in_chromes_order() {
     let mut fixture = fixture_with(&[capitals()]);
@@ -252,11 +253,11 @@ fn features_are_merged_in_chromes_order() {
     assert_eq!(cluster_used_font(&layout, 0).synthesis, UsedSynthesis::None);
 }
 
-/// Every style shapes with `chws` under `text-spacing-trim: normal`, as
-/// Blink's `default_enable_chws` has it, so a font with contextual
-/// half-width spacing collapses adjacent punctuation itself; not under
-/// `space-all`, and not where `font-feature-settings` names `chws` or turns
-/// the font's own `halt` or `palt` on.
+/// Every style shapes with `chws` unless `text-spacing-trim` is `space-all`,
+/// as Blink's `default_enable_chws` has it. A font with contextual
+/// half-width spacing then collapses adjacent punctuation itself. `chws` is
+/// also left off where `font-feature-settings` names it or turns `halt` or
+/// `palt` on.
 #[test]
 fn chws_is_on_unless_trimming_is_off_or_the_settings_say() {
     let mut fixture = fixture_with(&[capitals()]);
@@ -291,7 +292,7 @@ fn chws_is_on_unless_trimming_is_off_or_the_settings_say() {
     }
 }
 
-/// A font with `smcp` draws small capitals with it; the letters keep their
+/// A font with `smcp` draws small capitals with it. The letters keep their
 /// case and one run.
 #[test]
 fn small_caps_take_the_fonts_smcp() {
@@ -313,10 +314,10 @@ fn small_caps_take_the_fonts_smcp() {
 }
 
 /// A font without `smcp` has small capitals synthesized, as Blink's
-/// `SmallCapsIterator` makes them: the text is divided where letters stop or
-/// start changing when uppercased, and those that do are fed uppercased at
+/// `SmallCapsIterator` makes them. The text divides where letters stop or
+/// start changing when uppercased. Those that change are fed uppercased at
 /// 0.7 of the computed size, rounded to a pixel. The rest are set as they
-/// are, and a mark goes with its letter.
+/// are.
 #[test]
 fn small_caps_are_synthesized_where_the_font_has_none() {
     let mut fixture = fixture_with(&[plain()]);
@@ -351,10 +352,12 @@ fn small_caps_are_synthesized_where_the_font_has_none() {
     assert_eq!(cluster_used_font(&layout, 1).synthesis, UsedSynthesis::None);
 }
 
-/// `all-small-caps` synthesizes every letter, capitals, figures and
-/// punctuation among them; `unicase` from a font with `smcp` feeds the
-/// capitals lowercased to take it, and the lowercase as they are; and petite
-/// capitals fall back to a font's small ones (Blink's `OpenTypeCapsSupport`).
+/// The other capitals fall back as Blink's `OpenTypeCapsSupport` has them:
+/// - `all-small-caps` synthesizes every character, capitals, figures and
+///   punctuation among them;
+/// - `unicase` in a font with `smcp` feeds the capitals lowercased to take
+///   it, and the lowercase as they are;
+/// - petite capitals fall back to a font's small capitals.
 #[test]
 fn the_other_capitals_fall_back_as_blink_has_them() {
     let mut fixture = fixture_with(&[plain(), capitals()]);
@@ -393,13 +396,16 @@ fn the_other_capitals_fall_back_as_blink_has_them() {
 }
 
 /// `font-size-adjust` holds the primary font's metric at the value asked
-/// for, and every font of the style is used at that size, as Chrome sets
-/// its fallback fonts at the size the primary's aspect makes (measured with
-/// Chrome 153: a CJK fallback behind Courier New at `0.5` is as large as
-/// Courier's adjustment makes it). A metric the font does not give counts
-/// as one em, as Chrome takes it. A value of zero uses the fonts at zero,
-/// as CSS Fonts 4 says and Chrome does; one that is not a finite number of
-/// zero or more adjusts nothing.
+/// for, and every font of the style is used at that size.
+///
+/// - Chrome sets its fallback fonts at the size the primary's aspect makes.
+///   Measured with Chrome 153, a CJK fallback behind Courier New at `0.5`
+///   is as large as Courier's adjustment makes it.
+/// - A metric the font does not give counts as one em, as Chrome takes it.
+/// - A value of zero uses the fonts at zero, as CSS Fonts 4 says and Chrome
+///   does.
+/// - A value that is not a finite number of zero or more adjusts nothing.
+/// - A huge value is clamped to the largest size.
 #[test]
 fn font_size_adjust_holds_the_primary_fonts_metric() {
     let mut fixture = fixture_with(&[han()]);
@@ -455,14 +461,16 @@ fn font_size_adjust_holds_the_primary_fonts_metric() {
 /// An initial letter is set at the size that makes its over point reach
 /// from the first line's own to the under point `size` lines down, as
 /// Chrome's `ComputeInitialLetterFont` works it out, whatever its own
-/// `font-size` says. Ahem's capitals are 0.8 of its em, so
-/// on 10 px lines of 10 px text three lines are capitals of 28, at 35 px;
-/// two lines of 30 at 20 px text are capitals of 46, at 57.5; two and a
-/// half lines, 23, at 28.75. `hanging` reads the hanging baseline, which
-/// Ahem puts at 0.8 of its ascent, 0.64 of its em: 26.4 at 41.25;
-/// `ideographic` the em box, 30 at 30. Under `::first-line` the lines are
-/// the first line's; and a box with `initial-letter` that is not at the
-/// block's start is set as its own size says.
+/// `font-size` says. Ahem's capitals are 0.8 of its em, so:
+/// - three 10 px lines of 10 px text make capitals of 28, at 35 px;
+/// - two 30 px lines of 20 px text make capitals of 46, at 57.5 px;
+/// - two and a half 10 px lines make 23, at 28.75 px;
+/// - `hanging` reads the hanging baseline, which Ahem puts at 0.8 of its
+///   ascent, 0.64 of its em: 26.4, at 41.25 px;
+/// - `ideographic` reads the em box: 30, at 30 px.
+///
+/// Under `::first-line` the lines are the first line's. A box with
+/// `initial-letter` that is not at the block's start is set at its own size.
 #[test]
 fn an_initial_letter_is_sized_to_the_lines_it_spans() {
     use crate::style::{InitialLetter, InitialLetterAlign, LineHeight};
@@ -543,8 +551,9 @@ fn an_initial_letter_is_sized_to_the_lines_it_spans() {
 }
 
 /// A face's `size-adjust` scales the size its font is used at, unless the
-/// style has `font-size-adjust`, which sets it instead; its metric overrides
-/// replace the line's metrics, at the size used, as Chrome 153 sets them.
+/// style has `font-size-adjust`, which sets the size instead. The face's
+/// metric overrides replace the line's metrics, at the used size, as Chrome
+/// 153 sets them. Invalid descriptors are ignored.
 #[test]
 fn a_faces_size_adjust_and_overrides_apply_as_chrome_applies_them() {
     let mut document = LayerBuilder::new(Role::Document);
@@ -600,16 +609,15 @@ fn a_faces_size_adjust_and_overrides_apply_as_chrome_applies_them() {
     assert_eq!(used.metrics.ascent.to_px(), 32.0, "Ahem's own");
 }
 
-/// A font whose `fvar` and `GSUB` are cut short, asked for variations,
-/// capitals and positions, measures and draws as its default, and nothing
-/// panics.
+/// A font with a broken `fvar` and broken layout tables, asked for
+/// variations, capitals and positions, builds without panicking.
 #[test]
 fn broken_variation_and_layout_tables_do_not_panic() {
     let mut font = variable();
     font.family = "Test Broken Variable".into();
     font.broken_layout = true;
     let mut bytes = font.build();
-    // Every `fvar` axis past the table's end.
+    // An axis count that puts every `fvar` axis past the table's end.
     let at = bytes
         .windows(4)
         .position(|tag| tag == b"fvar")
@@ -636,15 +644,17 @@ fn broken_variation_and_layout_tables_do_not_panic() {
     assert!(built.is_complete());
 }
 
-/// A generated text's characters that the style's primary font does not
-/// map are set in the fonts the text's would be, a run a font, as Blink's
-/// shaper sets a hyphen and an ellipsis in the style's `Font` with its
-/// fallback: a `hyphenate-character` of `a`, an arrow and `b`
-/// in a font of ASCII alone is three runs, the arrow's in the font the
-/// fallback gives it, where the showcase of 2026-09 drew it as the
-/// primary's missing glyph; in a style whose own families hold the arrow,
-/// in that family; and a string the primary maps all of, one run in it,
-/// exactly as before. A string nothing draws any of is set in the primary.
+/// A generated text's characters that the style's primary font does not map
+/// are set in the fonts the style's text would take, one run per font. Blink
+/// likewise shapes a hyphen and an ellipsis in the style's `Font` with its
+/// fallback.
+///
+/// - A `hyphenate-character` of `a`, an arrow and `b` in an ASCII font is
+///   three runs, the arrow's in the font fallback gives it.
+/// - In a style whose own families hold the arrow, the arrow takes that
+///   family.
+/// - A string the primary maps whole is one run in it.
+/// - A string nothing draws any of is set in the primary.
 #[test]
 fn generated_text_falls_back_as_the_text_does() {
     use crate::style::TextOverflow;
@@ -727,9 +737,9 @@ fn generated_text_falls_back_as_the_text_does() {
             "{string:?}"
         );
     }
-    // A primary with neither a hyphen nor a full stop: `-` and three full
-    // stops, as Blink chooses them by what the primary maps, set in the
-    // fallback that has them, Ahem.
+    // A primary with neither a hyphen nor a full stop gives `-` and three
+    // full stops, as Blink chooses by what the primary maps. Ahem, the
+    // fallback, sets them.
     let families = [FontFamilyName::named("Test Arrow Block")];
     let style = families_style(&families);
     let cut = ComputedBlockStyle {
@@ -749,14 +759,16 @@ fn generated_text_falls_back_as_the_text_does() {
     );
 }
 
-/// The hyphen and the ellipsis say what their style's primary font maps, as
-/// Blink's `HyphenString` and `ComputeEllipsisText` choose:
-/// U+2010 and U+2026 in Ahem, which has both; U+2010 and three full stops in
-/// a font with the hyphen alone; `-` and three full stops in one of ASCII
-/// alone; a style's own `hyphenate-character` as written. Each is set in its
-/// style's primary font, and only a style that can need one has it: the
-/// hyphen where the style's text holds a soft hyphen a line may break
-/// after, the ellipsis where a line may be cut, in the block's style.
+/// The hyphen and the ellipsis strings depend on what the style's primary
+/// font maps, as Blink's `HyphenString` and `ComputeEllipsisText` choose:
+/// - U+2010 and U+2026 in Ahem, which has both;
+/// - U+2010 and three full stops in a font with the hyphen alone;
+/// - `-` and three full stops in an ASCII font;
+/// - a style's own `hyphenate-character` as written.
+///
+/// Each is set in its style's primary font. A style has one only where it
+/// can need it: the hyphen where its text holds a soft hyphen a line may
+/// break after, the ellipsis in the block's style where a line may be cut.
 #[test]
 fn generated_text_says_what_the_primary_font_maps() {
     use crate::style::{Hyphens, LineClamp, TextOverflow};
@@ -798,7 +810,7 @@ fn generated_text_says_what_the_primary_font_maps() {
         let found = |kind| generated.text(text, kind).expect("chosen");
         assert_eq!(found(Generated::Hyphen).string, hyphen, "{family}");
         assert_eq!(found(Generated::Ellipsis).string, ellipsis, "{family}");
-        // What the primary maps, it sets alone, in one run.
+        // The primary maps the whole string, so it sets it in one run.
         for kind in [Generated::Hyphen, Generated::Ellipsis] {
             let fonts: Vec<_> = generated
                 .runs(found(kind))
@@ -830,8 +842,8 @@ fn generated_text_says_what_the_primary_font_maps() {
     let strings = fixture.cx.content_lists().hyphen_strings();
     assert_eq!(hyphen.string.text(strings), "~");
     assert!(generated.text(text, Generated::Ellipsis).is_some());
-    // Nothing where nothing can need it: no soft hyphen and no cut, and a
-    // soft hyphen `hyphens: none` declines.
+    // Nothing where nothing can need it: no soft hyphen and no cut, or a
+    // soft hyphen under `hyphens: none`.
     let plain_style = families_style(&families);
     fixture.span(&mut layout, &plain_style, "plain text");
     assert_eq!(fixture.cx.generated_fonts().iter().count(), 0);

@@ -1,8 +1,8 @@
 //! Measurement tests.
 //!
-//! This file holds the fonts, the fixture, [`check`] and the shared views.
-//! It pins the record sizes, the bytes plain Latin costs a cluster, and
-//! inputs that must not panic. The children pin:
+//! This file holds the test fonts, the fixture, [`check`] and shared helpers.
+//! It pins record sizes, plain Latin's bytes per cluster, and that bad input
+//! doesn't panic. The children pin:
 //! - `prefix`: the prefix against shaping's advances, and where it goes back;
 //! - `edges`: the pen, box edges and atomic inlines;
 //! - `heights`: item extents, the strut and em boxes;
@@ -12,8 +12,7 @@
 //! - `autospace`: `text-autospace` seams;
 //! - `ruby`: ruby columns' overhang and split columns' sizes.
 //!
-//! Every layout here is built through [`Fixture::build`], which checks the
-//! stage's invariants each time (see [`check`]).
+//! Every build runs [`check`].
 
 use crate::stages::fonts::Generated;
 use alloc::borrow::Cow;
@@ -58,10 +57,9 @@ use crate::{
 // Fonts --------------------------------------------------------------------
 
 /// ASCII in a font whose three sets of line metrics disagree, as Consolas's
-/// and Yu Gothic's do: a win pair of 900 and 300, `hhea` of 800, 200 and a
-/// 100 gap, and typographic metrics of 700, 300 and a 200 gap that it asks
-/// to be used by. At 20 px: 18, 6 and no gap under `Win`; 16, 4 and 2 under
-/// `Hhea`; 14, 6 and 4 under `TypoOrHhea`.
+/// and Yu Gothic's do. At 20 px: ascent 18, descent 6, no gap under `Win`;
+/// 16, 4, 2 under `Hhea`; 14, 6, 4 under `TypoOrHhea` (it sets
+/// `USE_TYPO_METRICS`).
 fn metrics() -> TestFont {
     let mut font = TestFont::new("Test Metrics", &[(0x20, 0x7E)]);
     font.win = (900, 300);
@@ -71,8 +69,8 @@ fn metrics() -> TestFont {
     font
 }
 
-/// ASCII a third of an em wide, so running sums fall between layout's 1/64
-/// grid at 16 px; and a kerning pair that makes `A` go back before `V`.
+/// ASCII a third of an em wide, so sums fall off the 1/64 grid at 16 px,
+/// and a kern that moves `V` back before `A`'s start.
 fn narrow() -> TestFont {
     let mut font = TestFont::new("Test Narrow", &[(0x20, 0x7E)]);
     font.advances = (0x20u8..=0x7E).map(|b| (char::from(b), 333)).collect();
@@ -80,8 +78,7 @@ fn narrow() -> TestFont {
     font
 }
 
-/// Latin with ligatures, a character drawn as two glyphs, a raised one and a
-/// kern, as the shaping stage's tests have it.
+/// Latin with ligatures, a two-glyph character, a raised glyph and a kern.
 fn latin() -> TestFont {
     let mut font = TestFont::new("Test Latin", &[(0x20, 0x7E), (0xAD, 0xAD)]);
     font.ligatures = vec![vec!['f', 'f', 'i'], vec!['f', 'i'], vec!['f', 'l']];
@@ -91,8 +88,8 @@ fn latin() -> TestFont {
     font
 }
 
-/// A Han font that Han falls back to from Ahem, deeper below the baseline
-/// than Ahem and with a line gap: 14, 8 and 4 at 20 px.
+/// The Han fallback font, deeper than Ahem and with a line gap: ascent 14,
+/// descent 8, gap 4 at 20 px.
 fn han() -> TestFont {
     let mut font = TestFont::new(
         "Test Han",
@@ -111,9 +108,8 @@ const ASCII_ONLY: [FontFamilyName<'static>; 1] =
 
 // Fixtures -----------------------------------------------------------------
 
-/// A fixture over an application layer of Ahem and the fonts above, whose
-/// fallback puts Ahem at the head of every chain and Test Han among Han's,
-/// checking the stage each build (see [`check`]).
+/// Returns a fixture with Ahem and the fonts above, Ahem first in every
+/// fallback chain and Test Han in Han's, running [`check`] on each build.
 fn fixture() -> Fixture {
     Fixture::new(
         &[metrics(), narrow(), latin(), han()],
@@ -122,15 +118,16 @@ fn fixture() -> Fixture {
     )
 }
 
-/// Checks the stage's invariants:
+/// Checks the measurement invariants:
 /// - a prefix entry per boundary, the text's end included;
 /// - a flag byte per paragraph, and an extent per item;
-/// - stored em boxes that agree with the fragment rule;
-/// - line-edge costs sorted, one a boundary, each where a line may start
-///   or end, and paragraphs flagged exactly where one falls;
-/// - a paragraph marked `NONMONOTONE` exactly where its prefix goes back;
+/// - stored em boxes that agree with [`em_box`](super::em_box);
+/// - line-edge costs sorted, at most one per boundary, only where a line may
+///   start or end, with `HAS_EDGE_COSTS` exactly where they fall;
+/// - `NONMONOTONE` exactly where a paragraph's prefix goes back;
 /// - shifts and kept boxes in node order;
-/// - intrinsic sizes that are neither negative nor out of order.
+/// - ruby columns, text metrics and generated texts consistent;
+/// - `0 <= min <= max` for the intrinsic sizes.
 fn check(layout: &Layout, cx: &Context) {
     let measured = layout.measured();
     let text = measured.text(FirstLineVariant::Standard);
@@ -148,8 +145,7 @@ fn check(layout: &Layout, cx: &Context) {
         layout.content().items.len(),
         "an extent an item"
     );
-    // Stored whole-item em boxes must agree with the fragment rule, including
-    // first-line items whose fonts extend past the measurement reach.
+    // Stored em boxes agree with `em_box`, first-line items included.
     if layout.content().flags.contains(ContentFlags::RUBY)
         || layout.content().flags.contains(ContentFlags::EMPHASIS)
     {
@@ -194,10 +190,9 @@ fn check(layout: &Layout, cx: &Context) {
             }
         }
     }
-    // The line-edge costs, which cloned boxes, line padding, hanging
-    // punctuation and ruby overhang make, are sorted, one a boundary, each
-    // where a line may start or end, and a paragraph is flagged exactly
-    // where one falls at its start, inside it or at its end.
+    // Line-edge costs: sorted, one per boundary, only where a line starts or
+    // ends, and present only with cloned boxes, line padding, ruby, hanging
+    // punctuation or soft hyphens.
     let edges = text.edge_costs();
     assert!(
         edges
@@ -239,8 +234,7 @@ fn check(layout: &Layout, cx: &Context) {
             "{:?} is no place a line starts or ends",
             edge.key()
         );
-        // A hyphen is owed after a soft hyphen a line may break after, and
-        // nowhere else.
+        // A hyphen is owed only after a soft hyphen with a break after it.
         let after_soft_hyphen = before
             .and_then(|before| clusters_attrs.attrs(before))
             .is_some_and(|attrs| {
@@ -287,9 +281,9 @@ fn check(layout: &Layout, cx: &Context) {
             "{id:?}'s costs"
         );
     }
-    // A shift a box or an atomic inline has, in node order, where some
-    // style sets `vertical-align` or `dominant-baseline`; and a shifted box
-    // keeps its fragment.
+    // Shifts: nonzero, in node order, only where some style sets
+    // `vertical-align` or `dominant-baseline`; a shifted box keeps its
+    // fragment.
     let shifts = text.shifts();
     assert!(
         shifts
@@ -312,7 +306,7 @@ fn check(layout: &Layout, cx: &Context) {
         }
         assert_eq!(text.shift(node), shift);
     }
-    // A kept box's entry names the node of an opening item, in node order.
+    // Kept boxes: in node order, each the node of an opening item.
     let content = layout.content();
     let kept = text.kept_boxes().boxes.as_slice();
     assert!(kept.windows(2).all(|pair| pair[0].0 < pair[1].0));
@@ -327,8 +321,8 @@ fn check(layout: &Layout, cx: &Context) {
         );
         assert!(!extent.is_none());
     }
-    // The text metrics: a row for each text's facts, the block's strut the
-    // lines', and a mark's em box exactly where the text sets marks.
+    // Text metrics: a row per text facts row, the block's strut as the
+    // lines', and a mark box exactly where the text sets marks.
     let block = content
         .nodes
         .text_facts(NodeId::BLOCK, FirstLineVariant::Standard);
@@ -342,9 +336,8 @@ fn check(layout: &Layout, cx: &Context) {
         let marks = content.facts.text(id).has(TextFlags::EMPHASIS);
         assert_eq!(!metrics.mark.is_none(), marks, "{id:?}'s marks");
     }
-    // The ruby columns in text order, none where there is no ruby, each
-    // over its own items and clusters, its levels its own, in order, and no
-    // wider than it; its room inside it.
+    // Ruby columns: in text order, none without ruby, nested inside their
+    // parents, each level owned once and no wider than its column.
     let rubies = text.ruby_columns();
     if !content_flags.contains(ContentFlags::RUBY) {
         assert!(rubies.is_empty() && rubies.level_count() == 0);
@@ -385,8 +378,7 @@ fn check(layout: &Layout, cx: &Context) {
         }
     }
     assert!(seen_levels.into_iter().all(|seen| seen));
-    // The generated texts: each the font stage chose, shaped a piece for
-    // each of its runs, in the run's font, from the left as drawn.
+    // Generated texts: one piece per font run, in visual order.
     let generated = measured.generated();
     let fonts = cx.generated_fonts();
     let chosen: Vec<_> = fonts.iter().collect();
@@ -460,8 +452,7 @@ fn positions(layout: &Layout) -> Vec<f32> {
         .collect()
 }
 
-/// Where the pen stands to draw `cluster`, in `stages`, the items at its
-/// boundary sought (`LineStages::pen`).
+/// Returns `LineStages::pen` at `cluster`, searching for its item.
 fn pen(stages: &LineStages<'_>, cluster: ClusterId) -> InlineLayoutUnit {
     stages.pen(
         cluster,
@@ -473,8 +464,7 @@ fn pen(stages: &LineStages<'_>, cluster: ClusterId) -> InlineLayoutUnit {
     )
 }
 
-/// The em box of `part` of the text of `node` in `layout`, its font runs
-/// sought where it starts (`em_box`).
+/// Returns `em_box` of `part` of the text of `node` in `layout`.
 fn node_em_box(layout: &Layout, node: NodeId, part: Range<ClusterId>) -> Extent {
     let (content, fonts) = (layout.content(), layout.fonts());
     let variant = FirstLineVariant::Standard;
@@ -486,9 +476,8 @@ fn node_em_box(layout: &Layout, node: NodeId, part: Range<ClusterId>) -> Extent 
 
 // The records --------------------------------------------------------------
 
-/// The records keep their sizes: a prefix entry 8 bytes, an extent 8, a
-/// paragraph's flags 1, a line-edge cost 20, a ruby column 68 and an
-/// annotation level 36.
+/// Record sizes: a prefix entry 8 bytes, an extent 8, paragraph flags 1, a
+/// line-edge cost 20, a ruby column 72 and an annotation level 44.
 #[test]
 fn records_keep_their_sizes() {
     assert_eq!(size_of::<InlineLayoutUnit>(), 8);
@@ -501,8 +490,8 @@ fn records_keep_their_sizes() {
 
 // Nothing panics -----------------------------------------------------------
 
-/// Whatever a caller gives -- sizes and edges that are not finite, huge, or
-/// negative, line heights of every kind -- measures into a valid stage.
+/// Non-finite, huge or negative sizes, edges and line heights measure
+/// without panicking.
 #[test]
 fn any_input_gives_valid_measurements() {
     let mut fixture = fixture();
@@ -555,11 +544,8 @@ fn any_input_gives_valid_measurements() {
 
 // Memory -------------------------------------------------------------------
 
-/// Plain Latin costs at most 19 bytes a cluster of layout state from the
-/// content to the measurements, the text aside: clusters
-/// 5.125 (their ends, classes and stops), glyphs 4, the prefix 8, and runs,
-/// items and nodes that are a few a paragraph. Every table counted by its
-/// length, the fixed cost of the style and its font included.
+/// Plain Latin costs at most 19 bytes per cluster of layout state, from the
+/// content to the measurements, text aside. Each table counts by length.
 #[test]
 fn plain_latin_keeps_a_few_bytes_a_cluster() {
     use crate::stages::analysis::{ClusterAttrs, ClusterEnd, Paragraph, ScriptRun};
@@ -641,11 +627,9 @@ fn plain_latin_keeps_a_few_bytes_a_cluster() {
         "{:.3} B a cluster: {shown:?}",
         per(total)
     );
-    // The prefix is 8 bytes a cluster and one entry more.
     assert_eq!(text.prefix.sums.len(), clusters + 1);
-    // What the figure is, pinned so that it moves only on purpose: 17.81,
-    // of which the content is 0.38, the analysis 5.25, the fonts 0.03, the
-    // shaping 4.09 and the measurements 8.07.
+    // Pinned so it moves only on purpose: 17.81 = content 0.38, analysis
+    // 5.25, fonts 0.03, shaping 4.09, measurements 8.07.
     assert!(
         (17.7..17.9).contains(&per(total)),
         "{:.3} B a cluster: {shown:?}",

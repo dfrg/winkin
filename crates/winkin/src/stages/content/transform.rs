@@ -1,139 +1,73 @@
 //! `text-transform`, applied as text is written.
 //!
-//! **Case** is ICU4X's full case mapping (`icu_casemap`), as CSS Text 3,
-//! section 2.1 asks: the full mappings, the conditional ones included, with
-//! the language's tailoring. So `ß` uppercases to `SS`, a final sigma
-//! lowercases to `ς`, Turkish and Azerbaijani case their dotted and dotless
-//! `i` as their own capitals, Lithuanian keeps its dots, Greek drops its
-//! accents in capitals, and Dutch titlecases `ij` whole. Chrome maps upper
-//! and lower case the same way, through ICU with the text's locale
-//! (`CaseMap`).
+//! **Case** uses the crate's full case mapping (`unicode::uppercase` and the
+//! like) with the language's tailoring, as CSS Text 3, section 2.1 asks. So
+//! `ß` uppercases to `SS`, a final sigma lowercases to `ς`, and Turkish,
+//! Lithuanian, Greek and Dutch get their own rules. Chrome maps case the same
+//! way, through ICU4C's `CaseMap` with the text's locale, and tailors no other
+//! language. Uppercase makes no Georgian Mtavruli, as in Chrome.
 //!
-//! **Capitalize** titlecases the first character of every word, and nothing
-//! else.
-//! - The words are Unicode's (UAX #29), found by the build's ICU4X word
-//!   segmenter, the same one word motion uses (`unicode::segmenters`). It
-//!   has dictionaries or an LSTM for Thai and the like. Chrome finds words
-//!   with ICU's word break iterator.
-//! - Chrome's one tailoring applies: Blink breaks words in `en_US_POSIX`,
-//!   whose rules make a full stop join only digits. So `x.y` is two words
-//!   and `3.14` one.
-//! - The character before what is written counts, so a word a span divides
-//!   is one word. Within one call, an apostrophe or a mark inside a word is
-//!   passed over, as the segmenter passes over them. Across calls only the
-//!   last character of the call before is known, as Chrome knows only the
-//!   last character of the text before (`LayoutText::PreviousCharacter`).
-//! - The titlecase is the full mapping with the language's tailoring, as
-//!   CSS asks and Chrome's `ICUCapitalization` does. Chrome as it ships
-//!   titlecases one UTF-16 unit by the simple mapping and no language. It
-//!   leaves `ß` and `ﬁ` as they are and sets `ijsland` as `Ijsland` in
-//!   Dutch. Chrome is moving off that limitation, so this crate does not
-//!   copy it.
+//! **Capitalize** titlecases the first character of every word.
+//! - Words are UAX #29's, found by the build's word segmenter, the one word
+//!   motion uses. Chrome uses ICU's word break iterator.
+//! - Chrome's `en_US_POSIX` tailoring applies: a full stop joins only digits,
+//!   so `x.y` is two words and `3.14` one.
+//! - The character before the written text counts, so a word split by a span
+//!   stays one word. Across calls only the previous call's last character is
+//!   known, as in Chrome's `LayoutText::PreviousCharacter`.
+//! - The titlecase is the full mapping with the language's tailoring, as CSS
+//!   asks. Chrome titlecases one UTF-16 unit by the simple mapping, leaving
+//!   `ß` and `ﬁ` alone and giving `Ijsland` in Dutch; this crate does not.
 //!
-//! **`full-width`** maps each character to its full-width form, as Blink's
+//! **`full-width`** maps printable ASCII, half-width katakana and Hangul and
+//! a few signs to their full-width forms, as Blink's
 //! `Character::FullwidthVariant` does (behind Chrome's
-//! `CSSTextTransformFullWidth` flag). It maps printable ASCII to U+FF01
-//! onward, half-width katakana and Hangul to their full-width forms, and a
-//! few signs. A space becomes U+3000 only where white space is kept. A space
-//! that collapses is left for collapsing, as CSS Text 3 says and Blink's
-//! `ApplyFullwidthTransform` does. It applies after the case, as CSS orders
-//! them.
+//! `CSSTextTransformFullWidth` flag). A space becomes U+3000 only where white
+//! space is kept; a collapsible space is left for collapsing, as CSS Text 3
+//! and Blink's `ApplyFullwidthTransform` do. It applies after the case.
 //!
-//! **`full-size-kana`** maps each small kana to its full-size form, by CSS
-//! Text 3's table (Appendix G). The table holds the small hiragana and
-//! katakana, those of the Kana Extended and Small Kana Extension blocks, and
-//! the half-width small katakana: 58 in all, the same table as Blink's
-//! `Character::FullSizeKanaVariant`. It applies last, after `full-width`, as
-//! CSS orders them and Blink's `ComputedStyle::ApplyTextTransform` does. So
-//! a half-width small katakana that `full-width` made full-width is then
-//! made full-size.
+//! **`full-size-kana`** maps the 58 small kana of CSS Text 3's table
+//! (Appendix G, Blink's `Character::FullSizeKanaVariant`) to full size. It
+//! applies last, as in Blink's `ComputedStyle::ApplyTextTransform`, so a
+//! half-width small katakana becomes full-width and then full-size.
 //!
-//! **`math-auto`** maps single-character text nodes to mathematical italic
+//! **`math-auto`** maps a single-character text node to mathematical italic
 //! by MathML Core's italic table. It excludes every other transform.
 //!
-//! **Lengths.** A transform may change how long the text is: `ß` to `SS`
-//! keeps its bytes, `ŉ` to `ʼN` grows by one, a full-width letter by two, and
-//! a dropped Greek accent shrinks it. Nothing here stores where. The offset
-//! map needs each source character's own output, which
-//! [`Transforms::counts`] gives in characters. The writer turns those into
-//! map units where it writes the text.
+//! **Lengths.** A transform may grow or shrink the text (`ŉ` to `ʼN`, a
+//! full-width letter, a dropped Greek accent). [`Transforms::counts`] gives
+//! each source character's output length in characters; the writer turns
+//! those into offset map entries.
 
 use alloc::string::String;
-use core::fmt;
 use core::ops::Range;
 use core::str::CharIndices;
 
-use icu_casemap::options::{LeadingAdjustment, TitlecaseOptions, TrailingCase};
-use icu_casemap::{CaseMapper, CaseMapperBorrowed};
-use icu_locale_core::{LanguageIdentifier, langid};
-use writeable::Writeable;
-
 use crate::data::TextOffset;
-use crate::style::{Language, TextCase, TextTransform};
-use crate::unicode::{has_stand_ins, segmenter_char, word_boundaries, word_segmenter};
+use crate::style::{TextCase, TextTransform};
+use crate::unicode::{
+    CaseLanguage, has_stand_ins, lowercase, segmenter_char, titlecase, uppercase, word_boundaries,
+    word_segmenter,
+};
 use crate::work;
 
-static ROOT: LanguageIdentifier = LanguageIdentifier::UNKNOWN;
-static TURKISH: LanguageIdentifier = langid!("tr");
-static LITHUANIAN: LanguageIdentifier = langid!("lt");
-static GREEK: LanguageIdentifier = langid!("el");
-static DUTCH: LanguageIdentifier = langid!("nl");
-static ARMENIAN: LanguageIdentifier = langid!("hy");
-
-/// Returns the language ICU4X maps the case of text in `language` by.
-///
-/// The primary subtag decides. It is one of the languages whose mapping
-/// ICU4X tailors away from the root's (`CaseMapLocale`), or the root for
-/// every other language and for none.
-pub(super) fn case_langid(language: &Language) -> &'static LanguageIdentifier {
-    match language.language() {
-        // `i` and `ı` are two letters.
-        "tr" | "az" => &TURKISH,
-        // An `i` keeps its dot under an accent.
-        "lt" => &LITHUANIAN,
-        // Capitals drop their accents.
-        "el" => &GREEK,
-        // `ij` titlecases whole.
-        "nl" => &DUTCH,
-        // The ligature `և` uppercases to two letters its own way.
-        "hy" => &ARMENIAN,
-        _ => &ROOT,
-    }
-}
-
-/// How one node's text is transformed.
-///
-/// It holds the node's `text-transform`, the language its case is mapped
-/// in, and whether its white space is kept, which decides whether
-/// `full-width` maps its spaces.
+/// The `text-transform` of one node, with its case language.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub(super) struct TextTransformer {
     transform: TextTransform,
-    /// The language whose tailoring maps its case ([`case_langid`]).
-    langid: &'static LanguageIdentifier,
-    /// White space is kept (`preserve`, `break-spaces`, `preserve-spaces`).
-    /// Its spaces are then content, and `full-width` makes them U+3000.
+    /// The language whose case tailoring applies.
+    language: CaseLanguage,
+    /// White space is kept (`preserve`, `break-spaces`, `preserve-spaces`),
+    /// so `full-width` maps spaces to U+3000.
     keeps_spaces: bool,
 }
 
-/// The case mapper, with its data compiled in, so it is free to make.
-const CASE: CaseMapperBorrowed<'static> = CaseMapper::new();
-
-/// Returns options that titlecase the first character of a word and leave
-/// the rest as it is.
-fn title_options() -> TitlecaseOptions {
-    let mut options = TitlecaseOptions::default();
-    options.leading_adjustment = Some(LeadingAdjustment::None);
-    options.trailing_case = Some(TrailingCase::Unchanged);
-    options
-}
-
 impl TextTransformer {
-    /// Creates a transformer for `transform`, mapping case as `langid`
-    /// tailors it, with white space kept or not (`keeps_spaces`).
+    /// Creates a transformer. Any `math-auto` transform becomes plain
+    /// `math-auto`, which excludes the others.
     pub(super) fn new(
         transform: TextTransform,
-        langid: &'static LanguageIdentifier,
+        language: CaseLanguage,
         keeps_spaces: bool,
     ) -> Self {
         let transform = if transform.is_math_auto() {
@@ -143,45 +77,47 @@ impl TextTransformer {
         };
         Self {
             transform,
-            langid,
+            language,
             keeps_spaces,
         }
     }
 
     /// Writes `src` transformed onto `out`.
     ///
-    /// `before` is the character before `src`, whose word `src` may carry
-    /// on. Only capitalize reads it. `scratch` holds the two together where
-    /// needed.
-    ///
-    /// It writes nothing past what the transform makes, so room for
-    /// [`max_growth`](Self::max_growth) times `src` holds all of it.
+    /// `before` is the character before `src`; only capitalize reads it.
+    /// `scratch` is segmenter scratch. The output fits in
+    /// [`max_growth`](Self::max_growth) times the length of `src`.
     pub(super) fn write(&self, src: &str, before: char, scratch: &mut String, out: &mut String) {
-        if self.transform.full_width || self.transform.full_size_kana {
-            let mut mapped = CharForms {
-                out,
-                full_width: self.transform.full_width,
-                full_size_kana: self.transform.full_size_kana,
-                keeps_spaces: self.keeps_spaces,
-            };
-            self.write_case(src, before, scratch, &mut mapped);
+        let TextTransform {
+            full_width,
+            full_size_kana,
+            ..
+        } = self.transform;
+        if full_width || full_size_kana {
+            self.write_case(src, before, scratch, &mut |mut ch| {
+                if full_width {
+                    ch = self::full_width(ch, self.keeps_spaces);
+                }
+                if full_size_kana {
+                    ch = self::full_size_kana(ch);
+                }
+                out.push(ch);
+            });
         } else if self.transform.is_math_auto() {
             Self::write_math(src, out);
+        } else if matches!(self.transform.case, TextCase::None | TextCase::MathAuto) {
+            out.push_str(src);
         } else {
-            self.write_case(src, before, scratch, out);
+            self.write_case(src, before, scratch, &mut |ch| out.push(ch));
         }
     }
 
-    /// Whether it capitalizes, whose mapping reads the words around a
-    /// character.
+    /// Whether it capitalizes, which reads the words around a character.
     pub(super) fn capitalizes(&self) -> bool {
         self.transform.case == TextCase::Capitalize
     }
 
     /// Returns the most bytes the transform makes of one byte of text.
-    ///
-    /// The writer leaves this much room for each byte before it writes the
-    /// transform whole. Near the limit it writes a character at a time.
     pub(super) fn max_growth(&self) -> usize {
         if self.transform.is_math_auto() {
             MATH_GROWTH
@@ -199,100 +135,81 @@ impl TextTransformer {
         }
     }
 
-    /// Writes the case part of [`write`](Self::write) into `sink`.
-    fn write_case<W: fmt::Write>(
+    /// Calls `push` with each character of the case part of
+    /// [`write`](Self::write).
+    fn write_case(
         &self,
         src: &str,
         before: char,
         scratch: &mut String,
-        sink: &mut W,
+        push: &mut dyn FnMut(char),
     ) {
-        let langid = self.langid;
-        // Writing into a string never fails.
-        let _ = match self.transform.case {
-            TextCase::None | TextCase::MathAuto => sink.write_str(src),
-            TextCase::Uppercase => CASE.uppercase(src, langid).write_to(sink),
-            TextCase::Lowercase => CASE.lowercase(src, langid).write_to(sink),
-            TextCase::Capitalize => {
-                let mut result = Ok(());
-                words(src, before, scratch, |segment, starts| {
-                    result = result.and_then(|()| {
-                        if starts {
-                            CASE.titlecase_segment_with_only_case_data(
-                                segment,
-                                langid,
-                                title_options(),
-                            )
-                            .write_to(sink)
-                        } else {
-                            sink.write_str(segment)
-                        }
-                    });
-                });
-                result
-            }
-        };
+        let language = self.language;
+        match self.transform.case {
+            TextCase::None | TextCase::MathAuto => src.chars().for_each(push),
+            TextCase::Uppercase => uppercase(src, language, push),
+            TextCase::Lowercase => lowercase(src, language, push),
+            TextCase::Capitalize => words(src, before, scratch, |segment, starts| {
+                if starts {
+                    titlecase(segment, language, push);
+                } else {
+                    segment.chars().for_each(&mut *push);
+                }
+            }),
+        }
     }
 
-    /// Counts the characters the transform makes of `ch` on its own.
+    /// Counts the characters the transform makes of `ch` alone.
     ///
-    /// `starts` says whether `ch` starts a word, which only capitalize
-    /// reads. [`write`](Self::write) maps a character in its context, so
-    /// the two disagree for the few mappings whose length a context changes
-    /// (a Greek accent dropped under a capital, a Lithuanian or Turkish
-    /// dot). [`Transforms::counts`]'s callers find those by the totals
-    /// disagreeing.
+    /// `starts` says whether `ch` starts a word; only capitalize reads it.
+    /// [`write`](Self::write) maps in context, so the two can disagree
+    /// (a Greek accent, a Lithuanian or Turkish dot). Callers of
+    /// [`Transforms::counts`] detect that by the totals disagreeing.
     fn count(&self, ch: char, starts: bool) -> usize {
         // Every case mapping makes one character of an ASCII one, the
-        // Turkic `i` included. `full-width` and `full-size-kana` make one
-        // character of any.
+        // Turkic `i` included. `full-width` and `full-size-kana` always
+        // make one.
         if ch.is_ascii() {
             return 1;
         }
-        let langid = self.langid;
+        let language = self.language;
         let mut buffer = [0u8; 4];
         let one = ch.encode_utf8(&mut buffer);
-        let mut count = Count(0);
-        // Counting never fails.
-        let _ = match self.transform.case {
+        let mut count = 0;
+        let mut counted = |_| count += 1;
+        match self.transform.case {
             TextCase::None | TextCase::MathAuto => return 1,
-            TextCase::Uppercase => CASE.uppercase(one, langid).write_to(&mut count),
-            TextCase::Lowercase => CASE.lowercase(one, langid).write_to(&mut count),
-            TextCase::Capitalize if starts => CASE
-                .titlecase_segment_with_only_case_data(one, langid, title_options())
-                .write_to(&mut count),
+            TextCase::Uppercase => uppercase(one, language, &mut counted),
+            TextCase::Lowercase => lowercase(one, language, &mut counted),
+            TextCase::Capitalize if starts => titlecase(one, language, &mut counted),
             TextCase::Capitalize => return 1,
-        };
-        count.0
+        }
+        count
     }
 }
 
-/// The writer's pair of transformers for a text node's text.
-///
-/// One follows the node's own style. The other applies on the block's
-/// first line, where the first-line style says otherwise.
+/// The transforms for a text node: its own, and the first line's.
 #[derive(Copy, Clone, Debug)]
 pub(super) struct Transforms {
-    /// How the text's own style transforms it, or `None` for not at all.
+    /// The node's own transform; `None` for none.
     pub(super) own: Option<TextTransformer>,
-    /// How the block's first line transforms the text (`None` for not at
-    /// all), where that differs from the node's own style.
+    /// The first line's transform where it differs from `own`; the inner
+    /// `None` means none.
     first_line: Option<Option<TextTransformer>>,
-    /// The character `-webkit-text-security` masks each grapheme with, if
+    /// The `-webkit-text-security` mask character for each grapheme, if
     /// any. `::first-line` cannot change it.
     pub(super) mask: Option<char>,
 }
 
 impl Transforms {
-    /// Text written as given, on every line.
+    /// No transform on any line.
     pub(super) const NONE: Self = Self {
         own: None,
         first_line: None,
         mask: None,
     };
 
-    /// Creates the pair: `own` for every line (`None` for not at all), and
-    /// `first_line` for the first line where it says otherwise.
+    /// Creates the pair, with no mask.
     pub(super) fn new(
         own: Option<TextTransformer>,
         first_line: Option<Option<TextTransformer>>,
@@ -304,13 +221,12 @@ impl Transforms {
         }
     }
 
-    /// Returns the pair masking each grapheme with `mask`, or masking none.
+    /// Returns the pair with `mask` as its mask.
     pub(super) fn with_mask(self, mask: Option<char>) -> Self {
         Self { mask, ..self }
     }
 
-    /// Returns the pair with the first line transforming the text as every
-    /// other line does.
+    /// Returns the pair with the first line using the node's own transform.
     pub(super) fn without_first_line(self) -> Self {
         Self {
             first_line: None,
@@ -318,14 +234,16 @@ impl Transforms {
         }
     }
 
-    /// Whether either variant asks for the whole text node's length.
+    /// Whether either transform is `math-auto`, which depends on the whole
+    /// text node.
     pub(super) fn has_math_auto(&self) -> bool {
         [self.own, self.first_line()]
             .into_iter()
             .any(|transformer| transformer.is_some_and(|t| t.transform.is_math_auto()))
     }
 
-    /// Disables `math-auto` where the source node is not one mapped character.
+    /// Drops `math-auto` unless the node is `single` character with a
+    /// mathematical italic form.
     pub(super) fn with_node(self, single: bool, text: &str) -> Self {
         let eligible = || single && text.chars().next().and_then(math_italic).is_some();
         let resolve =
@@ -333,38 +251,30 @@ impl Transforms {
         Self::new(resolve(self.own), self.first_line.map(resolve)).with_mask(self.mask)
     }
 
-    /// Returns the most bytes either variant makes of one byte of text: one
-    /// where neither transforms it.
+    /// Returns the most bytes either transform makes of one byte of text.
     pub(super) fn max_growth(&self) -> usize {
         let growth =
             |transformer: Option<TextTransformer>| transformer.map_or(1, |t| t.max_growth());
         growth(self.own).max(growth(self.first_line()))
     }
 
-    /// Whether the first line transforms the text otherwise than its own
-    /// style does.
+    /// Whether the first line's transform differs from the node's own.
     pub(super) fn first_line_differs(&self) -> bool {
         self.first_line.is_some()
     }
 
-    /// Returns how the first line transforms the text, or `None` for not at
-    /// all. It is the own style's transform unless the first-line style
-    /// says otherwise.
+    /// Returns the first line's transform; `None` for none.
     pub(super) fn first_line(&self) -> Option<TextTransformer> {
         self.first_line.unwrap_or(self.own)
     }
 
-    /// Calls `each` with every character of `src` in order, and how many
-    /// characters the text's own transform and the first line's each make
-    /// of it on its own.
+    /// Calls `each` with every character of `src` and the number of
+    /// characters the own and first-line transforms make of it alone.
     ///
-    /// `before` is the character before `src`, which capitalize reads, and
-    /// `scratch` is where it joins it to `src`. The counts align outputs a
-    /// caller's character at a time. The offset map aligns the content's
-    /// text with the caller's by the own count. The first line's side text
-    /// aligns with the content's by both. The first line's count is made
-    /// only where it transforms otherwise, and equals the own count where
-    /// it does not.
+    /// `before` is the character before `src`, for capitalize; `scratch` is
+    /// segmenter scratch. The offset map aligns by the own count, and the
+    /// first-line text by both. The first-line count equals the own count
+    /// unless [`first_line_differs`](Self::first_line_differs).
     pub(super) fn counts(
         &self,
         src: &str,
@@ -399,9 +309,10 @@ impl Transforms {
     }
 }
 
-/// What two transforms each made of one of the caller's characters: the
-/// bytes each made, from the start of what each made of the whole run, and
-/// how many characters.
+/// The outputs of two transforms for one source character.
+///
+/// Ranges are byte offsets from the start of each transform's output for
+/// the run; `counts` are their lengths in characters.
 #[derive(Clone, Debug)]
 pub(super) struct Made {
     pub(super) ours: Range<TextOffset>,
@@ -410,23 +321,21 @@ pub(super) struct Made {
 }
 
 impl Made {
-    /// Whether each made one character of it, and the two are as long.
+    /// Whether both outputs are one character of the same byte length.
     pub(super) fn is_aligned(&self) -> bool {
         let len = |range: &Range<TextOffset>| range.end.get() - range.start.get();
         self.counts == (1, 1) && len(&self.ours) == len(&self.theirs)
     }
 }
 
-/// Walks `ours` and `theirs`, two transforms of one run of the caller's
-/// text, a caller's character at a time.
+/// Walks `ours` and `theirs`, two transforms of one source run, one source
+/// character at a time.
 ///
-/// `counts` calls its argument with each of the caller's characters in
-/// order and how many characters each transform made of it on its own, as
-/// [`Transforms::counts`] does. `each` gets what each made of it. Returns
-/// whether those counts walk both texts exactly to their ends. Where they do
-/// not, as where a context mapped the characters otherwise than each alone,
-/// `each` is not called past the first character that does not fit, and the
-/// caller takes the run as a whole.
+/// `counts` reports per-character output counts, as [`Transforms::counts`]
+/// does; `each` gets each character's [`Made`]. Returns whether the counts
+/// walk both texts exactly to their ends. When they don't (context changed a
+/// mapping), `each` stops at the first character that doesn't fit and the
+/// caller maps the run as a whole.
 pub(super) fn align_counts(
     ours: &str,
     theirs: &str,
@@ -435,7 +344,7 @@ pub(super) fn align_counts(
 ) -> bool {
     let mut ours_chars = ours.char_indices();
     let mut theirs_chars = theirs.char_indices();
-    // Where each has got to, in bytes from where it started.
+    // Byte positions in `ours` and `theirs`.
     let (mut here, mut there) = (0, 0);
     let mut whole = true;
     // Takes `count` characters of `chars`, moving `to` past them.
@@ -467,14 +376,12 @@ pub(super) fn align_counts(
 }
 
 /// The most bytes a case mapping, `full-width` or `full-size-kana` makes of
-/// one byte of text.
-///
-/// A full-width form of ASCII is three bytes of one, and no case mapping
+/// one byte: a full-width ASCII form is three bytes, and no case mapping
 /// does more.
 const CASE_GROWTH: usize = 3;
 
-/// The most bytes `math-auto` makes of one byte of text: a mathematical
-/// italic letter is four bytes of one of ASCII.
+/// The most bytes `math-auto` makes of one byte: a mathematical italic
+/// letter is four bytes for one ASCII byte.
 const MATH_GROWTH: usize = 4;
 
 /// MathML Core's italic mappings.
@@ -502,27 +409,21 @@ fn math_italic(ch: char) -> Option<char> {
     char::from_u32(codepoint)
 }
 
-/// Calls `each` with the word segments of `src` in order, and whether the
-/// segment starts a word or carries on the one `before` is in.
+/// Calls `each` with the UAX #29 word segments of `src` and whether each
+/// starts a word (rather than continuing the word `before` is in).
 ///
-/// - The segments are UAX #29's. They are found with `before` in front where
-///   it could carry a word on, copied into `scratch` with `src`.
-/// - Chrome's `en_US_POSIX` tailoring applies: a full stop between two
-///   letters, or a letter and a digit, ends a word, since only digits join
-///   across one there (`unicode::word_boundaries`, as word motion finds
-///   them).
-/// - The word segmenter is the build's, the same as word motion's
-///   (`unicode::word_segmenter`). With the `dictionaries` feature, ICU's
-///   dictionaries part a run of Thai or of ideographs and kana into words,
-///   as ICU4C parts it for Chrome.
-/// - Without that feature, each ideograph and hiragana is copied into
-///   `scratch` as a stand-in character (`unicode::segmenter_char`). UAX #29's
-///   rules segment the stand-in as they would the original, and it is as
-///   long, so the segments are read from `src` at the copy's offsets.
+/// - Segmenting uses the build's word segmenter (`unicode::word_segmenter`)
+///   and Chrome's `en_US_POSIX` tailoring (`unicode::word_boundaries`), as
+///   word motion does.
+/// - With the `dictionaries` feature, dictionaries split Thai, ideographs
+///   and kana into words, as ICU4C does for Chrome.
+/// - Without it, ideographs and hiragana are copied into `scratch` as
+///   same-length stand-ins (`unicode::segmenter_char`) that segment the
+///   same way, and segments are read from `src` at the copy's offsets.
 fn words(src: &str, before: char, scratch: &mut String, mut each: impl FnMut(&str, bool)) {
     let segmenter = word_segmenter();
-    // A word never carries on past white space or a line's end, so only a
-    // character that could be inside one is looked at with the text.
+    // A word never continues past white space or a line end, so `before`
+    // joins the text only when it could be inside a word.
     let joined = !matches!(
         before,
         ' ' | '\t' | '\n' | '\r' | '\x0C' | '\u{200B}' | '\u{FFFC}'
@@ -543,7 +444,7 @@ fn words(src: &str, before: char, scratch: &mut String, mut each: impl FnMut(&st
     for end in word_boundaries(segmenter, text, skip) {
         work::step();
         if end > skip && end > start {
-            // Takes the segment's part in `src`, and whether it starts there.
+            // The segment's part in `src`, past `before`.
             let from = start.max(skip);
             if let Some(segment) = src.get(from.saturating_sub(skip)..end.saturating_sub(skip)) {
                 each(segment, start >= skip);
@@ -553,49 +454,9 @@ fn words(src: &str, before: char, scratch: &mut String, mut each: impl FnMut(&st
     }
 }
 
-/// Counts the characters written to it.
-struct Count(usize);
-
-impl fmt::Write for Count {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        self.0 += s.chars().count();
-        Ok(())
-    }
-}
-
-/// A writer that maps each character to the forms the transform asks for.
+/// Returns the full-size form of a small kana, or `ch` unchanged.
 ///
-/// It applies full-width under `full-width`, then full-size under
-/// `full-size-kana`, as CSS orders them.
-struct CharForms<'a> {
-    out: &'a mut String,
-    full_width: bool,
-    full_size_kana: bool,
-    keeps_spaces: bool,
-}
-
-impl fmt::Write for CharForms<'_> {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        for ch in s.chars() {
-            let ch = if self.full_width {
-                full_width(ch, self.keeps_spaces)
-            } else {
-                ch
-            };
-            let ch = if self.full_size_kana {
-                full_size_kana(ch)
-            } else {
-                ch
-            };
-            self.out.push(ch);
-        }
-        Ok(())
-    }
-}
-
-/// Returns `ch`'s full-size form where it is a small kana, or `ch`.
-///
-/// The table is CSS Text 3's (Appendix G), which is Blink's
+/// The table is CSS Text 3's (Appendix G), as in Blink's
 /// `Character::FullSizeKanaVariant`.
 pub(super) fn full_size_kana(ch: char) -> char {
     match ch {
@@ -664,10 +525,8 @@ pub(super) fn full_size_kana(ch: char) -> char {
     }
 }
 
-/// Returns `ch`'s full-width form, or `ch` where it has none, as Blink's
-/// `Character::FullwidthVariant` does.
-///
-/// A space has one only where white space is kept (`keeps_spaces`).
+/// Returns the full-width form of `ch`, or `ch` unchanged, as Blink's
+/// `Character::FullwidthVariant` does. A space maps only if `keeps_spaces`.
 fn full_width(ch: char, keeps_spaces: bool) -> char {
     const KATAKANA: [u16; 63] = [
         0x3002, 0x300C, 0x300D, 0x3001, 0x30FB, 0x30F2, 0x30A1, 0x30A3, 0x30A5, 0x30A7, 0x30A9,
@@ -677,8 +536,8 @@ fn full_width(ch: char, keeps_spaces: bool) -> char {
         0x30D8, 0x30DB, 0x30DE, 0x30DF, 0x30E0, 0x30E1, 0x30E2, 0x30E4, 0x30E6, 0x30E8, 0x30E9,
         0x30EA, 0x30EB, 0x30EC, 0x30ED, 0x30EF, 0x30F3, 0x3099, 0x309A,
     ];
-    // The full-width forms of half-width Hangul, from U+FFA0. The gaps
-    // Unicode leaves in the half-width block hold 0, for no mapping.
+    // Full-width forms of half-width Hangul from U+FFA0; 0 marks the
+    // block's unassigned gaps.
     const HANGUL: [u16; 61] = [
         0x3164, 0x3131, 0x3132, 0x3133, 0x3134, 0x3135, 0x3136, 0x3137, 0x3138, 0x3139, 0x313A,
         0x313B, 0x313C, 0x313D, 0x313E, 0x313F, 0x3140, 0x3141, 0x3142, 0x3143, 0x3144, 0x3145,

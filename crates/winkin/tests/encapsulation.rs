@@ -1,46 +1,42 @@
 //! The encapsulation, naming and comment guard.
 //!
-//! Reads the crate's own sources as text and fails on:
-//! - a field opened past the crate, a function whose name has a blocked
-//!   word ([`BLOCKED_WORDS`]), a `usize` range into a table, or a constructor
-//!   with a name of its own;
-//! - a door that answers by cluster or by offset, called outside the files
-//!   allowed to call it;
-//! - the caller's style named past the door;
+//! Reads the crate's sources as text and fails on:
+//! - a `pub` field on a crate-private struct, a function whose name has a
+//!   blocked word ([`BLOCKED_WORDS`]), a `usize` range into a table, or a
+//!   constructor not named `new`, `from_*` or `with_*`;
+//! - a by-cluster or by-offset lookup called outside the files allowed to
+//!   call it;
+//! - the host's style named past the builder;
 //! - history or a doc reference in a comment.
 //!
 //! Frozen stage data may show its fields to the crate, `pub(crate)` or
 //! `pub(super)`, since a later stage holds only `&` of it. A bare `pub`
-//! field on a type the crate keeps to itself is a field no reader should
-//! see, and fails.
+//! field on a crate-private type fails.
 //!
 //! Each check is a heuristic over the text, tuned to find nothing in code
-//! that keeps the rules. Each real exception is on an allowlist below, one
-//! line with its reason, so that breaking a rule is a decision someone
-//! writes down. An entry that no longer excuses anything fails too, so the
-//! lists only shrink.
+//! that keeps the rules. Each real exception is an allowlist entry with its
+//! reason. An entry that no longer excuses anything fails too, so the lists
+//! only shrink.
 //!
 //! Test code is exempt from all but the comment check: `tests.rs` files,
-//! `tests/` directories, and `#[cfg(test)]` modules inside a source file.
+//! `tests/` directories, and `#[cfg(test)]` modules.
 //!
-//! The doors that answer by cluster or by offset stay in the files allowed
-//! to call them. A walk carries the runs it is inside, and a search happens
-//! only where a random-access read starts. Each file calling one is on an
-//! allowlist with its reason: an entry, where such a read starts and seeks
-//! once, or a door's own body. A new caller fails until it is an entry or
-//! walks.
+//! A walk carries the runs it is inside, so lookups by cluster or offset
+//! happen only where a random-access read starts. Each file calling one is
+//! on an allowlist with its reason: an entry that seeks once, or the
+//! lookup's own body.
 //!
-//! The caller's style stays at the door: `ComputedStyle`, the content's
+//! The host's style stays in the builder: `ComputedStyle`, the content's
 //! tables by `.styles.`, and the facts' constructors are named only in
-//! `stages/content/` and `style/`, where the door lowers each style into the facts
-//! every later stage reads. A file elsewhere naming one is on an allowlist
-//! with its reason.
+//! `stages/content/` and `style/`, which lower each style into the facts
+//! later stages read. A file elsewhere naming one is on an allowlist with
+//! its reason.
 //!
 //! The comment check reads every `.rs` file under `src` and `tests`, test
 //! code included. Its patterns are [`HISTORY`].
 //!
-//! What it cannot see is left to review: a method that only forwards to a
-//! free function, a method and a free function sharing a name, an enum
+//! Review covers what the checks cannot see: a method that only forwards to
+//! a free function, a method and a free function sharing a name, an enum
 //! converted to another by an inline `match`, and a search over another
 //! stage's table written inline.
 
@@ -51,14 +47,15 @@ use std::path::{Path, PathBuf};
 /// An allowlist entry: the file, the item it excuses, and the reason.
 type Entry = (&'static str, &'static str, &'static str);
 
-/// Crate-private structs whose fields may be `pub`, past the crate, by file
-/// and struct, each with its reason.
+/// Crate-private structs whose fields may be `pub`, by file and struct, each
+/// with its reason.
 const ALLOWED_FIELDS: &[Entry] = &[];
 
 /// The words a function's name may not have as one of its `_`-separated
 /// parts.
-/// A name that is the word `at` alone is a lookup on its own collection
-/// (`Clusters::at`), which keeps the rule.
+///
+/// The bare name `at` is a lookup on its own collection (`Clusters::at`)
+/// and is allowed.
 const BLOCKED_WORDS: &[&str] = &["holding", "of", "in", "for", "own", "at"];
 
 /// Functions whose names have a blocked word that Rust's own naming backs,
@@ -66,8 +63,8 @@ const BLOCKED_WORDS: &[&str] = &["holding", "of", "in", "for", "own", "at"];
 const ALLOWED_NAMES: &[Entry] = &[];
 
 /// Lines holding a `Range<usize>` outside the data module and `unit.rs`, by
-/// file and a piece of the line, each with its reason: a byte range into a
-/// string, which indexes no table.
+/// file and a piece of the line, each with its reason, such as a byte range
+/// into a string.
 #[rustfmt::skip]
 const ALLOWED_USIZE_RANGES: &[Entry] = &[
     ("src/layout/line.rs", "pub fn text_range", "public API: a line's text as a byte range into the caller's `Layout::text`"),
@@ -93,12 +90,11 @@ const ALLOWED_CONSTRUCTORS: &[Entry] = &[
     ("src/style/edges.rs", "all", "public API: one value on every side, as a CSS shorthand given one value sets them"),
 ];
 
-/// The doors that answer by cluster or by offset, which a walk carrying its
-/// runs does not call: each as it reads in code with its white
-/// space taken out, a call and not a definition.
+/// The lookups by cluster or by offset, which a walk carrying its runs does
+/// not call. Each is a call as it reads in code with white space removed.
 const DOORS: &[&str] = &[
     // The run, cluster, line, paragraph or column base containing a
-    // position, by halving or by rank.
+    // position, found by halving or by rank.
     ".containing(",
     "containing_offset(",
     "run_containing(",
@@ -111,28 +107,28 @@ const DOORS: &[&str] = &[
     "line_edges_touching(",
     "first_reaching(",
     "empty_items(",
-    // A walk's seek, and a place in the flow sought.
+    // A walk's seek, and a sought place in the flow.
     "cursor_containing(",
     "Slot::new(",
     // The halvings themselves.
     "first_from(",
     "last_where(",
     "partition_point(",
-    // A cursor over runs moved by a cluster, which a `RunCursor` replaces.
+    // A cursor over runs moved by a cluster; a `RunCursor` replaces it.
     "runs.advance(",
     "paragraphs.advance(",
 ];
 
-/// The files that may call a door of [`DOORS`], by file and door, each with
-/// its reason: an entry, where a random-access read starts and seeks once;
-/// a door's or a primitive's own body; or a search over a table that is not
-/// of runs.
+/// The files that may call a lookup of [`DOORS`], by file and lookup, each
+/// with its reason: an entry, where a random-access read starts and seeks
+/// once; a lookup's or a primitive's own body; or a search over a table that
+/// is not of runs.
 #[rustfmt::skip]
 const ALLOWED_DOORS: &[Entry] = &[
     ("src/stages/lines/ruby/mod.rs", "partition_point(", "retained continuation rows are keyed by line, not runs; rewind finds the first discarded line"),
     ("src/stages/lines/ruby/mod.rs", "lines.at(", "entry: the lines a caret's or a selection's ruby pieces can be on, from the clusters at its ends, seeking once each"),
     ("src/stages/lines/height.rs", "cursor_containing(", "entry: a line's text that fallback fonts widen across its edges seeks its shaping run once a line, then carries the cursor"),
-    // The doors' and the primitives' own bodies.
+    // The lookups' and the primitives' own bodies.
     ("src/data/runs.rs", ".containing(", "body: `Runs::cursor_containing` seeks by `Runs::containing`"),
     ("src/data/runs.rs", "last_where(", "bodies: `Runs::containing` and `Runs::last_where`, the halving"),
     ("src/data/runs.rs", "partition_point(", "body: `Runs::first_from`, the halving"),
@@ -158,6 +154,7 @@ const ALLOWED_DOORS: &[Entry] = &[
     ("src/stages/fragments/boxes.rs", "partition_point(", "line layout's box parts, by their left: geometry"),
     ("src/stages/measure/items.rs", "partition_point(", "body: `KeptBoxes::first_from`, a walk's one seek among the kept boxes by node, not a table of runs"),
     ("src/path/curves.rs", "partition_point(", "text on a path: a segment of the path by arc length"),
+    ("src/unicode/case.rs", "partition_point(", "the case runs and Soft_Dotted ranges by code point: Unicode data"),
     ("src/stages/measure/scan/em_boxes.rs", "cursor_containing(", "entry: the unshaped first-line tail of an item, sought once then walked in font order"),
     // Entries: a random-access read starts here, seeks once, and walks.
     ("src/selection/motion.rs", ".containing(", "entry: `paragraph_level` and `paragraph_boundary` seek the focus's paragraph from its cluster, once a motion"),
@@ -183,13 +180,12 @@ const ALLOWED_DOORS: &[Entry] = &[
     ("src/stages/lines/annotate.rs", "cursor_containing(", "a line's em boxes: the font runs of a text item with no one em box for all its text, sought once a line, and walked with the items"),
 ];
 
-/// What only the door names: the caller's style, and the
-/// content's tables reached as a style table's were. Each as it reads in
-/// code with its white space taken out.
+/// What only the builder names: the host's style, and the content's style
+/// tables. Each as it reads in code with white space removed.
 const STYLE_NAMES: &[&str] = &["ComputedStyle", ".styles."];
 
-/// The facts' records, whose constructors only the door calls: a
-/// call of `new`, or a literal, `Name {`.
+/// The facts' records, which only the builder constructs, by a call of
+/// `new` or a literal `Name {`.
 const FACTS: &[&str] = &[
     "TextFacts",
     "ShapingFacts",
@@ -235,8 +231,8 @@ fn fields_names_and_indexes_keep_the_rules() {
 }
 
 /// The checks find what they look for, and nothing in code that keeps the
-/// rules, comments, literals and test modules included: a guard whose
-/// reading of the code had broken would find nothing, and pass everything.
+/// rules, comments, literals and test modules included. A guard that
+/// misread the code would find nothing and pass everything.
 #[test]
 fn the_checks_find_what_they_look_for() {
     let source = r##"
@@ -344,8 +340,8 @@ fn collect(dir: &Path, files: &mut Vec<PathBuf>) {
     }
 }
 
-/// What a comment may not say: history, which lives in git, and pointers
-/// at the docs, which a comment restates in place instead.
+/// What a comment may not say: history, which lives in git, and pointers to
+/// documents, whose content a comment states in place instead.
 #[rustfmt::skip]
 const HISTORY: &[Banned] = &[
     Banned { text: "old crate", digit: false, word: false, ignore_case: false },
@@ -359,8 +355,8 @@ const HISTORY: &[Banned] = &[
     Banned { text: "hard-won", digit: false, word: false, ignore_case: false },
 ];
 
-/// A pattern of [`HISTORY`]: its text, then a digit where `digit` says,
-/// alone as a word where `word` says.
+/// A pattern of [`HISTORY`]: its text, followed by a digit where `digit` is
+/// set, and matched as a whole word where `word` is set.
 struct Banned {
     text: &'static str,
     digit: bool,
@@ -369,7 +365,7 @@ struct Banned {
 }
 
 impl Banned {
-    /// Whether `comment` says this.
+    /// Returns whether `comment` contains this pattern.
     fn is_said_by(&self, comment: &str) -> bool {
         let comment = if self.ignore_case {
             comment.to_lowercase()
@@ -387,8 +383,8 @@ impl Banned {
     }
 }
 
-/// No comment anywhere in the crate, tests included, tells history or
-/// points at the docs.
+/// No comment in the crate, tests included, tells history or points at a
+/// document.
 #[test]
 fn comments_tell_no_history_and_cite_no_docs() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -571,8 +567,8 @@ fn wave(old_crate: u32) -> &'static str {
     );
 }
 
-/// Each comment in `text` that says a pattern of [`HISTORY`], one line
-/// each, as `file:line: comment`.
+/// Returns each comment in `text` that matches a pattern of [`HISTORY`], one
+/// a line, as `file:line: comment`.
 fn history(file: &str, text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut report = String::new();
@@ -635,10 +631,10 @@ impl Guard {
         self.styles(file, code);
     }
 
-    /// A pattern of [`STYLE_NAMES`] named, or a record of [`FACTS`]
+    /// Fails on a pattern of [`STYLE_NAMES`] named, or a record of [`FACTS`]
     /// constructed, outside `stages/content/` and `style/` and not on
-    /// [`ALLOWED_STYLES`]: a stage after the door reading a style, or
-    /// making a fact the door should have lowered.
+    /// [`ALLOWED_STYLES`]: a later stage reading a style, or making a fact
+    /// the builder should have lowered.
     fn styles(&mut self, file: &str, code: &Code) {
         if file.starts_with("src/stages/content/") || file.starts_with("src/style/") {
             return;
@@ -686,10 +682,10 @@ impl Guard {
         }
     }
 
-    /// A call of a door of [`DOORS`] in a file not on [`ALLOWED_DOORS`] for
-    /// it: a search by cluster or offset, where a walk should carry the run
-    /// it asks for. Read over the code with its white space taken
-    /// out, so a call whose receiver is on the line before is seen.
+    /// Fails on a call of a lookup of [`DOORS`] in a file not on
+    /// [`ALLOWED_DOORS`] for it: a search where a walk should carry the run.
+    /// Reads the code with white space removed, so a call whose receiver is
+    /// on the line before is seen.
     fn doors(&mut self, file: &str, code: &Code) {
         let mut squeezed = Vec::new();
         for (index, line) in code.lines.iter().enumerate() {
@@ -733,10 +729,9 @@ impl Guard {
         }
     }
 
-    /// A struct field declared `pub` on a struct that is not itself `pub`:
-    /// wider than the crate that keeps its struct to itself. `pub(crate)` and
-    /// `pub(super)` are the crate's, which frozen stage data may show its
-    /// readers.
+    /// Fails on a `pub` field of a struct that is not itself `pub`.
+    /// `pub(crate)` and `pub(super)` fields are allowed: frozen stage data
+    /// may show them to its readers.
     fn fields(&mut self, file: &str, code: &Code) {
         for item in &code.structs {
             for field in &item.fields {
@@ -767,9 +762,9 @@ impl Guard {
         }
     }
 
-    /// A function whose name has a word of [`BLOCKED_WORDS`] as one of its
-    /// `_`-separated parts: `x_of`, `x_in`, `x_for`, `own_x`, `x_holding` or
-    /// `x_at`. The bare name `at` is allowed.
+    /// Fails on a function whose name has a word of [`BLOCKED_WORDS`] as one
+    /// of its `_`-separated parts: `x_of`, `x_in`, `x_for`, `own_x`,
+    /// `x_holding` or `x_at`. The bare name `at` is allowed.
     fn blocked_names(&mut self, file: &str, code: &Code) {
         for function in &code.functions {
             let name = function.name.as_str();
@@ -797,9 +792,9 @@ impl Guard {
         }
     }
 
-    /// `Range<usize>` in code outside the data module (`src/data/`) and
-    /// `unit.rs`, where ids and lengths become numbers: a range into a
-    /// table, which should be a range of its typed ids.
+    /// Fails on `Range<usize>` in code outside `src/data/` and `unit.rs`,
+    /// where ids and lengths become numbers: a range into a table should be
+    /// a range of its typed ids.
     fn usize_ranges(&mut self, file: &str, code: &Code) {
         if file.starts_with("src/data/") || file == "src/unit.rs" {
             return;
@@ -827,9 +822,9 @@ impl Guard {
         }
     }
 
-    /// An inherent function with no receiver that returns `Self`,
-    /// `Option<Self>` or `Result<Self, …>`, not named `new`, `from_*` or
-    /// `with_*`: a constructor with a name of its own.
+    /// Fails on an inherent function with no receiver that returns `Self`,
+    /// `Option<Self>` or `Result<Self, …>` and is not named `new`, `from_*`
+    /// or `with_*`.
     fn constructors(&mut self, file: &str, code: &Code) {
         for function in &code.functions {
             if function.in_trait || function.has_receiver || !function.returns_self {
@@ -859,8 +854,7 @@ impl Guard {
         }
     }
 
-    /// An allowlist entry that excuses nothing: the rule is kept there now,
-    /// so the entry goes.
+    /// Fails on an allowlist entry that excuses nothing, so it is removed.
     fn check_stale_entries(&mut self) {
         let lists: [(&str, &[Entry], &Vec<usize>); 6] = [
             ("ALLOWED_FIELDS", ALLOWED_FIELDS, &self.used_fields),
@@ -901,8 +895,8 @@ impl Guard {
 // Reading the code
 // --------------------------------------------------------------------------
 
-/// A source file's code, with its comments, literals and `#[cfg(test)]`
-/// modules blanked, and the structs and functions the checks look at.
+/// A source file's code with its comments, literals and `#[cfg(test)]`
+/// modules blanked, and the structs and functions the checks read.
 struct Code {
     lines: Vec<String>,
     structs: Vec<Struct>,
@@ -1116,9 +1110,9 @@ impl Code {
     }
 }
 
-/// `text` with every comment, and the contents of every string and
-/// character literal, replaced by spaces, newlines kept, so that line
-/// numbers and brace depths are the code's own.
+/// Returns `text` with every comment and literal's contents replaced by
+/// spaces, keeping newlines, so line numbers and brace depths stay the
+/// code's.
 fn blank(text: &str) -> Vec<char> {
     let chars: Vec<char> = text.chars().collect();
     let mut out = chars.clone();
@@ -1227,7 +1221,8 @@ fn scan(chars: &[char], mut found: impl FnMut(Span, usize, usize)) {
     }
 }
 
-/// `chars` with every module under `#[cfg(test)]` blanked, newlines kept.
+/// Returns `chars` with every `#[cfg(test)]` module blanked, keeping
+/// newlines.
 fn blank_test_modules(mut chars: Vec<char>) -> Vec<char> {
     let attribute: Vec<char> = "#[cfg(test)]".chars().collect();
     let mut i = 0;
@@ -1277,9 +1272,11 @@ fn blank_test_modules(mut chars: Vec<char>) -> Vec<char> {
     chars
 }
 
-/// Whether `line` constructs `record`: calls its `new`, or opens a literal
-/// of it, `record {`, where `record` is a whole name, not a path's last
-/// part, and not a type before a body (`-> &'a record {`, `impl record {`).
+/// Returns whether `line` constructs `record`, by calling its `new` or
+/// opening a literal `record {`.
+///
+/// `record` must be a whole name, not a path's last part, and not a type
+/// before a body (`-> &'a record {`, `impl record {`).
 fn constructs(line: &str, record: &str) -> bool {
     line.match_indices(record).any(|(at, _)| {
         let before = &line[..at];
@@ -1307,8 +1304,7 @@ fn constructs(line: &str, record: &str) -> bool {
     })
 }
 
-/// Whether `line` defines a function whose name and opening parenthesis end
-/// as `door` does, its receiver's dot aside: the door itself, not a call.
+/// Returns whether `line` defines the lookup `door` rather than calling it.
 fn defines(line: &str, door: &str) -> bool {
     let door = door.trim_start_matches('.');
     line.match_indices("fn ").any(|(at, _)| {

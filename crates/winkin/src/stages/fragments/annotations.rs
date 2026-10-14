@@ -62,8 +62,8 @@ impl BoxInAnnotation {
 /// The boxes inside the annotation line being set, in tree order, and the
 /// stack of those open during the walk.
 ///
-/// It is line layout scratch: each annotation line clears it, and it is
-/// never dropped.
+/// Line layout scratch: each annotation line clears it, and it is never
+/// dropped.
 pub(super) struct BoxesInAnnotation {
     boxes: Table<AnnotationBoxId, BoxInAnnotation>,
     open: Vec<AnnotationBoxId>,
@@ -246,8 +246,8 @@ impl<'a> Placer<'a> {
                 .map(|ruby| (ruby, self.line_ruby.column_parts)),
         );
         // Closing-item order is postorder: child annotations precede their
-        // parent's, while siblings retain text order. Columns with none
-        // nested are in that order already.
+        // parent's, and siblings keep text order. Columns with none nested
+        // are in that order already.
         stable_sort_by_key(&mut columns[..], |open| open.close);
         let baseline = line.ascent();
         for index in 0..columns.len() {

@@ -3,19 +3,19 @@
 //! A cluster's script is its first character's, resolved as UAX #24 and
 //! Blink's `ScriptRunIterator` resolve it:
 //!
-//! - **Common, Inherited and Unknown** take the preceding real script, or at
-//!   a run's start the following one. The runs are held in scratch until
-//!   their script is known, so this is one look-ahead, not a second pass.
-//! - **Script_Extensions** narrow a shared character toward its neighbour: a
-//!   character that may be Hiragana, Katakana or Han stays in a Han run, and
+//! - **Common, Inherited and Unknown** take the preceding real script, or
+//!   the following one at a run's start. Runs wait in scratch until their
+//!   script is known, so this is one look-ahead, not a second pass.
+//! - **Script_Extensions** narrow a shared character toward its neighbour.
+//!   A character that may be Hiragana, Katakana or Han stays in a Han run;
 //!   characters that may each be several scripts keep the scripts they all
-//!   share. One that fits neither side starts a run of its own.
-//! - **Paired brackets** take the script of their opener, so the closing
+//!   share. One that fits neither side starts a run.
+//! - **Paired brackets** take their opener's script, so the closing
 //!   parenthesis after Japanese quoted in English is English.
 //!
-//! As in Blink, the resolution runs over the whole text, across paragraphs:
-//! a paragraph of digits after a paragraph of Han is Han, which is the script
-//! font fallback then asks for. The runs themselves never cross a paragraph.
+//! As in Blink, resolution runs across paragraphs: a paragraph of digits
+//! after one of Han is Han, the script font fallback then asks for. Runs
+//! never cross a paragraph.
 
 use alloc::vec::Vec;
 
@@ -27,21 +27,21 @@ use super::{
 use crate::stages::content::LanguageId;
 use crate::unicode::{self, BracketPairId, CoreProps, ScriptId};
 
-/// Brackets remembered at once. Blink keeps 32; deeper nesting forgets the
-/// outermost, which then closes as Common.
+/// The number of open brackets remembered, as in Blink. Deeper nesting
+/// forgets the outermost, which then closes as Common.
 const MAX_BRACKETS: usize = 32;
 
-/// A run found by the writer, before its paragraph's level is known and
-/// perhaps before its script is.
+/// A run the writer found, before its level and perhaps its script are
+/// known.
 #[derive(Copy, Clone, Debug)]
 pub(super) struct PendingRun {
     start: ClusterId,
     language: LanguageId,
-    /// Its script, or Common until the script run it is in resolves.
+    /// Its script, or Common until its script run resolves.
     script: ScriptId,
     orientation: RunOrientation,
-    /// Its clusters stand as its script run does, which is still undecided:
-    /// `orientation` is upright until it resolves.
+    /// Whether its clusters stand as its still undecided script run does;
+    /// `orientation` is upright until the run resolves.
     follows: bool,
 }
 
@@ -49,29 +49,30 @@ pub(super) struct PendingRun {
 enum ScriptStep {
     /// It joins the run, which keeps its script or lack of one.
     Joins,
-    /// It joins the run and decides its script, which the run's clusters
-    /// before it take too.
+    /// It joins the run and decides its script, for the run's earlier
+    /// clusters too.
     Resolves(ScriptId),
-    /// It cannot join: the run ends, with this script, and a run starts at
-    /// the cluster.
+    /// It cannot join: the run ends with this script, and a new run starts
+    /// at the cluster.
     Breaks(ScriptId),
 }
 
-/// The script run the clusters are in, and the brackets open.
+/// The current script run and the open brackets.
 struct ScriptState {
     /// The run's script, once a character has decided it.
     script: Option<ScriptId>,
-    /// While undecided: the Script_Extensions the run's shared characters
-    /// allow, the first such character's, with a bit per script still
-    /// allowed by every one since. Empty when none has come.
+    /// While undecided, the first shared character's Script_Extensions;
+    /// empty before one comes.
     candidates: &'static [ScriptId],
+    /// A bit per entry of `candidates` that every shared character since
+    /// allows.
     allowed: u64,
-    /// Open brackets, innermost last: each's pair, and the script of the run
-    /// it opened in, Common while that was undecided.
+    /// The open brackets, innermost last: each one's pair and the script of
+    /// the run it opened in, Common while that is undecided.
     brackets: [(BracketPairId, ScriptId); MAX_BRACKETS],
     depth: usize,
-    /// The first bracket opened while the run is undecided, whose script the
-    /// run's resolution fills in.
+    /// The first bracket opened while the run is undecided; resolving the
+    /// run fills in its script and those after it.
     undecided_from: usize,
 }
 
@@ -87,12 +88,12 @@ impl ScriptState {
         }
     }
 
-    /// What the cluster whose first character is `props`'s does.
+    /// Returns what the cluster whose first character has `props` does.
     ///
-    /// Every paired bracket is paired, whatever its own script, as Blink
-    /// pairs them: a closing bracket that closes an opener is the opener's
-    /// script, and an opener takes the script of the run it opens in, which
-    /// its own script decides first.
+    /// Every paired bracket pairs, whatever its own script, as in Blink. A
+    /// closing bracket that closes an opener takes the opener's script. An
+    /// opener's own script steps the run first; the opener then takes the
+    /// run's script.
     fn step(&mut self, props: CoreProps) -> ScriptStep {
         let bracket = props.bracket_pair();
         let closes = match bracket {
@@ -116,7 +117,7 @@ impl ScriptState {
         step
     }
 
-    /// A character of one real script.
+    /// Steps a character of one real script.
     fn real(&mut self, script: ScriptId) -> ScriptStep {
         match self.script {
             Some(current) if current == script => ScriptStep::Joins,
@@ -131,11 +132,11 @@ impl ScriptState {
         }
     }
 
-    /// A character that may be any of `scripts`, whose own Script is `own`.
+    /// Steps a character that may be any of `scripts`, whose own Script is
+    /// `own`.
     fn shared(&mut self, scripts: &'static [ScriptId], own: ScriptId) -> ScriptStep {
         if scripts.is_empty() {
-            // A set of nothing is no constraint; the table has none, but it
-            // costs nothing to be sure.
+            // An empty set is no constraint. The table has none.
             return if is_shared(own) {
                 ScriptStep::Joins
             } else {
@@ -162,12 +163,11 @@ impl ScriptState {
         }
     }
 
-    /// Whether the cluster whose first character is `props`'s joins the run
-    /// and changes nothing, as [`step`](Self::step) would find.
+    /// Returns whether [`step`](Self::step) would join the cluster whose
+    /// first character has `props` to the run and change nothing.
     ///
-    /// That holds for a cluster with no paired bracket and one script,
-    /// shared or the run's own. The Latin-1 fast path passes most clusters
-    /// through the runs by this test.
+    /// True for a cluster with no paired bracket and one script, shared or
+    /// the run's. The Latin-1 fast path passes most clusters by this test.
     #[inline]
     fn joins_quietly(&self, props: CoreProps) -> bool {
         props.bracket_pair().is_none()
@@ -177,7 +177,7 @@ impl ScriptState {
                 .is_some_and(|script| is_shared(script) || self.script == Some(script))
     }
 
-    /// Whether the candidates still allow `script`.
+    /// Returns whether the candidates still allow `script`.
     fn allows(&self, script: ScriptId) -> bool {
         self.candidates
             .iter()
@@ -186,7 +186,7 @@ impl ScriptState {
             .any(|(bit, &candidate)| candidate == script && self.allowed & (1 << bit) != 0)
     }
 
-    /// The run's script as it stands: decided, or its first allowed
+    /// Returns the run's script as it stands: decided, its first allowed
     /// candidate, or Common.
     fn settled(&self) -> ScriptId {
         match self.script {
@@ -201,8 +201,8 @@ impl ScriptState {
         }
     }
 
-    /// Ends the run and starts another, decided as `script` or undecided
-    /// among `candidates`, and says what the ended run was.
+    /// Ends the run and starts one decided as `script` or undecided among
+    /// `candidates`; returns the ended run's script.
     fn restart(&mut self, script: Option<ScriptId>, candidates: &'static [ScriptId]) -> ScriptStep {
         let ended = self.settled();
         self.script = script;
@@ -212,7 +212,8 @@ impl ScriptState {
         ScriptStep::Breaks(ended)
     }
 
-    /// Decides the run as `script`, and the brackets it opened undecided.
+    /// Decides the run as `script`, with the brackets it opened while
+    /// undecided.
     fn resolve(&mut self, script: ScriptId) {
         self.script = Some(script);
         let depth = self.depth;
@@ -224,10 +225,10 @@ impl ScriptState {
         self.undecided_from = depth;
     }
 
-    /// An opening bracket, remembered with the run's script.
+    /// Remembers an opening bracket with the run's script.
     fn open(&mut self, pair: BracketPairId) {
         if self.depth == MAX_BRACKETS {
-            // Forget the outermost.
+            // Forgets the outermost.
             self.brackets.copy_within(1.., 0);
             self.depth -= 1;
             self.undecided_from = self.undecided_from.saturating_sub(1);
@@ -239,8 +240,8 @@ impl ScriptState {
         }
     }
 
-    /// A closing bracket: the script its opener took, if it has an opener and
-    /// that was decided. The opener and everything opened since are closed.
+    /// Closes a bracket and returns its opener's script, if it has an opener
+    /// with a decided script. Closes the opener and everything opened since.
     fn close(&mut self, pair: BracketPairId) -> Option<ScriptId> {
         let open = self.brackets.get(..self.depth)?;
         let at = open.iter().rposition(|&(open, _)| open == pair)?;
@@ -254,7 +255,7 @@ impl ScriptState {
 /// Returns `script`, with Katakana taken as Hiragana.
 ///
 /// OpenType tags both `kana`, so a run of both shapes as one and kerns
-/// across them. Blink's `GetScriptForOpenType` maps them the same way. A
+/// across them, as Blink's `GetScriptForOpenType` maps them. A
 /// Script_Extensions set that holds Katakana holds Hiragana too.
 fn kana_as_hiragana(script: ScriptId) -> ScriptId {
     if script == ScriptId::KATAKANA {
@@ -264,21 +265,21 @@ fn kana_as_hiragana(script: ScriptId) -> ScriptId {
     }
 }
 
-/// Whether `script` is one every script shares: Common, Inherited, or
-/// Unknown for what has none.
+/// Returns whether `script` is shared by every script: Common, Inherited,
+/// or Unknown.
 pub(super) fn is_shared(script: ScriptId) -> bool {
     script == ScriptId::COMMON || script == ScriptId::INHERITED || script == ScriptId::UNKNOWN
 }
 
-/// Whether `script` is vertical-only, written only down the line, which CSS
-/// Writing Modes 4 names: Mongolian and Phags-pa. Its characters lie on their
-/// side in a vertical line, even under `text-orientation: upright`.
+/// Returns whether `script` is vertical-only per CSS Writing Modes 4:
+/// Mongolian or Phags-pa. Its characters lie on their side in a vertical
+/// line, even under `text-orientation: upright`.
 pub(super) fn is_vertical_only(script: ScriptId) -> bool {
     matches!(&script.tag(), b"Mong" | b"Phag")
 }
 
-/// How a cluster that stands as its script run does stands in a run of
-/// `script`: on its side in a vertical-only script, and upright otherwise.
+/// Returns the orientation of a cluster that follows a script run of
+/// `script`: sideways in a vertical-only script, upright otherwise.
 fn following(script: ScriptId) -> RunOrientation {
     if is_vertical_only(script) {
         RunOrientation::Sideways
@@ -287,7 +288,7 @@ fn following(script: ScriptId) -> RunOrientation {
     }
 }
 
-/// A bit for each of `scripts`, up to 64.
+/// Returns a bit for each of `scripts`, up to 64.
 fn all(scripts: &[ScriptId]) -> u64 {
     match scripts.len() {
         0 => 0,
@@ -296,7 +297,7 @@ fn all(scripts: &[ScriptId]) -> u64 {
     }
 }
 
-/// A bit for each of `candidates` that is also in `scripts`.
+/// Returns a bit for each of `candidates` that is also in `scripts`.
 fn within(candidates: &[ScriptId], scripts: &[ScriptId]) -> u64 {
     candidates
         .iter()
@@ -306,35 +307,34 @@ fn within(candidates: &[ScriptId], scripts: &[ScriptId]) -> u64 {
         .fold(0, |bits, (bit, _)| bits | (1 << bit))
 }
 
-/// How a cluster is set, as the runs read it: its orientation, and the
-/// combined unit it is in.
+/// How a cluster is set, as the runs read it: its orientation and its
+/// combined unit.
 ///
-/// It takes four bytes, which fit in a pending cluster's padding. The
-/// cluster loop of every layout copies one.
+/// Four bytes, which fit in a pending cluster's padding; every layout's
+/// cluster loop copies one.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub(super) struct Setting {
     pub(super) orientation: RunOrientation,
-    /// The combined unit it is in, a number the writer gives each unit in
-    /// turn, or 0 in none. Only a cluster's neighbours are asked whether
-    /// they share its unit, so the numbers go round, and two units side by
-    /// side never share one.
+    /// The combined unit's number, or 0 outside one. Only neighbours are
+    /// compared, so the numbers wrap around, and adjacent units never share
+    /// one.
     pub(super) unit: u16,
-    /// It stands as the script run it is in does: on its side in a
-    /// vertical-only script, and upright otherwise. `orientation` is upright
-    /// until the runs know that script.
+    /// Whether it stands as its script run does: sideways in a vertical-only
+    /// script, upright otherwise. `orientation` is upright until the script
+    /// is known.
     pub(super) follows: bool,
 }
 
 impl Setting {
-    /// Set across a horizontal line, in no unit.
+    /// The setting in a horizontal line, outside any unit.
     pub(super) const HORIZONTAL: Self = Self {
         orientation: RunOrientation::Horizontal,
         unit: 0,
         follows: false,
     };
 
-    /// Resolves the setting in a script run of `script`: a cluster that
-    /// follows its run stands as the run does.
+    /// Returns the setting in a script run of `script`, where a following
+    /// cluster takes the run's orientation.
     fn resolve(self, script: ScriptId) -> Self {
         if self.follows {
             Self {
@@ -351,12 +351,12 @@ impl Setting {
 /// Builds the runs, a cluster at a time, into the scratch list.
 pub(super) struct RunBuilder {
     state: ScriptState,
-    /// The language of the run open, or `None` before the first.
+    /// The open run's language, or `None` before the first run.
     language: Option<LanguageId>,
-    /// How the last cluster is set: horizontally before the first, which
-    /// opens its paragraph and so a run whatever it is.
+    /// The last cluster's setting; horizontal before the first cluster,
+    /// which opens a run anyway.
     setting: Setting,
-    /// The first run in the list of the script run the clusters are in.
+    /// The index of the current script run's first run in the list.
     from: usize,
 }
 
@@ -377,14 +377,14 @@ impl RunBuilder {
     /// `setting` how it is set. `opens_paragraph` says it is its
     /// paragraph's first cluster.
     ///
-    /// A run ends where the orientation changes, and around each combined
-    /// unit. A unit is one run whatever scripts it holds, since it is set as
-    /// one character. Its script is the one the script run it starts in
-    /// resolves to. Scripts still resolve across it as everywhere else.
+    /// A run ends where the language, script or setting changes, and around
+    /// each combined unit. A unit is one run whatever scripts it holds,
+    /// since it is set as one character; its script is the one its first
+    /// script run resolves to. Scripts still resolve across it.
     ///
-    /// A cluster that follows its script run stands as that run does. While
-    /// the run is undecided it is held upright, and the runs it is in turn
-    /// when the run resolves. The orientation returned is then upright.
+    /// A cluster that follows its script run is held upright while the run
+    /// is undecided, and its runs turn when the run resolves. The orientation
+    /// returned is then upright.
     pub(super) fn cluster(
         &mut self,
         runs: &mut Vec<PendingRun>,
@@ -412,7 +412,7 @@ impl RunBuilder {
             Some(script) => setting.resolve(script),
             None => setting,
         };
-        // Inside a combined unit, only the unit's own start starts a run.
+        // Inside a combined unit, only a paragraph start starts a run.
         let within = setting.unit != 0 && self.setting.unit == setting.unit;
         let restarts = if within {
             opens_paragraph
@@ -433,12 +433,11 @@ impl RunBuilder {
         })
     }
 
-    /// Whether [`cluster`](Self::cluster) would change nothing for a
+    /// Returns whether [`cluster`](Self::cluster) would change nothing for a
     /// horizontal cluster in `language` that does not open its paragraph.
     ///
-    /// That holds if it joins the script run quietly and the open run has
-    /// its language and setting. The Latin-1 fast path asks this before
-    /// `cluster`.
+    /// True if it joins the script run quietly and the open run has its
+    /// language and setting. The Latin-1 fast path asks this first.
     #[inline]
     pub(super) fn joins(&self, props: CoreProps, language: LanguageId) -> bool {
         self.language == Some(language)
@@ -446,14 +445,14 @@ impl RunBuilder {
             && self.state.joins_quietly(props)
     }
 
-    /// The text ended: the last script run settles.
+    /// Settles the last script run at the text's end.
     pub(super) fn finish(&mut self, runs: &mut [PendingRun]) {
         settle(runs, self.from, self.state.settled());
     }
 }
 
-/// Gives the runs from `from` on the script `script`, and stands those that
-/// follow it as it does.
+/// Sets `script` on the runs from index `from` on, and turns those that
+/// follow it to its orientation.
 fn settle(runs: &mut [PendingRun], from: usize, script: ScriptId) {
     if let Some(runs) = runs.get_mut(from..) {
         for run in runs {
@@ -468,10 +467,9 @@ fn settle(runs: &mut [PendingRun], from: usize, script: ScriptId) {
 
 /// Writes the runs out, each at its clusters' level.
 ///
-/// A run takes its paragraph's level. In a paragraph with clusters at other
-/// levels, runs are split wherever `changes` says the level changes. So a
-/// run has one level, and shaping sets it in one direction. `end` is the
-/// text's end, where the last run ends.
+/// A run takes its paragraph's level. In a mixed-level paragraph, runs also
+/// split at each of `changes`, so every run has one level and shapes in one
+/// direction. `end` is the text's end, where the last run ends.
 pub(super) fn emit(
     runs: &[PendingRun],
     paragraphs: &Paragraphs,
@@ -479,12 +477,12 @@ pub(super) fn emit(
     end: ClusterId,
     out: &mut ScriptRuns,
 ) {
-    // A run a pending one, and one more a change inside one.
+    // One run per pending run, plus one per change.
     out.reserve(runs.len() + changes.len());
     let mut open = paragraphs.iter().peekable();
     let mut changes = changes.iter().copied().peekable();
-    // The level the last change read set, which goes on into the runs
-    // after it: a mixed paragraph's first cluster has a change.
+    // The level set by the last change read, carried into later runs. A
+    // mixed paragraph's first cluster has a change.
     let mut current = BidiLevel::LTR;
     let mut runs = runs.iter().peekable();
     while let Some(run) = runs.next() {
@@ -516,13 +514,12 @@ pub(super) fn emit(
             push(run.start, level);
             continue;
         }
-        // The level at its start: the last change at or before it, which is
-        // in its paragraph, whose first cluster has one.
+        // The level at its start is the last change at or before it, which
+        // lies in its paragraph since the first cluster has one.
         while let Some((_, changed)) = changes.next_if(|&(at, _)| at <= run.start) {
             current = changed;
         }
         push(run.start, current);
-        // Where the run ends: the next one's start, or the text's end.
         let end = runs.peek().map_or(end, |next| next.start);
         while let Some((at, changed)) = changes.next_if(|&(at, _)| at < end) {
             push(at, changed);

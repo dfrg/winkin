@@ -1,7 +1,7 @@
-//! Facts breaking hands to line layout's placement.
+//! The line facts breaking hands to line layout's placement.
 //!
-//! They live in context scratch, not in every layout. A warm relayout reuses
-//! the table's capacity.
+//! They live in the context's [`BreakScratch`](super::BreakScratch), not in
+//! each layout, so a warm relayout reuses the table's capacity.
 
 use core::ops::{Deref, DerefMut};
 
@@ -13,14 +13,17 @@ use crate::unit::LayoutUnit;
 /// The two line facts placement needs until it writes the line's items.
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct PlacementFacts {
+    /// Where the line's content ends, before what hangs.
     pub(super) content_end: ClusterId,
+    /// Where the line box starts across the block, before the trim.
     pub(super) block_start: LayoutUnit,
 }
 
+/// The kept lines' placement facts, at each line's id.
 pub(crate) type LinePlacements = Table<LineId, PlacementFacts>;
 
-/// A fitted line before it is kept: its kept record, its placement facts,
-/// and the scale `text-fit` sets its text in, 1 where none does.
+/// A fitted line before it is kept: its record, its placement facts, and the
+/// scale `text-fit` sets its text in, 1 where none does.
 pub(super) struct PendingLine {
     pub(super) record: LineRecord,
     pub(super) facts: PlacementFacts,
@@ -39,7 +42,7 @@ impl DerefMut for PendingLine {
     }
 }
 
-/// A line as placement reads it, borrowing the record without copying it.
+/// A line as placement reads it: its borrowed record and its facts.
 pub(crate) struct LineView<'a> {
     pub(crate) id: LineId,
     record: &'a LineRecord,

@@ -8,37 +8,32 @@ use icu_segmenter::scaffold::Utf8;
 
 use crate::unicode::RareProps;
 
-/// The grapheme boundaries of a text, asked about a character at a time, in
+/// The grapheme boundaries of a text, queried one character at a time in
 /// order.
 ///
-/// Between two characters whose Grapheme_Cluster_Break stands alone (Other,
-/// a control, CR or LF) there is always a boundary, except inside a CRLF.
-/// Every rule of UAX #29 that keeps two characters together names another
-/// class on one side. Every Latin-1 character stands alone, so Latin-1 text
-/// reads no table for it. Ideographs, kana and most letters beyond Latin-1
-/// read their rare word.
+/// Two characters whose Grapheme_Cluster_Break stands alone (Other, a
+/// control, CR or LF) always have a boundary between them, except inside a
+/// CRLF: every UAX #29 rule that joins two characters names another class.
+/// Every Latin-1 character stands alone, so Latin-1 text reads no table.
 ///
-/// So only a character that may join a neighbour, or the one after it, asks
-/// the segmenter. Where the segmenter has fallen behind, it restarts at the
-/// last known boundary. Like the line segmenter, it goes on from a boundary
-/// as from the text's start.
+/// Only a character that may join a neighbour, or the one after it, asks
+/// the segmenter. A segmenter that has fallen behind restarts at the last
+/// known boundary, which segments the rest as it would from the text's start.
 pub(super) struct GraphemeCursor<'a> {
     text: &'a str,
     segmenter: GraphemeClusterSegmenterBorrowed<'static>,
-    /// The segmenter's iterator, over the text from `from`.
+    /// The segmenter's iterator over the text from byte `from`.
     iter: GraphemeClusterBreakIterator<'static, 'a, Utf8>,
     from: usize,
-    /// The next boundary the segmenter found, at or after the last position
-    /// it was asked about.
+    /// The next boundary from the segmenter, at or after the last position
+    /// queried.
     next: usize,
-    /// The last boundary known, from the segmenter or between two characters
-    /// that stand alone: where the segmenter starts again.
+    /// The last known boundary, where a restarted segmenter starts.
     known: usize,
-    /// The character before the one being asked about, or [`char::MAX`] at
-    /// the text's start.
+    /// The previous character, or [`char::MAX`] at the text's start.
     before: char,
-    /// Whether that character's Grapheme_Cluster_Break stands alone: false at
-    /// the text's start, where the segmenter is asked.
+    /// Whether the previous character stands alone; false at the text's
+    /// start, so the first query asks the segmenter.
     before_alone: bool,
 }
 
@@ -46,7 +41,7 @@ impl<'a> GraphemeCursor<'a> {
     /// Starts at the start of `text`, segmenting with `segmenter`.
     pub(super) fn new(text: &'a str, segmenter: GraphemeClusterSegmenterBorrowed<'static>) -> Self {
         let mut iter = segmenter.segment_str(text);
-        // The segmenter says 0 first: the text's start is a boundary.
+        // The first boundary is 0, the text's start.
         let next = iter.next().unwrap_or(usize::MAX);
         Self {
             text,
@@ -63,8 +58,8 @@ impl<'a> GraphemeCursor<'a> {
     /// Returns whether there is a grapheme boundary at byte `at`, before
     /// `ch`.
     ///
-    /// `rare` is `ch`'s rare word past Latin-1. Every character is asked
-    /// about, in order, except those [`skip_to`](Self::skip_to) passes.
+    /// `rare` is `ch`'s rare word, or `None` for Latin-1. Every character is
+    /// queried in order, except those [`skip_to`](Self::skip_to) passes.
     pub(super) fn boundary(&mut self, at: usize, ch: char, rare: Option<RareProps>) -> bool {
         let before = mem::replace(&mut self.before, ch);
         let alone = rare.is_none_or(|rare| rare.grapheme_cluster_break().stands_alone());
@@ -78,7 +73,7 @@ impl<'a> GraphemeCursor<'a> {
             self.iter = self
                 .segmenter
                 .segment_str(self.text.get(from..).unwrap_or_default());
-            // It says 0 first, which is `from`.
+            // Skips the first boundary, `from` itself.
             self.iter.next();
             self.from = from;
             self.next = from;
@@ -96,8 +91,8 @@ impl<'a> GraphemeCursor<'a> {
         boundary
     }
 
-    /// Goes on from `ch`, a Latin-1 character starting a grapheme at byte
-    /// `at`, past characters that were not asked about.
+    /// Resumes at `ch`, a Latin-1 character starting a grapheme at byte `at`,
+    /// after characters that were not queried.
     pub(super) fn skip_to(&mut self, at: usize, ch: char) {
         self.before = ch;
         self.before_alone = true;

@@ -8,7 +8,7 @@
 use super::*;
 use crate::style::LengthPercentage;
 
-/// Each glyph of line 0's text runs, where it is drawn.
+/// Returns each glyph of line 0's text runs, where it is drawn.
 fn glyph_places(layout: &Layout) -> Vec<(f32, f32)> {
     runs(layout, 0)
         .iter()
@@ -195,7 +195,7 @@ fn combined_line(
     layout
 }
 
-/// Line 0's combined run.
+/// Returns line 0's combined run.
 fn combined_run(layout: &Layout) -> TextRun<'_> {
     runs(layout, 0)
         .into_iter()
@@ -270,9 +270,9 @@ fn combined_text_is_fitted_to_one_em() {
 /// alphabetic baseline and 619 under in an em of 2048, is 39 and 12 whole
 /// pixels at 40 px, 26 over the central baseline and 25 under; at 25 px,
 /// 25 and 8, 17 over and 16 under. Chrome 153, Yu Gothic on lines twice its
-/// size, in `vertical-rl` and `vertical-lr` alike (research
-/// `vertical-2026-09.md` C): at 40 px `12` combined from 20.5 to 60.5 px
-/// across the 80 px line box, its font box 15 to 66, and `ABCDEFG`,
+/// size, in `vertical-rl` and `vertical-lr` alike: at 40 px `12` combined
+/// from 20.5 to 60.5 px across the 80 px line box, its font box 15 to 66,
+/// and `ABCDEFG`,
 /// narrowed to 44, from 18.5 to 62.48; at 25 px `12` from 13 to 38 across
 /// 50. Under `text-orientation: sideways` the line is on its alphabetic
 /// baseline, and the unit is set where it was, the middle of the font box:
@@ -339,9 +339,7 @@ fn combined_text_is_centred_between_its_fonts_text_over_and_under() {
                 line - from,
                 line - (to - width)
             );
-            // The carets inside the unit: its start, and between its first
-            // two characters.
-            // The carets inside the unit, a place across on the grid: its
+            // The carets inside the unit, on the grid across the line: its
             // start, and between its first two characters.
             let caret = |at: usize, want: f32| {
                 layout
@@ -358,8 +356,8 @@ fn combined_text_is_centred_between_its_fonts_text_over_and_under() {
 }
 
 /// Combined text is one character: letter-spacing goes after the text
-/// around it and not inside it or after it, as Chrome 153 spaces the probe
-/// `vertical-combinejustify`; a justified line gives it an ideograph's
+/// around it and not inside it or after it, as Chrome 153 spaces it; a
+/// justified line gives it an ideograph's
 /// room, one share after it; and it takes one emphasis mark, in the
 /// middle of its em, whatever its characters, as Blink marks a
 /// `LayoutTextCombine`.

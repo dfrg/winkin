@@ -1,19 +1,15 @@
 //! The measurement scan: one walk over a variant's clusters.
 //!
-//! In: the stages before measurement, shaping's advances among them. Out:
-//! the prefix, written once an entry, and the scan's tables in
+//! It writes each prefix entry once, and the scan's tables in
 //! [`MeasuredText`]. Start at [`Scan::measure`], then [`Walking::boundary`].
 //!
-//! - `walk` holds the impl of [`ScanWalk`], which crosses the items at
-//!   each boundary and enters the segment after them.
-//! - `ends` works out what a line starting or ending at a boundary pays.
-//! - `ruby` sizes ruby columns by looking ahead, and `overhang` works out
-//!   how far a column overhangs the text beside it.
-//! - `intrinsic` adds up the intrinsic widths.
-//! - `em_boxes` records each text item's em box.
-//! - `initial_letter` measures an initial letter.
-//!
-//! The scan's state types live here, so each of those files reads them.
+//! - `walk`: [`ScanWalk`], crossing the items at each boundary.
+//! - `ends`: what a line starting or ending at a boundary pays.
+//! - `ruby`: ruby columns, sized by looking ahead; `overhang`: how far a
+//!   column overhangs the text beside it.
+//! - `intrinsic`: the intrinsic widths.
+//! - `em_boxes`: each text item's em box.
+//! - `initial_letter`: the initial letter.
 
 mod em_boxes;
 mod ends;
@@ -61,18 +57,15 @@ use walk::OverhangNeighbour;
 
 /// What one variant's scan reads, fixed for that variant.
 ///
-/// It holds the stages before measurement, the variant, where the scan
-/// stops, the text metrics and hyphens made earlier in the stage, and the
-/// block's initial letter. Its `has_*` gates say which phases the content
-/// needs at all. The walk ([`ScanWalk`]) moves and this doesn't, so a
-/// look-ahead copies the walk alone.
+/// The `has_*` gates say which phases the content needs. Only the walk
+/// ([`ScanWalk`]) moves, so a look-ahead copies the walk alone.
 pub(super) struct Scan<'a> {
     /// The stages before measurement, and the config.
     input: &'a MeasureInput<'a>,
     /// Whose styles the text is measured in.
     variant: FirstLineVariant,
-    /// The variant's shaping: the glyphs, which say which clusters continue
-    /// a ligature, and the shaping runs the walk holds.
+    /// The variant's shaping: glyphs, which mark ligature continuations, and
+    /// the shaping runs.
     shaped: &'a ShapedText,
     /// Each cluster's shaped advance, up to `end`.
     advances: &'a [TextUnit],
@@ -84,86 +77,68 @@ pub(super) struct Scan<'a> {
     /// The baseline the lines are set on. An atomic inline without a
     /// baseline of its own sits on it.
     baseline: LineBaseline,
-    /// Which clusters take word-spacing: the build's rule.
+    /// Which clusters take word-spacing.
     words: WordSpacingRule,
-    /// The hyphens, shaped, which a line ending at a soft hyphen pays.
+    /// The shaped hyphens, which a line ending at a soft hyphen pays.
     generated: &'a GeneratedTexts,
-    /// What each text's facts measure in its primary font.
+    /// Each text's primary-font metrics.
     metrics: &'a Table<TextFactsId, TextMetrics>,
-    /// The block's initial letter.
+    /// The block's initial letter: its box's edges take what its measure says,
+    /// and its items take no room across the line.
     ///
-    /// Its box's edges take what its measure says, and its items take no
-    /// room across the line. The look-ahead that measures it reads a scan
-    /// with none.
+    /// The look-ahead that measures it reads a scan with none.
     letter: Option<InitialLetter>,
-    /// Where `text-autospace` puts room.
-    ///
-    /// The scan looks for seams only where some style sets it, and then only
-    /// in paragraphs with an ideograph.
+    /// Where `text-autospace` puts room. Seams are sought only in paragraphs
+    /// with an ideograph.
     autospace: AutospaceRules,
-    /// The text has a tab. Tab stops are sized only then.
+    /// The text has a tab, so tab stops are sized.
     has_tabs: bool,
-    /// Some box has an edge that takes room. Without one, no boundary takes
-    /// any.
+    /// Some box has an edge that takes room.
     has_edges: bool,
     /// Some box with an edge clones its decoration where it breaks.
     has_clones: bool,
-    /// Some style spaces its letters or words. Without one, the scan works
-    /// out no spacing.
+    /// Some style spaces its letters or words.
     has_spacing: bool,
-    /// Some style sets line padding. The scan tracks it only then.
+    /// Some style sets line padding.
     has_padding: bool,
-    /// Some style hangs punctuation. The scan tracks it only then.
+    /// Some style hangs punctuation.
     has_hanging: bool,
-    /// The content has ruby. The scan looks for columns and their overhang
-    /// only then.
+    /// The content has ruby.
     has_ruby: bool,
     /// Some text is combined (`text-combine-upright`). Combined text takes
     /// no spacing and ends every autospace seam.
     has_combined: bool,
-    /// The plain fast path is open ([`Walking::plain_fast_path`]).
-    ///
-    /// No style sets anything that a cluster inside a text item could pay
-    /// for beyond its advance.
+    /// Some paragraph has a soft hyphen. Without one, no line ending owes a
+    /// hyphen, and the plain fast path skips its two hyphen tests a cluster.
+    has_soft_hyphens: bool,
+    /// The plain fast path is open ([`Walking::plain_fast_path`]): no style
+    /// makes a text cluster pay beyond its advance.
     plain_fast_path_open: bool,
 }
 
 /// The scan's walk over the text, and the state that moves with it.
 ///
-/// It holds:
-/// - the segment holding the cluster after the scan's boundary, with its
-///   item's text facts and its paragraph;
-/// - cursors on the atomic inlines and floats;
-/// - the edges of the cloned boxes open;
-/// - the last leaf passed, for a ruby column's overhang.
-///
-/// It is `Copy`. A look-ahead over a ruby column or the initial letter
-/// moves a copy, leaving the scan's own in place. Both read the same
-/// [`Scan`].
+/// It is `Copy`: a look-ahead over a ruby column or the initial letter moves
+/// a copy, reading the same [`Scan`].
 #[derive(Copy, Clone)]
 struct ScanWalk<'a> {
     /// The walk over the segments and the items between them.
     segments: Segments<'a>,
-    /// What the walk yields next. The scan takes it when it reaches its
-    /// boundary.
+    /// What the walk yields next, taken at its boundary.
     ahead: Option<Step>,
-    /// The segment holding the clusters from the scan's boundary to
-    /// `until`.
+    /// The segment holding the clusters from the scan's boundary to `until`.
     segment: Option<Segment>,
-    /// The segment's item row, read where the scan enters the item.
+    /// The segment's item row.
     item: Option<&'a Item>,
-    /// The segment's paragraph and its row, read where the scan enters the
-    /// segment.
+    /// The segment's paragraph and its row.
     paragraph: Option<(ParagraphId, &'a Paragraph)>,
     /// The scan looks for autospace seams in the segment's paragraph
     /// ([`Scan::has_seams`]).
     has_seams: bool,
-    /// The segment's clusters are combined text.
-    ///
-    /// The scan reads the script run's orientation on entering the segment,
-    /// and only where some text is combined.
+    /// The segment's clusters are combined text. Read only where some text is
+    /// combined.
     combined: bool,
-    /// The autospace facts and direction, resolved on entering a segment.
+    /// The autospace facts and direction of the segment.
     seam: Option<SeamContext>,
     /// Where the segment ends. No item sits at a boundary before it.
     until: ClusterId,
@@ -171,47 +146,35 @@ struct ScanWalk<'a> {
     text: TextFactsId,
     /// The row `text` names.
     facts: &'a TextFacts,
-    /// What the item's text adds after each of its clusters.
-    ///
-    /// This holds on whichever line the clusters are set: an annotation's
-    /// own or the base's. It is zero unless some style spaces text.
+    /// What the item's text adds after each cluster, on whichever line it is
+    /// set. Zero unless some style spaces text.
     spacing: LetterWordSpacing,
-    /// The width of the U+FFFC where the item is an atomic inline: its
-    /// margin box.
+    /// An atomic inline's margin box, the width of its U+FFFC.
     atomic: Option<InlineLayoutUnit>,
-    /// The edges of the cloned boxes open so far.
+    /// The edges of the cloned boxes open.
     cloned: EdgeAmounts,
     /// The next atomic inline not passed.
     atomics: AtomicId,
     /// The next float not passed.
     floats: FloatId,
-    /// The extent of the text item the scan is in under `line-height:
-    /// normal`, and the last font that widened it.
-    ///
-    /// The font of each of the item's segments widens it. The scan pushes it
-    /// once it leaves the item.
+    /// The current text item's extent under `line-height: normal`, and the
+    /// last font that widened it. Pushed once the scan leaves the item.
     pending: Option<(Extent, UsedFontId)>,
-    /// The last thing the scan passed that holds a place, for a ruby
-    /// column's overhang.
+    /// The last thing passed that holds a place, for ruby overhang.
     leaf: OverhangNeighbour,
-    /// The item holding the cluster after the scan's boundary, as a leaf,
-    /// and its first cluster.
+    /// The item holding the cluster after the boundary, as a leaf, and its
+    /// first cluster.
     ///
-    /// Once the scan is past that cluster, the item becomes `leaf`. So a
-    /// ruby column starting at the boundary reads the leaf before it, not
-    /// its own base's first item.
+    /// It becomes `leaf` only once the scan passes that cluster, so a ruby
+    /// column starting at the boundary reads the leaf before it.
     entered: Option<(ClusterId, OverhangNeighbour)>,
-    /// How many open inline boxes have struts that reach past the block's.
-    ///
-    /// Each paragraph where it is above zero gets `BOXES_PAST_STRUT`.
+    /// How many open inline boxes have struts past the block's. Each paragraph
+    /// where it is above zero gets `BOXES_PAST_STRUT`.
     past_strut: u32,
 }
 
 /// Amounts paid at a line's two ends: `start` by a line starting at a
 /// boundary, `end` by one ending there.
-///
-/// They hold the edges of the cloned boxes open across a break, the line
-/// padding at each end, or a ruby column's overhang.
 #[derive(Copy, Clone, Debug, Default)]
 struct EdgeAmounts {
     start: InlineLayoutUnit,
@@ -227,28 +190,24 @@ impl EdgeAmounts {
 
 /// What the intrinsic sizes pay where a line starts or ends at a boundary.
 ///
-/// The edges hold the cloned boxes' edges and the line padding, less the
-/// marks that always hang there and the room of a seam a line ending there
-/// gives back.
+/// The edges leave out marks that always hang and the room of a seam a line
+/// ending there gives back.
 #[derive(Copy, Clone, Debug, Default)]
 struct LinePay {
     edges: EdgeAmounts,
-    /// What a min-content line ending here gives back beyond `edges.end`.
-    ///
-    /// It is a mark that hangs only where the line would not fit with it
-    /// (`allow-end`), which max-content counts.
+    /// What a min-content line ending here also gives back: a mark that hangs
+    /// only where the line would not fit (`allow-end`).
     min_end_hang: InlineLayoutUnit,
 }
 
 /// The room the items at one boundary take along the line.
 ///
-/// The edges that end the line before a break there ([`BoundarySplit`])
-/// come before the prefix entry there. The rest come after it. A ruby
-/// column ending there adds its width past its base to the leading closes.
+/// `leading_closes` comes before the prefix entry there, `rest` after it. A
+/// ruby column ending there adds its width past its base to the leading
+/// closes.
 #[derive(Copy, Clone, Debug, Default)]
 pub(super) struct BoundaryRoom {
-    /// The boundary is inside a whole ruby column, so no line edge falls
-    /// here.
+    /// The boundary is inside a whole ruby column, so no line edge falls here.
     inside_column: bool,
     /// The edges that end the line before a break here.
     pub(super) leading_closes: InlineLayoutUnit,
@@ -259,17 +218,12 @@ pub(super) struct BoundaryRoom {
     /// The opening item of a ruby container that opens a column here.
     ruby_open: Option<ItemId>,
     /// The edges of the cloned boxes open across a break here.
-    ///
-    /// A break falls where [`BoundarySplit`] places it.
     across: EdgeAmounts,
-    /// How far the ruby column ending here overhangs the text before it,
-    /// and the one starting here the text after it.
-    ///
-    /// A line that ends or starts here has no such text, so it pays the
-    /// overhang.
+    /// How far the ruby column ending here overhangs the text before it, and
+    /// the one starting here the text after it. A line ending or starting here
+    /// pays it.
     overhang: EdgeAmounts,
-    /// The floats anchored here. They take no room along the line and sit
-    /// beside it.
+    /// The floats anchored here, beside the line.
     floats: AnchoredFloats,
 }
 
@@ -284,10 +238,9 @@ impl BoundaryRoom {
 
     /// Adds the room `item` takes.
     ///
-    /// Annotation items, the annotation's own marks included, take nothing
-    /// on the base's line. Floats and empty text take nothing and leave the
-    /// leading closes leading. So a float anchored between two closing
-    /// edges doesn't part them.
+    /// Annotation items take nothing on the base's line. Floats and empty text
+    /// take nothing and leave the leading closes leading, so a float between
+    /// two closing edges doesn't part them.
     pub(super) fn add(&mut self, content: &Content, letter: Option<&InitialLetter>, item: &Item) {
         if item.flags.contains(ItemFlags::ANNOTATION) {
             return;
@@ -298,16 +251,15 @@ impl BoundaryRoom {
             let room = edge_room(content, letter, item, kind.is_open());
             self.split.take(kind, room, before, after);
         } else if kind == ItemKind::Absolute {
-            // An anchor takes no room, but may hold what follows it on the
-            // line after.
+            // An anchor takes no room, but may hold what follows it on the next line.
             self.split.take(kind, InlineLayoutUnit::ZERO, before, after);
         }
     }
 }
 
 impl Scan<'_> {
-    /// Returns cluster `at`'s shaped advance, widened to the prefix's 48.16:
-    /// zero past `end`, or where shaping wrote none, which is a bug in it.
+    /// Returns cluster `at`'s shaped advance as a 48.16 `InlineLayoutUnit`,
+    /// or zero past `end` or where shaping wrote none.
     #[inline]
     fn advance(&self, at: ClusterId) -> InlineLayoutUnit {
         InlineLayoutUnit::from_text(self.advances.get(at.get()).copied().unwrap_or_default())
@@ -315,9 +267,8 @@ impl Scan<'_> {
 
     /// Measures one variant into `out`, and returns its intrinsic widths.
     ///
-    /// It measures the initial letter and the fixed box shifts first, so a
-    /// ruby look-ahead can read them. Then the walk turns `advances` into the
-    /// prefix and records the item extents and em boxes.
+    /// The initial letter and the fixed box shifts come first, for a ruby
+    /// look-ahead to read.
     pub(super) fn measure(
         mut self,
         cx: &mut ShapeSession<'_, '_>,
@@ -340,11 +291,7 @@ impl Scan<'_> {
     /// Writes the prefix sums into `sums`, and `out`'s paragraph flags,
     /// extents and line-edge costs. Returns the intrinsic widths.
     ///
-    /// `sums` takes one entry before each cluster and one at the end, summed
-    /// from the shaped advances. The text's variant covers the whole text. The
-    /// first line's variant covers the first paragraph, in its
-    /// `::first-line` styles, with the same tables over the same clusters.
-    /// [`Walking::boundary`] measures each boundary in turn.
+    /// `sums` gets one entry before each cluster and one at the end.
     fn walk(
         &self,
         sums: &mut Vec<InlineLayoutUnit>,
@@ -354,9 +301,7 @@ impl Scan<'_> {
         let MeasureInput {
             content, analysis, ..
         } = *self.input;
-        // The text's scan writes an extent for every item and flags for every
-        // paragraph. The first line's writes them up to the first
-        // paragraph's end.
+        // The first line's scan writes only up to the first paragraph's end.
         if self.variant == FirstLineVariant::Standard {
             out.extents.reserve(content.items.len());
             out.paragraphs.reserve(analysis.paragraphs.len());
@@ -375,9 +320,6 @@ impl Scan<'_> {
 impl<'a> Scan<'a> {
     /// Returns the scan of `input` in `variant`'s styles, with no initial
     /// letter yet.
-    ///
-    /// Word-spacing goes where `words` says. The scan reads the hyphens in
-    /// `generated` and the text metrics in `metrics`.
     pub(super) fn new(
         input: &'a MeasureInput<'a>,
         variant: FirstLineVariant,
@@ -402,8 +344,7 @@ impl<'a> Scan<'a> {
             input,
             variant,
             shaped,
-            // A missing advance is a bug in shaping; its cluster then
-            // measures zero.
+            // A missing advance is a bug in shaping; its cluster measures zero.
             advances: shaped.advances.get(..end.get()).unwrap_or(&shaped.advances),
             source: content.text(variant),
             end,
@@ -422,13 +363,12 @@ impl<'a> Scan<'a> {
             has_hanging,
             has_ruby,
             has_combined: analysis.flags.contains(ParagraphFlags::HAS_COMBINED),
+            has_soft_hyphens: analysis.flags.contains(ParagraphFlags::HAS_SOFT_HYPHEN),
             plain_fast_path_open: work::fast_paths() && !has_ruby && !has_padding && !has_hanging,
         }
     }
 
     /// Returns the script run of `segment`, through its shaping run's link.
-    ///
-    /// Each step is one indexed load.
     fn script(&self, segment: &Segment) -> Option<&'a ScriptRun> {
         let run = self.shaped.runs.get(segment.run)?;
         self.input.analysis.runs.get(run.script_run)
@@ -444,16 +384,14 @@ impl<'a> Scan<'a> {
         self.autospace.any() && para.flags.contains(ParagraphFlags::HAS_EAST_ASIAN)
     }
 
-    /// Returns the strut of text with the facts `text`.
+    /// Returns `text`'s strut.
     fn strut(&self, text: TextFactsId) -> Extent {
         self.metrics
             .get(text)
             .map_or(Extent::NONE, |metrics| metrics.strut)
     }
 
-    /// Returns where the tabs of text with the facts `text` stop.
-    ///
-    /// Returns `None` where the text has no tab.
+    /// Returns `text`'s tab stops, or `None` where the text has no tab.
     fn tab_stops(&self, text: TextFactsId) -> Option<TabStops> {
         if !self.has_tabs {
             return None;
@@ -464,8 +402,7 @@ impl<'a> Scan<'a> {
     /// Returns the paragraph holding the cluster at `at`, and the paragraph
     /// the boundary at `at` belongs to.
     ///
-    /// The walk `walk` stands at `at`, and `paragraph` is the previous
-    /// boundary's. At the scan's end no cluster follows, and the boundary
+    /// `paragraph` is the previous boundary's. At the scan's end the boundary
     /// belongs to the text's last paragraph, or to the one starting there.
     #[inline]
     fn boundary_paragraphs(
@@ -487,8 +424,7 @@ impl<'a> Scan<'a> {
     }
 }
 
-/// One variant's walk over its boundaries: the scan's walk, the tables it
-/// writes, and what it carries from one boundary to the next.
+/// One variant's walk over its boundaries, and the tables it writes.
 struct Walking<'w, 'a> {
     scan: &'w Scan<'a>,
     /// The prefix sums before the walk's boundary.
@@ -501,23 +437,21 @@ struct Walking<'w, 'a> {
     em_boxes: Option<ItemEmScan>,
     ends: LineEndState,
     widths: IntrinsicScan,
-    /// The paragraph the last boundary belongs to, and what was found of it
-    /// so far.
+    /// The paragraph the last boundary belongs to, and its flags so far.
     paragraph: ParagraphId,
     flags: MeasureFlags,
     writer: PrefixWriter,
-    /// What a line starting or ending at the last boundary pays, as the
-    /// intrinsic sizes count it.
+    /// What a line starting or ending at the last boundary pays, for the
+    /// intrinsic sizes.
     cost: LinePay,
     ruby: RubyBoundaries,
-    /// The text's last line ends at its end. Where the text ends in a
-    /// separator, its last paragraph is empty and holds no line.
+    /// The text's last line ends at its end; false where the text ends in a
+    /// separator, leaving an empty last paragraph.
     ends_on_a_line: bool,
 }
 
 impl<'w, 'a> Walking<'w, 'a> {
-    /// Returns the walk of `scan` before its first boundary, writing `prefix`
-    /// and `out`.
+    /// Returns the walk of `scan` before its first boundary.
     fn new(
         scan: &'w Scan<'a>,
         sums: &'w mut Vec<InlineLayoutUnit>,
@@ -546,22 +480,18 @@ impl<'w, 'a> Walking<'w, 'a> {
     }
 
     /// Measures boundary `at` and the cluster after it, and returns the next
-    /// boundary to measure.
+    /// boundary.
     ///
-    /// Each phase is a call:
-    /// 1. The walk crosses the items there into the next segment
-    ///    ([`ScanWalk::cross`]).
-    /// 2. A ruby column ending there closes, and one starting there is sized
-    ///    ([`RubyBoundaries::cross`]).
-    /// 3. The cluster after it is measured ([`ScanWalk::step`]).
-    /// 4. A line starting or ending there is charged ([`LineEndState::cost`]).
-    /// 5. The paragraphs ending there close
-    ///    ([`end_paragraphs`](Self::end_paragraphs)), and the prefix entry is
-    ///    written here.
-    /// 6. What a line ending after the cluster ends with is recorded
-    ///    ([`record_line_end`](Self::record_line_end)).
-    /// 7. The plain fast path runs on from there where it is open
-    ///    ([`plain_fast_path`](Self::plain_fast_path)).
+    /// The phases, in order:
+    /// 1. [`ScanWalk::cross`] crosses the items there.
+    /// 2. [`RubyBoundaries::cross`] closes and opens ruby columns.
+    /// 3. [`ScanWalk::step`] measures the cluster after it.
+    /// 4. [`LineEndState::cost`] charges a line starting or ending there.
+    /// 5. [`end_paragraphs`](Self::end_paragraphs) closes paragraphs, and the
+    ///    prefix entry is written.
+    /// 6. [`record_line_end`](Self::record_line_end) records what a line
+    ///    ending after the cluster ends with.
+    /// 7. [`plain_fast_path`](Self::plain_fast_path) runs on where it is open.
     fn boundary(&mut self, at: ClusterId) -> ClusterId {
         let scan = self.scan;
         let clusters = &scan.input.analysis.clusters;
@@ -596,17 +526,14 @@ impl<'w, 'a> Walking<'w, 'a> {
             );
         }
         if at == clusters.end_id() && self.ends_on_a_line {
-            // No line starts at the text's end, so nothing there is the
-            // next line's: an empty box ending the text, or one left
-            // open, is the last line's.
+            // No line starts at the text's end: an empty or open box there is the
+            // last line's.
             room.leading_closes += room.rest;
             room.rest = InlineLayoutUnit::ZERO;
         }
-        // Measure the cluster after the boundary before the boundary's
-        // costs, since a mark hanging at a line's start is that cluster.
-        // It adds its advance, the spacing after it, and the room of a
-        // seam after it. The shaper puts `text-spacing-trim` in the
-        // advance.
+        // The cluster after the boundary is measured before the boundary's costs:
+        // a mark hanging at a line's start is that cluster. Its advance includes
+        // `text-spacing-trim`.
         let attrs = clusters.attrs(at);
         let class = attrs.map_or(ClusterClass::Text, ClusterAttrs::class);
         let seams = held.is_some() && self.walk.has_seams;
@@ -630,13 +557,10 @@ impl<'w, 'a> Walking<'w, 'a> {
             self.flags.insert(MeasureFlags::HAS_EDGE_COSTS);
         }
         self.cost = paid;
-        // The leading closing edges end the line before a break here,
-        // and the paragraph before, where one ends here.
+        // The leading closes end the line before a break here.
         self.writer.sum += room.leading_closes;
-        // The prefix going back from the last boundary to this one marks
-        // the paragraph, which may end here. A dip between the two
-        // boundaries that recovers by this one doesn't count: nobody
-        // reads it.
+        // A dip in the prefix between boundaries doesn't count: the breaker reads
+        // only boundaries.
         if at > text_start && self.writer.went_back() {
             self.flags.insert(MeasureFlags::NONMONOTONE);
         }
@@ -650,8 +574,7 @@ impl<'w, 'a> Walking<'w, 'a> {
         self.widths.boundary(self.writer.sum, self.cost);
         self.ends.pass_room(room.leading_closes);
         if self.paragraph < next {
-            // The cost is the next paragraph's start's too, and so are
-            // the boxes open across it.
+            // The cost and the open boxes carry into the next paragraph.
             let mut carried = MeasureFlags::NONE;
             if has_cost {
                 carried.insert(MeasureFlags::HAS_EDGE_COSTS);
@@ -664,20 +587,18 @@ impl<'w, 'a> Walking<'w, 'a> {
         if column.is_some_and(|open| open.may_break) {
             self.flags.insert(MeasureFlags::HAS_BREAKABLE_RUBY);
         }
-        // The floats anchored here sit beside the paragraph the boundary
-        // starts. A float after a forced break is the next line's, as
-        // Chrome's breaker leaves it.
+        // The floats anchored here sit beside the paragraph the boundary starts.
+        // A float after a forced break is the next line's, as in Chrome's breaker.
         self.widths.floats(room.floats);
         self.writer.write(self.sums);
-        // The rest start the line after it.
+        // The rest start the line after.
         self.writer.sum += room.rest;
         self.ends.pass_room(room.rest);
-        // The scan's end has no cluster after it.
         if at == end {
             return next_at;
         }
-        // A tab takes nothing in the prefix. In the intrinsic widths it
-        // takes the distance from the pen to its stop.
+        // A tab takes nothing in the prefix. The intrinsic widths size it from the
+        // pen to its stop.
         let tab = match class {
             ClusterClass::Tab if !self.walk.annotation() => {
                 let reach = self.out.ruby_columns().tab_reach(at);
@@ -695,7 +616,7 @@ impl<'w, 'a> Walking<'w, 'a> {
         if gap != InlineLayoutUnit::ZERO {
             self.flags.insert(MeasureFlags::HAS_AUTOSPACE);
         }
-        // Intrinsic sizing still treats each column as one object.
+        // No break inside a ruby column: `IntrinsicScan::ruby` adds its pieces.
         let outer_attrs = attrs.map(|attrs| {
             let inside = column.is_some_and(|open| at.get() + 1 < open.end.get());
             if inside {
@@ -706,22 +627,24 @@ impl<'w, 'a> Walking<'w, 'a> {
         });
         (self.widths).cluster(outer_attrs, step, tab, self.walk.facts.flags);
         self.record_line_end(at, class, (attrs, outer_attrs), gap, step);
-        // Run the plain fast path from the next boundary where its gate holds:
-        // the fast path is open for the content, the item is plain, and the
-        // paragraph has no autospace seams.
+        // The gate: the content allows the fast path, the item is plain, and the
+        // paragraph has no seams.
         if scan.plain_fast_path_open
             && gap == InlineLayoutUnit::ZERO
             && self.walk.is_plain()
             && held.is_some()
             && !self.walk.has_seams
         {
-            return self.plain_fast_path(next_at);
+            return if scan.has_soft_hyphens {
+                self.plain_fast_path::<true>(next_at)
+            } else {
+                self.plain_fast_path::<false>(next_at)
+            };
         }
         next_at
     }
 
-    /// Widens the em box of the item the walk is in by the segment it just
-    /// entered.
+    /// Widens the current item's em box by the segment just entered.
     fn enter_em_box(&mut self) {
         if let Some(em) = &mut self.em_boxes
             && let Some(segment) = &self.walk.segment
@@ -730,11 +653,9 @@ impl<'w, 'a> Walking<'w, 'a> {
         }
     }
 
-    /// Ends each paragraph from the walk's up to `next`, the one the
-    /// boundary belongs to.
+    /// Ends each paragraph up to `next`, the one the boundary belongs to.
     ///
-    /// Each paragraph ended writes its flags and its intrinsic widths at the
-    /// running sum with the boundary's cost. The next starts with fresh
+    /// Each writes its flags and intrinsic widths. The next starts with fresh
     /// line-end state and the flags `carried` across the boundary.
     fn end_paragraphs(&mut self, next: ParagraphId, carried: MeasureFlags) {
         let sum = self.writer.sum;
@@ -751,17 +672,16 @@ impl<'w, 'a> Walking<'w, 'a> {
         }
     }
 
-    /// Measures again the min-content lines of the current paragraph, which
-    /// ends at sum `end` and whose prefix goes back, as Chrome's breaker
-    /// sets them in no room.
+    /// Measures again the min-content lines of the current paragraph, whose
+    /// prefix goes back, as Chrome's breaker sets them in no room. It ends at
+    /// sum `end`.
     ///
-    /// A line overflows at its first opportunity unless its content ends
-    /// there no further on than it started. Where nothing up to its first
-    /// opportunity fits, the breaker tries the later ones, as
-    /// `Breaker::later_fit` does: from the first that fits, the line goes on
-    /// to the last that fits before one that doesn't (WPT
-    /// `inline-negative-margin-001`). A paragraph with tabs, ruby, hanging
-    /// marks or line-edge costs keeps the lines the scan gave it.
+    /// A line overflows at its first opportunity unless its content ends no
+    /// further on than it started. Where nothing fits there, later
+    /// opportunities are tried, as `Breaker::later_fit` does: from the first
+    /// that fits, the line runs to the last that fits (WPT
+    /// `inline-negative-margin-001`). A paragraph with tabs, ruby, hanging marks
+    /// or line-edge costs keeps the scan's lines.
     #[cold]
     #[inline(never)]
     fn redo_min_lines(&mut self, end: InlineLayoutUnit) {
@@ -805,7 +725,7 @@ impl<'w, 'a> Walking<'w, 'a> {
             }
             range.end
         };
-        // Where the content of a line ending at `at` ends: before what hangs.
+        // Where a line ending at `at` ends its content: before what hangs.
         let content_end = |at: ClusterId| {
             let mut first = at;
             while first > range.start && has(ClusterId::new(first.get() - 1), ClusterAttrs::HANGS) {
@@ -814,8 +734,7 @@ impl<'w, 'a> Walking<'w, 'a> {
             }
             sum(first)
         };
-        // The room of the boxes opening at boundary `at`, which a line
-        // ending there takes where it brings the line back.
+        // The room of the boxes opening at `at`.
         let content = scan.input.content;
         let near = Cell::new(ItemId::new(0));
         let opening = |at: ClusterId| {
@@ -826,9 +745,9 @@ impl<'w, 'a> Walking<'w, 'a> {
             near.set(item);
             boundary_room(content, analysis, None, at, item).1
         };
-        // The content's end on a line ending at `at`, and where the next
-        // starts: the boxes opening there end the line where their negative
-        // room fits, as Chrome's breaker takes each item that fits.
+        // Where a line ending at `at` ends its content, and where the next starts.
+        // Opening boxes with negative room end the line, as Chrome's breaker takes
+        // each item that fits.
         let ends = |at: ClusterId| {
             let rest = opening(at).min(InlineLayoutUnit::ZERO);
             (content_end(at) + rest, sum(at) + rest)
@@ -843,8 +762,8 @@ impl<'w, 'a> Walking<'w, 'a> {
                 let (end, next) = ends(at);
                 (width(end) <= InlineLayoutUnit::ZERO).then_some((at, width(end), next))
             };
-            // Where nothing fits up to the first opportunity, a later one
-            // may; from the first that fits, the line goes on while they do.
+            // Where nothing fits up to the first opportunity, try later ones; from the
+            // first that fits, go on while they fit.
             let opportunity = next_end(start);
             let mut found = fits(opportunity);
             let mut at = opportunity;
@@ -875,15 +794,13 @@ impl<'w, 'a> Walking<'w, 'a> {
 
     /// Records what a line ending after the cluster at `at` ends with.
     ///
-    /// - The room of the seam after the cluster, `gap`, which the line gives
-    ///   back.
-    /// - After a soft hyphen a line may break after, the hyphen, its width
-    ///   snapped to the grid as Chrome's `HyphenResult::InlineSize` is.
+    /// - `gap`, the seam's room after the cluster, which the line gives back.
+    /// - After a breakable soft hyphen, the hyphen, snapped to the grid as
+    ///   Chrome's `HyphenResult::InlineSize` is.
     /// - Where the cluster doesn't hang, its padding and the mark that may
     ///   hang. `step` is its advance with `gap`.
     ///
-    /// The cluster has `class` and its own `attrs`, and `outer_attrs` as the
-    /// intrinsic sizes read it.
+    /// `outer_attrs` are `attrs` as the intrinsic sizes read them.
     #[inline]
     fn record_line_end(
         &mut self,
@@ -905,35 +822,31 @@ impl<'w, 'a> Walking<'w, 'a> {
         }
         let hangs = attrs.is_some_and(|attrs| attrs.has(ClusterAttrs::HANGS));
         if (scan.has_padding || scan.has_hanging) && !hangs {
-            // A mark hanging past a line's end hangs its own advance. A line
-            // ending after it gives the seam's room back already.
+            // A mark hangs its own advance; the seam's room is given back already.
             let clusters = &scan.input.analysis.clusters;
             ends.content(walk, step - gap, || clusters.first_char(scan.source, at));
         }
     }
 
-    /// Runs the plain fast path from boundary `from`: a tight loop over
-    /// boundaries where each cluster pays only its advance.
+    /// Runs the plain fast path from boundary `from`: a tight loop where each
+    /// cluster pays only its advance.
     ///
-    /// The fast path runs to the end of the current item, its paragraph, or
-    /// the scan. It writes each boundary's sum into the prefix, and moves the
-    /// walk into the item's next segment where a shaping run ends inside the
-    /// item. It marks the paragraph where the prefix goes back, and keeps the
-    /// intrinsic widths up to date.
+    /// It runs to the end of the current item, its paragraph, or the scan,
+    /// entering the item's next segment where a shaping run ends inside it. A
+    /// breakable soft hyphen's hyphen is charged at the next boundary
+    /// ([`LineEndState::take_plain_hyphen`]).
     ///
-    /// A soft hyphen a line may break after owes its hyphen to the boundary
-    /// after it, which charges it ([`LineEndState::take_plain_hyphen`]).
+    /// With `HYPHENS` false the text has no soft hyphen and the loop skips
+    /// the hyphen tests.
     ///
-    /// Returns the boundary it stopped at: the fast path's end, or the
-    /// boundary before a sized tab or an atomic inline's U+FFFC. The general
-    /// body handles those, and a hyphen still owed there.
+    /// Returns where it stopped: the end, or before a sized tab or an atomic
+    /// inline's U+FFFC, which the general body handles.
     ///
-    /// The fast path is exact because of its gate. The content has no ruby,
-    /// line padding or hanging punctuation. The paragraph has no autospace
-    /// seam. The item has no spacing, cloned edge or annotation. So every
-    /// cost the general body would work out here but the hyphen's is zero.
+    /// It is exact because of its gate: no ruby, line padding or hanging
+    /// punctuation, no seam in the paragraph, and no spacing, cloned edge or
+    /// annotation in the item. Every other cost is zero.
     #[inline(always)]
-    fn plain_fast_path(&mut self, from: ClusterId) -> ClusterId {
+    fn plain_fast_path<const HYPHENS: bool>(&mut self, from: ClusterId) -> ClusterId {
         let scan = self.scan;
         let clusters = &scan.input.analysis.clusters;
         let mut at = from;
@@ -957,7 +870,12 @@ impl<'w, 'a> Walking<'w, 'a> {
                 if tab || class == ClusterClass::Object {
                     return at;
                 }
-                let pay = match ends.take_plain_hyphen(at) {
+                let hyphen = if HYPHENS {
+                    ends.take_plain_hyphen(at)
+                } else {
+                    None
+                };
+                let pay = match hyphen {
                     Some((pay, edge)) => {
                         out.rare_mut().edge_costs.push(edge);
                         flags.insert(MeasureFlags::HAS_EDGE_COSTS);
@@ -973,7 +891,8 @@ impl<'w, 'a> Walking<'w, 'a> {
                 writer.write(sums);
                 writer.sum += advance;
                 widths.cluster(attrs, advance, Tab::NONE, text);
-                if class == ClusterClass::SoftHyphen
+                if HYPHENS
+                    && class == ClusterClass::SoftHyphen
                     && attrs.is_some_and(|attrs| attrs.has(ClusterAttrs::BREAK_AFTER))
                 {
                     let generated = scan.generated;
@@ -990,22 +909,20 @@ impl<'w, 'a> Walking<'w, 'a> {
         }
     }
 
-    /// Ends the walk past its last boundary, and returns the intrinsic
-    /// widths.
+    /// Ends the walk past its last boundary, and returns the intrinsic widths.
     fn finish(mut self) -> IntrinsicScan {
         let scan = self.scan;
         let analysis = scan.input.analysis;
-        // The last text item's extent, which its fonts widened to the end.
+        // The last text item's extent.
         self.walk.flush(&mut self.out.extents);
         if let Some(em) = self.em_boxes.take() {
             em.finish(scan, self.out);
         }
-        // The last paragraph ends at the text's end, after its closing
-        // edges. A line ending there pays what the last boundary charged. A
-        // scan that stops at the first paragraph's end has ended it already.
+        // The last paragraph ends at the text's end, after its closing edges. A
+        // first-line scan has ended it already.
         if scan.end == analysis.clusters.end_id() {
-            // An empty last paragraph that makes a line holds the room of
-            // the boxes opening there, which no prefix sum holds.
+            // An empty last paragraph that makes a line holds the room of the boxes
+            // opening there, which no prefix sum holds.
             let sum = if analysis.paragraphs.has_end_line() {
                 self.writer.sum
             } else {
@@ -1024,12 +941,10 @@ impl<'w, 'a> Walking<'w, 'a> {
     }
 }
 
-/// The one writer of the prefix sums, in the general body and the plain fast path
-/// alike.
+/// The one writer of the prefix sums, for the general body and the fast path.
 ///
-/// It holds the running sum and the prefix entry at the last boundary. The
-/// next boundary is compared with that entry, since the breaker reads the
-/// prefix at boundaries only.
+/// It keeps the running sum and the entry at the last boundary, since the
+/// breaker reads the prefix at boundaries only.
 #[derive(Copy, Clone, Debug, Default)]
 struct PrefixWriter {
     sum: InlineLayoutUnit,
@@ -1037,14 +952,13 @@ struct PrefixWriter {
 }
 
 impl PrefixWriter {
-    /// Returns whether the sum is under the prefix at the last boundary,
-    /// which means the prefix goes back.
+    /// Returns whether the sum is under the last boundary's entry: the prefix
+    /// goes back.
     fn went_back(self) -> bool {
         self.sum < self.last
     }
 
-    /// Appends the sum to `sums`, as the prefix entry at the current
-    /// boundary.
+    /// Appends the sum to `sums` as the current boundary's entry.
     #[inline]
     fn write(&mut self, sums: &mut Vec<InlineLayoutUnit>) {
         sums.push(self.sum);
@@ -1052,11 +966,11 @@ impl PrefixWriter {
     }
 }
 
-/// The prefix as a ruby look-ahead reads it at the scan's boundary: the
-/// running sums before the boundary, and the shaped advances from it on.
+/// The prefix as a ruby look-ahead reads it: sums before the scan's
+/// boundary, shaped advances from it on.
 #[derive(Copy, Clone)]
 pub(super) struct ScanPrefix<'s> {
-    /// The sums written, one before each boundary the scan passed.
+    /// The sums written so far.
     sums: &'s [InlineLayoutUnit],
     /// Each cluster's shaped advance, up to `end`.
     advances: &'s [TextUnit],
@@ -1065,9 +979,8 @@ pub(super) struct ScanPrefix<'s> {
 }
 
 impl ScanPrefix<'_> {
-    /// Returns the entry at `at`: a sum before the scan's boundary, an
-    /// advance from it on, and zero at the scan's end. Returns `None` past
-    /// the end.
+    /// Returns the entry at `at`: a sum before the scan's boundary, an advance
+    /// from it on, zero at the scan's end, and `None` past it.
     pub(super) fn get(self, at: ClusterId) -> Option<InlineLayoutUnit> {
         match self.sums.get(at.get()) {
             Some(&sum) => Some(sum),

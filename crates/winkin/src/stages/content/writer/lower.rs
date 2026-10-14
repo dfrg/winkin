@@ -1,26 +1,26 @@
-//! Lowering each node's styles into facts, and the writer's reads of the
-//! facts it lowered.
+//! Lowers node styles into facts, and reads back the facts lowered.
 
 use super::{ContentScratch, ContentWriter, InitialLetterUse, LoweredNode, NodeFacts};
 #[cfg(any(debug_assertions, test))]
 use crate::stages::content::facts_check;
 use crate::stages::content::lists::Lookup;
 use crate::stages::content::memo::StyleKey;
-use crate::stages::content::transform::{TextTransformer, Transforms, case_langid};
+use crate::stages::content::transform::{TextTransformer, Transforms};
 use crate::stages::content::{
     BoxFactsId, Content, ContentFlags, Facts, NodeId, NodeKind, TextFacts, TextFactsId, TextFlags,
 };
+use crate::unicode::CaseLanguage;
 
-/// What lowering a style writes to: the fact tables, their lookup, and the
-/// content's flags.
+/// The fact tables, their lookup and the content's flags, which lowering
+/// writes.
 type Lowering<'a> = (&'a mut Facts, &'a mut Lookup, &'a mut ContentFlags);
 use crate::style::{
     BidiGroup, ComputedStyle, Direction, FirstLineVariant, RubyGroup, TextTransform,
 };
 
 impl ContentWriter<'_> {
-    /// Returns `style` keyed for the writer, its lists interned. Lists that
-    /// do not fit are replaced and counted.
+    /// Returns `style` with its lists interned. Lists that don't fit are
+    /// replaced and counted.
     pub(super) fn key(&mut self, style: &ComputedStyle<'_>) -> StyleKey {
         let (fonts, ..) = self.cx.selecting_fonts();
         self.scratch.lists.key(
@@ -31,10 +31,9 @@ impl ContentWriter<'_> {
         )
     }
 
-    /// Returns a node's style keyed with `initial-letter` as `letter` uses
-    /// it, and, where the block has `::first-line`, its first-line style
-    /// pinned and keyed the same way: `first_line`, or its own where that is
-    /// `None`.
+    /// Returns a node's style keyed with `letter` applied, and, when the
+    /// block has `::first-line`, its pinned first-line style keyed the same
+    /// way (the own key when `first_line` is `None`).
     pub(super) fn key_styles(
         &mut self,
         letter: InitialLetterUse,
@@ -50,15 +49,13 @@ impl ContentWriter<'_> {
         (own, first_line)
     }
 
-    /// Lowers a node's style, and its pinned first-line style where the
-    /// block has `::first-line`, into the facts a node of `kind` has.
+    /// Lowers a node's style, and its first-line style if any, into facts
+    /// for a node of `kind`.
     ///
-    /// `initial-letter` is kept only for an inline box (`inline_box`) that
-    /// may be the block's initial letter, which then takes it (see
-    /// [`initial_letter_use`](Self::initial_letter_use)). Everything else is
-    /// lowered with its used value, `normal`. Where a fact table cannot take
-    /// the facts, the container's text facts and the initial box facts
-    /// stand in.
+    /// `initial-letter` is kept only for an `inline_box` that may be the
+    /// initial letter (see [`initial_letter_use`](Self::initial_letter_use));
+    /// elsewhere it is `normal`. If a fact table is full, the container's
+    /// text facts and the initial box facts stand in.
     pub(super) fn lower_node_styles(
         &mut self,
         style: &ComputedStyle<'_>,
@@ -72,13 +69,11 @@ impl ContentWriter<'_> {
         self.lower_both(&own, first_line.as_ref(), kind, Some(around))
     }
 
-    /// Lowers the facts of a node of `kind` set in `own` and, where the
-    /// block has `::first-line`, in `first_line`.
+    /// Lowers keyed styles `own` and `first_line` into facts and transforms
+    /// for a node of `kind`.
     ///
-    /// Each variant is lowered by [`lower`](Self::lower), with the
-    /// container's facts in that variant, `around`, as its stand-in. The
-    /// block has no container, so it has none. The result also says how
-    /// the text written in the node is transformed.
+    /// Each variant uses the container's text facts in that variant,
+    /// `around`, as its stand-in; the block has no container (`None`).
     pub(super) fn lower_both(
         &mut self,
         own: &StyleKey,
@@ -89,7 +84,7 @@ impl ContentWriter<'_> {
         let stand_in = around.map_or(TextFactsId::default(), |around| around.own.text);
         let lowered = self.lower(own, kind, stand_in);
         let first = first_line.map(|first| {
-            // The block's first line stands in its own text facts.
+            // The block's first line falls back to its own text facts.
             let stand_in = match around {
                 Some(around) => around.first_line.unwrap_or(around.own).text,
                 None => lowered.text,
@@ -110,14 +105,12 @@ impl ContentWriter<'_> {
 
     /// Lowers `style` into the facts of a node of `kind`.
     ///
-    /// The facts come from the memo, or are lowered and held there.
-    /// Each new row is interned, and the content's flags are set for what
-    /// it holds. The block's styles are lowered once a build and not held.
+    /// Facts come from the memo, or are lowered, interned and memoized; new
+    /// rows set the content's flags. The block's styles skip the memo.
     ///
-    /// Where a fact table is full, the node's text facts are `stand_in`,
-    /// its parent's, since text facts inherit. Its box facts are the
-    /// initial ones, a culled box's, never its parent's. Each counts as a
-    /// style replaced.
+    /// If a fact table is full, the text facts are `stand_in`, the
+    /// parent's, since text facts inherit; the box facts are the initial
+    /// ones, a culled box's. Each counts as a replaced style.
     fn lower(&mut self, style: &StyleKey, kind: NodeKind, stand_in: TextFactsId) -> NodeFacts {
         let basis = self.content.basis();
         let Content {
@@ -134,7 +127,6 @@ impl ContentWriter<'_> {
         if style.text.transform.is_math_auto() {
             flags.insert(ContentFlags::MATH_AUTO);
         }
-        // The flags each new row holds go in the content's flags.
         let lower_text = |(facts, lookup, flags): &mut Lowering<'_>| {
             let lowered = facts.lower_text(lookup, languages, style, writing_mode);
             flags.insert(lowered.flags);
@@ -163,15 +155,14 @@ impl ContentWriter<'_> {
         NodeFacts { text, box_ }
     }
 
-    /// Returns the box facts of a box that keeps nothing of its own but its
-    /// `direction`, as a plain first letter does. New rows are interned.
+    /// Returns the box facts of a plain first letter, which keeps only its
+    /// `direction`.
     pub(super) fn plain_box(&mut self, direction: Direction) -> BoxFactsId {
         self.box_keeping(direction, RubyGroup::INITIAL, NodeKind::FirstLetter)
     }
 
     /// Returns the box facts of an anonymous ruby container, which keeps
-    /// nothing of its own but its `direction` and the ruby properties it
-    /// inherits, `ruby`. New rows are interned.
+    /// only its `direction` and inherited `ruby` properties.
     pub(super) fn anonymous_ruby_box(
         &mut self,
         direction: Direction,
@@ -181,7 +172,7 @@ impl ContentWriter<'_> {
     }
 
     /// Returns the box facts of a node of `kind` that keeps only `direction`
-    /// and `ruby`. New rows are interned.
+    /// and `ruby`, interning a new row if needed.
     fn box_keeping(&mut self, direction: Direction, ruby: RubyGroup, kind: NodeKind) -> BoxFactsId {
         let style = StyleKey {
             bidi: BidiGroup {
@@ -209,14 +200,12 @@ impl ContentWriter<'_> {
         })
     }
 
-    /// Returns what `initial-letter` comes to on a box opening now, set in
-    /// `style`.
+    /// Returns the used `initial-letter` for a box opening now in `style`.
     ///
-    /// It is kept where the box is an inline box (`inline_box`) and a
-    /// first child all the way up to the block, with only opening edges and
-    /// float anchors before it, and no box is already the block's initial
-    /// letter. This is the rule of CSS Inline 3, section 7.3.1. A box that
-    /// keeps it here marks it taken. Otherwise its used value is `normal`.
+    /// It is kept for an `inline_box` that
+    /// [`may_open_initial_letter`](Self::may_open_initial_letter) (CSS
+    /// Inline 3, section 7.3.1), which then takes the initial letter.
+    /// Otherwise it is `normal`.
     fn initial_letter_use(
         &mut self,
         style: &ComputedStyle<'_>,
@@ -232,9 +221,9 @@ impl ContentWriter<'_> {
         InitialLetterUse::Normal
     }
 
-    /// Whether a box opening now may be the block's initial letter. It may
-    /// where only opening edges and float anchors have been written, and no
-    /// box has taken it.
+    /// Whether a box opening now may be the initial letter: no text and no
+    /// items but opening edges and float or absolute anchors have been
+    /// written, and no box has taken it.
     pub(super) fn may_open_initial_letter(&self) -> bool {
         self.letters.at_start && self.content.text.is_empty() && !self.letters.initial_letter
     }
@@ -247,8 +236,7 @@ impl ContentWriter<'_> {
             .text(nodes.text_facts(node, FirstLineVariant::Standard))
     }
 
-    /// Returns the direction of `node`'s text in `variant`, from its text
-    /// facts.
+    /// Returns the direction of `node`'s text in `variant`.
     pub(super) fn direction(&self, node: NodeId, variant: FirstLineVariant) -> Direction {
         let text = self.content.nodes.text_facts(node, variant);
         if self.content.facts.text(text).has(TextFlags::RTL) {
@@ -258,7 +246,7 @@ impl ContentWriter<'_> {
         }
     }
 
-    /// How text set in `style` is transformed, or `None` where it is not.
+    /// Returns the transformer for `style`, or `None` for no transform.
     fn transformer(&self, style: &StyleKey) -> Option<TextTransformer> {
         let transform = style.text.transform;
         if transform == TextTransform::NONE {
@@ -266,15 +254,14 @@ impl ContentWriter<'_> {
         }
         Some(TextTransformer::new(
             transform,
-            case_langid(&self.content.languages.get(style.text.language)),
+            CaseLanguage::from_language(self.content.languages.get(style.text.language).language()),
             style.text.white_space_collapse.keeps_spaces(),
         ))
     }
 
-    /// How the text written in a container set in `own` is transformed and
-    /// masked. On the first line, where `first_line` transforms it
-    /// otherwise, that style's transform applies. The mask is the
-    /// container's own on every line.
+    /// Returns the transforms for text in a node styled `own`, with the
+    /// first-line transform where `first_line` differs. The mask is `own`'s
+    /// on every line.
     fn transforms(&self, own: &StyleKey, first_line: Option<&StyleKey>) -> Transforms {
         let first_line = first_line
             .filter(|first| first.text.transform != own.text.transform)
@@ -282,8 +269,8 @@ impl ContentWriter<'_> {
         Transforms::new(self.transformer(own), first_line).with_mask(own.text.security.mask())
     }
 
-    /// How the text written in the innermost container open, or the
-    /// block, is transformed.
+    /// Returns the transforms of the innermost open container, or the
+    /// block's.
     pub(super) fn container_transforms(&self) -> Transforms {
         self.scratch
             .open
@@ -291,12 +278,10 @@ impl ContentWriter<'_> {
             .map_or(self.block_transforms, |open| open.transforms)
     }
 
-    /// Returns the facts that text and a `<br>` written in the innermost
-    /// container take: its text facts, and no box facts.
+    /// Returns the facts for text and `<br>` in the innermost container:
+    /// its text facts in both variants and the initial box facts.
     ///
-    /// The first-line ones come too, where the block has `::first-line`.
-    /// Whether the container's first line restyles it was noted with the
-    /// container.
+    /// `restyles` is false; the container's own node already recorded it.
     pub(super) fn container_facts(&self) -> LoweredNode {
         let container = self.container();
         let nodes = &self.content.nodes;
@@ -315,11 +300,8 @@ impl ContentWriter<'_> {
         }
     }
 
-    /// Records whether a node's first-line style restyles anything of its
-    /// own (`restyles`), and whether its text shapes otherwise on the first
-    /// line (`first_line` against `own`).
-    ///
-    /// The flags for what each holds were set as it was lowered.
+    /// Flags the content when a node's first-line style `restyles` it, or
+    /// when its first-line text facts shape differently from `own`.
     pub(super) fn note_first_line(
         &mut self,
         own: NodeFacts,

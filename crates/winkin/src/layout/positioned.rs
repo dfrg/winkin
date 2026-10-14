@@ -75,7 +75,7 @@ pub(super) struct StaticPositions<'a> {
 }
 
 impl<'a> StaticPositions<'a> {
-    /// Every static position of `layout`.
+    /// Creates the walk of every static position of `layout`.
     pub(super) fn new(layout: &'a Layout) -> Self {
         Self {
             layout,

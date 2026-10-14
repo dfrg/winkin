@@ -4,12 +4,12 @@
 //! instance at a size. They come from the instance's unscaled metrics, the
 //! size and the context's [`Config`](crate::config::Config), whose
 //! [`LineMetricsSource`] picks which set of vertical metrics measures a line.
-//! The ascent, descent and line gap are rounded to whole pixels, as Windows
-//! hands them to Chrome and as Skia rounds them everywhere. No other code
-//! computes metrics.
+//! The ascent, descent and line gap round to whole pixels, as Windows hands
+//! them to Chrome and as Skia rounds them everywhere. No other code computes
+//! metrics.
 //!
-//! A metric the font does not give takes a default, so that a font with
-//! broken tables, and a used font with no font at all, still measure:
+//! A metric the font does not give takes a default, so a font with broken
+//! tables, and a used font with no font at all, still measure:
 //!
 //! | Metric | Default |
 //! |---|---|
@@ -24,12 +24,13 @@
 //! | underline, strikeout | none: no thickness, which the painter reads as `auto`'s |
 //! | superscript, subscript | 0.34 em up, 0.22 em down |
 //! | ideographic advance | 水's advance, else one em |
+//! | space advance | `.notdef`'s advance, else a quarter em |
 //!
 //! A decoration line the font gives is at least a pixel thick.
 //!
 //! **A vertical line is centred.** Where the block's lines run down the page
 //! with their text upright or mixed, the dominant baseline is the central
-//! one, as Blink's `ComputedStyle::GetFontBaseline` has it ([`LineBaseline`]).
+//! one, as in Blink's `ComputedStyle::GetFontBaseline` ([`LineBaseline`]).
 //! Every font of the layout is then measured about it:
 //! - its line's height, in whole pixels, splits with the odd pixel over, as
 //!   `FontMetrics::IntAscentInternal(kCentralBaseline)` splits it;
@@ -85,10 +86,10 @@ impl LineBaseline {
     /// chooses.
     ///
     /// Blink sets every box of an inline formatting context on the baseline
-    /// its block's style chooses (`InlineBoxState::ComputeTextMetrics`). So
+    /// its block's style chooses (`InlineBoxState::ComputeTextMetrics`), so
     /// a span turned on its side in a mixed column is centred as the column
-    /// is. The baseline is central where the block's text stands upright in
-    /// a vertical line, or is mixed.
+    /// is. The baseline is central where the block's text is upright or
+    /// mixed in a vertical line.
     pub(crate) fn from_content(content: &Content) -> Self {
         if content.block.central_baseline {
             Self::Central
@@ -98,7 +99,8 @@ impl LineBaseline {
     }
 }
 
-/// How a used font measures a line, in pixels at its size on layout's grid.
+/// How a used font measures a line, in pixels at its size, as 26.6
+/// `LayoutUnit`s.
 ///
 /// The ascent, descent and line gap are whole pixels. Heights are positive.
 /// The ascent and descent are about the line's dominant baseline
@@ -141,8 +143,8 @@ pub(crate) struct FontLineMetrics {
     /// Where `post`'s underline's top sits, in whole pixels: below the
     /// baseline, positive.
     ///
-    /// The painter hands it and the three below out for `from-font`
-    /// decorations (`paint::Decoration`).
+    /// Paint reports it and the three below for `from-font` decorations
+    /// (`Decoration`).
     pub(crate) underline_offset: LayoutUnit,
     /// `post`'s underline thickness: at least a pixel, zero where the font
     /// gives none.
@@ -156,12 +158,14 @@ pub(crate) struct FontLineMetrics {
     pub(crate) superscript: LayoutUnit,
     /// Where `OS/2` puts a subscript's baseline: positive, lowered.
     pub(crate) subscript: LayoutUnit,
-    /// The advance of the font's space at the used size, 16.16.
+    /// The advance of the font's space at the used size, in 16.16
+    /// `TextUnit`s.
     ///
     /// Chrome reads it as `SimpleFontData::SpaceWidth`. A `tab-size` given as
     /// a number counts in it, and a `word-spacing` percentage is of it.
     pub(crate) space: TextUnit,
-    /// The ideographic advance, CSS's `ic`, at the used size, 16.16.
+    /// The ideographic advance, CSS's `ic`, at the used size, in 16.16
+    /// `TextUnit`s.
     ///
     /// It is the advance of U+6C34 水, or one em where the font does not map
     /// it, as Chrome's `SimpleFontData::IdeographicInlineSize` falls back to
@@ -178,14 +182,14 @@ impl FontLineMetrics {
     /// - `text`, `cap` and `ex` give the ascent, cap height and x-height, as
     ///   Chrome's `AdjustEdges` reads `FixedAscent`, `FixedCapHeight` and
     ///   `FixedXHeight`.
-    /// - Beyond Chrome, which parses neither, `ideographic` gives the top of
-    ///   the ideographic em box. `ideographic-ink` gives the same, since font
-    ///   metrics carry no character face.
+    /// - `ideographic`, which Chrome does not parse, gives the top of the
+    ///   ideographic em box. So does `ideographic-ink`, since font metrics
+    ///   carry no character face.
     ///
-    /// Cap height and x-height stand over the alphabetic baseline. In a
-    /// vertical line set on its central baseline, the alphabetic offset comes
-    /// off them. Chrome 153 trims a 40 px line of 20 px Ahem to 30 at its
-    /// start and 26 at its end under `cap alphabetic` in `vertical-rl`.
+    /// Cap height and x-height stand over the alphabetic baseline, so in a
+    /// line set on its central baseline the alphabetic offset comes off
+    /// them. Chrome 153 trims a 40 px line of 20 px Ahem to 30 at its start
+    /// and 26 at its end under `cap alphabetic` in `vertical-rl`.
     pub(crate) fn over_edge(&self, edge: TextBoxEdge) -> LayoutUnit {
         let alphabetic = self.alphabetic;
         match edge.over {
@@ -202,8 +206,9 @@ impl FontLineMetrics {
     /// Returns how far `edge`'s under edge stands under the baseline.
     ///
     /// `text` gives the descent and `alphabetic` the alphabetic baseline, as
-    /// Chrome's `AdjustEdges` reads them. Beyond Chrome, `ideographic` and
-    /// `ideographic-ink` give the bottom of the ideographic em box.
+    /// Chrome's `AdjustEdges` reads them. `ideographic` and `ideographic-ink`,
+    /// which Chrome does not parse, give the bottom of the ideographic em
+    /// box.
     pub(crate) fn under_edge(&self, edge: TextBoxEdge) -> LayoutUnit {
         match edge.under {
             TextEdgeUnder::Text => self.descent,
@@ -230,7 +235,7 @@ pub(super) struct UnscaledMetrics {
     hhea: Option<[f32; 3]>,
     /// `OS/2`'s typographic ascender, descender and line gap.
     typo: Option<[f32; 3]>,
-    /// `OS/2` sets `USE_TYPO_METRICS`.
+    /// Whether `OS/2` sets `USE_TYPO_METRICS`.
     use_typo: bool,
     /// `OS/2`'s x-height, or the top of `x`'s outline.
     x_height: Option<f32>,
@@ -259,7 +264,8 @@ pub(super) struct UnscaledMetrics {
     mathematical: Option<f32>,
     /// `BASE`'s hanging baseline, `hang`.
     hanging: Option<f32>,
-    /// The advance of U+0020, `hmtx` moved by `HVAR` at the coordinates.
+    /// The advance of U+0020, or of `.notdef` where the font maps no space,
+    /// from `hmtx` moved by `HVAR` at the coordinates.
     ///
     /// A `tab-size` given as a number counts in it.
     space: Option<f32>,
@@ -374,8 +380,11 @@ impl UnscaledMetrics {
         }
     }
 
-    /// Returns the advance of the font's space at `px`, 16.16: a quarter of
-    /// an em, a common space's width, where it gives none.
+    /// Returns the advance of the font's space at `px` pixels, in 16.16
+    /// `TextUnit`s.
+    ///
+    /// It is a quarter of an em, a common space's width, where the font
+    /// gives none.
     pub(super) fn space(&self, px: f32) -> TextUnit {
         TextUnit::from_px(self.space.unwrap_or(0.25) * px)
     }
@@ -538,14 +547,13 @@ impl FontLineMetrics {
     /// line, the font being used at `size` pixels.
     ///
     /// The line's height `h` (a whole pixel ascent plus descent) splits into
-    /// `h − ⌊h/2⌋` over and `⌊h/2⌋` under, the odd pixel over. Blink's
-    /// `FontMetrics::IntAscentInternal(kCentralBaseline)` is `Height() -
-    /// Height() / 2` (`platform/fonts/font_metrics.cc`), and Chrome 153 sets
-    /// 15px Ahem 8 over and 7 under. The split ignores the font's `central`
-    /// baseline, whose fallback rounds the other way, and its `BASE` table,
-    /// which Blink does not read here.
+    /// `h − ⌊h/2⌋` over and `⌊h/2⌋` under, the odd pixel over, as Blink's
+    /// `FontMetrics::IntAscentInternal(kCentralBaseline)` splits it. Chrome
+    /// 153 sets 15px Ahem 8 over and 7 under. The split ignores the font's
+    /// `central` baseline, whose fallback rounds the other way, and its
+    /// `BASE` table, which Blink does not read here.
     ///
-    /// The em box is the size split the same way on the grid, `h/2`
+    /// The em box is the size split the same way on the grid, half of it
     /// truncated under, as `SimpleFontData::NormalizedTypoAscentAndDescent`
     /// splits it for a baseline other than the alphabetic. The baselines and
     /// decoration lines keep their places in the font, each as an offset
@@ -592,18 +600,17 @@ impl FontLineMetrics {
         let (ascent_px, descent_px) = (ascent * size, descent * size);
         let px = |em: f32| LayoutUnit::from_px(em * size);
         let x_height = unscaled.x_height.unwrap_or(0.56 * ascent);
-        // The em box is the font's typographic pair scaled to one em. The font
-        // puts its letters in the ideographic em box there, and ruby and
-        // emphasis marks are set against it. Blink's
-        // `ComputeNormalizedTypoAscentAndDescent` takes the pair where its
-        // ascender is above zero. Otherwise it takes the line's ascent and
-        // descent as the font reports them, in whole pixels. Either applies
-        // only where the ascent is within the height and the height is above
-        // zero. The ascent rounds onto layout's 1/64 grid, and the descent is
-        // the rest of the em. Chrome 153 sets a ruby annotation over Yu
-        // Gothic, whose box's top is 26.39px up at 30px, 27px up: the 1/64
-        // value ceiled (`ComputeEmHeight`). Rounding to a whole pixel would
-        // give 26. A font with neither is all above, where Blink's is empty.
+        // The em box is the font's typographic pair scaled to one em: the
+        // font sets its ideographs in it, and ruby and emphasis marks are set
+        // against it. Blink's `ComputeNormalizedTypoAscentAndDescent` takes
+        // the pair where its ascender is above zero, else the line's ascent
+        // and descent in whole pixels. Either applies only where the height
+        // is above zero and the ascent within it. The ascent rounds onto
+        // layout's 1/64 grid, and the descent is the rest of the em. Over Yu
+        // Gothic at 30px, whose box top is 26.39px up, Chrome 153 sets a ruby
+        // annotation 27px up: the 1/64 value ceiled (`ComputeEmHeight`).
+        // Whole pixels would give 26. A font with neither is all above, where
+        // Blink's is empty.
         let valid = |(over, under): (f32, f32)| {
             let height = over + under;
             (height > 0.0 && over >= 0.0 && over <= height).then_some((over, height))
@@ -694,14 +701,17 @@ impl FontLineMetrics {
         (self.ascent - self.descent).half()
     }
 
-    /// The font's ascent over its alphabetic baseline, whole pixels, as
-    /// Skia hands it to Chrome, whichever baseline the line is centred on:
-    /// what Blink's vertical metrics fall back to where a font has none.
+    /// Returns the font's ascent over its alphabetic baseline, in whole
+    /// pixels, whichever baseline the line is centred on.
+    ///
+    /// It is the ascent Skia hands Chrome, which Blink's vertical metrics
+    /// fall back to where a font has none.
     pub(crate) fn alphabetic_ascent(&self) -> LayoutUnit {
         self.ascent + self.alphabetic
     }
 
-    /// The font's descent under its alphabetic baseline, likewise.
+    /// Returns the font's descent under its alphabetic baseline, in whole
+    /// pixels, whichever baseline the line is centred on.
     pub(crate) fn alphabetic_descent(&self) -> LayoutUnit {
         self.descent - self.alphabetic
     }
@@ -713,10 +723,11 @@ impl FontLineMetrics {
         self.ascent + self.descent + self.line_gap
     }
 
-    /// Whether `other` has this font's ascent, descent and line gap:
-    /// Blink's `HasIdenticalAscentDescentAndLineGap`, which decides whether
-    /// a box set in another font than its parent's changes what its
-    /// fragment would report.
+    /// Returns whether `other` has this font's ascent, descent and line gap.
+    ///
+    /// It is Blink's `HasIdenticalAscentDescentAndLineGap`, which decides
+    /// whether a box set in another font than its parent's changes what its
+    /// fragment reports.
     pub(crate) fn same_line_metrics(&self, other: &Self) -> bool {
         self.ascent == other.ascent
             && self.descent == other.descent
@@ -740,25 +751,26 @@ impl FontLineMetrics {
     }
 }
 
-/// The top of `glyph`'s outline in font units, at the instance's
-/// coordinates, or `None` where its outline has no bounds or none above the
-/// baseline.
+/// Returns the top of `glyph`'s outline in font units, at the instance's
+/// coordinates.
 ///
-/// What a platform reads for an x-height or a cap height the `OS/2` table
+/// Returns `None` where the outline has no bounds or none above the
+/// baseline. A platform reads this for an x-height or cap height that `OS/2`
 /// does not give: DirectWrite and FreeType both measure the glyph.
 fn glyph_top(glyphs: &GlyphMetrics<'_>, glyph: GlyphId) -> Option<f32> {
     let top = glyphs.extents(glyph)?.y_bearing;
     (top > 0.0).then_some(top)
 }
 
-/// One baseline from `BASE`'s horizontal axis, read at the instance's
-/// coordinates, in font units upward from the alphabetic baseline, or
-/// `None` where the font does not name it.
+/// Returns the baseline `wanted` from `BASE`'s horizontal axis, at the
+/// instance's coordinates, in font units upward from the alphabetic
+/// baseline.
 ///
-/// A coordinate is a height in the glyphs' own design space, whose origin is
-/// the alphabetic baseline. It is not an offset from the script's default
-/// baseline. Only the first script record's values are read: a font that
-/// distinguishes scripts names the same baselines in each.
+/// Returns `None` where the font does not name it. A coordinate is a height
+/// in the glyphs' own design space, whose origin is the alphabetic baseline,
+/// not an offset from the script's default baseline. Only the first script
+/// record's values are read: a font that distinguishes scripts names the
+/// same baselines in each.
 fn base_baseline(base: &BaseInstance<'_>, wanted: Tag) -> Option<f32> {
     let axis = base.axis(BaseAxis::Horizontal)?;
     let tags = axis.base_tag_list()?.ok()?;
@@ -779,20 +791,22 @@ fn base_baseline(base: &BaseInstance<'_>, wanted: Tag) -> Option<f32> {
 // How far a glyph's ink reaches. Layout reads it to fit an initial letter's
 // box.
 //
-// CSS Inline 3, section 7.5.5, fits the box to "the glyph outlines", and
-// this reads them. It takes the outline as designed, at the size its glyphs are set at,
-// rounded out to whole pixels as Skia bounds a glyph. Chrome reads its
-// rasterizer's bounds (`ShapeResult::ComputeInkBounds`), which DirectWrite
-// hints on Windows. The engine does no hinting of its own: hinting is costly,
-// and a host may cache it or turn it off. Hinted bounds come from the host's
+// CSS Inline 3, section 7.5.5, fits the box to "the glyph outlines". This
+// reads the outline as designed, at the size its glyphs are set at, rounded
+// out to whole pixels as Skia bounds a glyph. Chrome reads its rasterizer's
+// bounds (`ShapeResult::ComputeInkBounds`), which DirectWrite hints on
+// Windows. The engine does no hinting of its own: hinting is costly, and a
+// host may cache it or turn it off. Hinted bounds come from the host's
 // `FontMetricsProvider` when one is given.
 
 impl UsedFonts {
-    /// The ink of `glyph` in the used font `font`, at the size its glyphs
-    /// are set at, from its origin: its outline as designed at the
-    /// instance's coordinates, as read-fonts bounds it, rounded out; or the
-    /// host's, where `provider` gives it. `None` where it draws nothing, or
-    /// the used font has no font to draw with.
+    /// Returns the ink of `glyph` in the used font `font`, from its origin,
+    /// at the size its glyphs are set at.
+    ///
+    /// It is the host's bounds where `provider` gives them, else the outline
+    /// as designed at the instance's coordinates, as read-fonts bounds it,
+    /// rounded out. Returns `None` where the glyph draws nothing or the used
+    /// font has no font to draw with.
     pub(crate) fn glyph_ink(
         &self,
         font: UsedFontId,
@@ -837,12 +851,13 @@ impl UsedFonts {
 }
 
 impl GlyphInk {
-    /// The ink of an outline whose box reaches from `x_min` to `x_max` along
-    /// the line and from `y_min` to `y_max` up, rounded out to whole pixels,
-    /// as Skia bounds a glyph (`SkRect::roundOut`): `None` where it is empty
-    /// or not a number. Each edge is put on layout's grid first, so that an
-    /// outline scaled to land on a pixel's edge, which the float scaling can
-    /// overshoot by a hair, rounds out to that edge and not past it.
+    /// Returns the ink of an outline box from `x_min` to `x_max` along the
+    /// line and from `y_min` to `y_max` up, rounded out to whole pixels as
+    /// Skia bounds a glyph (`SkRect::roundOut`).
+    ///
+    /// Returns `None` where the box is empty or not a number. Each edge goes
+    /// onto layout's grid first, so an edge that float scaling overshoots
+    /// past a pixel's edge by a hair rounds out to that pixel's edge.
     fn from_outline_box(x_min: f32, x_max: f32, y_min: f32, y_max: f32) -> Option<Self> {
         let finite = [x_min, x_max, y_min, y_max]
             .iter()

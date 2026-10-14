@@ -1,6 +1,5 @@
-//! The parts of ruby columns split across lines, and their annotation
-//! levels, which advance independently of each other. `split` splits a
-//! breakable column across lines.
+//! The parts of ruby columns split across lines, with their annotation
+//! levels. `split` splits a breakable column across lines.
 
 mod split;
 use super::{EdgeShapeId, LineId, Lines};
@@ -14,12 +13,12 @@ use core::ops::Range;
 pub(super) use split::Continued;
 
 define_id! {
-    /// Names a part of a split ruby column in [`RubyLines`]' table of them.
+    /// Names a part of a split ruby column in [`RubyLines`].
     struct ColumnPartId(u32);
 }
 
 define_id! {
-    /// Names one level of a part in [`RubyLines`]' table of them.
+    /// Names one level of a part in [`RubyLines`].
     pub(crate) struct PartLevelId(u32);
 }
 
@@ -28,15 +27,15 @@ define_id! {
 pub(crate) struct PartLevel {
     /// The level in the measure stage's table.
     pub(super) level: RubyLevelId,
-    /// Its clusters on this line, collapsed white space at the end included.
+    /// Its clusters on this line, trailing collapsed white space included.
     pub(crate) clusters: Range<ClusterId>,
-    /// Its width with its edges reshaped.
+    /// Its width with reshaped edges.
     pub(crate) width: LayoutUnit,
-    /// Where its clusters end once trailing collapsed white space is left out.
+    /// The end of its clusters without trailing collapsed white space.
     pub(crate) visible_end: ClusterId,
-    /// The reshaped annotation edges it keeps in the edge tables.
+    /// Its reshaped annotation edges in the edge tables.
     pub(super) shapes: Range<EdgeShapeId>,
-    /// The first item at its clusters' start, where a walk over them starts.
+    /// The first item at its clusters' start.
     pub(crate) item: ItemId,
 }
 
@@ -49,17 +48,17 @@ pub(crate) struct ColumnPart {
     pub(crate) column: RubyColumnId,
     /// Its base clusters on this line.
     pub(crate) base: Range<ClusterId>,
-    /// Its levels, one row each, in the column's level order.
+    /// Its levels, in the column's level order.
     pub(crate) levels: Range<PartLevelId>,
-    /// Its base's width on this line, with reshaped edges and any hyphen.
+    /// Its base width on this line, with reshaped edges and any hyphen.
     pub(crate) base_width: LayoutUnit,
-    /// The width the part takes: its base's or its widest level's.
+    /// Its width: the base's or the widest level's.
     pub(crate) width: LayoutUnit,
-    /// How far it overhangs the text before it and after it.
+    /// Its overhang over the text before and after it.
     pub(crate) overhang: (LayoutUnit, LayoutUnit),
 }
 
-/// Where the ruby tables stand, which a rewind takes them back to.
+/// A position in the ruby tables to rewind to.
 #[derive(Copy, Clone, Debug, Default)]
 pub(super) struct RubyMark {
     parts: ColumnPartId,
@@ -68,9 +67,8 @@ pub(super) struct RubyMark {
 
 /// Every part of a split ruby column, in line order, and their levels.
 ///
-/// The breaker writes each line's parts as it fits the line. A line holds
-/// at most one part of a column. Parts of one line may come in any column
-/// order: a split column's part comes before a continued column's.
+/// [`Lines`] boxes it, made at the first split. A line has at most one part
+/// of a column; a split column's part comes before a continued column's.
 #[derive(Default)]
 pub(crate) struct RubyLines {
     parts: Table<ColumnPartId, ColumnPart>,
@@ -84,7 +82,7 @@ impl RubyLines {
         self.levels.clear();
     }
 
-    /// Returns where the tables stand, to rewind to later.
+    /// Returns the tables' current position.
     pub(super) fn mark(&self) -> RubyMark {
         RubyMark {
             parts: self.parts.next_id(),
@@ -98,10 +96,8 @@ impl RubyLines {
         self.levels.truncate(mark.levels);
     }
 
-    /// Takes back the parts of `line`, the last line written, and of any
-    /// line after it.
-    ///
-    /// They are the table's tail, walked back from its end.
+    /// Takes back the parts of `line`, the last line written, and any later
+    /// line, walking back from the table's end.
     pub(super) fn truncate(&mut self, line: LineId) {
         let parts = self.parts.as_slice();
         let mut count = parts.len();
@@ -133,14 +129,12 @@ impl RubyLines {
         self.parts.as_slice()
     }
 
-    /// Adds `part`, which the line being written sets.
+    /// Adds `part`, set by the line being written.
     pub(super) fn push_part(&mut self, part: ColumnPart) {
         let _ = self.parts.push(part);
     }
 
-    /// Returns the parts of one line, in write order.
-    ///
-    /// It seeks the line's first part, and walks its few parts from there.
+    /// Returns the parts of `line`, in write order.
     pub(crate) fn line_parts(&self, line: LineId) -> &[ColumnPart] {
         let from = self.first_part_id(line);
         let rest = self
@@ -151,12 +145,11 @@ impl RubyLines {
         rest.get(..count).unwrap_or_default()
     }
 
-    /// Returns the parts of `line`, one of the last lines written, in
-    /// write order.
+    /// Returns the parts of `line`, one of the last lines written, in write
+    /// order.
     ///
-    /// They are walked back from the table's end, past the parts of any
-    /// line after it, with no search. The breaker asks this of the line
-    /// it fits and the line before.
+    /// Walks back from the table's end, with no search; the breaker asks this of
+    /// the line it fits and the line before.
     pub(super) fn recent_line_parts(&self, line: LineId) -> &[ColumnPart] {
         let parts = self.parts.as_slice();
         let mut end = parts.len();
@@ -176,11 +169,10 @@ impl RubyLines {
         parts.get(start..end).unwrap_or_default()
     }
 
-    /// Returns the first annotation edge shape that `line`, the line just
-    /// fitted, keeps.
+    /// Returns the first annotation edge shape the line just fitted, `line`,
+    /// keeps.
     ///
-    /// It stays out of line so that plain line records inline their
-    /// construction.
+    /// Out of line, so that plain line records inline their construction.
     #[inline(never)]
     pub(super) fn line_first_shape(&self, line: LineId) -> Option<EdgeShapeId> {
         self.recent_line_parts(line)
@@ -194,11 +186,11 @@ impl RubyLines {
             .min()
     }
 
-    /// Returns the parts that can hold any of `clusters`, in write order.
+    /// Returns the parts that can contain any of `clusters`, in write order.
     ///
-    /// A part is on the line holding its base's start, and its levels
-    /// follow its base. So the lines searched run from the one holding the
-    /// outermost column's base start to the one holding the last cluster.
+    /// A part is on the line of its base's start, and its levels follow its
+    /// base. The search runs from the line of the outermost column's base start
+    /// to the line of the last cluster.
     pub(crate) fn around(
         &self,
         lines: &Lines,
@@ -215,10 +207,8 @@ impl RubyLines {
         self.parts.get_slice(from..to.max(from)).unwrap_or_default()
     }
 
-    /// Returns the line whose part sets annotation cluster `cluster`.
-    ///
-    /// With `upstream`, returns the line whose part's level ends at
-    /// `cluster`.
+    /// Returns the line whose part sets annotation cluster `cluster`, or, with
+    /// `upstream`, whose part's level ends at `cluster`.
     pub(crate) fn annotation_line(
         &self,
         lines: &Lines,
@@ -259,36 +249,35 @@ impl RubyLines {
 
 heap_bytes! { RubyLines { parts, levels } }
 
-/// One level's cut for the part being fitted, which the breaker keeps in
-/// its scratch across a split's trials.
+/// One level's cut for the part being fitted, kept in the breaker's scratch
+/// across a split's trials.
 #[derive(Copy, Clone, Debug)]
 pub(super) struct LevelCut {
     /// The level in the measure stage's table.
     pub(super) level: RubyLevelId,
     /// Where the level resumes on the line.
     pub(super) from: ClusterId,
-    /// The first item at `from`, where a walk over the level's part starts.
+    /// The first item at `from`.
     pub(super) item: ItemId,
     /// Its unshaped width from `from` to its end.
     pub(super) remaining: LayoutUnit,
     /// The target the last trial cut it for.
     pub(super) target: Option<LayoutUnit>,
-    /// Where the last trial cut it: its end before any trial.
+    /// Where the last trial cut it; its end before any trial.
     pub(super) end: ClusterId,
     /// Its reshaped width from `from` to `end`, once a trial measured it.
     pub(super) width: Option<LayoutUnit>,
 }
 
-/// How the rest of a continued column shifts prefix positions at and past
-/// the column's end.
+/// The shift a continued column's rest puts on prefix positions from the
+/// column's end on.
 ///
-/// The prefix counts the column whole. The line holds only its rest, whose
-/// width differs.
+/// The prefix counts the whole column; the line holds only its rest.
 #[derive(Copy, Clone, Debug, Default)]
 pub(super) struct ContinuationShift {
-    /// The column's end, from which the shift applies.
+    /// The column's end, where the shift starts.
     pub(super) end: Option<ClusterId>,
-    /// The shift: the rest's width less what the prefix gives it.
+    /// The rest's width less the prefix's width for it.
     pub(super) delta: InlineLayoutUnit,
 }
 

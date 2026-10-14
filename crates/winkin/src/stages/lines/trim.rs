@@ -21,10 +21,10 @@ use crate::unit::LayoutUnit;
 /// A block's `text-box-trim`: its trim edges and which ends it trims.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub(super) struct TextBoxTrims {
-    /// How far the over edge stands over the baseline, and the under edge
-    /// under it, in each line variant's font: the standard one, and the
-    /// first line's.
+    /// The over edge's distance over the baseline and the under edge's
+    /// under it, in the standard variant's font and the first line's.
     edges: [(LayoutUnit, LayoutUnit); 2],
+    /// Whether it trims the block's start.
     starts: bool,
     /// Whether it trims the block's end.
     pub(super) ends: bool,
@@ -45,7 +45,7 @@ impl TextBoxTrims {
         if !starts && !ends {
             return None;
         }
-        // The block's own font: the primary of node 0's text.
+        // The block's font: the primary font of the block node's text.
         let root = NodeId::BLOCK;
         content.nodes.kind(root)?;
         let edge = block.text_box_edge;
@@ -65,8 +65,8 @@ impl TextBoxTrims {
         })
     }
 
-    /// Returns how far every line moves up, given the first line, set in
-    /// `variant`, with its extent and the scale `text-fit` sets its text in.
+    /// Returns how far every line moves up, given the first line's extent,
+    /// `text-fit` scale and variant.
     ///
     /// It is what the line box reaches past the start edge, or zero where
     /// the block does not trim its start. The edges scale with the text, as
@@ -80,9 +80,8 @@ impl TextBoxTrims {
         }
     }
 
-    /// Returns how far the block's end moves up, given the last line, set
-    /// in `variant`, with its extent and the scale `text-fit` sets its text
-    /// in.
+    /// Returns how far the block's end moves up, given the last line's
+    /// extent, `text-fit` scale and variant.
     ///
     /// It is what the line box reaches past the end edge, or zero where the
     /// block does not trim its end.
@@ -104,8 +103,8 @@ impl TextBoxTrims {
     }
 }
 
-/// Returns `edge`, an edge's distance from the baseline, on a line whose
-/// text `text-fit` scales by `scale`.
+/// Returns `edge`, an edge's distance from the baseline, scaled by the
+/// `text-fit` scale `scale` and truncated onto the grid.
 fn scaled(edge: LayoutUnit, scale: f32) -> LayoutUnit {
     if scale == 1.0 {
         edge

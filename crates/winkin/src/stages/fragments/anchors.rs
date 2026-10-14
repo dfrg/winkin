@@ -25,7 +25,7 @@ use crate::work;
 
 impl Placer<'_> {
     /// Records the static position of each anchor among `line`'s pieces,
-    /// now placed with the line box's left at `offset`.
+    /// placed with the line box's left at `offset`.
     #[cold]
     #[inline(never)]
     pub(super) fn place_anchors(

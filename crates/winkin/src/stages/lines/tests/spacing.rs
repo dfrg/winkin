@@ -4,7 +4,8 @@
 //! - spacing moving where lines break, and reshaped edges spaced as the
 //!   paragraph is;
 //! - a hanging mark given back where the line ends;
-//! - negative spacing, and spacing or indents of any size giving valid lines.
+//! - negative spacing, and spacing, `line-padding` or indents of any size
+//!   giving valid lines.
 
 use super::*;
 use crate::data::IdRange;
@@ -21,13 +22,10 @@ fn indents(layout: &Layout) -> Vec<f32> {
 
 /// `text-indent` takes room from the lines it starts.
 ///
-/// - It indents the block's first line, and under `hanging` every other.
+/// - It indents the block's first line, or under `hanging` every other line.
 /// - Under `each-line` it also indents each line after a forced break.
 /// - A percentage is of the area's width, not the band's.
-/// - A negative indent gives room.
-/// - One wider than the band leaves a stub, a word overflowing its line.
-///
-/// The text is Ahem at 10 px, in lines 80 long.
+/// - A negative indent gives room; one wider than the band overflows.
 #[test]
 fn an_indent_takes_room_from_the_lines_it_starts() {
     let mut fixture = fixture();
@@ -96,8 +94,8 @@ fn an_indent_takes_room_from_the_lines_it_starts() {
     );
     fixture.lay_out(&mut layout, 80.0);
     assert_eq!(texts(&layout), ["XXX ", "XXX\n", "XXX XXX"]);
-    // A percentage of the area's width: a band a float narrows to 100 of
-    // the area's 200 takes a tenth of 200.
+    // A percentage is of the area's width. A float narrows the band to
+    // 100 px of the area's 200, and 10% indents 20 px.
     fixture.build(
         &mut layout,
         &ComputedBlockStyle {
@@ -111,7 +109,7 @@ fn an_indent_takes_room_from_the_lines_it_starts() {
     let area = Area::new(200.0);
     fixture.lay_out_with(&mut layout, area, &mut Pushed(100.0, FloatSide::Left));
     assert_eq!(indents(&layout)[0], 20.0);
-    // Wider than the band: a stub, overflowing.
+    // An indent wider than the band leaves an overflowing line.
     fixture.build(
         &mut layout,
         &ComputedBlockStyle {
@@ -130,8 +128,8 @@ fn an_indent_takes_room_from_the_lines_it_starts() {
 /// Letter- and word-spacing are in the prefix, so they move where lines
 /// break.
 ///
-/// In Ahem at 10 px, `XX XX` is 50 long plain and 60 with 2 px after every
-/// letter and space. So at 55 it no longer fits a line.
+/// `XX XX` is 50 px plain, 60 px with 2 px letter-spacing, and 56 px with
+/// 6 px word-spacing.
 #[test]
 fn spacing_moves_where_lines_break() {
     let mut fixture = fixture();
@@ -159,9 +157,8 @@ fn spacing_moves_where_lines_break() {
 
 /// A reshaped line edge is spaced as the paragraph is.
 ///
-/// A kerned pair is broken apart under 5 px of letter-spacing, at many
-/// widths. Every line is as wide as its text shaped whole and spaced, and
-/// the pieces' advances are the spaced ones.
+/// Under 5 px of letter-spacing, every line is as wide as its text shaped
+/// whole and spaced.
 #[test]
 fn a_reshaped_edge_is_spaced_as_the_paragraph_is() {
     let mut fixture = fixture();
@@ -197,14 +194,9 @@ fn a_reshaped_edge_is_spaced_as_the_paragraph_is() {
 
 /// Hanging punctuation is given back where the line ends at the mark.
 ///
-/// - `force-end` always hangs, so `XX XX,` fits 50 with its comma past the
-///   end.
-/// - `allow-end` hangs only where the line needs it, so at 60 the comma
-///   stays inside.
-/// - `first` hangs at the block's start, on its first line alone.
-/// - `last` hangs at the text's end.
-///
-/// The text is Ahem at 10 px.
+/// - `force-end` always hangs; `allow-end` only where the line needs it.
+/// - `first` hangs on the block's first line only, not after a forced break.
+/// - `last` hangs only at the text end.
 #[test]
 fn a_hanging_mark_is_given_back_where_the_line_ends() {
     use crate::style::{HangEnd, HangingPunctuation};
@@ -264,10 +256,8 @@ fn a_hanging_mark_is_given_back_where_the_line_ends() {
     assert_eq!(hangs(&layout)[0], (0.0, 0.0));
 }
 
-/// Negative spacing that takes the prefix back is walked, as a negative
-/// margin is.
-///
-/// It breaks into valid lines at any width.
+/// Negative spacing that takes the prefix back gives valid lines at any
+/// width, walked as a negative margin is.
 #[test]
 fn negative_spacing_breaks_as_a_negative_margin_does() {
     let mut fixture = fixture();
@@ -288,10 +278,8 @@ fn negative_spacing_breaks_as_a_negative_margin_does() {
     }
 }
 
-/// Spacing, padding and indents of any size break into valid lines at any
-/// width.
-///
-/// The sizes include huge, negative and not-a-number values.
+/// Spacing, `line-padding` and indents of any size, NaN included, give
+/// valid lines at any width.
 #[test]
 fn any_spacing_or_indent_gives_valid_lines() {
     use crate::style::{HangEnd, HangingPunctuation};

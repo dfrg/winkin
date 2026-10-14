@@ -1,20 +1,15 @@
-//! `text-fit`: the scale each line's text takes to fill its line.
+//! `text-fit`: the scale that makes each line's text fill its line.
 //!
-//! Lines break at the text's own size; a line's scale is worked out after it
-//! is fitted and before its height, as Chrome's `LineFitter` does. A
-//! per-line target scales each line by itself. `consistent` lays the block
-//! out once, takes the least scale its lines ask for, as Chrome's
-//! `MeasurePerBlockScale` does, and lays the block out again with that scale
-//! on every line.
+//! Lines break at the text's own size; each line's scale is set after it is
+//! fitted and before its height, as Chrome's `LineFitter` does. `per-line`
+//! scales each line alone. `consistent` lays the block out twice: once to
+//! find the least scale its lines ask for (`MeasurePerBlockScale`), then with
+//! that scale on every line. Kept scales go in `RareLines::scales`.
 //!
-//! What scales is a line's text, less the letter- and word-spacing set as
-//! fixed lengths. Atomic inlines, box edges, tabs, fixed spacing and the
-//! line's edge costs keep their size. A per-line scale counts `text-indent`
-//! in neither part, as Chrome does.
-//!
-//! Only a block that sets `text-fit` and has no float, initial letter or
-//! ruby gets here, as Chrome's `ShouldApplyTextFit` has it. Other content
-//! pays one test a line.
+//! Only text scales, less fixed letter- and word-spacing. Atomic inlines, box
+//! edges, tabs, edge costs and `text-indent` keep their size. Only a block
+//! with `text-fit` and no float, initial letter or ruby scales
+//! (`ShouldApplyTextFit`).
 
 use core::ops::Range;
 
@@ -33,16 +28,13 @@ use crate::style::{TextFitKind, TextFitTarget, VerticalAlign};
 use crate::unit::{InlineLayoutUnit, LayoutUnit};
 use crate::work;
 
-/// Returns how far a line may fall short of its room, or overflow it, and
-/// still take no scale: 2 px, Chrome's epsilon at a device pixel ratio of 1.
+/// Returns how far a line may miss its room and take no scale: 2 px,
+/// Chrome's epsilon at a device pixel ratio of 1.
 fn epsilon() -> LayoutUnit {
     LayoutUnit::from_px(2.0)
 }
 
-/// Returns `scale`, or 1 where it is not a finite positive number.
-///
-/// A line's record holds only such a scale, so nothing a reader multiplies
-/// by it goes wrong.
+/// Returns `scale`, or 1 where it is not finite and positive.
 fn usable_scale(scale: f32) -> f32 {
     if scale.is_finite() && scale > 0.0 {
         scale
@@ -51,22 +43,21 @@ fn usable_scale(scale: f32) -> f32 {
     }
 }
 
-/// The block's `text-fit`, where it applies, and the scale `consistent`
-/// sets every line in once it is measured.
+/// The block's `text-fit`, with the block scale once `consistent` has
+/// measured it.
 #[derive(Copy, Clone, Debug)]
 pub(super) struct TextFitting {
     kind: TextFitKind,
     target: TextFitTarget,
-    /// The limit's bound on a scale: the most text grows, or the least it
-    /// shrinks to.
+    /// The limit on a scale: the most text grows, or the least it shrinks to.
     bound: f32,
     /// The scale of every line, on `consistent`'s second layout.
     block: Option<f32>,
 }
 
 impl TextFitting {
-    /// Returns the fitting `content`'s block asks for, or `None` where it
-    /// sets no `text-fit` or has a float, an initial letter or ruby.
+    /// Returns the fitting `content`'s block asks for, or `None` where it sets no
+    /// `text-fit` or has a float, an initial letter or ruby.
     pub(super) fn new(content: &Content) -> Option<Self> {
         let fit = content.text_fit();
         let excluded = content.flags.contains(ContentFlags::FLOATS)
@@ -80,8 +71,8 @@ impl TextFitting {
         })
     }
 
-    /// Returns whether the block shares one scale, still to be measured on
-    /// a first layout of its lines.
+    /// Returns whether this is `consistent`'s first layout, which measures the
+    /// block scale.
     pub(super) fn measures_block(&self) -> bool {
         self.target == TextFitTarget::Consistent && self.block.is_none()
     }
@@ -94,8 +85,7 @@ impl TextFitting {
         }
     }
 
-    /// Returns `scale` held to the limit, as Chrome's `RestrictScale` holds
-    /// it.
+    /// Returns `scale` held to the limit, as Chrome's `RestrictScale` does.
     fn restrict(&self, scale: f32) -> f32 {
         match self.kind {
             TextFitKind::Shrink => scale.max(self.bound),
@@ -103,8 +93,8 @@ impl TextFitting {
         }
     }
 
-    /// Returns whether a line `missing` short of its room scales: it is not
-    /// within [`epsilon`] of it, and the kind goes the way it needs.
+    /// Returns whether a line `missing` short of its room scales: it misses by
+    /// [`epsilon`] or more, the way the kind goes.
     fn scales(&self, missing: LayoutUnit) -> bool {
         let wanted = match self.kind {
             TextFitKind::Grow => missing > LayoutUnit::ZERO,
@@ -115,8 +105,7 @@ impl TextFitting {
     }
 }
 
-/// What a line's text takes along it: all of it, and the part of that set
-/// by fixed letter- and word-spacing.
+/// The advance of a line's text, and the part of it fixed spacing sets.
 #[derive(Copy, Clone, Debug, Default)]
 struct LineText {
     text: InlineLayoutUnit,
@@ -124,20 +113,18 @@ struct LineText {
 }
 
 impl LineText {
-    /// Returns the part that scales.
     fn flexible(self) -> InlineLayoutUnit {
         self.text - self.fixed
     }
 
-    /// Returns the scale that makes `room` hold the flexible part, or `None`
+    /// Returns the scale that makes the flexible part fill `room`, or `None`
     /// where there is none.
     fn scale_into(self, room: InlineLayoutUnit) -> Option<f32> {
         let flexible = self.flexible();
         (flexible > InlineLayoutUnit::ZERO).then(|| room.to_px() / flexible.to_px())
     }
 
-    /// Returns `width`, which holds this text, with its flexible part
-    /// scaled by `scale`.
+    /// Returns the line width `width` with this text's flexible part scaled.
     fn scaled_width(self, width: LayoutUnit, scale: f32) -> LayoutUnit {
         let flexible = self.flexible();
         (InlineLayoutUnit::from_layout(width) - flexible + flexible.times(scale)).to_layout()
@@ -145,12 +132,10 @@ impl LineText {
 }
 
 impl LineStages<'_> {
-    /// Returns what the text of the line holding `clusters`, from item
-    /// `from` on, takes along it.
+    /// Returns the text advance of the line over `clusters`, from item `from`.
     ///
-    /// A cluster `reshaped` gives an advance takes that one, as a reshaped
-    /// line edge does. Tabs count as no text, as they reach their stops
-    /// whatever the scale.
+    /// `reshaped` gives the advance of a reshaped edge cluster. Tabs and
+    /// annotations count as no text.
     fn line_text(
         &self,
         from: ItemId,
@@ -190,15 +175,14 @@ impl LineStages<'_> {
     }
 }
 
-/// What a line whose text is scaled reads of its height, as Chrome's
+/// Height inputs of a scaled line, as Chrome's
 /// `InlineBoxState::ComputeTextMetrics` and `ComputeAlignmentBaselineShift`
 /// scale them.
 impl LineStages<'_> {
-    /// Returns the used line height of text with the facts `text`, whose
-    /// primary font has `metrics`, in a line scaled by `scale`.
+    /// Returns the used line height of text with facts `text`, whose primary
+    /// font has `metrics`, in a line scaled by `scale`.
     ///
-    /// `normal` and a number scale with the text; a length, a percentage
-    /// among them, keeps its size.
+    /// `normal` and a number scale; a length or percentage does not.
     fn scaled_line_height(
         &self,
         text: TextFactsId,
@@ -212,11 +196,11 @@ impl LineStages<'_> {
         }
     }
 
-    /// Returns the strut of text with the facts `text` in a line scaled by
-    /// `scale`: its primary font's ascent and descent scaled, around its
-    /// scaled line height.
+    /// Returns the strut of text with facts `text` in a line scaled by `scale`,
+    /// or [`Extent::NONE`] without primary font metrics.
     ///
-    /// The leading splits as the measurements split it.
+    /// The leading splits around the scaled ascent and descent as measurement
+    /// splits it.
     pub(super) fn scaled_strut(&self, text: TextFactsId, scale: f32) -> Extent {
         let Some(metrics) = primary_metrics(self, text) else {
             return Extent::NONE;
@@ -228,11 +212,11 @@ impl LineStages<'_> {
         Extent::new(ascent + over, descent + (leading - over))
     }
 
-    /// Returns the extent of item `item`, `extent` as measured, in a line
-    /// scaled by `scale`.
+    /// Returns the extent of `item`, measured as `extent`, in a line scaled by
+    /// `scale`.
     ///
-    /// Text, a forced break and a box's opening edge take their scaled
-    /// strut. An atomic inline keeps its margin box.
+    /// Text, a forced break and an opening edge take the scaled strut; other
+    /// items keep `extent`.
     pub(super) fn scaled_extent(&self, item: ItemId, extent: Extent, scale: f32) -> Extent {
         let Some(found) = self.content.items.get(item) else {
             return extent;
@@ -245,12 +229,11 @@ impl LineStages<'_> {
         self.scaled_strut(self.text_facts(found.node), scale)
     }
 
-    /// Returns how much further `vertical-align: align` raises box `node` in
-    /// a line scaled by `scale` than measurement raised it.
+    /// Returns how much further `vertical-align: align` raises box `node` in a
+    /// line scaled by `scale` than measurement raised it.
     ///
-    /// `super` and `sub` take the parent's scaled font size, and a
-    /// percentage the box's scaled line height. A length and the keywords
-    /// placed by the line keep theirs.
+    /// `super` and `sub` follow the parent's scaled font size, and a percentage
+    /// the box's scaled line height. Other values return zero.
     pub(super) fn scaled_shift(
         &self,
         node: NodeId,
@@ -275,8 +258,8 @@ impl LineStages<'_> {
                     }
                 };
                 let size = LayoutUnit::from_px(size);
-                // Under the size rule the shift is the size's; under the
-                // font's own offsets it scales with them.
+                // A shift from the font-size rule follows the scaled size; one from the
+                // font's own offsets scales with them.
                 if measured == ratio(size) {
                     ratio(size.times_truncated(scale)) - measured
                 } else {
@@ -298,15 +281,13 @@ impl LineStages<'_> {
     }
 }
 
-/// The scale of a line, as more of the breaker's `impl`.
+/// A line's scale, as more of the breaker's `impl`.
 impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
-    /// Returns the scale the line `fitted`, from `start` and item
-    /// `first_item`, takes in `band`, and scales its width and what hangs
-    /// past it.
+    /// Returns the scale of the line `fitted` in `band`, and scales its width and
+    /// hanging widths.
     ///
-    /// `ends_paragraph` says it is its paragraph's last line, which
-    /// `per-line` leaves unscaled. On `consistent`'s first layout every line
-    /// keeps its size.
+    /// `per-line` leaves a paragraph's last line (`ends_paragraph`) unscaled. On
+    /// `consistent`'s first layout every line keeps its size.
     #[inline(never)]
     pub(super) fn fit_text(
         &self,
@@ -335,7 +316,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
                 if !fitting.scales(missing) {
                     return 1.0;
                 }
-                // The room the text has: the band less what does not scale.
+                // The text's room is the band less what does not scale.
                 let room =
                     InlineLayoutUnit::from_layout(band.width() - fitted.width) + text.flexible();
                 match text.scale_into(room) {
@@ -354,13 +335,13 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     }
 }
 
-/// Returns the one scale `consistent` sets every line of `out` in, as
-/// Chrome's `MeasurePerBlockScale` measures it: the least that fills a line,
-/// held to the limit.
+/// Returns the scale `consistent` sets every line of `out` in, as Chrome's
+/// `MeasurePerBlockScale` measures it.
 ///
-/// It skips lines within [`epsilon`] of their room, lines with no text, and
-/// lines whose text cannot take up what they overflow by. Where the least
-/// scale goes the way the kind does not, it is 1.
+/// It is the least scale that fills a line, held to the limit. Lines within
+/// [`epsilon`] of their room, or with no text to absorb their overflow, are
+/// skipped. Returns 1 where no line counts or the scale goes against the
+/// kind.
 pub(super) fn block_scale(
     stages: Stages<'_>,
     fitting: TextFitting,

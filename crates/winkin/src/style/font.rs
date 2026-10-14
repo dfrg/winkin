@@ -7,9 +7,8 @@ use parlance::Tag;
 use crate::style::same::{Same, eq_and_hash_by_bits, same_by_value, style_struct};
 
 style_struct! {
-    /// `font-synthesis`: which missing faces may be synthesized.
-    ///
-    /// One field per longhand.
+    /// `font-synthesis`: which missing faces may be synthesized, one field
+    /// per longhand.
     pub struct FontSynthesis {
         /// `font-synthesis-weight`: emboldening.
         pub weight: bool,
@@ -23,9 +22,8 @@ style_struct! {
 }
 
 impl FontSynthesis {
-    /// Everything may be synthesized: the initial value.
-    ///
-    /// `auto` for each longhand.
+    /// `auto` for each longhand: everything may be synthesized. The initial
+    /// value.
     pub const ALL: Self = Self {
         weight: true,
         style: true,
@@ -72,8 +70,8 @@ pub enum FontVariantPosition {
 /// `font-variant-east-asian` and `font-variant-alternates`. The empty set is
 /// `normal` for all four. Ligature `none` sets every `NO_` ligature bit.
 ///
-/// Alternates support only `historical-forms`; other values require
-/// `@font-feature-values`, which is not supplied to layout.
+/// Of the alternates, only `historical-forms` is supported. The others need
+/// `@font-feature-values`, which layout does not receive.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub struct FontVariants(u32);
 
@@ -134,12 +132,12 @@ impl FontVariants {
     /// No keyword: `normal` for every longhand. The initial value.
     pub const NORMAL: Self = Self(0);
 
-    /// Every keyword's bit: those `from_bits` keeps.
+    /// Every keyword's bit, which `from_bits` keeps.
     const ALL: u32 = (1 << 26) - 1;
 
     /// Creates a keyword set from `bits`, discarding unknown bits.
     ///
-    /// The bit positions match the associated constants.
+    /// The bit positions are those of the associated constants.
     ///
     /// ```
     /// use winkin::style::FontVariants;
@@ -180,9 +178,8 @@ pub enum FontVariantEmoji {
 /// `font-optical-sizing`.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub enum FontOpticalSizing {
-    /// The `opsz` axis follows the font size.
-    ///
-    /// Where `font-variation-settings` sets it, that wins. The initial value.
+    /// The `opsz` axis follows the font size, unless
+    /// `font-variation-settings` sets it. The initial value.
     #[default]
     Auto,
     /// The `opsz` axis stays at the font's default.
@@ -233,8 +230,8 @@ pub enum AdjustMetric {
 
 /// `font-size-adjust`.
 ///
-/// Adjusts the used font size so the specified metric of the first available
-/// font equals `value` times the computed size. Resolved during layout.
+/// Scales the used font size so that the chosen metric of the first
+/// available font is `value` times the computed size. Layout resolves it.
 #[derive(Copy, Clone, Debug, Default)]
 pub enum FontSizeAdjust {
     /// The size is used as computed. The initial value.
@@ -246,8 +243,8 @@ pub enum FontSizeAdjust {
         metric: AdjustMetric,
         /// Its fraction of the size.
         ///
-        /// At `0` the text is set at size zero, as in Chrome. A value that is
-        /// negative or not a number leaves the size as computed.
+        /// At `0` the text is set at size zero, as CSS Fonts 4 specifies. A
+        /// value that is negative or not finite leaves the size as computed.
         value: f32,
     },
 }

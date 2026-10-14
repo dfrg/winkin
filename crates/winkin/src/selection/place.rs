@@ -1,33 +1,31 @@
-//! Where a position is: snapped to a caret stop, on its line, beside its item, and its caret.
+//! Caret stops, the line and leaf a position is drawn in, and its caret.
 //!
 //! - A caret stop is a grapheme cluster boundary. A grapheme split at an item
-//!   boundary is one stop, unless a box's edges take room inside it; Chrome's
-//!   caret then stops at the edge. A character a text transform changed the
-//!   length of is one stop.
-//! - The line holds the offset downstream, or ends at it upstream. A position
-//!   upstream at a soft wrap past white space the wrap removed stays on the
-//!   line before, past that space, as if it hung. Chrome puts it on the next
-//!   line, finding no item to put it by (`CanResolveInlineCaretPositionAfterFragment`);
-//!   this keeps the two places of a wrap apart. Upstream after a forced break
-//!   is on the next line.
-//! - The item holds the offset. Where two reading different ways meet at it,
-//!   the affinity is the side: upstream the one before, downstream the one
-//!   after, so the offset's two places are two positions. Chrome draws the
-//!   caret on the side nearer the paragraph's level whatever the affinity.
-//!   At other changes of level the one nearer the paragraph's level wins,
-//!   and at equal levels the one before, as Blink's `ComputeInlineCaretPosition`
-//!   resolves it. Ruby annotation text is searched where the base text has
-//!   no match.
-//! - A box edge that takes room along the line, with a leaf either side on
-//!   one line, is two positions, and the affinity is the side: upstream is
-//!   drawn in the leaf before, downstream in the leaf after. Each stands on
-//!   its own side of the room, where text typed there goes. Chrome keeps one
-//!   position there, always in the text before; this deliberately does not
-//!   follow it. Firefox has the two positions.
-//! - A soft hyphen is not matched to Chrome. Blink's line ends with the
-//!   generated hyphen, so the position after the soft hyphen stays on that
-//!   line even downstream, and the next line's start is no caret position.
-//!   Here downstream is the next line's start, as at any wrap.
+//!   boundary is one stop, unless a box edge takes room inside it; Chrome's
+//!   caret then stops at the edge. A character whose length a text transform
+//!   changed is one stop.
+//! - Downstream, the line is the one holding the offset; upstream, the one
+//!   ending at it. Upstream at a soft wrap after removed white space, the
+//!   caret stays on the line before, past that space, as if it hung. Chrome
+//!   puts it on the next line, finding no item to place it by
+//!   (`CanResolveInlineCaretPositionAfterFragment`); keeping it on the line
+//!   before keeps a wrap's two places apart. Upstream after a forced break is
+//!   on the next line.
+//! - The leaf holding the offset draws the caret. Where leaves of opposite
+//!   directions meet, the affinity picks the side: upstream the leaf before,
+//!   downstream the one after. Chrome picks the side nearer the paragraph's
+//!   level whatever the affinity. At other level changes the leaf nearer the
+//!   paragraph's level wins, and at equal levels the one before, as Blink's
+//!   `ComputeInlineCaretPosition` resolves it. Ruby annotation text is
+//!   searched where the base text has no match.
+//! - A box edge that takes room along the line, with a leaf on each side on
+//!   one line, has two positions: upstream is drawn in the leaf before,
+//!   downstream in the leaf after, each on its own side of the room, where
+//!   typed text goes. Chrome keeps one position there, in the text before;
+//!   this is a deliberate difference. Firefox has the two positions.
+//! - A soft hyphen differs from Chrome. Blink's line ends with the generated
+//!   hyphen, so the position after the soft hyphen stays on that line even
+//!   downstream. Here downstream is the next line's start, as at any wrap.
 
 use super::{Affinity, Caret, Carets, Position};
 use crate::data::{Id, TextOffset};
@@ -42,16 +40,16 @@ use crate::work;
 
 /// A leaf of a line as a caret sees it: a text run or an atomic inline.
 ///
-/// Boxes are not leaves. Neither is generated text, an ellipsis or a hyphen;
-/// a caret passes through it to the text under it, as Blink's does
+/// Boxes are not leaves. Neither is generated text (an ellipsis or a
+/// hyphen): a caret passes through it to the text under it, as Blink's does
 /// (`IsGeneratedText`).
 #[derive(Copy, Clone)]
 pub(super) struct Leaf<'a> {
-    /// Where its text starts, as a byte offset into the layout's text.
+    /// The byte offset in the layout's text where its text starts.
     pub(super) start: usize,
-    /// Where its text ends.
+    /// The byte offset where its text ends.
     pub(super) end: usize,
-    /// Where it starts and ends along its line, from the line box's left.
+    /// Its extent along the line, from the line box's left.
     pub(super) inline: InlineExtents,
     /// The text run or atomic inline it is.
     pub(super) item: LeafItem<'a>,
@@ -69,7 +67,8 @@ pub(super) enum LeafItem<'a> {
 }
 
 impl<'a> Leaf<'a> {
-    /// Returns the leaf `item` of `line` is, where it is one.
+    /// Returns `item` of `line` as a leaf, or `None` for a box or generated
+    /// text.
     fn from_item(line: Line<'a>, item: Item<'a>) -> Option<Self> {
         match item {
             Item::Text(run) => Some(Self::from_run(line, run)),
@@ -87,7 +86,7 @@ impl<'a> Leaf<'a> {
         }
     }
 
-    /// Returns the leaf the text run `run` of `line` is.
+    /// Returns the text run `run` of `line` as a leaf.
     fn from_run(line: Line<'a>, run: TextRun<'a>) -> Self {
         let range = run.text_range();
         Self {
@@ -112,7 +111,7 @@ impl<'a> Leaf<'a> {
         self.level().is_rtl()
     }
 
-    /// Returns the text run it is, where it is one.
+    /// Returns its text run, or `None` for an atomic inline.
     pub(super) fn run(&self) -> Option<&TextRun<'a>> {
         match &self.item {
             LeafItem::Text(run) => Some(run),
@@ -127,9 +126,10 @@ impl<'a> Leaf<'a> {
         self.run().is_some_and(TextRun::is_combined)
     }
 
-    /// Returns where its boundary `at` stands across the line, for combined text only.
+    /// Returns where the boundary `at` stands across the line, for combined
+    /// text only.
     ///
-    /// It is the start of the cluster starting at `at`, or the end of the one
+    /// Uses the start of the cluster starting at `at`, or the end of the one
     /// ending there, from `TextRun::across_places`.
     fn across(&self, layout: &Layout, at: usize) -> Option<f32> {
         let clusters = &layout.analysis().clusters;
@@ -144,12 +144,13 @@ impl<'a> Leaf<'a> {
         (clusters.range(cluster).end.get() == at).then_some(to)
     }
 
-    /// Returns the boundary of its combined text that `y` across the line hits, with the cluster starting there.
+    /// Returns the boundary of its combined text that `y` across the line
+    /// hits, with the cluster starting there.
     ///
-    /// It is the nearer edge of the cluster there, a tie going to its start,
-    /// as Chrome's click in a unit's horizontal text finds it. Past the text
-    /// on either side it is the unit's start or end. Chrome's click there
-    /// leaves the unit for the text's start, a bug not matched.
+    /// The boundary is the nearer edge of the cluster at `y`, a tie going to
+    /// its start, as a click in Chrome's combined text finds it. Past the text
+    /// on either side it is the unit's start or end. Chrome there jumps to the
+    /// text's start, a bug not matched.
     pub(super) fn hit_across(&self, layout: &Layout, y: f32) -> Option<(usize, ClusterId)> {
         let clusters = &layout.analysis().clusters;
         let mut end = None;
@@ -157,8 +158,8 @@ impl<'a> Leaf<'a> {
             let range = clusters.range(cluster);
             let start = (range.start.get(), cluster);
             let after = (range.end.get(), ClusterId::new(cluster.get() + 1));
-            // The text reads from its under side, the larger `y`. Past its
-            // start there, the hit is the start.
+            // The text starts at its under side, the larger `y`; a hit past
+            // that is the start.
             if end.is_none() && y >= from {
                 return Some(start);
             }
@@ -179,10 +180,10 @@ impl<'a> Leaf<'a> {
         }
     }
 
-    /// Returns where the caret at its boundary `at` stands along the line.
+    /// Returns where the caret at the boundary `at` stands along the line.
     ///
-    /// It is at its start's edge, its end's, or between two clusters, which
-    /// share a ligature evenly (`TextRun::places`).
+    /// The caret is at the leaf's start or end edge, or between two clusters;
+    /// clusters share a ligature evenly (`TextRun::places`).
     pub(super) fn caret_x(&self, layout: &Layout, at: usize) -> f32 {
         let InlineExtents { left, right } = self.inline;
         let rtl = self.is_rtl();
@@ -206,11 +207,12 @@ impl<'a> Leaf<'a> {
         edge(at != start)
     }
 
-    /// Returns the caret boundary in it that `x` along the line hits, with the cluster starting there where found.
+    /// Returns the boundary that `x` along the line hits, with the cluster
+    /// starting there where known.
     ///
-    /// It is the nearer edge of the cluster under `x`, a tie going left, as
-    /// Blink's `ShapeResult::CaretOffsetForHitTest` finds it. Where no cluster
-    /// is under `x`, it is the nearer end, whose cluster is not known.
+    /// The boundary is the nearer edge of the cluster under `x`, a tie going
+    /// left, as Blink's `ShapeResult::CaretOffsetForHitTest` finds it. Where
+    /// no cluster is under `x`, it is the nearer end, with no cluster.
     ///
     /// Combined text is hit along the line as an atomic inline is, before or
     /// after by its halves. A point across the line picks among its
@@ -242,7 +244,8 @@ impl<'a> Leaf<'a> {
         edge
     }
 
-    /// Returns where a caret beside it spans across its line, from the line box's top.
+    /// Returns the extent across the line of a caret in it, from the line
+    /// box's top.
     ///
     /// In text it spans the font's ascent and descent around the baseline, as
     /// Chrome sizes a caret. Beside an atomic inline it spans the line box,
@@ -254,7 +257,7 @@ impl<'a> Leaf<'a> {
         }
     }
 
-    /// Returns the caret at its boundary `at`.
+    /// Returns the caret at the boundary `at`.
     ///
     /// The caret stands across the line. In combined text it runs along the
     /// line over the unit's em instead.
@@ -283,8 +286,8 @@ impl<'a> Leaf<'a> {
 
 /// Returns the leaves of `line` in visual order.
 ///
-/// They include the text an ellipsis hides, which keeps its carets and hits
-/// as in Chrome.
+/// Includes text an ellipsis hides, which keeps its carets and hits as in
+/// Chrome.
 pub(super) fn leaves<'a>(line: Line<'a>) -> impl DoubleEndedIterator<Item = Leaf<'a>> + Clone {
     line.leaf_items()
         .filter_map(move |item| Leaf::from_item(line, item))
@@ -297,7 +300,7 @@ pub(super) fn annotation_leaves<'a>(line: Line<'a>) -> impl Iterator<Item = Leaf
         .map(move |run| Leaf::from_run(line, run))
 }
 
-/// A position and the cluster its offset is in, so no reader searches for the cluster again.
+/// A position with the cluster its offset is in, found once.
 ///
 /// Snapping keeps the cluster in step with the offset. Functions that need a
 /// caret stop take one named `snapped`.
@@ -313,7 +316,7 @@ pub(super) struct ClusteredPosition {
 }
 
 impl ClusteredPosition {
-    /// Returns `position` with the cluster its offset is in, found by search.
+    /// Returns `position` with its cluster, found by search.
     pub(super) fn new(layout: &Layout, position: Position) -> Self {
         let clusters = &layout.analysis().clusters;
         let at = position.offset.min(layout.text().len());
@@ -335,10 +338,10 @@ impl ClusteredPosition {
         }
     }
 
-    /// Returns `position` with its cluster, walked to from `near` a cluster at a time.
+    /// Returns `position` with its cluster, walked to from `near`.
     ///
-    /// It costs the clusters between `near` and the offset, so `near` is a
-    /// cluster the caller holds close by.
+    /// Costs the clusters between `near` and the offset, so `near` should be
+    /// close.
     pub(super) fn from_walk(layout: &Layout, near: ClusterId, position: Position) -> Self {
         let clusters = &layout.analysis().clusters;
         let at = TextOffset::new(position.offset.min(layout.text().len()));
@@ -348,7 +351,7 @@ impl ClusteredPosition {
         }
     }
 
-    /// Returns `position` with `cluster` where the caller holds it, else found by search.
+    /// Returns `position` with `cluster` where given, else found by search.
     pub(super) fn with_cluster(
         layout: &Layout,
         position: Position,
@@ -368,9 +371,9 @@ impl ClusteredPosition {
 
 /// Returns `unsnapped` snapped to a caret stop, moving toward the affinity's side.
 ///
-/// The stop is in the text and on a cluster boundary. It is outside a
-/// grapheme split by a style boundary, unless a box's edges part it, and
-/// outside a character a text transform changed the length of.
+/// The stop is in the text, on a cluster boundary, outside a grapheme split
+/// by a style boundary (unless a box edge parts it), and outside a
+/// character whose length a text transform changed.
 pub(super) fn snap(layout: &Layout, unsnapped: ClusteredPosition) -> ClusteredPosition {
     let affinity = unsnapped.position.affinity;
     let clusters = &layout.analysis().clusters;
@@ -401,7 +404,7 @@ pub(super) fn snap(layout: &Layout, unsnapped: ClusteredPosition) -> ClusteredPo
         };
     }
     let start = clusters.start(cluster);
-    // Out of a character a text transform changed the length of.
+    // Out of a character whose length a text transform changed.
     if let Some(map) = layout.content().offset_map()
         && let Some(whole) = map.variable_around(start)
     {
@@ -420,11 +423,12 @@ pub(super) fn snap(layout: &Layout, unsnapped: ClusteredPosition) -> ClusteredPo
     }
 }
 
-/// Returns whether the boundary before `cluster` is inside a grapheme and no stop.
+/// Returns whether the boundary before `cluster` is inside a grapheme and
+/// so no stop.
 ///
-/// That is where `cluster` continues a grapheme split at an item boundary,
-/// or is the marks after a space, and no box's margin, border or padding
-/// takes room there. Chrome makes such an edge a stop of its own.
+/// It is where `cluster` continues a grapheme split at an item boundary, or
+/// holds the marks after a space, and no box's margin, border or padding
+/// takes room there. Chrome makes such a box edge a stop of its own.
 fn divides_grapheme(layout: &Layout, cluster: ClusterId) -> bool {
     layout
         .analysis()
@@ -433,7 +437,8 @@ fn divides_grapheme(layout: &Layout, cluster: ClusterId) -> bool {
         && !is_box_edge(layout, cluster)
 }
 
-/// Returns whether a box opening or closing before `cluster` takes room along the line there.
+/// Returns whether a box opening or closing before `cluster` takes room
+/// along the line.
 ///
 /// The room is the margin, border and padding on the side facing the
 /// boundary: a box's start where it opens, its end where it closes.
@@ -465,12 +470,12 @@ fn is_box_edge(layout: &Layout, cluster: ClusterId) -> bool {
         })
 }
 
-/// Returns whether `snapped`, a snapped position, is at a box edge whose two sides are two positions.
+/// Returns whether `snapped` is at a box edge whose two sides are two
+/// positions.
 ///
-/// That is a box edge taking room along the line with a leaf either side on
-/// one line, so the two affinities draw the caret at two places. At a
-/// line's start or end only the side inside the line exists, and this is
-/// false.
+/// The edge takes room along the line and has a leaf on each side on one
+/// line, so the two affinities draw the caret at two places. Returns false
+/// at a line's start or end, where only the side inside the line exists.
 pub(super) fn is_sided(layout: &Layout, snapped: ClusteredPosition) -> bool {
     if !is_box_edge(layout, snapped.cluster) {
         return false;
@@ -492,9 +497,10 @@ pub(super) fn is_sided(layout: &Layout, snapped: ClusteredPosition) -> bool {
     }
 }
 
-/// Returns whether a line after the first starts at `cluster`, so upstream there is on the line before.
+/// Returns whether a line after the first starts at `cluster`, so upstream
+/// there is on the line before.
 ///
-/// That is a wrap or a forced break. The text's end starts no line.
+/// True at a wrap or a forced break. The text's end starts no line.
 pub(super) fn starts_line(layout: &Layout, cluster: ClusterId) -> bool {
     let lines = &layout.line_records().lines;
     let line = layout.line_records().first_reaching(cluster);
@@ -504,7 +510,8 @@ pub(super) fn starts_line(layout: &Layout, cluster: ClusterId) -> bool {
         && lines.get(LineId::new(line.get() + 1)).is_some()
 }
 
-/// Returns whether a forced break ends the text before `cluster`, so a line starting there has one place.
+/// Returns whether a forced break directly precedes `cluster`, so a line
+/// starting there has one place.
 pub(super) fn follows_break(layout: &Layout, cluster: ClusterId) -> bool {
     let clusters = &layout.analysis().clusters;
     cluster.get().checked_sub(1).is_some_and(|before| {
@@ -514,17 +521,19 @@ pub(super) fn follows_break(layout: &Layout, cluster: ClusterId) -> bool {
     })
 }
 
-/// Returns whether `line` ends at a soft wrap: another line follows, and no forced break ends it.
+/// Returns whether `line` ends at a soft wrap: another line follows and no
+/// forced break ends it.
 pub(super) fn wraps(layout: &Layout, line: &Line<'_>) -> bool {
     Line::new(layout, LineId::new(line.index() + 1)).is_some()
         && !follows_break(layout, line.record().clusters().end)
 }
 
-/// Returns the caret upstream at the end of `line`, where it wraps past white space it removed.
+/// Returns the upstream caret at the end of `line` where it wraps after
+/// removed white space.
 ///
-/// The caret stands past that space, at the line's end in the paragraph's
-/// direction, as if the space hung there. `None` where the line does not
-/// wrap, or its leaves reach its end, or what they leave out holds no space.
+/// The caret stands past that space, in the line's direction, as if the
+/// space hung there. Returns `None` where the line does not wrap, its leaves
+/// reach its end, or the clusters after them hold no space.
 pub(super) fn wrap_end(layout: &Layout, line: &Line<'_>) -> Option<Caret> {
     if !wraps(layout, line) {
         return None;
@@ -540,7 +549,7 @@ pub(super) fn wrap_end(layout: &Layout, line: &Line<'_>) -> Option<Caret> {
     let clusters = &layout.analysis().clusters;
     let stages = line.stages();
     let (mut cluster, mut room, mut removed) = (line.record().clusters().end, 0.0, false);
-    // What the line leaves out after its leaves, back from its end.
+    // The clusters after the last leaf, walked back from the line's end.
     while let Some(before) = cluster.get().checked_sub(1).map(ClusterId::new) {
         work::step();
         if clusters.start(before).get() < placed {
@@ -565,8 +574,8 @@ pub(super) fn wrap_end(layout: &Layout, line: &Line<'_>) -> Option<Caret> {
 
 /// Returns whether a caret can stop at `cluster`'s start.
 ///
-/// A stop is not inside a grapheme split by a style boundary, and not inside
-/// a character a text transform changed the length of. The text's end is a
+/// A stop is outside a grapheme split by a style boundary and outside a
+/// character whose length a text transform changed. The text's end is a
 /// stop.
 pub(super) fn is_stop(layout: &Layout, cluster: ClusterId) -> bool {
     if divides_grapheme(layout, cluster) {
@@ -579,14 +588,13 @@ pub(super) fn is_stop(layout: &Layout, cluster: ClusterId) -> bool {
         .is_none_or(|map| map.variable_around(at).is_none())
 }
 
-/// Returns the line `snapped`, a snapped position, is on by its affinity alone.
+/// Returns the line `snapped` is on by its affinity alone.
 ///
 /// Downstream it is the line holding the offset, upstream the one ending at
-/// it, and past the text's end the last. It does not look at what the line
-/// placed. `None` where the layout has no lines.
+/// it, and past the text's end the last. Ignores what the line placed.
+/// Returns `None` where the layout has no lines.
 ///
-/// Where the caller expects line `near`, it checks that line before it
-/// searches.
+/// Checks the expected line `near` before searching.
 pub(super) fn line(
     layout: &Layout,
     snapped: ClusteredPosition,
@@ -610,7 +618,7 @@ pub(super) fn line(
     if upstream && cluster.get() == 0 {
         return Some(LineId::new(0));
     }
-    // A line's end and the one before's bound the clusters it holds.
+    // A line holds the clusters between the previous line's end and its own.
     let end = |line: LineId| lines.lines.get(line).map(|record| record.clusters().end);
     let is_on = |line: LineId| {
         let before = line
@@ -635,7 +643,7 @@ pub(super) fn line(
     Some(line.min(last))
 }
 
-/// Returns the carets of `snapped`, a snapped position, on line `near` where the caller expects it.
+/// Returns the carets of `snapped`, checking the expected line `near` first.
 pub(super) fn carets(
     layout: &Layout,
     snapped: ClusteredPosition,
@@ -648,13 +656,13 @@ pub(super) fn carets(
     }
     let at = snapped.offset();
     if snapped.position.affinity == Affinity::Upstream {
-        // Upstream at a wrap past removed white space, past that space.
+        // Upstream at a wrap after removed white space: past that space.
         if line.record().clusters().end == snapped.cluster
             && let Some(strong) = wrap_end(layout, &line)
         {
             return Some(Carets { strong, weak: None });
         }
-        // Elsewhere past what the line placed, the caret is on the next line.
+        // Elsewhere past the line's leaves, the caret is on the next line.
         if let Some(next) = Line::new(layout, LineId::new(id.get() + 1))
             && let Some(found) = line_carets(layout, &next, snapped)
         {
@@ -667,7 +675,7 @@ pub(super) fn carets(
     })
 }
 
-/// Returns the strong caret of `snapped`, a snapped position, as [`carets`] finds it.
+/// Returns the strong caret of `snapped`, as [`carets`] finds it.
 pub(super) fn caret(
     layout: &Layout,
     snapped: ClusteredPosition,
@@ -676,9 +684,9 @@ pub(super) fn caret(
     carets(layout, snapped, near).map(|carets| carets.strong)
 }
 
-/// Returns the line the caret of `snapped`, a snapped position, is drawn on, as [`carets`] finds it.
+/// Returns the line `snapped`'s caret is drawn on, as [`carets`] finds it.
 ///
-/// It reads which leaves meet the offset, not where their carets are.
+/// Reads which leaves meet the offset without computing their carets.
 pub(super) fn caret_line(
     layout: &Layout,
     snapped: ClusteredPosition,
@@ -698,7 +706,8 @@ pub(super) fn caret_line(
     Some(line)
 }
 
-/// Returns whether a leaf of `line`, in its base text or annotations, holds or meets at offset `at`.
+/// Returns whether a leaf of `line`, in its base text or annotations, holds
+/// or meets offset `at`.
 fn touches(line: &Line<'_>, at: usize) -> bool {
     leaves(*line).chain(annotation_leaves(*line)).any(|leaf| {
         work::step();
@@ -707,31 +716,33 @@ fn touches(line: &Line<'_>, at: usize) -> bool {
     })
 }
 
-/// Returns the carets of `snapped`, a snapped position, among `line`'s leaves that hold or meet at its offset.
+/// Returns the carets of `snapped` among the leaves of `line` that hold or
+/// meet its offset.
 ///
-/// It searches the base text first, then the annotations. `None` where no
-/// leaf does.
+/// Searches the base text first, then the annotations. Returns `None` where
+/// no leaf does.
 fn line_carets(layout: &Layout, line: &Line<'_>, snapped: ClusteredPosition) -> Option<Carets> {
     touching(layout, leaves(*line), snapped)
         .or_else(|| touching(layout, annotation_leaves(*line), snapped))
 }
 
-/// Returns the carets of `snapped`, a snapped position, among `leaves`, all of one line.
+/// Returns the carets of `snapped` among `leaves`, all on one line.
 ///
-/// The strong caret is in the leaf holding the offset. At a boundary
-/// between two leaves reading in different directions, the affinity is the
-/// side: upstream the leaf before, downstream the one after, and the other
-/// gives the weak caret. Chrome draws it in the one nearer the paragraph's
-/// level. At other changes of level it is in that one, and at equal levels
-/// in the one before, which Blink resolves first.
+/// The strong caret is in the leaf holding the offset. Between two leaves of
+/// opposite directions, the affinity picks the side (upstream the leaf
+/// before, downstream the one after) and the other leaf gives the weak
+/// caret; Chrome draws the strong caret in the leaf nearer the paragraph's
+/// level. At other level changes the strong caret is in the leaf nearer the
+/// paragraph's level, and at equal levels in the one before, which Blink
+/// resolves first.
 ///
-/// At a box edge taking room between the two, the affinity is the side,
+/// At a box edge taking room between the two, the affinity picks the side,
 /// with no weak caret.
 ///
-/// At the edge of combined text, the affinity chooses: downstream the leaf
-/// after, upstream the one before. A click in a unit then draws its caret in
-/// the unit, and a click beside it beside it, as in Chrome 153. Chrome has
-/// two DOM positions at a unit's edge, one inside and one outside.
+/// At the edge of combined text, the affinity picks the side: downstream the
+/// leaf after, upstream the one before. A click in a unit draws its caret in
+/// the unit and a click beside it draws it outside, as in Chrome 153, which
+/// has two DOM positions there.
 fn touching<'a>(
     layout: &Layout,
     leaves: impl Iterator<Item = Leaf<'a>>,
@@ -794,11 +805,11 @@ fn touching<'a>(
     })
 }
 
-/// Returns the caret at `at` on `line` where no leaf holds or meets at `at`.
+/// Returns the caret at `at` on `line` where no leaf holds or meets `at`.
 ///
-/// It is at the logical end of what the line placed, past a final forced
-/// break or white space a wrap removed. On an empty line it is at the start,
-/// as tall as the line box.
+/// The caret is at the end of the last leaf ending at or before `at`, as past
+/// a final forced break. On a line with no such leaf it is at the line's
+/// start, as tall as the line box.
 fn past_content(layout: &Layout, line: &Line<'_>, at: usize) -> Caret {
     let last = leaves(*line)
         .filter(|leaf| leaf.end <= at)

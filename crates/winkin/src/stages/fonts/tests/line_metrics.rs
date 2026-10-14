@@ -1,12 +1,14 @@
-//! Line metrics tests: the table each metrics source reads, and the em
-//! box.
+//! Line metrics tests:
+//! - the table each metrics source reads;
+//! - a zeroed win pair;
+//! - the em box and the ideographic advance.
 
 use super::*;
 
-/// A font whose three sets of vertical metrics all differ.
+/// Returns a font whose three sets of vertical metrics all differ.
 ///
-/// Where `use_typo`, it asks for its typographic metrics, and its family is
-/// Test Line Metrics Typo rather than Test Line Metrics.
+/// Where `use_typo` is true, the font sets `USE_TYPO_METRICS` and its family
+/// is Test Line Metrics Typo rather than Test Line Metrics.
 fn metrics_font(use_typo: bool) -> TestFont {
     let family = if use_typo {
         "Test Line Metrics Typo"
@@ -21,9 +23,8 @@ fn metrics_font(use_typo: bool) -> TestFont {
     font
 }
 
-/// Returns the ascent, descent and line gap of `font` at `size` under `source`.
-///
-/// The values are in pixels.
+/// Returns the ascent, descent and line gap of `font` at `size` under
+/// `source`, in pixels.
 fn line_metrics(font: TestFont, source: LineMetricsSource, size: f32) -> (f32, f32, f32) {
     let family = font.family.clone();
     let mut fixture = fixture_with(&[font]);
@@ -41,14 +42,18 @@ fn line_metrics(font: TestFont, source: LineMetricsSource, size: f32) -> (f32, f
     )
 }
 
-/// Each source reads its own table: the win pair with the gap left to the
-/// `hhea` line, as DirectWrite reports it; `hhea`; and the typographic
-/// metrics only where the font asks for them. Each is rounded to whole
-/// pixels, halves up, as Skia rounds them.
+/// Each source reads its own table:
+/// - `Win` reads the win pair, with the gap making up the `hhea` line, as
+///   DirectWrite reports it;
+/// - `Hhea` reads `hhea`;
+/// - `TypoOrHhea` reads the typographic metrics only where the font asks
+///   for them.
+///
+/// Each value is rounded to whole pixels, halves up, as Skia rounds them.
 #[test]
 fn each_metrics_source_reads_its_table() {
     use LineMetricsSource::{Hhea, TypoOrHhea, Win};
-    // hhea's 1300 units less the win pair's 1000 leave a gap of 300.
+    // `hhea`'s 1300 units less the win pair's 1000 leave a gap of 300.
     assert_eq!(
         line_metrics(metrics_font(false), Win, 10.0),
         (8.0, 2.0, 3.0)
@@ -77,8 +82,8 @@ fn each_metrics_source_reads_its_table() {
     );
 }
 
-/// A win pair of zero says nothing, so the Windows source reads `hhea`, as
-/// DirectWrite reports a font with a zeroed win pair.
+/// A zeroed win pair says nothing, so the Windows source reads `hhea`, as
+/// DirectWrite reports such a font.
 #[test]
 fn a_zeroed_win_pair_falls_back_to_hhea() {
     let mut font = metrics_font(false);
@@ -90,8 +95,9 @@ fn a_zeroed_win_pair_falls_back_to_hhea() {
     );
 }
 
-/// Ahem reads the same whatever the source: 0.8 above and 0.2 below with no
-/// gap, an x-height and cap height of 0.8, and an em box of the same split.
+/// Ahem measures the same under every source: 0.8 above and 0.2 below with
+/// no gap, an x-height and cap height of 0.8, and an em box of the same
+/// split.
 #[test]
 fn agreeing_metrics_measure_the_same_under_every_source() {
     for source in [
@@ -114,8 +120,8 @@ fn agreeing_metrics_measure_the_same_under_every_source() {
         assert_eq!(metrics.cap_height.to_px(), 16.0);
         assert_eq!(metrics.em_over.to_px(), 16.0);
         assert_eq!(metrics.em_under.to_px(), 4.0);
-        // Ahem has no BASE: the ideographic baseline is the descent's
-        // bottom, the central one the middle of the line.
+        // Ahem has no `BASE`, so the ideographic baseline is at the bottom
+        // of the descent and the central one in the middle of the line.
         assert_eq!(metrics.ideographic.to_px(), 4.0);
         assert_eq!(metrics.central.to_px(), -6.0);
         assert!(metrics.underline_offset.to_px() > 0.0);
@@ -126,12 +132,14 @@ fn agreeing_metrics_measure_the_same_under_every_source() {
 }
 
 /// The em box is the typographic pair scaled to one em, its ascent rounded
-/// onto layout's 1/64 grid and its descent the rest, as Blink's
-/// `ComputeNormalizedTypoAscentAndDescent` stores it, which Chrome 153's
-/// ruby ceils (27px up for Yu Gothic at 30px, where a whole pixel would be
-/// 26); where the typographic ascender is not above zero, the line's
-/// ascent and descent, whole pixels, scaled so; the ideographic advance is
-/// `水`'s, or one em where the font has none.
+/// onto layout's 1/64 grid and its descent the rest.
+///
+/// - Blink's `ComputeNormalizedTypoAscentAndDescent` stores it so, and
+///   Chrome 153's ruby ceils it: 27 px up for Yu Gothic at 30 px, where a
+///   whole pixel would be 26.
+/// - Where the typographic ascender is not above zero, the line's ascent
+///   and descent, in whole pixels, are scaled the same way.
+/// - The ideographic advance is `水`'s, or one em where the font has none.
 #[test]
 fn the_em_box_is_the_typographic_pair_on_the_sixty_fourth() {
     let mut typo = TestFont::new("Test Typo", &[(0x20, 0x7E), (0x6C34, 0x6C34)]);
@@ -153,7 +161,7 @@ fn the_em_box_is_the_typographic_pair_on_the_sixty_fourth() {
     let family = [FontFamilyName::named("Test No Typo")];
     fixture.span(&mut layout, &sized(&family, 17.0), "X");
     let metrics = used_font(&layout, fixture.primary(&layout)).metrics;
-    // The line's 13 and 4, whole pixels, over 17: 13 up.
+    // The line's whole-pixel 13 and 4, scaled to 17: 13 up.
     assert_eq!(metrics.em_over.to_px(), 13.0);
     assert_eq!(metrics.em_under.to_px(), 4.0);
     assert_eq!(metrics.ideographic_advance.to_px(), 17.0);

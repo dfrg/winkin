@@ -1,14 +1,11 @@
 //! Float tests:
-//! - a float a paragraph opens with is placed before its first line is
-//!   fitted;
-//! - a float reached inside a line goes beside it where it fits beside the
-//!   text before its anchor, and below it where it does not or where
-//!   clearance would push it down; every later float follows it below;
-//! - a line with no room beside the floats moves down past them where the
-//!   block wraps, but not under `nowrap` nor for an indent;
-//! - a line tried and not kept takes its floats back and places them again;
-//! - a float the line breaks before is left to the next line;
-//! - floats no line reaches are placed where the text ends;
+//! - a float that opens a paragraph is placed before its first line is fitted;
+//! - a float inside a line goes beside it where it fits, else below it, and
+//!   later floats follow it below;
+//! - a line with no room beside the floats moves below them, except under
+//!   `nowrap` or for an indent;
+//! - a line tried and not kept takes its floats back;
+//! - floats past the text end, a clamp, or a trimmed start or end;
 //! - initial letters, the intrinsic sizes and relayout;
 //! - hosts whose answers are nonsense or never settle.
 
@@ -21,7 +18,7 @@ use crate::build::FloatSide;
 use crate::config::Config;
 use crate::style::{InitialLetter, LineClamp, LineGroup, LineHeight, TextBoxTrim};
 
-/// A float the host has placed: its key, its side and its margin box.
+/// A float the host has placed, with its margin box.
 #[derive(Copy, Clone, PartialEq, Debug)]
 struct Held {
     key: NodeKey,
@@ -32,31 +29,27 @@ struct Held {
     bottom: f32,
 }
 
-/// A host that places floats simply.
+/// A host that places floats simply and records every request.
 ///
-/// - Each float goes as high as asked, never above an earlier float's top,
-///   and below every float before it where it clears them.
-/// - It goes at its side's edge of the band where it fits, or lower.
-/// - Each band is what the floats leave of the area, and of a shelf that
-///   narrows it from some height down, like a float from a block before.
-///
-/// It keeps every request, trials included.
+/// - A float goes as high as asked, never above an earlier float's top, and
+///   below all earlier floats where it clears them.
+/// - It goes at its side's edge of the first band it fits in.
+/// - A band is what the floats and an optional shelf leave of the area.
 struct Host {
     left: f32,
     right: f32,
     placed: Vec<Held>,
-    /// The shelf: from where down the area's right end comes in, and to
-    /// where.
+    /// The top from which the area's right end moves in, and the new right.
     shelf: Option<(f32, f32)>,
     /// The floats that clear every float before them.
     clears: Vec<NodeKey>,
     asked: Vec<FloatRequest>,
-    /// How many times it is asked for a checkpoint.
+    /// The number of checkpoints taken.
     checkpoints: Cell<usize>,
 }
 
 impl Host {
-    /// Returns a host with no floats, over lines `width` long from zero.
+    /// Returns a host with no floats over an area `width` wide.
     fn new(width: f32) -> Self {
         Self {
             left: 0.0,
@@ -69,17 +62,15 @@ impl Host {
         }
     }
 
-    /// Returns the host with the area's right end at `right` from `top`
-    /// down.
+    /// Returns the host with the area's right end at `right` from `top` down.
     fn shelved(mut self, top: f32, right: f32) -> Self {
         self.shelf = Some((top, right));
         self
     }
 
-    /// Returns the host with a float a block before placed, reaching in.
+    /// Returns the host with `held` placed by an earlier block.
     ///
-    /// The block's own checkpoints are all after it, so no rewind takes it
-    /// back.
+    /// The block's checkpoints all come after it, so no rewind removes it.
     fn reaching(mut self, held: Held) -> Self {
         self.placed.push(held);
         self
@@ -91,8 +82,7 @@ impl Host {
         self
     }
 
-    /// Returns what the floats and the shelf leave of the area from `start`
-    /// to `end`.
+    /// Returns the left and right of the room between `start` and `end`.
     fn room(&self, start: f32, end: f32) -> (f32, f32) {
         let (mut left, mut right) = (self.left, self.right);
         if let Some((top, edge)) = self.shelf
@@ -180,12 +170,12 @@ impl Exclusions for Host {
     }
 }
 
-/// Returns where each line's box starts across the block.
+/// Returns each line's top, in pixels.
 fn tops(layout: &Layout) -> Vec<f32> {
     layout.lines().map(|line| line.metrics().top).collect()
 }
 
-/// Returns the host's requests, by key and placement start.
+/// Returns the host's requests as key and block start.
 fn asked(host: &Host) -> Vec<(NodeKey, f32)> {
     host.asked
         .iter()
@@ -193,13 +183,11 @@ fn asked(host: &Host) -> Vec<(NodeKey, f32)> {
         .collect()
 }
 
-/// A float anchored where a paragraph starts is placed at its first line's
-/// top before the line is fitted, as Blink's `PositionLeadingFloats` does.
+/// A float that opens a paragraph is placed before the first line is fitted,
+/// as Blink's `PositionLeadingFloats` does.
 ///
-/// In Ahem at 10 px, on lines 10 tall, a float 50 wide and 25 tall narrows
-/// the first three lines of a 100-wide area to 50. The fourth, below it,
-/// has the whole width again. The first line keeps the float where the
-/// host put it. The host is asked to place its margin box.
+/// In 10 px Ahem, a 50 by 25 float narrows the first three lines of a
+/// 100 px area to 50. The host places the margin box.
 #[test]
 fn a_float_a_paragraph_opens_with_is_what_its_first_line_starts_beside() {
     let mut fixture = fixture();
@@ -268,9 +256,8 @@ fn a_float_a_paragraph_opens_with_is_what_its_first_line_starts_beside() {
     );
     assert_eq!(bands(&layout)[0], (40.0, 60.0));
 
-    // Its size and margins are each truncated onto the grid, as Chrome
-    // holds a box's lengths: 50.012 is 50, 10.012 is 10, -10.012 is -10 and
-    // 10.99 is 10.984375.
+    // Chrome truncates a box's size and margins to the 1/64 grid: 50.012 is
+    // 50, -10.012 is -10 and 10.99 is 10.984375.
     margined.edges.margin = Sides::<f32> {
         top: 10.99,
         right: 10.012,
@@ -295,20 +282,16 @@ fn a_float_a_paragraph_opens_with_is_what_its_first_line_starts_beside() {
     );
 }
 
-/// A float reached inside a line goes at the line's top where it fits
-/// beside the text before its anchor, as Blink's `HandleFloat` and
+/// A float inside a line goes at the line's top where it fits beside the
+/// text before its anchor, as Blink's `HandleFloat` and
 /// `ShouldPushFloatAfterLine` decide.
 ///
-/// - The line is then fitted again in what the float leaves. `XX ` reaches
-///   30, and a float 30 wide fits beside it in 100, so the first line holds
-///   `XX XX ` in the 70 left.
-/// - Where it does not fit, it is placed from the line's bottom, and the
-///   line keeps its band. `XX XX XX ` reaches 80 without its space, and a
-///   float 40 wide does not fit.
-/// - A float after one that went below the line goes below it too, however
-///   small.
-/// - A collapsible space before the anchor comes off where that makes it
-///   fit.
+/// - The line is then refitted beside it: a 30 px float after `XX ` leaves
+///   70 for `XX XX `.
+/// - A float that does not fit goes below the line, which keeps its band.
+///   So does any float after it, however small.
+/// - A collapsible space before the anchor is dropped where that makes the
+///   float fit.
 #[test]
 fn a_float_reached_inside_a_line_is_placed_beside_it_where_it_fits() {
     let mut fixture = fixture();
@@ -358,12 +341,11 @@ fn a_float_reached_inside_a_line_is_placed_beside_it_where_it_fits() {
     assert_eq!(asked(&host), [(NodeKey(2), 0.0)]);
 }
 
-/// A float the host would put lower than the line's top goes below the line
-/// instead, as Blink pushes a cleared float after the line.
+/// A float the host puts below the line's top goes below the line instead,
+/// as Blink pushes a cleared float after the line.
 ///
-/// Here the float clears a float before it. The host is asked at the line's
-/// top, the answer is taken back, and the host is asked again from the
-/// line's bottom.
+/// The trial placement at the line's top is rewound, and the float is asked
+/// for again at the line's bottom.
 #[test]
 fn a_float_that_clears_goes_below_the_line() {
     let mut fixture = fixture();
@@ -386,13 +368,11 @@ fn a_float_that_clears_goes_below_the_line() {
     assert_eq!(bands(&layout)[0], (20.0, 80.0), "beside the first alone");
 }
 
-/// A line the floats narrow until nothing fits moves down to where the
-/// bands next change, where the block wraps.
+/// A line with no room beside the floats moves down to where the bands
+/// next change.
 ///
-/// A float 90 wide leaves 10, in which `XX` does not fit, so the line moves
-/// to the float's bottom and has the whole width. Under `nowrap` it stays
-/// beside the float, overflowing, as in Chrome. An indent that leaves no
-/// room moves nothing, since going lower makes no room for it.
+/// Under `nowrap` it stays and overflows, as in Chrome. An indent that
+/// leaves no room moves nothing, since no lower band has more room for it.
 #[test]
 fn a_line_with_no_room_beside_a_float_moves_below_it() {
     let mut fixture = fixture();
@@ -433,12 +413,8 @@ fn a_line_with_no_room_beside_a_float_moves_below_it() {
     assert_eq!(tops(&layout), [0.0, 10.0], "an indent moves nothing");
 }
 
-/// A block with no float of its own moves its lines below floats reaching
-/// in from the blocks before.
-///
-/// The host's float, 90 wide and 25 tall, leaves 10, so the first line
-/// moves to 25 and the lines after stack on it. Text with no float takes
-/// the plain path, which hands the float driver only such a line.
+/// A block with no floats of its own moves its lines below floats from
+/// earlier blocks.
 #[test]
 fn a_line_moves_below_a_float_reaching_in_from_before() {
     let mut fixture = fixture();
@@ -458,7 +434,7 @@ fn a_line_moves_below_a_float_reaching_in_from_before() {
     assert_eq!(tops(&layout), [25.0, 35.0, 45.0, 55.0]);
     assert!(host.asked.is_empty(), "nothing of the block's to place");
     assert_eq!(host.placed, [reaching]);
-    // Beside a float that leaves room, the lines stay and are narrowed.
+    // Beside a float that leaves room, the lines stay and narrow.
     let narrower = Held {
         right: 40.0,
         ..reaching
@@ -470,14 +446,11 @@ fn a_line_moves_below_a_float_reaching_in_from_before() {
 }
 
 /// A line that moves down takes back the floats it placed while tried, and
-/// places them again where it goes.
+/// places them again at its new top.
 ///
 /// Chrome likewise restores its exclusion space for each layout
-/// opportunity. The float after `X` fits beside it in the 20 a float 80
-/// wide leaves, but its word does not. So the line moves below the wide
-/// float, and the small float is placed again at the new top, kept once.
-/// When the line asks where to go, the host has only the floats from before
-/// it. The small float's own bottom would move the line past only itself.
+/// opportunity. The line asks where to go with only earlier floats placed,
+/// so its own small float cannot hold it back.
 #[test]
 fn a_line_that_moves_places_its_floats_again() {
     let mut fixture = fixture();
@@ -501,13 +474,11 @@ fn a_line_that_moves_places_its_floats_again() {
     assert_eq!(bands(&layout), [(5.0, 95.0)]);
 }
 
-/// A float whose anchor the line no longer reaches once fitted beside it is
-/// taken back, and the next line reaches it again.
+/// A float whose anchor falls past the line once the line is refitted
+/// beside it is taken back, and the next line places it.
 ///
-/// `XXX` straddles the anchor of a float 30 wide, which fits beside
-/// `XX XXX` in 100. Beside it only `XX ` fits, so the line ends there
-/// without the float, in the band left once it is gone. The next line
-/// places it.
+/// Beside the 30 px float only `XX ` fits, so the line ends before the
+/// anchor, in the full band.
 #[test]
 fn a_float_the_line_breaks_before_is_the_next_lines() {
     let mut fixture = fixture();
@@ -529,10 +500,10 @@ fn a_float_the_line_breaks_before_is_the_next_lines() {
 }
 
 /// Floats no line reaches are placed where the text ends, as Blink places
-/// the floats of a line with nothing else on it.
+/// the floats of an otherwise empty line.
 ///
-/// They sit after a final forced break, or in a block with no text. A float
-/// on a forced break's far side belongs to the next line, at its top.
+/// These follow a final forced break, or are in a block with no text. A
+/// float after an inner forced break belongs to the next line.
 #[test]
 fn floats_no_line_reaches_are_placed_where_the_text_ends() {
     let mut fixture = fixture();
@@ -574,10 +545,7 @@ fn floats_no_line_reaches_are_placed_where_the_text_ends() {
 /// Floats past a `line-clamp` are not placed, since their text is on no
 /// line.
 ///
-/// Clamped to one line, the float anchored on it is placed, below it where
-/// it does not fit beside. The floats after the clamp, one inside the
-/// second line and one after a forced break, are never asked for. The block
-/// ends after its one line.
+/// The host is never asked for them, and the block ends after its one line.
 #[test]
 fn floats_past_the_clamp_are_not_placed() {
     let mut fixture = fixture();
@@ -609,10 +577,8 @@ fn floats_past_the_clamp_are_not_placed() {
 
 /// Floats past a clamp by height are not placed either.
 ///
-/// The lines are measured until one ends past the block's end. That line's
-/// floats are taken back before the kept lines are laid out again. Here the
-/// second line, which holds a float, ends at 20, past an end of 15. The
-/// block keeps the first line alone, with its float.
+/// The second line, which holds a float, ends at 20, past the block end of
+/// 15. Its float is taken back, and the block keeps the first line alone.
 #[test]
 fn floats_past_a_clamp_by_height_are_not_placed() {
     let mut fixture = fixture();
@@ -644,12 +610,10 @@ fn floats_past_a_clamp_by_height_are_not_placed() {
     assert_eq!(layout.metrics().block_end, 10.0);
 }
 
-/// A taller line fitted again in a narrower band takes back the floats it
-/// placed at the strut's height and places them again.
+/// A taller line refitted in a narrower band places its floats again.
 ///
-/// A shelf narrows the area from 15 down. The strut's line, 10 tall, does
-/// not reach it, but a line with a 40 px letter does. The line's float is
-/// asked for twice and kept once.
+/// A shelf from 15 down narrows the area. A line with a 40 px letter
+/// reaches it, so its float is asked for twice and kept once.
 #[test]
 fn a_taller_line_places_its_floats_again_in_its_own_band() {
     let mut fixture = fixture();
@@ -671,13 +635,13 @@ fn a_taller_line_places_its_floats_again_in_its_own_band() {
     assert_eq!(asked(&host), [(NodeKey(2), 0.0), (NodeKey(2), 0.0)]);
 }
 
-/// Where the block trims its start, the host is asked for the later lines'
-/// bands where the trim moved them, as Chrome lays them.
+/// Where the block trims its start, later lines' bands are asked for at
+/// their trimmed positions, as in Chrome.
 ///
-/// In Chrome 153, a float 35 px tall beside 40 px lines trimmed by 10
-/// narrows the second line, which stands at 30. Untrimmed, the line clears
-/// it. Here a shelf from 75 down narrows the second line of an untrimmed
-/// block, which reaches 80, and not a trimmed one's, which reaches 70.
+/// In Chrome 153, a 35 px float beside 40 px lines trimmed by 10 narrows the
+/// second line, at 30. Untrimmed, the line clears it. Here a shelf from 75
+/// down narrows the untrimmed second line, which reaches 80, but not the
+/// trimmed one, which reaches 70.
 #[test]
 fn the_lines_after_a_trimmed_first_are_asked_where_they_stand() {
     let mut fixture = fixture();
@@ -710,14 +674,12 @@ fn the_lines_after_a_trimmed_first_are_asked_where_they_stand() {
     }
 }
 
-/// A clearing break keeps a block's trimmed end below the floats it clears,
-/// even where it needs no clearance past its line.
+/// A clearing break keeps a block's trimmed end below the floats it clears.
 ///
-/// Chrome adds the clearance after `text-box-trim`
-/// (`text-box-trim-float-clear-br-002`). Here 20 px Ahem lines trimmed at
-/// `alphabetic` end at 16. A float reaching to 20 holds the end at 20, and
-/// one reaching to 10 lets the trim stand. Without the break, the trim
-/// stands as well.
+/// Chrome adds the clearance after `text-box-trim` (WPT
+/// `text-box-trim-float-clear-br-002`). Lines of 20 px Ahem trimmed at
+/// `alphabetic` end at 16. A float to 20 holds the end at 20; one to 10, or
+/// no clearing break, leaves it at 16.
 #[test]
 fn a_clearing_break_keeps_a_trimmed_end_below_the_floats() {
     use crate::build::Clear;
@@ -768,15 +730,14 @@ fn a_clearing_break_keeps_a_trimmed_end_below_the_floats() {
 /// A block's initial letter is reported to the host once its first line is
 /// kept, as Chrome's `CreateExclusionSpaceForInitialLetterBox` makes it.
 ///
-/// - Its margin box runs from the first line's top to the bottom of the ink
-///   its box is fitted to, on the paragraph's start side.
-/// - The lines beside it have what it leaves, and so does the line under
-///   its sink where its glyph descends into it.
-/// - In Ahem at 10 px on 10 px lines, a letter 3 lines tall is set at
-///   35 px, its capitals 28 high, from the first to the third baseline. Its
-///   `X` reaches 7 below.
-/// - A raised letter moves the first line's text down by the lines it
-///   stands above. The block's own style sets no letter.
+/// - Its margin box runs from the first line's top to the bottom of its ink,
+///   on the paragraph's start side.
+/// - The lines beside it, and the line its glyph descends into, are
+///   narrowed.
+/// - In 10 px Ahem, a 3-line letter is 35 px, its capitals 28 high, from the
+///   first to the third baseline.
+/// - A raised letter moves the text after the first line down. The block's
+///   own style sets no letter.
 #[test]
 fn an_initial_letter_takes_room_from_the_lines_beside_it() {
     let mut fixture = fixture();
@@ -828,8 +789,8 @@ fn an_initial_letter_takes_room_from_the_lines_beside_it() {
     });
     let mut host = Host::new(100.0);
     fixture.lay_out_with(&mut layout, Area::new(100.0), &mut host);
-    // The text moves down two lines; the letter stays, its baseline on the
-    // first line's, and its glyph's foot reaches into the second.
+    // The text moves down two lines. The letter's baseline stays on the
+    // first line's, and its glyph reaches into the second.
     assert_eq!(tops(&layout)[..3], [0.0, 30.0, 40.0]);
     assert_eq!(asked(&host), [(NodeKey(7), 0.0)]);
     let lengths: Vec<f32> = bands(&layout).iter().map(|band| band.1).collect();
@@ -845,15 +806,12 @@ fn an_initial_letter_takes_room_from_the_lines_beside_it() {
 
 /// An initial letter alone breaks without the float driver's trials.
 ///
-/// The letter is one exclusion, known before the first line and placed once
-/// that line is kept. So the host is never asked for a checkpoint, even
-/// where lines move below the letter. The lines still match the driver's:
-/// - the first line's band is asked at the letter's height, where a shelf
-///   15 px down from a block before narrows it;
+/// The letter is one exclusion, known before the first line, so the host is
+/// never asked for a checkpoint. The lines still match the driver's:
+/// - the first line's band is asked at the letter's height, which reaches a
+///   shelf 15 px down;
 /// - later lines sit beside the letter where they fit, and below it where
 ///   the 3 px beside it hold nothing.
-///
-/// The text is Ahem at 10 px, with a letter 3 lines tall and 35 px wide.
 #[test]
 fn an_initial_letter_alone_is_placed_without_trials() {
     let mut fixture = fixture();
@@ -907,9 +865,8 @@ fn an_initial_letter_alone_is_placed_without_trials() {
 
 /// The intrinsic sizes count floats.
 ///
-/// A max-content line sets every float its paragraph holds beside it. A
-/// float after a forced break belongs to the next paragraph. No line is
-/// narrower than the widest float. Laid out at max-content, nothing wraps.
+/// Max-content puts each paragraph's floats beside its line, and
+/// min-content is at least the widest float. At max-content nothing wraps.
 #[test]
 fn floats_are_counted_in_the_intrinsic_sizes() {
     let mut fixture = fixture();
@@ -939,7 +896,7 @@ fn floats_are_counted_in_the_intrinsic_sizes() {
 /// float for float.
 ///
 /// The widths put floats beside and below lines, and lines below floats.
-/// The block opens with an initial letter whose room its host keeps.
+/// The block opens with an initial letter.
 #[test]
 fn a_relayout_around_floats_equals_a_fresh_layout() {
     let mut fixture = fixture();
@@ -980,10 +937,8 @@ fn a_relayout_around_floats_equals_a_fresh_layout() {
 /// A host whose answers are nonsense still gives valid lines, and one whose
 /// answers never settle cannot keep a line moving.
 ///
-/// - Bands are not numbers or run backwards.
-/// - `below` is not a number, infinite, not below, or a hair below forever.
-/// - Places are not numbers.
-/// - Float sizes are not numbers, or past the grid.
+/// Bands, `below` answers, placements and float sizes are NaN, infinite,
+/// reversed, not below, a hair below forever, or past the grid.
 #[test]
 fn any_host_gives_valid_lines() {
     struct Hostile(usize);
@@ -1053,8 +1008,8 @@ fn any_host_gives_valid_lines() {
             fixture.lay_out_with(&mut layout, area, &mut Hostile(which));
         }
     }
-    // A hair below forever moves the first line the most times a line may
-    // move, a 1/64 at a time. Then it stays and overflows.
+    // A hair below forever moves the line down 1/64 at a time, up to the
+    // move limit. Then it stays and overflows.
     fixture.lay_out_with(&mut layout, Area::new(100.0), &mut Hostile(4));
     let line = layout.line(0).expect("a line");
     assert_eq!(

@@ -10,8 +10,7 @@
 //! - `vertical`: vertical metrics and text on its side;
 //! - `plain`: the fast path against the cluster-by-cluster one.
 //!
-//! Every layout here is built through [`Fixture::build`], which runs
-//! [`check`] each time.
+//! A fixture from [`fixture_with`] runs [`check`] on every build.
 
 use alloc::borrow::Cow;
 
@@ -56,10 +55,12 @@ use crate::{BuildOptions, ComputedBlockStyle, Context, Layout, NodeKey};
 
 // Fonts --------------------------------------------------------------------
 
-/// ASCII, the soft hyphen, the combining diacritics and Hebrew, with `fi`,
-/// `fl` and `ffi` ligatures, `Q` drawn as two glyphs, `R` drawn raised,
-/// `AV` kerned, and a Turkish `i` of its own; and for right-to-left text, an
-/// alef-lamed ligature and bet drawn as two glyphs.
+/// Returns a font of ASCII, the soft hyphen, the combining diacritics and
+/// Hebrew.
+///
+/// It has `fi`, `fl` and `ffi` ligatures, `Q` drawn as two glyphs, `R`
+/// drawn raised, `AV` kerned and a Turkish `i` of its own. For right-to-left
+/// text it has an alef-lamed ligature and bet drawn as two glyphs.
 fn latin_hebrew() -> TestFont {
     let mut font = TestFont::new(
         "Test Latin Hebrew",
@@ -104,20 +105,20 @@ fn fixture_with(fonts: &[TestFont]) -> Fixture {
     )
 }
 
-/// A fixture over Ahem and the fonts above.
+/// Returns a fixture over Ahem and the fonts above.
 fn fixture() -> Fixture {
     fixture_with(&[latin_hebrew(), arabic(), han()])
 }
 
 impl Fixture {
-    /// Each cluster's advance as the last build's shaping handed it on
+    /// Returns each cluster's advance as the last build's shaping wrote it
     /// (see [`advances`]).
     fn advances(&self) -> Vec<i32> {
         advances(&self.cx)
     }
 
-    /// Shapes `range` of `layout`'s run `run` again, as the breaker will,
-    /// into tables of its own.
+    /// Shapes `range` of the run `run` of `layout` again, as the breaker
+    /// does, into tables of its own.
     fn reshape(&mut self, layout: &Layout, run: ShapedRunId, range: Range<ClusterId>) -> Piece {
         let shaped = layout.shaped().text(FirstLineVariant::Standard);
         let run = shaped.runs.get(run).expect("a run");
@@ -157,8 +158,8 @@ impl Fixture {
     }
 }
 
-/// A range shaped on its own, as a reshaped line edge is, its advances in
-/// 16.16 as a line keeps them.
+/// A range shaped on its own, as a reshaped line edge is, with its advances
+/// in 16.16 as a line keeps them and whether its start is unsafe.
 #[derive(Default)]
 struct Piece {
     words: Table<ClusterId, GlyphWord>,
@@ -167,8 +168,8 @@ struct Piece {
     start: bool,
 }
 
-/// Each cluster's advance along the line as the last build in `cx` handed it
-/// on, in 1/65536 px, which a test's clusters fit an `i32` in.
+/// Returns each cluster's advance along the line as the last build in `cx`
+/// wrote it, in 16.16, as `i32`s, which every test's clusters fit.
 fn advances(cx: &Context) -> Vec<i32> {
     cx.shaped_advances()
         .iter()
@@ -180,8 +181,9 @@ fn advances(cx: &Context) -> Vec<i32> {
 /// all in 16.16.
 type Drawn = (u32, i32, i32, i32);
 
-/// A cluster's glyphs as drawn, whichever way its word stores them: a
-/// compact glyph's advance is the cluster's.
+/// Returns a cluster's glyphs as drawn, whichever way its word stores them.
+///
+/// A compact glyph takes `advance`, the cluster's.
 fn drawn(
     word: GlyphWord,
     sidecar: &Table<SidecarGlyphId, SidecarGlyph>,
@@ -200,7 +202,7 @@ fn drawn(
     }
 }
 
-/// The glyph ids of every cluster of `layout`, in cluster order.
+/// Returns the glyph ids of every cluster of `layout`, in cluster order.
 fn ids(layout: &Layout) -> Vec<Vec<u32>> {
     let shaped = layout.shaped().text(FirstLineVariant::Standard);
     shaped
@@ -221,11 +223,14 @@ fn ids(layout: &Layout) -> Vec<Vec<u32>> {
 /// - Runs tile the clusters from the first. Each lies in the analysis run
 ///   holding its start and names a used font the layout has. Each is all
 ///   shaped or all not.
+/// - Each run records the shaping facts of the item holding its start, and
+///   every text item in a shaped run has the same.
 /// - A cluster that isn't shaped has no glyphs and no advance, and nor does
 ///   a continuation.
-/// - An expanded word points at a whole group of the sidecar, and the words
-///   cover the sidecar exactly.
-/// - The flags say what is there.
+/// - An expanded word's advance is its glyphs' sum. Every sidecar glyph is
+///   some word's, and a word of several glyphs has them to itself.
+/// - Each cluster's run is found by `containing`.
+/// - `HAS_UNSAFE` is set exactly where some word is unsafe to break before.
 /// - There is no combined text and no first line's table, since the content
 ///   checked here never asks for them.
 fn check(layout: &Layout, cx: &Context) {
@@ -280,12 +285,12 @@ fn check(layout: &Layout, cx: &Context) {
             classes.iter().all(|&s| s == classes[0]),
             "a run is shaped or not throughout"
         );
-        // It links the shaping facts of the item holding its start, which
+        // It records the shaping facts of the item holding its start, which
         // every text item of a shaped run has.
         let content = layout.content();
         let shaping_at = |cluster: usize| {
-            // The last item starting at or before it, those holding none
-            // at its boundary coming before the one holding it.
+            // The last item starting at or before it. Empty items at its
+            // boundary come before the one holding it.
             let items = &layout.analysis().item_clusters;
             let id = (0..items.len())
                 .map(ItemId::new)
@@ -338,8 +343,8 @@ fn check(layout: &Layout, cx: &Context) {
             groups.push(start..start + glyphs.len());
         }
     }
-    // Every glyph in the sidecar is some cluster's; a cluster of one glyph
-    // may share its entry with others drawing the same glyph alike, and a
+    // Every glyph in the sidecar is some cluster's. A cluster of one glyph
+    // may share its entry with others drawing the same glyph alike; a
     // cluster of several has its own.
     assert!(
         drawn.iter().all(|&count| count > 0),
@@ -351,8 +356,8 @@ fn check(layout: &Layout, cx: &Context) {
             "a cluster of several glyphs has them to itself"
         );
     }
-    // The run holding each cluster, counted from the runs' starts, is the
-    // last run starting at or before it, and none past the last.
+    // The run holding each cluster is the last run starting at or before
+    // it, and there is none past the last cluster.
     for at in 0..=count {
         let cluster = ClusterId::new(at);
         let searched = runs
@@ -373,13 +378,13 @@ fn check(layout: &Layout, cx: &Context) {
 
 /// Scales `units` in an em of `upem` to `scale` as harfrust does.
 ///
-/// The sum is `(units × ((scale << 16) / upem) + 2^15) >> 16`, HarfBuzz's
-/// `em_mult`.
+/// That is `(units × ((scale << 16) / upem) + 2^15) >> 16`, as HarfBuzz's
+/// `em_mult` scales.
 fn scaled(units: i64, upem: i64, scale: i64) -> i32 {
     i32::try_from((units * ((scale << 16) / upem) + 32768) >> 16).unwrap()
 }
 
-/// `n` pixels in 16.16.
+/// Returns `n` pixels in 16.16.
 fn px16(n: i32) -> i32 {
     n << 16
 }

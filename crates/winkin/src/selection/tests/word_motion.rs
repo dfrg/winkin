@@ -7,9 +7,10 @@
 
 use super::*;
 
-/// Word motion on Windows goes forward to the next word's start and back to the previous word's start.
+/// Word motion on Windows goes forward to the next word's start and back to
+/// the previous word's start.
 ///
-/// A comma and a forced break are words of their own (`selection.png`).
+/// A comma and a forced break are words of their own.
 #[test]
 fn word_motion_on_windows_skips_spaces() {
     let windows = WordMotion::SkipSpaces;
@@ -80,7 +81,8 @@ fn a_run_of_punctuation_is_one_word() {
     }
 }
 
-/// On macOS and Linux a forward word motion stops at the word's end, as Blink's `NextWordPositionForPlatform`.
+/// On macOS and Linux a forward word motion stops at the word's end, as
+/// Blink's `NextWordPositionForPlatform` does.
 ///
 /// Backward it stops at the word's start, as on Windows.
 #[test]
@@ -92,7 +94,8 @@ fn word_motion_elsewhere_stops_at_a_words_end() {
     assert_eq!(walk(&layout, 0, forward), [0, 2, 8, 9, 13, 19]);
 }
 
-/// A motion carries the platform's word stops, so one layout moves both ways from two calls.
+/// A motion carries its word-stop rule, so one layout can move by either
+/// platform's rule.
 ///
 /// By default a word motion stops as Chrome does on the target platform.
 #[test]
@@ -143,7 +146,8 @@ fn from_utf16(text: &str, units: &[usize]) -> Vec<usize> {
         .collect()
 }
 
-/// Word motion over a Thai and a Japanese sentence stops where Chrome 153's does on Windows.
+/// Word motion over a Thai and a Japanese sentence stops where Chrome 153's
+/// does on Windows.
 ///
 /// With the `dictionaries` feature, ICU4X finds the words ICU4C finds for
 /// Chrome: `ฉัน|ชอบ|กิน|ข้าว|…` and
@@ -170,7 +174,8 @@ fn word_motion_finds_thai_and_japanese_words() {
     }
 }
 
-/// Where a Thai run meets Latin letters or digits, ICU4X breaks, so `ภาษา|abc|ไทย 123|ไทย` is five words.
+/// Where a Thai run meets Latin letters or digits, ICU4X breaks, so
+/// `ภาษา|abc|ไทย 123|ไทย` is five words.
 ///
 /// ICU4X always breaks before a dictionary run and after one of two or more
 /// characters. ICU4C counts Thai as a letter that joins its neighbours, so
@@ -258,7 +263,8 @@ fn a_break_opportunity_leaves_a_word_whole() {
     assert_eq!(walk(&joined("abc", " def"), 0, end), [0, 3, 10]);
 }
 
-/// A run too long for the stack copy is segmented in the pieces its `<wbr>`s part.
+/// A run too long for the stack copy is segmented in the pieces its `<wbr>`s
+/// part.
 ///
 /// In long Thai with a `<wbr>`, a word starts at each stop near it where each
 /// side segmented alone has one, and at the `<wbr>`.
@@ -294,7 +300,8 @@ fn a_long_run_finds_words_on_each_side_of_its_wbr() {
     assert!(Words::new(&layout).starts_word(cluster(&layout, piece.len())));
 }
 
-/// Word boundaries found around each stop equal those of the whole paragraph segmented at once.
+/// Word boundaries found around each stop equal those of the whole
+/// paragraph segmented at once.
 ///
 /// The whole paragraph is segmented without builder break opportunities.
 /// The text is generated from a wide mix: letters, digits, joining
@@ -311,8 +318,8 @@ fn words_around_a_stop_are_the_whole_paragraphs() {
     use words::Words;
 
     // Letters, digits and the punctuation the rules join across; spaces; a
-    // mark on a letter and one alone; a soft hyphen, a mark and a U+200B the
-    // caller wrote; a joiner, a pictograph and regional indicators; katakana
+    // mark on a letter and one alone; a soft hyphen, a mark and a U+200B in
+    // the source; a joiner, a pictograph and regional indicators; katakana
     // and the prolonged sound mark, an ideograph, Hebrew and Thai; Thai
     // words and a mark, Lao, Khmer and Myanmar; ideographs, hiragana and the
     // ideographic iteration mark, which UAX #29 makes a letter.

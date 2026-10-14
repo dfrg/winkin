@@ -47,9 +47,9 @@ fn words(cx: &mut Context, layout: &mut Layout, block: &ComputedBlockStyle<'_>) 
     });
 }
 
-/// Everything the views read of `layout`: each line's metrics, each text
-/// run's place and glyphs, each atomic inline's place, a caret at every
-/// offset and the hit on a grid of points.
+/// Returns everything the views read of `layout`: each line's metrics, each
+/// text run's place and glyphs, each atomic inline's place, a caret at
+/// every offset and the hit on a grid of points.
 fn views(layout: &Layout) -> Vec<String> {
     let mut out = Vec::new();
     for line in layout.lines() {
@@ -80,10 +80,9 @@ fn views(layout: &Layout) -> Vec<String> {
     out
 }
 
-/// A layout built aligned `start` and then set to each alignment breaks into
-/// what a layout built with that alignment does: the same lines, items,
-/// glyph positions, carets and hits. Right to left, balanced and pretty
-/// alike.
+/// A layout built with `start` alignment and then set to another breaks as
+/// a layout built with that alignment: the same lines, items, glyph
+/// positions, carets and hits, also right to left, balanced and pretty.
 #[test]
 fn a_relayout_with_another_alignment_equals_a_fresh_layout() {
     let root = sized(&AHEM_FAMILY, 10.0);

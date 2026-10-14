@@ -1,5 +1,4 @@
-//! Each text item's em box, recorded at segment starts beside the item
-//! extents.
+//! Each text item's em box, recorded at segment starts.
 
 use super::Scan;
 use crate::data::IdRange;
@@ -8,14 +7,12 @@ use crate::stages::content::{ContentFlags, ItemFlags, ItemId, ItemKind};
 use crate::stages::fonts::UsedFontId;
 use crate::stages::measure::{Extent, MeasuredText, ruby};
 
-/// The em box of the text item the scan is in, built segment by segment.
+/// The em box of the current text item, built segment by segment.
 ///
-/// It lives apart from the copyable walk, since a ruby look-ahead writes no
-/// em boxes.
+/// Kept apart from the copyable walk: a ruby look-ahead writes no em boxes.
 pub(super) struct ItemEmScan {
-    /// The item the em box is for.
     item: Option<ItemId>,
-    /// The union of the em boxes of the item's fonts so far.
+    /// The union of the item's fonts' em boxes so far.
     em: Extent,
     /// Every font so far has the same em box.
     uniform: bool,
@@ -71,10 +68,8 @@ impl ItemEmScan {
         self.em = self.em.unite(own);
     }
 
-    /// Pushes the current item's em box to `out`.
-    ///
-    /// Only base text set in fonts with one em box has one. It is capped by
-    /// the primary font's ascent and descent.
+    /// Pushes the current item's em box to `out`: only for base text in fonts
+    /// with one em box, capped by the primary font's ascent and descent.
     fn flush(&mut self, scan: &Scan<'_>, out: &mut MeasuredText) {
         let Some(id) = self.item.take() else {
             return;
@@ -102,8 +97,8 @@ impl ItemEmScan {
     /// Pushes the last item's em box, and those of the items the variant's
     /// shaping doesn't reach.
     pub(super) fn finish(mut self, scan: &Scan<'_>, out: &mut MeasuredText) {
-        // First-line shaping can stop inside an item. Its stored em box still
-        // describes the whole item, including fonts past that paragraph.
+        // First-line shaping can stop inside an item, whose em box still covers
+        // the whole item.
         let partial = self
             .item
             .filter(|&id| scan.input.analysis.item_clusters.range(id).end > scan.end);
@@ -118,8 +113,7 @@ impl ItemEmScan {
         }
         let text_end = scan.input.analysis.clusters.end_id();
         let runs = scan.input.fonts.runs(scan.variant);
-        // Seek once where the unshaped tail starts, then walk the fonts in
-        // order.
+        // Seek once where the unshaped tail starts, then walk the fonts in order.
         let mut run = runs.cursor_containing(
             scan.input.analysis.item_clusters.range(first).start,
             text_end,

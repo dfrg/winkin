@@ -1,5 +1,4 @@
-//! A bit per id of a table, kept beside it, and the same with a count of
-//! the bits set before each word.
+//! One bit per id of a table, with or without a rank count per word.
 
 use alloc::vec::Vec;
 use core::fmt;
@@ -8,12 +7,11 @@ use core::ops::Range;
 
 use super::{HeapBytes, Id, make_room};
 
-/// One bit per id of a table, kept beside it: bit `i % 64` of word `i / 64`.
+/// One bit per id of a table: bit `i % 64` of word `i / 64`.
 ///
-/// A reader searches it for the ids whose bit is set, 64 at a word, as the
-/// breaker searches the clusters for break opportunities. The owner sets each
-/// bit as it pushes the item beside it, so the two stay in step. The bit
-/// arithmetic lives here with the other index casts.
+/// Searches for set bits read 64 ids per word; the line breaker finds break
+/// opportunities this way. The owner pushes each bit with its item, so the
+/// two stay in step.
 pub(crate) struct BitTable<I> {
     words: Vec<u64>,
     id: PhantomData<fn(I) -> I>,
@@ -34,15 +32,14 @@ impl<I: Id> BitTable<I> {
     }
 
     /// Makes room for the bits of `count` ids in all, as
-    /// [`Table::reserve`](super::Table::reserve) makes room for their items.
+    /// [`Table::reserve`](super::Table::reserve) does.
     pub(crate) fn reserve(&mut self, count: usize) {
         make_room(&mut self.words, count.min(I::MAX).div_ceil(64));
     }
 
-    /// Gives `id` its bit, set where `set` is true.
+    /// Appends the bit for `id`, set if `set`.
     ///
-    /// `id` is the one the table beside this has just handed out, the next
-    /// after every id given a bit so far.
+    /// `id` must be the next id after every one pushed so far.
     pub(crate) fn push(&mut self, id: I, set: bool) {
         let at = id.get();
         if at.is_multiple_of(64) {
@@ -53,8 +50,7 @@ impl<I: Id> BitTable<I> {
         }
     }
 
-    /// The last id of `range` whose bit is set, scanning back a word of 64
-    /// at a time.
+    /// The last id in `range` whose bit is set, or `None`.
     pub(crate) fn last(&self, range: Range<I>) -> Option<I> {
         let (from, below) = (range.start.get(), range.end.get());
         if below <= from {
@@ -77,8 +73,7 @@ impl<I: Id> BitTable<I> {
         }
     }
 
-    /// The first id of `range` whose bit is set, scanning forward a word of
-    /// 64 at a time.
+    /// The first id in `range` whose bit is set, or `None`.
     pub(crate) fn first(&self, range: Range<I>) -> Option<I> {
         let (from, below) = (range.start.get(), range.end.get());
         let mut at = from;
@@ -96,7 +91,7 @@ impl<I: Id> BitTable<I> {
         None
     }
 
-    /// The bytes the bits take, capacity aside.
+    /// The bytes the bits take, excluding spare capacity.
     #[cfg(test)]
     pub(crate) fn bytes(&self) -> usize {
         self.words.len() * size_of::<u64>()
@@ -122,16 +117,14 @@ impl<I> fmt::Debug for BitTable<I> {
 }
 
 /// A [`BitTable`] set in increasing order, with a count of the bits set
-/// before each word of 64.
+/// before each 64-bit word.
 ///
-/// Counting the set bits at or before an id takes one read and one word's
-/// popcount, however many ids there are. An owner whose records each start at
-/// a set bit uses it to find the record holding an id without searching. The
-/// shaping runs, each starting at a cluster, work this way. The record is the
-/// count at or before the id, less one.
+/// Counting the set bits through an id takes one read and one popcount.
+/// When each record starts at a set bit, the record containing an id is that
+/// count less one, found without a search. Shaping's run starts use it.
 pub(crate) struct RankedBitTable<I> {
     bits: BitTable<I>,
-    /// Before each word, how many bits the words before it have set.
+    /// For each word, the number of bits set in the words before it.
     before: Vec<u32>,
 }
 
@@ -150,18 +143,17 @@ impl<I: Id> RankedBitTable<I> {
         self.before.clear();
     }
 
-    /// Makes room for the bits of `count` ids in all, and their counts, as
-    /// [`Table::reserve`](super::Table::reserve) makes room for a table's
-    /// items.
+    /// Makes room for the bits of `count` ids in all and their counts, as
+    /// [`Table::reserve`](super::Table::reserve) does.
     pub(crate) fn reserve(&mut self, count: usize) {
         self.bits.reserve(count);
         make_room(&mut self.before, count.min(I::MAX).div_ceil(64));
     }
 
-    /// Sets `id`'s bit, leaving every id between the last set and it unset.
+    /// Sets the bit for `id`, leaving the ids since the last one set unset.
     ///
-    /// Ids are set in increasing order, so a word is finished once an id past
-    /// it is set, and its count is recorded then.
+    /// Ids come in increasing order, so a word's count is recorded when an id
+    /// past it is set.
     pub(crate) fn set(&mut self, id: I) {
         let at = id.get();
         let index = at / 64;
@@ -179,7 +171,7 @@ impl<I: Id> RankedBitTable<I> {
         }
     }
 
-    /// How many ids at or before `id` have their bit set.
+    /// The number of ids at or before `id` whose bit is set.
     #[inline]
     pub(crate) fn count_through(&self, id: I) -> usize {
         let at = id.get();
@@ -193,7 +185,7 @@ impl<I: Id> RankedBitTable<I> {
                     .unwrap_or(usize::MAX)
                     .saturating_add(held.count_ones() as usize)
             }
-            // Past the last word: every bit set.
+            // Past the last word: every set bit counts.
             _ => match (words.last(), self.before.last()) {
                 (Some(&word), Some(&before)) => usize::try_from(before)
                     .unwrap_or(usize::MAX)

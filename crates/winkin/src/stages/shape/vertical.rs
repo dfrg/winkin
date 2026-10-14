@@ -20,17 +20,17 @@
 //!   `SkiaScalarToHarfBuzzPosition` does. Like Blink, this reads `hmtx`,
 //!   `vmtx` and `VORG` raw, without `HVAR` or `VVAR`.
 //!
-//! Everything else harfrust asks (glyphs, horizontal advances, extents) is
-//! its own, scaled by its own dispatch. Horizontal text keeps harfrust's own
-//! functions entirely.
+//! A host metric provider, where one is given, answers first, and these
+//! answer what it leaves out (see `provider`). Everything else harfrust asks
+//! is its own or the provider's. Horizontal text never reads these.
 //!
 //! A glyph's two answers depend only on its instance, the size and the
-//! fallback. So the context caches a [`VerticalFont`] per instance at a size
-//! and a [`VerticalGlyph`] per glyph asked ([`VerticalGlyphs`]), as Blink
-//! keeps vertical data with the font at its size. A call reads the tables
-//! ([`VerticalTables`]) only at the first glyph the cache lacks, so a warm
-//! call reads none. That matters because, without `VORG`, a `CFF` or `gvar`
-//! font draws the outline to find a glyph's bounds.
+//! fallback. So the context caches a [`VerticalFont`] per instance, size and
+//! fallback, and a [`VerticalGlyph`] per glyph asked ([`VerticalGlyphs`]),
+//! as Blink keeps vertical data with the font at its size. A call reads the
+//! tables ([`VerticalTables`]) only at the first glyph the cache lacks, so a
+//! warm call reads none. Without `VORG`, a `CFF` or `gvar` font draws the
+//! outline to find a glyph's bounds, which makes that reading costly.
 
 use core::cell::{OnceCell, RefCell};
 
@@ -55,8 +55,8 @@ define_id! {
     pub(super) struct VerticalFontId(u32);
 }
 
-/// What Blink uses where a font has no vertical metrics: its line's ascent
-/// and height.
+/// The line ascent and height Blink uses where a font has no vertical
+/// metrics.
 ///
 /// Both are whole pixels, from the font's line metrics, and alphabetic
 /// whatever baseline the line is centred on.
@@ -77,10 +77,8 @@ impl VerticalFallback {
     }
 }
 
-/// The cache key of a font set down the line, besides its coordinates.
-///
-/// It holds the font, its size, and its fallback from the used font's line
-/// metrics.
+/// The cache key of a font set down the line: the font, its size and its
+/// fallback, but not its coordinates, which are compared apart.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub(super) struct VerticalKey {
     font: FontKey,
@@ -115,7 +113,7 @@ pub(super) struct VerticalFont {
 impl VerticalFont {
     /// Returns the font `key` names, held as `font`.
     ///
-    /// Returns `None` where its em is zero, and harfrust's own metrics are
+    /// Returns `None` where its em is zero, so harfrust's own metrics are
     /// used.
     pub(super) fn new(font: &Font, key: VerticalKey) -> Option<Self> {
         let upem = font.units_per_em();
@@ -131,14 +129,15 @@ impl VerticalFont {
         self.key.font
     }
 
-    /// Whether it is the font `key` names, at `used`'s coordinates.
+    /// Returns whether it is the font `key` names, at the coordinates of
+    /// `used`.
     pub(super) fn is(&self, key: &VerticalKey, used: &UsedInstance) -> bool {
         self.key == *key && is_instance(key.font, &self.font, used)
     }
 }
 
 /// One glyph's metrics down the line in a [`VerticalFont`], as harfrust is
-/// answered, in 1/65536 px.
+/// answered, in 16.16 pixels.
 ///
 /// The advance is negative down the line, since HarfBuzz's y grows up. The
 /// origin is the vertical origin's offset from the horizontal one, across
@@ -152,7 +151,7 @@ struct VerticalGlyph {
     up: i32,
 }
 
-/// The context's cache of glyph metrics down the line, by font at a size and
+/// The context's cache of glyph metrics down the line, by vertical font and
 /// glyph.
 ///
 /// A call reads a font's tables only for a glyph the cache lacks.
@@ -161,7 +160,7 @@ pub(super) struct VerticalGlyphs {
 }
 
 impl VerticalGlyphs {
-    /// Empty, allocating nothing.
+    /// Returns an empty cache, allocating nothing.
     pub(super) fn new() -> Self {
         Self {
             glyphs: HashTable::new(),
@@ -173,18 +172,18 @@ impl VerticalGlyphs {
         self.glyphs.clear();
     }
 
-    /// Drops the glyphs of every font `keep` refuses.
+    /// Drops the glyphs of every font for which `keep` returns false.
     pub(super) fn retain(&mut self, keep: impl Fn(VerticalFontId) -> bool) {
         self.glyphs.retain(|held| keep(held.font));
     }
 
-    /// How many glyphs it holds.
+    /// Returns how many glyphs it holds.
     #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.glyphs.len()
     }
 
-    /// Returns glyph `glyph` of `font`, where a call has read it.
+    /// Returns glyph `glyph` of `font`, or `None` where no call has read it.
     fn get(&self, font: VerticalFontId, glyph: u32) -> Option<VerticalGlyph> {
         self.glyphs
             .find(hash_one(&(font, glyph)), |held| {
@@ -193,7 +192,7 @@ impl VerticalGlyphs {
             .copied()
     }
 
-    /// Keeps `read`, which it does not hold.
+    /// Inserts `read`, which it must not hold yet.
     fn insert(&mut self, read: VerticalGlyph) {
         let hash = hash_one(&(read.font, read.glyph));
         self.glyphs
@@ -210,13 +209,14 @@ heap_bytes! {
 /// A glyph the cache lacks is measured with these.
 struct VerticalTables<'a> {
     hmtx: Option<Hmtx<'a>>,
-    /// Where the font has `vhea`, its `vmtx`, which may still be unreadable.
+    /// The font's `vmtx`, read only where it has `vhea`; `None` also where
+    /// it is unreadable.
     vmtx: Option<Vmtx<'a>>,
     /// The font's `VORG`, read only where it has `vhea`, as Blink reads it.
     vorg: Option<Vorg<'a>>,
     /// The glyphs' bounds at the size and the instance's coordinates.
     bounds: ScaledGlyphMetrics<'a, 'static, ScaleF32>,
-    /// The size over the em in pixels per unit, as Blink's `size_per_unit_`.
+    /// The size over the em, in pixels per unit, as Blink's `size_per_unit_`.
     per_unit: f32,
     fallback: VerticalFallback,
 }
@@ -253,7 +253,7 @@ impl<'a> VerticalTables<'a> {
         unit::whole_to_f32(units) * self.per_unit
     }
 
-    /// The glyph's vertical advance, in pixels.
+    /// Returns the glyph's vertical advance, in pixels.
     fn advance_px(&self, glyph: GlyphId) -> f32 {
         match self.vmtx.as_ref().and_then(|vmtx| vmtx.advance(glyph)) {
             Some(advance) => self.px(advance),
@@ -261,7 +261,7 @@ impl<'a> VerticalTables<'a> {
         }
     }
 
-    /// Where the glyph's vertical origin is from its horizontal one, in
+    /// Returns the glyph's vertical origin from its horizontal one, in
     /// pixels: across, and up.
     fn origin_px(&self, glyph: GlyphId) -> (f32, f32) {
         let width = self
@@ -279,7 +279,7 @@ impl<'a> VerticalTables<'a> {
         } else if let Some(vmtx) = &self.vmtx {
             // A glyph past the bearings takes the last, as Blink indexes
             // them. Its bounds' top rounds out to a whole pixel, as Skia
-            // bounds a glyph, and is zero where it draws nothing.
+            // bounds a glyph, and is zero where it has no bounds.
             let bearing = vmtx
                 .side_bearing(glyph)
                 .or_else(|| vmtx.top_side_bearings().last().map(|tsb| tsb.get()))
@@ -317,15 +317,15 @@ impl<'a> VerticalTables<'a> {
 /// harfrust's own, scaled by its own dispatch.
 pub(super) struct VerticalFuncs<'a> {
     font: VerticalFontId,
-    /// The context's cache, behind a cell: harfrust asks through a shared
-    /// reference.
+    /// The context's cache, behind a cell, since harfrust asks through a
+    /// shared reference.
     glyphs: RefCell<&'a mut VerticalGlyphs>,
     /// The font held at the instance's coordinates, whose tables are read.
     held: &'a Font,
     scale: i32,
     upem: u16,
     fallback: VerticalFallback,
-    /// Its tables, read at the first glyph the cache does not hold.
+    /// The font's tables, read at the first glyph the cache does not hold.
     tables: OnceCell<VerticalTables<'a>>,
 }
 
@@ -363,7 +363,7 @@ impl<'a> VerticalFuncs<'a> {
         read
     }
 
-    /// The glyph's metrics down the line, read from the font's tables.
+    /// Reads the glyph's metrics down the line from the font's tables.
     fn read(&self, glyph: GlyphId) -> VerticalGlyph {
         self.tables
             .get_or_init(|| VerticalTables::new(self.held, self.scale, self.upem, self.fallback))

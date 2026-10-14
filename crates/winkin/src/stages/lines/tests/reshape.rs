@@ -1,12 +1,17 @@
 //! Unsafe edge tests. They pin:
-//! - a kerned pair, a ligature and joined Arabic broken inside measured as
-//!   reshaped, with the paragraph's glyphs untouched;
+//! - a kerned pair, a kern across U+200B, a ligature and joined Arabic
+//!   broken inside measured as reshaped, with the paragraph's glyphs
+//!   untouched;
 //! - a line end reshaped back to its run and no further;
-//! - a break at a space reshaped only where the end must be exact;
-//! - a removed space leaving the letter before it unkerned.
+//! - hanging spaces at a break keeping the paragraph's glyphs, past the
+//!   first only where the end must be exact, and a `break-spaces` space
+//!   reshaped wherever it must;
+//! - the text before end spaces reshaped without them only where the end
+//!   must be exact, outlines aside, and always before removed spaces at a
+//!   paragraph's end.
 
 use super::*;
-use crate::style::FirstLineVariant;
+use crate::style::{FirstLineVariant, TextAlignLast};
 
 /// Returns the glyph ids a line's piece over `clusters` draws, in cluster
 /// order.
@@ -33,12 +38,9 @@ fn piece_ids(layout: &Layout, line: &LineRecord, clusters: Range<usize>) -> Vec<
 
 /// A kerned pair broken by `break-all` is measured as drawn.
 ///
-/// `A` before `V` is kerned back two pixels at 20 px. So `AVA` measures
-/// 26 px in the paragraph and 28 as a line, whose last `A` has no `V` after
-/// it. At 26 px the line does not fit as drawn, and the breaker steps back
-/// to `AV`. At 28 it takes `AVA`, and the next line starts at the unsafe
-/// `V`, reshaped on its own. Every line is as wide as its text shaped
-/// whole, and the paragraph's glyphs are untouched.
+/// `A` before `V` kerns 2 px at 20 px, so `AVA` is 26 px in the paragraph
+/// but 28 px as a line. At 26 px the line ends at `AV`; at 28 it takes
+/// `AVA`, and the next line starts at the unsafe `V`.
 #[test]
 fn a_kerned_pair_broken_apart_is_measured_as_reshaped() {
     let mut fixture = fixture();
@@ -60,8 +62,8 @@ fn a_kerned_pair_broken_apart_is_measured_as_reshaped() {
     assert_eq!(texts(&layout), ["AVA", "VAV", "AV"]);
     assert_eq!(widths(&layout), [28.0, 28.0, 18.0]);
     // The line's end is reshaped from the last safe-to-break cluster, the
-    // second `A`, as Chrome's `ShapingLineBreaker` does. The lone `A` is
-    // drawn a whole half em, unkerned, after the paragraph's `AV`.
+    // second `A`, as Chrome's `ShapingLineBreaker` does. That `A` is drawn
+    // unkerned, a whole half em, after the paragraph's `AV`.
     let first = records(&layout)[0].clone();
     let lines = layout.line_records();
     let shapes = lines.edges().shapes.slice(first.shapes.clone());
@@ -74,10 +76,9 @@ fn a_kerned_pair_broken_apart_is_measured_as_reshaped() {
     for line in records(&layout).to_vec() {
         assert_eq!(line.width, shaped_whole(&mut fixture, &layout, &line));
     }
-    // A line that starts at an unsafe `V` and ends before another. Its
-    // start window ends at the safe `A`, where its end window starts, so
-    // the line is two pieces meeting there. The first line has a band of
-    // 30, the others 20.
+    // A line that starts at an unsafe `V` and ends before another is two
+    // pieces. Its start piece ends at the safe `A`, where its end piece
+    // starts. The first line's band is 30 px wide, the others' 20.
     let steps = Steps(vec![(0.0, 30.0), (20.0, 20.0)]);
     fixture.lay_out_with(&mut layout, Area::new(500.0), &mut { steps });
     assert_eq!(texts(&layout), ["AVA", "VA", "VA", "V"]);
@@ -92,13 +93,11 @@ fn a_kerned_pair_broken_apart_is_measured_as_reshaped() {
     assert_eq!(glyph_words(&layout), glyphs);
 }
 
-/// A kern across a caller's U+200B, which is shaped with its text, is
-/// reshaped at a break there.
+/// A kern across a U+200B in the text, which is shaped with it, is reshaped
+/// at a break there.
 ///
-/// `A` is kerned against the `V` past it, so the paragraph measures `A`
-/// 8 px at 20 px. A line breaking after the U+200B ends with the `A`
-/// reshaped alone, a whole half em, as Chrome's `ShapingLineBreaker`
-/// reshapes it. The paragraph's glyphs are untouched.
+/// A line breaking after the U+200B ends with the `A` reshaped alone, 10 px
+/// instead of 8, as Chrome's `ShapingLineBreaker` reshapes it.
 #[test]
 fn a_kern_across_a_zero_width_space_is_reshaped_where_a_line_breaks_there() {
     let mut fixture = fixture();
@@ -116,9 +115,10 @@ fn a_kern_across_a_zero_width_space_is_reshaped_where_a_line_breaks_there() {
     assert_eq!(glyph_words(&layout), glyphs);
 }
 
-/// Floats a host has placed, as bands that change down the block.
+/// Exclusions whose band width changes down the block, as placed floats
+/// make it.
 ///
-/// Each `(top, width)` is the band's width from `top` on.
+/// Each `(top, width)` sets the band's width from `top` down.
 struct Steps(Vec<(f32, f32)>);
 
 impl Exclusions for Steps {
@@ -145,10 +145,8 @@ impl Exclusions for Steps {
 
 /// A ligature broken inside by `break-all` is reshaped letter by letter.
 ///
-/// `ffi` is one glyph of 15 px at 20 px on its first `f`. So the paragraph
-/// measures `o|f` as 25 px and the rest of the ligature as nothing. At
-/// 12 px every line holds one letter as drawn alone: `f`, `f`, then `i`.
-/// The paragraph's measure would give `ffi` a line that overflows.
+/// `ffi` is one 15 px glyph at 20 px, so the paragraph gives its last two
+/// letters no width. At 12 px each line holds one letter drawn alone.
 #[test]
 fn a_ligature_broken_inside_is_measured_as_reshaped() {
     let mut fixture = fixture();
@@ -181,10 +179,8 @@ fn a_ligature_broken_inside_is_measured_as_reshaped() {
 
 /// Arabic broken inside a word keeps its joining forms.
 ///
-/// The reshaped pieces are shaped with the paragraph either side as
-/// context, as Chrome gives HarfBuzz the whole text. So the letters at the
-/// break stay medial, and the lines are exactly as wide as the joined
-/// forms. A letter set alone would be wider.
+/// The reshaped pieces take the paragraph on either side as context, as
+/// Chrome gives HarfBuzz the whole text, so letters at a break stay medial.
 #[test]
 fn arabic_broken_inside_a_word_keeps_its_joining() {
     let mut fixture = fixture();
@@ -226,11 +222,9 @@ fn arabic_broken_inside_a_word_keeps_its_joining() {
 /// A line ending inside an Arabic word is reshaped from the word's run
 /// start and no further back.
 ///
-/// Here the family's first font draws the spaces, so every word and space
-/// is its own shaping run. A piece starting at its run's start joins what
-/// is before it as the run did. Widening it would pull the space and the
-/// word before into the Arabic font, whose space is half an em, not a
-/// third. The line would then measure 60 px, too wide for its room.
+/// The family's first font draws the spaces, so each word and space is its
+/// own run. Reshaping further back would set the space in the Arabic font,
+/// half an em instead of a third, and the line would overflow at 60 px.
 #[test]
 fn a_line_end_is_reshaped_back_to_its_run_and_no_further() {
     const NARROW_THEN_ARABIC: [FontFamilyName<'static>; 2] = [
@@ -250,7 +244,7 @@ fn a_line_end_is_reshaped_back_to_its_run_and_no_further() {
     let runs = &layout.shaped().text(FirstLineVariant::Standard).runs;
     assert_eq!(runs.len(), 3, "each word and the space a run");
     // Room for the first word, the space and two letters of the second:
-    // three joined letters of 10 px, a space of 6.66 and two more letters.
+    // three joined 10 px letters, a 6.66 px space and two more letters.
     fixture.lay_out(&mut layout, 57.0);
     let ranges: Vec<Range<ClusterId>> = records(&layout).iter().map(LineRecord::clusters).collect();
     assert_eq!(ranges, [at(0)..at(6), at(6)..at(7)]);
@@ -276,13 +270,30 @@ fn a_line_end_is_reshaped_back_to_its_run_and_no_further() {
     assert_eq!(glyph_words(&layout), glyphs);
 }
 
-/// A break at a space is reshaped only where the alignment needs the
-/// line's exact end, as Chrome's `SetDontReshapeEndIfAtSpace` decides.
+/// A break after spaces kerned against the letter after them is reshaped
+/// as Chrome's `ShapingLineBreaker` and `TruncateLineEndResult` decide.
 ///
-/// `text-align: end`, `center` and `justify` need it. A space kerned
-/// against the letter after it shows the difference.
+/// Spaces that hang keep the paragraph's glyphs, past a second one only
+/// where the line needs its exact end. Under `break-spaces` the space is
+/// reshaped wherever the line needs its exact end.
+///
+/// In a font whose space kerns 4 px closer to a `V` at 20 px, `AA VV` and
+/// `AA  VV` in 30 px end their first line after the spaces. A space is
+/// 6 px kerned and 10 shaped alone.
+///
+/// Chrome 155, Times New Roman at 20 px, whose space is 3.91 px kerned
+/// against an `A` and 5 alone:
+/// - `XX AXX` in 60 px keeps its space at 3.91 px under `pre-wrap`,
+///   `normal` and `pre-line`, at every alignment and with a background or
+///   an underline;
+/// - `XX  AXX` under `pre-wrap` in 62 px reshapes its second space to 5 px
+///   at `center` or with a background, and keeps it at 3.91 at `start`;
+/// - under `break-spaces`, `XX AXX` keeps its space at 3.92 px at `start`
+///   and `left`, and reshapes it to 5.02 at `right`, `center`, `end` and
+///   `justify`, with `text-align-last: center`, and with a background or an
+///   underline.
 #[test]
-fn a_break_at_a_space_is_reshaped_only_where_the_end_must_be_exact() {
+fn a_break_at_a_space_is_reshaped_only_where_chrome_reshapes_it() {
     let mut font = TestFont::new("Test Spaced", &[(0x20, 0x7E)]);
     font.kerning = vec![(' ', 'V', -200)];
     let mut layer = LayerBuilder::new(Role::Application);
@@ -294,59 +305,124 @@ fn a_break_at_a_space_is_reshaped_only_where_the_end_must_be_exact() {
     );
     const SPACED: [FontFamilyName<'static>; 1] =
         [FontFamilyName::Named(Cow::Borrowed("Test Spaced"))];
-    let style = sized(&SPACED, 20.0);
+    let collapse = sized(&SPACED, 20.0);
+    let mut pre_wrap = collapse;
+    pre_wrap.text.white_space_collapse = WhiteSpaceCollapse::Preserve;
+    let mut break_spaces = collapse;
+    break_spaces.text.white_space_collapse = WhiteSpaceCollapse::BreakSpaces;
+    let painted = |style: ComputedStyle<'static>| ComputedStyle {
+        paints: true,
+        ..style
+    };
+    let decorated = |style: ComputedStyle<'static>| ComputedStyle {
+        decorates: true,
+        ..style
+    };
+    let (start, center) = (TextAlign::Start, TextAlign::Center);
+    let one = "AA VV";
+    let two = "AA  VV";
     let mut layout = Layout::new();
-    for (align, reshaped) in [
-        (TextAlign::Start, false),
-        (TextAlign::Left, false),
-        (TextAlign::End, true),
-        (TextAlign::Center, true),
-        (TextAlign::Justify, true),
+    // The style, the text, the alignment, whether the line is reshaped, and
+    // the hanging space and the line's width in px.
+    for (style, text, align, reshaped, hang, width) in [
+        (collapse, one, start, false, 6.0, 20.0),
+        (collapse, one, center, false, 6.0, 20.0),
+        (collapse, one, TextAlign::End, false, 6.0, 20.0),
+        (collapse, one, TextAlign::Justify, false, 6.0, 20.0),
+        (painted(collapse), one, start, false, 6.0, 20.0),
+        (pre_wrap, one, start, false, 6.0, 20.0),
+        (pre_wrap, one, center, false, 6.0, 20.0),
+        (painted(pre_wrap), one, start, false, 6.0, 20.0),
+        (decorated(pre_wrap), one, center, false, 6.0, 20.0),
+        (pre_wrap, two, start, false, 16.0, 20.0),
+        (pre_wrap, two, center, true, 20.0, 20.0),
+        (painted(pre_wrap), two, start, true, 20.0, 20.0),
+        (break_spaces, one, start, false, 0.0, 26.0),
+        (break_spaces, one, TextAlign::Left, false, 0.0, 26.0),
+        (break_spaces, one, TextAlign::Right, true, 0.0, 30.0),
+        (break_spaces, one, center, true, 0.0, 30.0),
+        (painted(break_spaces), one, start, true, 0.0, 30.0),
+        (decorated(break_spaces), one, start, true, 0.0, 30.0),
     ] {
         let block = ComputedBlockStyle {
             text_align: align,
             ..ComputedBlockStyle::new(&style)
         };
-        fixture.build(&mut layout, &block, |b| b.text(NodeKey(1), "AA VV"));
+        fixture.build(&mut layout, &block, |b| b.text(NodeKey(1), text));
+        let says = alloc::format!(
+            "{text:?} {align:?} {:?} paints {} decorates {}",
+            style.text.white_space_collapse,
+            style.paints,
+            style.decorates
+        );
+        let glyphs = glyph_words(&layout);
+        let first_v = text.len() - 2;
         assert!(
             layout
                 .shaped()
                 .text(FirstLineVariant::Standard)
                 .glyphs
-                .word(at(3))
-                .is_unsafe_to_break()
+                .word(at(first_v))
+                .is_unsafe_to_break(),
+            "{says}"
         );
-        fixture.lay_out(&mut layout, 25.0);
-        assert_eq!(texts(&layout), ["AA ", "VV"], "{align:?}");
+        fixture.lay_out(&mut layout, 30.0);
+        let line = &text[..first_v];
+        assert_eq!(texts(&layout), [line, "VV"], "{says}");
         let first = &records(&layout)[0];
-        assert_eq!(first.shapes.is_empty(), !reshaped, "{align:?}");
-        // What hangs is its own advance as drawn: 10 px shaped alone, and 6
-        // in the paragraph, kerned against the `V` after it.
-        let hang = if reshaped { 10.0 } else { 6.0 };
-        assert_eq!(first.hang.space, LayoutUnit::from_px(hang), "{align:?}");
-        assert_eq!(first.width, LayoutUnit::from_px(20.0), "{align:?}");
+        assert_eq!(!first.shapes.is_empty(), reshaped, "{says}");
+        assert_eq!(first.hang.space, LayoutUnit::from_px(hang), "{says}");
+        assert_eq!(first.width, LayoutUnit::from_px(width), "{says}");
+        assert_eq!(glyph_words(&layout), glyphs, "{says}");
     }
 }
 
-/// A line's removed end space no longer kerns the letter before it.
+/// How [`the_text_before_end_spaces_is_reshaped_only_where_the_line_needs_its_exact_end`]
+/// builds `XY XY XY`.
+#[derive(Copy, Clone, Debug)]
+enum Spaced {
+    /// In the block's own style.
+    Plain,
+    /// In one box of the style.
+    Around,
+    /// With the second `XY` alone in a box of the style.
+    Word,
+    /// In a plain box, in a box of the style.
+    Outer,
+    /// With the space after the second `XY` in a text node of its own.
+    OwnNode,
+    /// With the last `XY` alone in a box of the style.
+    Split,
+}
+
+/// The text before the spaces a line ends with is reshaped without them
+/// only where the line needs its exact end, as Chrome's
+/// `TruncateLineEndResult` and `ShapingLineBreaker` decide.
 ///
-/// CSS Text 3 removes the collapsible space a line ends with. Where the
-/// paragraph kerned the letter before it against the space, the line is
-/// reshaped without it. The letter keeps its own advance, as at a
-/// paragraph's end. The paragraph's glyphs are never touched.
+/// In a font whose `Y` kerns 4 px closer to a space at 20 px, `XY XY XY`
+/// in 50 px ends its first line with a space that hangs. Reshaped without
+/// it, the line is 46 px of text, its last `Y` 10 px. Kept, it is 42, as
+/// the paragraph shaped it. The paragraph's glyphs are never touched.
 ///
-/// - In a font whose `Y` kerns 4 px closer to a space at 20 px, `XY XY XY`
-///   in 50 px ends its first line with a 10 px `Y`. The line is 46 px of
-///   text where the paragraph's shaping made 42, at any alignment.
-/// - The first `Y`, mid-line, keeps its kern. A preserved space stays on
-///   the line, so it keeps the kern too and nothing is reshaped.
-/// - Chrome 153 does the same where the line needs its exact end: a
-///   background, a decoration, or an alignment other than start. Elsewhere
-///   it keeps the kern. In Times New Roman at 20 px, whose `Y` kerns
-///   0.74 px against a space, `XRAY ` ends at 917.45 with a background and
-///   916.70 without (probe `transformbreak` block 4).
+/// Chrome 155 does the same with `XRAY bravo` in Times New Roman at 20 px,
+/// 90 px wide, whose `Y` is 0.75 px narrower kerned against a space:
+/// - reshaped under `right`, `end`, `center` and `justify`, and under
+///   `start` with `text-align-last: center`;
+/// - reshaped with a background or an underline on the block, a background
+///   on a span holding `XRAY `, or an underline on a span around a span
+///   holding it;
+/// - reshaped at `center` with `bravo` in a span of its own;
+/// - kept under `start` and `left`, with emphasis marks, with an outline on
+///   the block or on a span around the text, with a background on a span
+///   holding only `XRAY`, and at `center` with the space in a span of its
+///   own.
+///
+/// Under `pre-wrap` the space stays and hangs, and Chrome 155 reshapes the
+/// `Y` as it does a removed space's, except at `center` with `bravo` in a
+/// span of its own, where it keeps the kern: the text before it fits whole
+/// and is not broken.
 #[test]
-fn a_removed_space_leaves_the_letter_before_it_unkerned() {
+fn the_text_before_end_spaces_is_reshaped_only_where_the_line_needs_its_exact_end() {
     let mut font = TestFont::new("Test Spaced", &[(0x20, 0x7E)]);
     font.kerning = vec![('Y', ' ', -200)];
     let mut layer = LayerBuilder::new(Role::Application);
@@ -358,28 +434,155 @@ fn a_removed_space_leaves_the_letter_before_it_unkerned() {
     );
     const SPACED: [FontFamilyName<'static>; 1] =
         [FontFamilyName::Named(Cow::Borrowed("Test Spaced"))];
-    let collapsed = sized(&SPACED, 20.0);
-    let mut preserved = collapsed;
+    let plain = sized(&SPACED, 20.0);
+    let mut preserved = plain;
     preserved.text.white_space_collapse = WhiteSpaceCollapse::Preserve;
+    let mut marked = plain;
+    marked.text.emphasis.marks = true;
+    let painted = ComputedStyle {
+        paints: true,
+        ..plain
+    };
+    let decorated = ComputedStyle {
+        decorates: true,
+        ..plain
+    };
+    let outlined = ComputedStyle {
+        outlines: true,
+        ..plain
+    };
+    let painted_preserved = ComputedStyle {
+        paints: true,
+        ..preserved
+    };
+    let (start, last) = (TextAlign::Start, TextAlignLast::Auto);
     let mut layout = Layout::new();
-    for (style, align, width, reshaped) in [
-        (&collapsed, TextAlign::Start, 46.0, true),
-        (&collapsed, TextAlign::Center, 46.0, true),
-        (&collapsed, TextAlign::End, 46.0, true),
-        (&preserved, TextAlign::Start, 42.0, false),
+    for (style, spaced, align, reshaped) in [
+        (&plain, Spaced::Plain, (start, last), false),
+        (&plain, Spaced::Plain, (TextAlign::Left, last), false),
+        (&plain, Spaced::Plain, (TextAlign::Right, last), true),
+        (&plain, Spaced::Plain, (TextAlign::Center, last), true),
+        (&plain, Spaced::Plain, (TextAlign::End, last), true),
+        (&plain, Spaced::Plain, (TextAlign::Justify, last), true),
+        (&plain, Spaced::Plain, (start, TextAlignLast::Center), true),
+        (&plain, Spaced::Plain, (start, TextAlignLast::Left), false),
+        (&painted, Spaced::Plain, (start, last), true),
+        (&decorated, Spaced::Plain, (start, last), true),
+        (&marked, Spaced::Plain, (start, last), false),
+        (&painted, Spaced::Around, (start, last), true),
+        (&painted, Spaced::Word, (start, last), false),
+        (&decorated, Spaced::Outer, (start, last), true),
+        (&decorated, Spaced::Word, (start, last), false),
+        (&plain, Spaced::OwnNode, (TextAlign::Center, last), false),
+        (&outlined, Spaced::Plain, (start, last), false),
+        (&outlined, Spaced::Around, (start, last), false),
+        (&plain, Spaced::Split, (TextAlign::Center, last), true),
+        (&preserved, Spaced::Plain, (start, last), false),
+        (&preserved, Spaced::Plain, (TextAlign::Center, last), true),
+        (&preserved, Spaced::Plain, (TextAlign::Justify, last), true),
+        (&painted_preserved, Spaced::Plain, (start, last), true),
+        (&preserved, Spaced::Split, (TextAlign::Center, last), false),
+        (
+            &preserved,
+            Spaced::OwnNode,
+            (TextAlign::Center, last),
+            false,
+        ),
     ] {
-        let block = ComputedBlockStyle {
-            text_align: align,
-            ..ComputedBlockStyle::new(style)
+        let root = if matches!(spaced, Spaced::Plain | Spaced::Split | Spaced::OwnNode) {
+            style
+        } else {
+            &plain
         };
-        fixture.build(&mut layout, &block, |b| b.text(NodeKey(1), "XY XY XY"));
+        let block = ComputedBlockStyle {
+            text_align: align.0,
+            text_align_last: align.1,
+            ..ComputedBlockStyle::new(root)
+        };
+        fixture.build(&mut layout, &block, |b| match spaced {
+            Spaced::Plain => b.text(NodeKey(1), "XY XY XY"),
+            Spaced::Around => {
+                b.open_box(NodeKey(1), style, None);
+                b.text(NodeKey(2), "XY XY XY");
+                b.close_box();
+            }
+            Spaced::Word => {
+                b.text(NodeKey(1), "XY ");
+                b.open_box(NodeKey(2), style, None);
+                b.text(NodeKey(3), "XY");
+                b.close_box();
+                b.text(NodeKey(4), " XY");
+            }
+            Spaced::Outer => {
+                b.open_box(NodeKey(1), style, None);
+                b.open_box(NodeKey(2), &plain, None);
+                b.text(NodeKey(3), "XY XY XY");
+                b.close_box();
+                b.close_box();
+            }
+            Spaced::OwnNode => {
+                b.text(NodeKey(1), "XY XY");
+                b.text(NodeKey(2), " ");
+                b.text(NodeKey(3), "XY");
+            }
+            Spaced::Split => {
+                b.text(NodeKey(1), "XY XY ");
+                b.open_box(NodeKey(2), style, None);
+                b.text(NodeKey(3), "XY");
+                b.close_box();
+            }
+        });
         let glyphs = glyph_words(&layout);
         fixture.lay_out(&mut layout, 50.0);
-        let says = alloc::format!("{:?} {align:?}", style.text.white_space_collapse);
+        let says = alloc::format!(
+            "{spaced:?} {align:?} paints {} outlines {} decorates {} {:?}",
+            style.paints,
+            style.outlines,
+            style.decorates,
+            style.text.white_space_collapse
+        );
         assert_eq!(texts(&layout), ["XY XY ", "XY"], "{says}");
-        assert_eq!(widths(&layout), [width, 20.0], "{says}");
         let first = &records(&layout)[0];
         assert_eq!(!first.shapes.is_empty(), reshaped, "{says}");
+        if align.0 != TextAlign::Justify {
+            let width = if reshaped { 46.0 } else { 42.0 };
+            assert_eq!(widths(&layout), [width, 20.0], "{says}");
+        }
         assert_eq!(glyph_words(&layout), glyphs, "{says}");
     }
+}
+
+/// A removed space at a paragraph's end is reshaped away at any alignment.
+///
+/// Chrome removes the collapsible spaces a block or a forced break ends
+/// with before it shapes, so nothing kerns against them. Chrome 155,
+/// `XRAY ` in Times New Roman at 20 px, start-aligned: the `Y` is 14.45 px
+/// at the block's end and before a `<br>`, its own advance, where it is
+/// 13.70 kerned before a space mid-line.
+#[test]
+fn a_removed_space_at_a_paragraphs_end_is_reshaped_away() {
+    let mut font = TestFont::new("Test Spaced", &[(0x20, 0x7E)]);
+    font.kerning = vec![('Y', ' ', -200)];
+    let mut layer = LayerBuilder::new(Role::Application);
+    assert!(layer.add_data(font.build()).is_ok());
+    let mut fixture = Fixture::from_collection(
+        Collection::new().with_layer(layer.snapshot()),
+        &[],
+        StageCheck::Placed(check),
+    );
+    const SPACED: [FontFamilyName<'static>; 1] =
+        [FontFamilyName::Named(Cow::Borrowed("Test Spaced"))];
+    let style = sized(&SPACED, 20.0);
+    let block = ComputedBlockStyle::new(&style);
+    let mut layout = Layout::new();
+    fixture.build(&mut layout, &block, |b| b.text(NodeKey(1), "XY XY "));
+    fixture.lay_out(&mut layout, 200.0);
+    assert_eq!(widths(&layout), [46.0]);
+    fixture.build(&mut layout, &block, |b| {
+        b.text(NodeKey(1), "XY XY ");
+        b.line_break(NodeKey(2));
+        b.text(NodeKey(3), "XY");
+    });
+    fixture.lay_out(&mut layout, 200.0);
+    assert_eq!(widths(&layout), [46.0, 20.0]);
 }

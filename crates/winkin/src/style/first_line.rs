@@ -9,16 +9,14 @@ use core::mem::size_of;
 
 use crate::data::HeapBytes;
 
-/// Which styles something is read in: the nodes' own, or their `::first-line` ones.
+/// The styles a line is read in: the nodes' own, or their `::first-line` ones.
 ///
-/// This is Blink's `StyleVariant`, in its two kinds. The block's first line
-/// is set in the `::first-line` styles.
+/// This is Blink's `StyleVariant`, in its two kinds.
 ///
-/// Every stage from font selection to the readers keeps a first-line variant
-/// of what it makes, in a [`FirstLine`]. The variant covers the first
-/// paragraph, the most the first line can reach. Readers use it where they
-/// read the first line. Both variants index the same clusters and items,
-/// because nothing `::first-line` changes moves a cluster.
+/// Every stage from font selection on keeps a first-line variant of its
+/// output in a [`FirstLine`]. The variant covers the first paragraph, the
+/// most the first line can reach. Both variants index the same clusters and
+/// items, since nothing `::first-line` changes moves a cluster.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub(crate) enum FirstLineVariant {
     /// The nodes' own styles: every line but the block's first, and the
@@ -32,32 +30,31 @@ pub(crate) enum FirstLineVariant {
 /// A table a stage keeps once per first-line variant.
 ///
 /// The font runs, the shaped text and the measured text are such tables. A
-/// build clears them. The first line's table stays empty where the first
-/// line is styled no differently.
+/// build clears them. The first line's table stays empty where `::first-line`
+/// changes nothing.
 pub(crate) trait FirstLineState: Default + HeapBytes {
     /// Empties it, keeping its capacity.
     fn clear(&mut self);
 
-    /// Whether it holds nothing: a first line's variant the build did not
-    /// make.
+    /// Returns whether it holds nothing, as a first-line variant the build
+    /// did not make.
     fn is_empty(&self) -> bool;
 }
 
 /// A stage's table for the text, and the same table for the first line.
 ///
-/// The first line's table uses the `::first-line` styles. It is boxed, and
-/// made the first time a build styles the first line differently. Most
-/// layouts never do, and hold only an empty box pointer. Once made, the box
-/// is cleared with the text's table and never dropped. So a layout that
-/// gains and loses `::first-line` keeps its capacity. A reader asking for
-/// the first line's table gets the text's where the build made none.
+/// The first line's table uses the `::first-line` styles. It is boxed and
+/// made the first time a build styles the first line differently, so most
+/// layouts hold only `None`. Once made, it is cleared with the text's table
+/// and never dropped, so it keeps its capacity. A reader asking for the
+/// first line's table gets the text's where the build made none.
 pub(crate) struct FirstLine<T> {
     text: T,
     first_line: Option<Box<T>>,
 }
 
 impl<T: FirstLineState> FirstLine<T> {
-    /// Makes one from the text's table `text`, with no first line's and no allocation.
+    /// Creates one from the text's table `text`, with no first line's table.
     pub(crate) const fn new(text: T) -> Self {
         Self {
             text,
@@ -65,7 +62,7 @@ impl<T: FirstLineState> FirstLine<T> {
         }
     }
 
-    /// Empties both, keeping every allocation, the box included.
+    /// Empties both tables, keeping every allocation.
     pub(crate) fn clear(&mut self) {
         self.text.clear();
         if let Some(first_line) = &mut self.first_line {
@@ -73,27 +70,25 @@ impl<T: FirstLineState> FirstLine<T> {
         }
     }
 
-    /// The text's, for the stage writing it.
+    /// Returns the text's table, for the stage writing it.
     pub(crate) fn text_mut(&mut self) -> &mut T {
         &mut self.text
     }
 
-    /// The first line's, where the build made one.
+    /// Returns the first line's table, where the build made one.
     #[inline]
     pub(crate) fn first_line(&self) -> Option<&T> {
         self.first_line.as_deref().filter(|first| !first.is_empty())
     }
 
-    /// Whether the build made the first line's.
+    /// Returns whether the build made the first line's table.
     #[inline]
     pub(crate) fn has_first_line(&self) -> bool {
         self.first_line().is_some()
     }
 
-    /// Returns the table `variant` reads.
-    ///
-    /// That is the first line's where the build made one, and the text's
-    /// otherwise.
+    /// Returns the table `variant` reads: the first line's where the build
+    /// made one, else the text's.
     #[inline]
     pub(crate) fn get(&self, variant: FirstLineVariant) -> &T {
         match variant {
@@ -104,21 +99,20 @@ impl<T: FirstLineState> FirstLine<T> {
 
     /// Returns the first line's table for the stage writing it.
     ///
-    /// The first call makes it empty. Later calls return the kept one.
+    /// The first call creates it.
     pub(crate) fn first_line_mut(&mut self) -> &mut T {
         self.first_line.get_or_insert_with(Box::default)
     }
 
     /// Returns the first line's table if a build made one, empty or not.
     ///
-    /// It makes none. A stage uses it to hand its buffers round.
+    /// Makes none. A stage uses it to reuse the buffers.
     pub(crate) fn kept_first_line_mut(&mut self) -> Option<&mut T> {
         self.first_line.as_deref_mut()
     }
 
-    /// Returns the heap bytes the first line's table takes, box included.
-    ///
-    /// It is zero where no build made one.
+    /// Returns the heap bytes the first line's table takes, box included,
+    /// or zero where no build made one.
     pub(crate) fn first_line_heap_bytes(&self) -> usize {
         self.first_line
             .as_deref()
@@ -159,8 +153,8 @@ mod tests {
     }
 
     /// The first line's table is made on its first write. Reads get it where
-    /// it holds something and the text's table where it doesn't. Clearing
-    /// keeps it, and its box and capacity are counted.
+    /// it holds something, else the text's table. Clearing keeps it, and its
+    /// box and capacity are counted.
     #[test]
     fn the_first_line_is_made_once_and_kept() {
         let mut both = FirstLine::new(Numbers(Vec::new()));

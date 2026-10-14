@@ -7,8 +7,8 @@
 use super::*;
 use crate::paint::FontDecorationLine;
 
-/// What `layout`'s line `at` paints, one string an operation, with
-/// `decorates` saying which lines each key draws.
+/// Returns what `layout`'s line `at` paints, one string per operation,
+/// with `decorates` saying which lines each key draws.
 fn painted(layout: &Layout, at: usize, decorates: &dyn Fn(NodeKey) -> Decorates) -> Vec<String> {
     let Some(line) = layout.line(at) else {
         return Vec::new();
@@ -34,7 +34,7 @@ fn painted(layout: &Layout, at: usize, decorates: &dyn Fn(NodeKey) -> Decorates)
         .collect()
 }
 
-/// Says every key draws every line.
+/// Returns that every key draws every line.
 fn everything(_: NodeKey) -> Decorates {
     Decorates::Both
 }
@@ -83,7 +83,7 @@ fn a_line_paints_its_items_one_by_one_in_chromes_order() {
             "through 0 (80.0, 120.0)",
         ]
     );
-    // Only what the caller says decorates is decorated.
+    // Only the keys `decorates` marks are decorated.
     let underlined = |key: NodeKey| {
         if key == NodeKey(2) {
             Decorates::BeforeText

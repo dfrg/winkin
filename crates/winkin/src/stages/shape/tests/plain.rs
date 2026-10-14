@@ -1,12 +1,12 @@
-//! Tests that the plain path writes exactly what the cluster-by-cluster path
+//! Plain path tests: the plain path writes exactly what the marked path
 //! writes, over random text, styles, directions, orientations and first
 //! lines.
 
 use super::*;
 use crate::style::{FirstLineVariant, LengthPercentage, TextCase, TextTransform};
 
-/// What a shaping wrote, word by word: each cluster's word, the glyphs it
-/// draws and its advance, and where each run starts and in which font.
+/// Returns what a shaping wrote: each cluster's word, the glyphs it draws
+/// and its advance, and where each run starts and in which font.
 fn written(
     words: &[(ClusterId, GlyphWord)],
     sidecar: &Table<SidecarGlyphId, SidecarGlyph>,
@@ -21,14 +21,14 @@ fn written(
         .collect()
 }
 
-/// Shaping writes a call's output by a plain path where no mark is kerned or
-/// halved and its glyphs run forward along a horizontal line; it must write
-/// exactly what the path that asks of every cluster writes. Over random text
-/// of ligatures, kerned pairs, glyphs split and raised, marks, Hebrew and
-/// Arabic, ideographs and the punctuation `text-spacing-trim` trims, in
-/// random styles, directions and orientations, the shaped text each builds,
-/// its first line's in capitals, its advances, and the ranges the breaker
-/// would reshape are the same either way.
+/// A call with no kerned or halved mark, set left to right, takes the plain
+/// path, which writes exactly what the marked path writes.
+///
+/// The text is random: ligatures, kerned pairs, glyphs split and raised,
+/// marks, Hebrew and Arabic, ideographs and the punctuation
+/// `text-spacing-trim` trims, in random styles, directions and orientations.
+/// The shaped text, its first line's in capitals, its advances and the
+/// ranges the breaker would reshape are the same either way.
 #[test]
 fn the_plain_path_writes_what_asking_every_cluster_does() {
     struct Lcg(u64);

@@ -119,19 +119,20 @@ impl ColumnSizes {
         self.base.0..self.base.1
     }
 
-    /// Where its room goes under `ruby-align: space-around` on a justified
-    /// line whose start it stands at (`start`), whose end (`end`), or both,
-    /// as Chrome's `ApplyRubyAlign` places it with `on_start_edge` and
-    /// `on_end_edge`: its base flush with the edge, all its
-    /// room at the other side but what the base's opportunities share; at
-    /// both edges, all its room inside the base, as `space-between` puts it,
-    /// or the base centred where it has no opportunity, and over the whole
-    /// of `line`, the line's room, where it is wider than its base and so
-    /// all the line holds, as Chrome spreads a base-shorter column alone on
-    /// a line. At neither, `before` and `inside`, its room elsewhere.
-    ///
     /// Returns the room before its base, the room its base's opportunities
-    /// share, and its width on the line.
+    /// share, and its width on the line, for a column at a justified line's
+    /// `start` edge, `end` edge, or both.
+    ///
+    /// This is where `ruby-align: space-around` puts the room, as Chrome's
+    /// `ApplyRubyAlign` does with `on_start_edge` and `on_end_edge`:
+    /// - At one edge, the base sits flush with it, and all the room the
+    ///   base's opportunities don't share goes on the other side.
+    /// - At both edges, all the room goes inside the base, as
+    ///   `space-between` puts it, or the base is centred where it has no
+    ///   opportunity. A column wider than its base is then all the line
+    ///   holds, and spreads over `line`, the line's room, as Chrome spreads a
+    ///   base-shorter column alone on a line.
+    /// - At neither, the room is `before` and `inside`.
     fn room_on_edges(
         &self,
         (before, inside): (LayoutUnit, LayoutUnit),

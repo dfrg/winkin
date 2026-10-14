@@ -1,18 +1,12 @@
 //! Measuring one candidate end of a line, as more of [`Breaker`]'s `impl`.
 //!
-//! **A candidate's width.** A line to `e` reaches its prefix sum there, plus
-//! what its reshaped pieces add, plus its tabs. It is put on Chrome's grid
-//! as the fit reads it. What hangs at its end steps back off it, a cluster
-//! at a time, with each cluster's reshaped advance where it has one.
-//!
-//! **Tabs.** A tab takes nothing in the prefix. Its width depends on where it
-//! lands on the line, using the same tab function as line layout. A
-//! candidate adds its tabs to its reach, and takes a hanging tab off with
-//! the rest of what hangs. Stops count from the block's content edge.
-//!
-//! **Costs.** A line pays the line-edge cost at its start and its end, and
-//! takes `text-indent` where it applies. A cursor sought at the line's start
-//! moves with its candidates.
+//! - **Width.** A line to `e` reaches its prefix sum there, plus its reshaped
+//!   pieces' deltas, its tabs and a continued ruby column's shift, rounded up
+//!   to Chrome's grid. What hangs at its end comes off it.
+//! - **Tabs.** A tab takes nothing in the prefix. Its width depends on where
+//!   it lands; line layout sizes it with the same function.
+//! - **Costs.** A line pays the line-edge cost at each end, and takes
+//!   `text-indent` where it applies.
 
 use alloc::vec::Vec;
 use core::ops::Range;
@@ -30,15 +24,12 @@ use crate::work;
 
 use super::fit::Candidate;
 
-/// The tabs of a line its fit's walk sized, which its candidates read back.
+/// The tab widths a line's walk sized, which its candidates read back.
 ///
-/// A tab's width depends on where it lands, so the walk over a line with
-/// tabs sizes each tab it passes. A candidate, or the reach of a float's
-/// anchor, reads those widths and sizes only the tabs past where the walk
-/// stopped. The breaker keeps one in its scratch.
+/// Readers size only the tabs past where the walk stopped.
 pub(super) struct SizedTabs {
-    /// The line they were sized on: its start, tab origin and indent, which
-    /// every width depends on. `None` before a walk.
+    /// The line's start, tab origin and indent, which every width depends
+    /// on; `None` before a walk.
     line: Option<(ClusterId, LayoutUnit, LayoutUnit)>,
     /// Each tab the walk passed, with its width, in order.
     tabs: Vec<(ClusterId, InlineLayoutUnit)>,
@@ -56,7 +47,7 @@ impl SizedTabs {
         }
     }
 
-    /// Forgets the tabs sized, at the start of a break.
+    /// Forgets the tabs sized, at the start of a layout of the lines.
     pub(super) fn clear(&mut self) {
         self.line = None;
         self.tabs.clear();
@@ -74,15 +65,13 @@ impl SizedTabs {
         self.tabs.push((tab, width));
     }
 
-    /// Records that the walk stopped at boundary `at`, having passed every
-    /// cluster before it.
+    /// Records that the walk stopped at boundary `at`.
     pub(super) fn stop(&mut self, at: ClusterId) {
         self.walked = at;
     }
 
-    /// Returns the tabs sized on `line`, and where the walk that sized them
-    /// stopped: none, at the line's start, where the record is another
-    /// line's.
+    /// Returns the tabs sized on `line` and where their walk stopped; none
+    /// and the line's start where the record is another line's.
     fn line_tabs(&self, line: &LineStart<'_>) -> (&[(ClusterId, InlineLayoutUnit)], ClusterId) {
         if self.line == Some((line.start, line.tab_origin, line.indent)) {
             (&self.tabs, self.walked)
@@ -100,8 +89,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// Measures the line from the fitting's start to `end`, reshaping its
     /// edges where the font shaped across them.
     ///
-    /// First takes back what the last candidate reshaped. Where `trims_end`,
-    /// the line ends at a closing mark it trims, and is reshaped regardless.
+    /// Takes back the last candidate's pieces first. With `trims_end`, the
+    /// line ends at a closing mark it trims and is always reshaped.
     pub(super) fn candidate(
         &mut self,
         out: &mut Lines,
@@ -109,8 +98,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         end: ClusterId,
         trims_end: bool,
     ) -> Candidate {
-        // The last candidate's pieces go; the start's window, which every
-        // candidate shares, stays.
+        // The start's window piece, shared by every candidate, stays.
         out.rewind_edges(fitting.head.after());
         let para = fitting.line.para;
         let start = fitting.line.start;
@@ -125,9 +113,9 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         let gives_back = seam > InlineLayoutUnit::ZERO;
         let reshapes = self.shaped.contains(ShapedFlags::HAS_UNSAFE);
         if reshapes || window.is_some() || trims_end || gives_back {
-            // Where the paragraph shaped across collapsible spaces at the
-            // line's end, the line is reshaped up to them. So its last letter
-            // is not kerned against a space the line drops.
+            // Where the line needs its exact end, the spaces it ends with are
+            // left out of its reshape, so its last letter is not kerned
+            // against them.
             let removed = if trims_end || gives_back {
                 None
             } else {
@@ -138,9 +126,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
                 || removed.is_some()
                 || (end < para.end
                     && self.stages.shaped.glyphs.word(end).is_unsafe_to_break()
-                    && (para.exact_end || !self.clusters.space_or_tab_before(end)));
-            // The line's start is shaped as a start, its opening mark
-            // trimmed where the window says, and its end trimmed where asked.
+                    && (!self.clusters.space_or_tab_before(end)
+                        || self.space_break_reshaped(&fitting.line, end)));
             let whole = ShapingEdges {
                 line_start: start > para.start,
                 trim_start: window.is_some_and(|window| window.trims),
@@ -157,9 +144,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             let line = start..shaped_end;
             pieces = self.edge_pieces(out, para, line, window, fitting.head, ends);
         }
-        // Step back over what hangs, using each cluster's reshaped advance
-        // where it has one. At the paragraph's end, the white space decides
-        // whether it hangs only where it overflows.
+        // At the paragraph's end, part of what hangs may hang only where it
+        // overflows.
         let (content_end, mut tail) =
             self.hanging_tail(start, end, |cluster| pieces.advance(&*out, cluster));
         let conditional = (end == para.end)
@@ -179,8 +165,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             + pieces.delta()
             + fitting.shift.at(end);
         if para.tabs {
-            // The line's tabs, which the prefix gives nothing. Those that
-            // hang come off with the rest of what hangs.
+            // The prefix gives tabs nothing. Hanging tabs come off with the
+            // rest of what hangs.
             let (tabs, hanging_tabs) = self.line_tabs(&fitting.line, end, content_end);
             reach += tabs;
             tail += hanging_tabs;
@@ -201,9 +187,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     ///
     /// Steps back no further than `floor`. Each cluster is as wide as
     /// `reshaped` says where it has a reshaped advance, and otherwise its own
-    /// advance, walking back with the items at its boundaries. A box's edge
-    /// among them stays content. The fit's candidates and the scorer both
-    /// use it.
+    /// advance. A box's edge among the hanging clusters stays content.
     pub(super) fn hanging_tail(
         &self,
         floor: ClusterId,
@@ -226,15 +210,13 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         (content_end, tail)
     }
 
-    /// Returns where the white space in `tail`, at a paragraph's end, that
-    /// hangs only where it overflows starts.
+    /// Returns where the white space that hangs only where it overflows
+    /// starts in `tail`, a paragraph's hanging end.
     ///
-    /// That white space is the run of trailing texts that keep white space
-    /// and wrap (`pre-wrap`). Where white space collapses, other space
-    /// separators hang whole, as Blink's `ComputeTrailingSpaceWidth` hangs
-    /// them. `None` where the last text with a space, tab or space separator
-    /// collapses. Most paragraph ends have no such space and skip the walk,
-    /// which seeks the tail.
+    /// That white space is the trailing run of `pre-wrap` texts. Where white
+    /// space collapses, space separators hang whole, as Blink's
+    /// `ComputeTrailingSpaceWidth` hangs them. `None` where the last text
+    /// with a breaking space collapses, or `tail` has none.
     fn conditional_start(&self, tail: Range<ClusterId>) -> Option<ClusterId> {
         let clusters = self.clusters;
         let spaces = |range: Range<ClusterId>| {
@@ -264,13 +246,11 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         start
     }
 
-    /// Returns how far `tab` reaches on the line being fitted, the tabs
-    /// before it reaching `before`.
+    /// Returns `tab`'s width on the line being fitted, given the width
+    /// `before` of the tabs before it.
     ///
-    /// Its position counts from the line's start, with the indent and what
-    /// the start's reshape moved. `boundary` gives the first item at its
-    /// boundary. Line layout sizes the tab with the same function. A tab in
-    /// ruby annotation text takes no room on its base's line.
+    /// `boundary` gives the first item at its boundary. A tab in ruby
+    /// annotation text takes no room on its base's line.
     #[inline(never)]
     pub(super) fn tab_width(
         &self,
@@ -293,8 +273,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             .filter(|&(at, _)| at == tab)
             .map_or(segment.item, |(_, first)| first);
         let pen = stages.pen(tab, from);
-        // The start's reshape moves what follows its window. A tab ends any
-        // shaping run, so a tab past the line's start follows the window.
+        // A tab past the start's window moves by what its reshape adds.
         let moved = line
             .window
             .filter(|window| window.end <= tab)
@@ -307,12 +286,10 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         InlineLayoutUnit::from_layout(tab_advance_reached(line.tab_origin, position, stops, reach))
     }
 
-    /// Returns how far the tabs of `line` up to `end` reach: all of them,
-    /// and those from `content_end` on, which hang.
+    /// Returns the width of `line`'s tabs before `end`, and of those from
+    /// `content_end` on, which hang.
     ///
-    /// It reads the widths the fit's walk recorded, and sizes only the tabs
-    /// past where the walk stopped. Only a paragraph with tabs asks. It is
-    /// out of line so text without tabs pays nothing.
+    /// It is out of line so text without tabs pays nothing.
     #[inline(never)]
     pub(super) fn line_tabs(
         &self,
@@ -352,11 +329,10 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         (all, hanging)
     }
 
-    /// Returns the walk over `clusters` of the line being fitted, which
-    /// starts from the line's first item and seeks only its shaping run.
+    /// Returns the walk over `clusters` of the line being fitted.
     ///
-    /// The walk starts at the line's start. It passes the segments and
-    /// items before `clusters` without yielding them, a step each.
+    /// The walk starts at the line's first item, with no search, and skips
+    /// the steps before `clusters`.
     pub(super) fn line_segments(
         &self,
         line: &LineStart<'_>,
@@ -377,11 +353,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         })
     }
 
-    /// Returns a cursor into `para`'s line-edge costs at `at`, sought by
-    /// halving, or `None` where `para` has no cost.
-    ///
-    /// A line's fit seeks it once at the line's start, and its candidates
-    /// move it from there.
+    /// Returns a cursor into `para`'s line-edge costs sought to `at`, or
+    /// `None` where `para` has no cost.
     pub(super) fn edge_costs(
         &self,
         para: &BreakerParagraph,
@@ -394,11 +367,9 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// Returns what a line starting at `start` pays there, and how far a
     /// mark hangs past its start, moving `costs` to `start`.
     ///
-    /// Only the block's first line, `first`, hangs a mark under
-    /// `hanging-punctuation: first`. The hung mark is its first cluster.
-    ///
-    /// Inlined into every line's fit: out of line, a relayout of content
-    /// with no line-edge cost runs about 1% more instructions.
+    /// Only the block's first line (`first`) hangs its first cluster under
+    /// `hanging-punctuation: first`. Out of line, a relayout of content with
+    /// no line-edge cost runs about 1% more instructions.
     #[inline(always)]
     pub(super) fn start_cost(
         &self,
@@ -424,16 +395,13 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// Returns the `text-indent` a line starting at `start` takes, `first`
     /// marking the block's first line.
     ///
-    /// The first line takes it, and under `each-line` every line after a
-    /// forced break. `hanging` inverts which lines do. A percentage is of the
-    /// area's width, not the band's, truncated onto the grid as Chrome's
-    /// `MinimumValueForLength` does. Nothing clamps it, so an indent wider
-    /// than the band leaves a stub of a line.
-    ///
-    /// A first line that opens an initial letter takes it twice: once before
-    /// the letter's box and once inside it, where the box's own first line
-    /// takes it (`CalculateInitialLetterBoxInlineSize`). Line layout gives
-    /// the box the second.
+    /// - The first line takes it, and under `each-line` every line after a
+    ///   forced break. `hanging` inverts which lines do.
+    /// - A percentage is of the area's width, not the band's, truncated as
+    ///   Chrome's `MinimumValueForLength` does. Nothing clamps it.
+    /// - A first line that opens an initial letter takes it twice, once
+    ///   before the letter's box and once inside it
+    ///   (`CalculateInitialLetterBoxInlineSize`).
     pub(super) fn indent(
         &self,
         para: &BreakerParagraph,
@@ -459,10 +427,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     }
 }
 
-/// Returns what a line of `para` ending at `end` pays there, or nothing.
-///
-/// Moves `costs` to `end`, except at the paragraph's end, whose cost `para`
-/// holds.
+/// Returns what a line of `para` ending at `end` pays there, moving `costs`
+/// to `end` short of the paragraph's end.
 pub(super) fn end_cost(
     para: &BreakerParagraph,
     costs: &mut Option<SortedCursor<'_, LineEdgeCost>>,
@@ -478,10 +444,8 @@ pub(super) fn end_cost(
         .unwrap_or_default()
 }
 
-/// Returns the segment `step` is, or `None` for an item at a boundary.
-///
-/// `boundary` records the first item the walk meets at each boundary, which
-/// a tab's pen position counts from.
+/// Returns the segment `step` is, or `None` for an item, recording in
+/// `boundary` the first item at each boundary.
 pub(super) fn step_segment(
     boundary: &mut Option<(ClusterId, ItemId)>,
     step: Step,

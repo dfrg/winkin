@@ -1,4 +1,4 @@
-//! Fixed box shifts and retained box extents.
+//! Fixed box baseline shifts and kept boxes' extents.
 
 use super::{Extent, MeasureInput, MeasuredText, TextMetrics};
 use crate::config::{DominantBaselines, SuperSubPosition};
@@ -12,10 +12,11 @@ use crate::style::{FirstLineVariant, VerticalAlign};
 use crate::unit::LayoutUnit;
 use crate::work;
 
-/// Prepares fixed shifts and retained box extents in node order. Ruby's
-/// look-ahead reads the shifts, so this runs before the cluster scan. The
-/// initial letter has already been measured and keeps its ink extent. Nodes
-/// opening past `reach`, where the scan stops, are left out.
+/// Writes each box's fixed baseline shift and each kept box's extent into
+/// `out`, in node order, skipping nodes that open past `reach`.
+///
+/// Runs before the cluster scan, whose ruby look-ahead reads the shifts. The
+/// initial letter keeps its measured border box.
 pub(super) fn prepare_boxes(
     input: &MeasureInput<'_>,
     variant: FirstLineVariant,
@@ -47,12 +48,10 @@ pub(super) fn prepare_boxes(
                 kind,
                 Some(NodeKind::Box | NodeKind::FirstLetter | NodeKind::Atomic)
             );
-        // A ruby container always keeps its box, as Chrome keeps one for a
-        // box whose annotations set fonts of their own. An anonymous one has
-        // no element to answer for.
+        // A ruby container keeps its box, as Chrome does when annotations
+        // set their own fonts; an anonymous one has no element to keep.
         let ruby = item.kind == ItemKind::RubyOpen && !nodes.is_anonymous_ruby(node);
-        // An annotation keeps its box too: its annotation line, as wide as
-        // its column, across which its border box stands on its baseline.
+        // An annotation keeps its box: its line, as wide as its column.
         let annotation = item.kind == ItemKind::AnnotationOpen;
         let keeps = item.kind == ItemKind::Open || ruby || annotation;
         if !shifts && !keeps {
@@ -102,6 +101,7 @@ pub(super) fn prepare_boxes(
         let kept = ruby
             || annotation
             || boxes.has(BoxFlags::PAINTS)
+            || boxes.has(BoxFlags::OUTLINES)
             || boxes.has(BoxFlags::HAS_EDGES)
             || !matches!(boxes.align, VerticalAlign::Baseline)
             || shift != LayoutUnit::ZERO
@@ -136,11 +136,13 @@ pub(super) fn prepare_boxes(
     }
 }
 
-/// Returns a box's fixed shift relative to its parent's baseline.
-/// Lengths and percentages truncate onto the grid; super/sub use the
-/// configured size ratio or the parent's font offsets. Edge alignment
-/// waits for line layout. Dominant baselines additionally raise non-atomic
-/// boxes that are not placed by their edges.
+/// Returns a box's fixed shift from its parent's baseline, positive up.
+///
+/// Lengths and percentages truncate to the 26.6 grid. `super` and `sub` use
+/// the configured size ratio or the parent font's offsets. Edge alignments
+/// (`top`, `text-top`, ...) are line layout's. Under `dominant`, a
+/// non-atomic box not aligned by edges also moves by its `dominant-baseline`
+/// less its parent's.
 #[allow(clippy::too_many_arguments)]
 fn baseline_shift(
     input: &MeasureInput<'_>,
@@ -169,8 +171,7 @@ fn baseline_shift(
                         -(size.divided(5) + one)
                     }
                 }
-                // The offsets are downward from the baseline, a
-                // superscript's negative.
+                // The font's offsets point down.
                 SuperSubPosition::FontMetrics => {
                     parent_metrics.map_or(LayoutUnit::ZERO, |metrics| {
                         if up {

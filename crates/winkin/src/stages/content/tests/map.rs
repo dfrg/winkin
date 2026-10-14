@@ -2,13 +2,12 @@
 //! - the units the writer records, for collapsed, dropped and kept white
 //!   space;
 //! - transforms that change a length, and `full-size-kana`;
-//! - text masked by `-webkit-text-security`, a unit a grapheme;
-//! - nodes answering by their keys, atomic inlines, breaks and break
-//!   opportunities;
+//! - text masked by `-webkit-text-security`, one unit per grapheme;
+//! - lookup by node key, atomic inlines, breaks and break opportunities;
 //! - the first letter's box;
-//! - round trips from the content's text to the caller's and back.
+//! - round trips from the content text to the source and back.
 //!
-//! Collapsed white space maps as Blink's `offset_mapping_test.cc` maps it.
+//! Collapsed white space maps as in Blink's `offset_mapping_test.cc`.
 
 use alloc::vec::Vec;
 
@@ -38,15 +37,15 @@ fn units(layout: &Layout) -> Vec<(MapUnitKind, Range<usize>, Range<u32>)> {
     extras.map_or_else(Vec::new, |extras| extras.map.listed(content.text.len()))
 }
 
-/// Returns where content offset `at` is in the caller's text, from `side`.
+/// Returns the source key and offset of content offset `at`, from `side`.
 fn source(layout: &Layout, at: usize, side: MapSide) -> Option<(u64, u32)> {
     let map = layout.content().offset_map()?;
     map.source_position(TextOffset::new(at), side)
         .map(|(key, offset)| (key.0, offset))
 }
 
-/// Returns where offset `offset` of node `key`'s text is in the content's
-/// text.
+/// Returns the content offset of `offset` in the text keyed `key_`, from
+/// `side`.
 fn content_offset(layout: &Layout, key_: u64, offset: u32, side: MapSide) -> Option<usize> {
     let map = layout.content().offset_map()?;
     map.content_offset(key(key_), offset, side)
@@ -84,8 +83,8 @@ fn math_auto_maps_each_source_character_as_one_stop() {
     }
 }
 
-/// A plain document is one unit per text node. Nothing collapses or
-/// transforms, and a lone space stays one unit.
+/// Text that nothing collapses or transforms is one unit per text node,
+/// single spaces included.
 #[test]
 fn an_untouched_document_is_one_unit() {
     let layout = mapped(|b| b.text(key(1), "nothing to collapse here"));
@@ -98,7 +97,7 @@ fn an_untouched_document_is_one_unit() {
     }
 }
 
-/// Without `map_source` nothing is recorded, and there is no map to ask.
+/// Without `map_source` no map is recorded.
 #[test]
 fn the_map_is_recorded_only_where_asked() {
     let layout = build(|b| b.text(key(1), "a  b"));
@@ -106,8 +105,8 @@ fn the_map_is_recorded_only_where_asked() {
     assert!(units(&layout).is_empty());
 }
 
-/// A collapsed run keeps its first character as the space. The rest maps to
-/// after it, as Blink's `OneTextNodeWithCollapsedSpace` has it.
+/// A collapsed run keeps its first character as the space, and the rest maps
+/// to after it, as in Blink's `OneTextNodeWithCollapsedSpace`.
 #[test]
 fn a_collapsed_run_is_its_first_character_and_nothing() {
     let layout = mapped(|b| b.text(key(1), "one     two"));
@@ -116,7 +115,7 @@ fn a_collapsed_run_is_its_first_character_and_nothing() {
         units(&layout),
         [(I, 0..4, 0..4), (C, 4..4, 4..8), (I, 4..7, 8..11)]
     );
-    // Into the content: the run past its first character is after the space.
+    // To the content: the run past its first character is after the space.
     assert_eq!(content_offset(&layout, 1, 3, After), Some(3));
     for offset in 4..=8 {
         assert_eq!(
@@ -126,7 +125,7 @@ fn a_collapsed_run_is_its_first_character_and_nothing() {
         );
     }
     assert_eq!(content_offset(&layout, 1, 9, Before), Some(5));
-    // Out of it: after the space, the run's two ends.
+    // To the source: after the space, the run's two ends.
     assert_eq!(source(&layout, 4, Before), Some((1, 4)));
     assert_eq!(source(&layout, 4, After), Some((1, 8)));
     assert_eq!(source(&layout, 5, Before), Some((1, 9)));
@@ -151,8 +150,8 @@ fn white_space_dropped_maps_to_where_the_text_starts() {
     assert_eq!(content_offset(&layout, 1, 10, After), Some(8));
 }
 
-/// A space owed across a box edge is the unit of the white space it came
-/// from. The white space after the edge collapses to nothing.
+/// A space pending across a box edge maps to the white space it came from;
+/// the white space after the edge collapses to nothing.
 #[test]
 fn a_space_owed_across_an_edge_is_its_own_nodes() {
     let layout = mapped(|b| {
@@ -179,8 +178,8 @@ fn a_space_owed_across_an_edge_is_its_own_nodes() {
     assert_eq!(content_offset(&layout, 3, 1, Before), Some(4));
 }
 
-/// A transformed piece written near the text's limit, a character at a time,
-/// records the units the same piece records written whole far from it.
+/// A transformed piece written a character at a time near the text limit
+/// records the same units as when written whole.
 #[test]
 fn a_transformed_piece_near_the_text_limit_maps_as_one_far_from_it() {
     let upper = cased(TextCase::Uppercase, "de");
@@ -197,8 +196,8 @@ fn a_transformed_piece_near_the_text_limit_maps_as_one_far_from_it() {
         b.finish();
         layout
     };
-    // Four bytes, which a transform may grow to twelve: a limit of eleven
-    // writes them a character at a time, and all of them fit.
+    // Four bytes may grow to twelve, so a limit of eleven writes them a
+    // character at a time; all of them fit.
     let near = built(ContentLimits::MAX.with_text(11));
     let far = built(ContentLimits::MAX);
     assert_eq!(text(&near), "ASSB");
@@ -210,14 +209,15 @@ fn a_transformed_piece_near_the_text_limit_maps_as_one_far_from_it() {
     assert_eq!(units(&near), units(&far));
 }
 
-/// A transform that keeps each character's length maps one to one. One that
-/// does not is one caret stop: an offset inside it maps to an end.
+/// A transform that keeps each character's length maps one to one. Where it
+/// changes a length, the span is one caret stop and an offset inside maps to
+/// an end.
 #[test]
 fn a_transform_that_changes_a_length_is_one_stop() {
     let upper = cased(TextCase::Uppercase, "en");
     let layout = mapped_with(&upper, |b| b.text(key(1), "Stra\u{DF}e ab"));
     assert_eq!(text(&layout), "STRASSE AB");
-    // `ß` is two bytes, and so is `SS`, but two characters: one unit.
+    // `ß` and `SS` are both two bytes, but `SS` is two characters: one unit.
     assert_eq!(
         units(&layout),
         [(I, 0..4, 0..4), (V, 4..6, 4..6), (I, 6..10, 6..10)]
@@ -232,10 +232,10 @@ fn a_transform_that_changes_a_length_is_one_stop() {
         Some(TextOffset::new(4)..TextOffset::new(6))
     );
     assert_eq!(map.variable_around(TextOffset::new(4)), None);
-    // ASCII in capitals is the text as given.
+    // Uppercased ASCII keeps its lengths: one identity unit.
     let layout = mapped_with(&upper, |b| b.text(key(1), "plain words"));
     assert_eq!(units(&layout), [(I, 0..11, 0..11)]);
-    // A full-width letter is three bytes of one.
+    // A full-width letter is three bytes for one.
     let wide = styled(|style| {
         style.text.transform = TextTransform {
             full_width: true,
@@ -250,8 +250,8 @@ fn a_transform_that_changes_a_length_is_one_stop() {
 /// CSS Text 3's table of small kana and their full-size forms (Appendix G,
 /// "Small Kana Mappings"), as the editor's draft lists it.
 ///
-/// It holds the hiragana, the katakana and the half-width katakana, 58 in
-/// all. Blink's `Character::FullSizeKanaVariant` holds the same 58.
+/// Hiragana, katakana and half-width katakana, 58 in all, the same 58 as
+/// Blink's `Character::FullSizeKanaVariant`.
 const SMALL_KANA: [(char, char); 58] = [
     ('\u{3041}', '\u{3042}'),
     ('\u{3043}', '\u{3044}'),
@@ -316,10 +316,9 @@ const SMALL_KANA: [(char, char); 58] = [
 /// `full-size-kana` maps every small kana of CSS Text 3's table to its
 /// full-size form, and every other Unicode scalar value to itself.
 ///
-/// A small kana that `full-width` makes full-width is then made full-size,
-/// as CSS orders the two and Blink applies them. A supplementary small kana
-/// of four UTF-8 bytes becomes three bytes, one character for one, and the
-/// offset map finds it.
+/// `full-width` applies first and `full-size-kana` second, as CSS orders them
+/// and Blink applies them. A four-byte supplementary small kana becomes a
+/// three-byte character, and the offset map records the change.
 #[test]
 fn full_size_kana_is_css_text_3s_table() {
     for code in 0..=0x10_FFFF_u32 {
@@ -365,8 +364,8 @@ fn full_size_kana_is_css_text_3s_table() {
     assert_eq!(units(&layout), [(V, 0..3, 0..4), (I, 3..4, 4..5)]);
 }
 
-/// Greek capitals drop their accents in context, which each letter alone
-/// does not. The span whose characters do not add up is one unit.
+/// Greek capitals drop their accents in context, which letters mapped alone
+/// do not. The span whose lengths do not add up is one unit.
 #[test]
 fn a_transform_in_context_is_one_unit_where_it_must_be() {
     let upper = cased(TextCase::Uppercase, "el");
@@ -386,8 +385,8 @@ fn a_transform_in_context_is_one_unit_where_it_must_be() {
     );
 }
 
-/// A letter whose marks a capital drops in context keeps a unit of its own
-/// where its marks mapped alone make what the context made.
+/// A letter that loses marks when uppercased in context keeps its own unit
+/// where uppercasing it alone gives the same result.
 ///
 /// Greek `Ϊ́Ρ` uppercases to `Ϊ̈Ρ`, dropping the acute. Chrome selects the
 /// capital iota alone for the first three UTF-16 units
@@ -401,8 +400,8 @@ fn a_letter_whose_marks_a_capital_drops_keeps_its_own_unit() {
     assert_eq!(content_offset(&layout, 1, 6, Before), Some(4));
 }
 
-/// Masked text is one unit for each grapheme. A one-character grapheme as
-/// long as its mask maps as given, and any other is one caret stop.
+/// Masked text is one unit per grapheme. A one-character grapheme as long as
+/// its mask maps one to one; any other is one caret stop.
 #[test]
 fn masked_text_is_one_unit_a_grapheme() {
     let masked = styled(|s| s.text.security = TextSecurity::Disc);
@@ -445,9 +444,8 @@ fn the_map_answers_in_nodes() {
     assert_eq!(content_offset(&layout, 9, 0, After), None);
 }
 
-/// An atomic inline and a `<br>` span their node's offsets 0 and 1, before
-/// and after them, as Blink's `ReplacedElement` and `BRBetweenTextNodes`
-/// have them.
+/// An atomic inline and a `<br>` span their node's offsets 0 (before) and 1
+/// (after), as in Blink's `ReplacedElement` and `BRBetweenTextNodes`.
 #[test]
 fn an_atomic_inline_and_a_break_are_before_and_after() {
     let layout = mapped(|b| {
@@ -479,8 +477,8 @@ fn an_atomic_inline_and_a_break_are_before_and_after() {
     assert_eq!(source(&layout, 8, After), Some((5, 0)));
 }
 
-/// A `<wbr>`'s U+200B holds none of the caller's text. Offsets on either
-/// side of it map to the text node's one offset there.
+/// A `<wbr>`'s U+200B holds no source text. Offsets on either side of it map
+/// to the one text-node offset there.
 #[test]
 fn a_break_opportunity_holds_none_of_the_callers_text() {
     let layout = mapped(|b| {
@@ -497,7 +495,8 @@ fn a_break_opportunity_holds_none_of_the_callers_text() {
     assert_eq!(content_offset(&layout, 1, 2, After), Some(5));
     assert_eq!(source(&layout, 2, After), Some((1, 2)));
     assert_eq!(source(&layout, 5, Before), Some((1, 2)));
-    // Between nodes, after a box closed: the node written last's.
+    // Between nodes after a box closes: the end of the text before it, then
+    // the start of the text after.
     let layout = mapped(|b| {
         b.open_box(key(2), &ComputedStyle::initial(), None);
         b.text(key(3), "ab");
@@ -510,9 +509,8 @@ fn a_break_opportunity_holds_none_of_the_callers_text() {
     assert_eq!(source(&layout, 5, After), Some((4, 0)));
 }
 
-/// Collapsing keeps a break opportunity where white space that wraps joins a
-/// run from a box that does not. The opportunity belongs to the joining node
-/// and holds none of its text.
+/// The break opportunity kept when wrapping white space joins a `nowrap` run
+/// belongs to the joining node and holds none of its text.
 #[test]
 fn the_opportunity_collapsing_keeps_is_empty_in_the_callers_text() {
     let layout = mapped(|b| {
@@ -535,8 +533,8 @@ fn the_opportunity_collapsing_keeps_is_empty_in_the_callers_text() {
     assert_eq!(content_offset(&layout, 3, 1, Before), Some(5));
 }
 
-/// Kept white space is written as given, a kept segment break too. A CRLF is
-/// one break: its CR collapses.
+/// Kept white space and segment breaks are written as given. A CRLF is one
+/// break: its CR collapses.
 #[test]
 fn kept_white_space_is_written_as_given() {
     let layout = mapped_with(&white_space(WhiteSpaceCollapse::Preserve), |b| {
@@ -549,7 +547,7 @@ fn kept_white_space_is_written_as_given() {
     );
     assert_eq!(content_offset(&layout, 1, 5, After), Some(4));
     assert_eq!(content_offset(&layout, 1, 6, After), Some(5));
-    // A segment break written as a space stands for itself.
+    // A segment break written as a space maps one to one.
     let layout = mapped_with(&white_space(WhiteSpaceCollapse::PreserveSpaces), |b| {
         b.text(key(1), "a\nb");
     });
@@ -566,8 +564,8 @@ fn kept_white_space_is_written_as_given() {
 }
 
 /// The block's `white-space-trim: discard-inner` trims its kept white space
-/// at both ends. What it trims collapses to nothing, and the rest maps as it
-/// would untrimmed.
+/// at both ends. The trimmed white space collapses to nothing; the rest maps
+/// as if untrimmed.
 #[test]
 fn a_trimmed_block_maps_what_it_kept() {
     let root = styled(|style| {
@@ -588,9 +586,9 @@ fn a_trimmed_block_maps_what_it_kept() {
     assert_eq!(source(&layout, 11, After), Some((1, 15)));
 }
 
-/// The first letter's box holds the caller's text node's text, as in Blink's
-/// `FirstLetter`. Its units answer to the text node's key, and the rest of
-/// that node counts on after it.
+/// The first letter's box holds the source text node's text, as in Blink's
+/// `FirstLetter`. Its units map to the text node's key, and the node's
+/// offsets continue after it.
 #[test]
 fn a_first_letter_is_its_text_nodes_text() {
     let letter = ComputedStyle::initial();
@@ -608,8 +606,8 @@ fn a_first_letter_is_its_text_nodes_text() {
         assert_eq!(source(&layout, at, After), Some((1, offset)), "{at}");
     }
     assert_eq!(content_offset(&layout, 9, 0, After), None);
-    // A text ends with punctuation, and the letter is in the next text. The
-    // box holds the first text's part, and the next text goes on after it.
+    // A text ending in punctuation leaves the letter to the next text. The
+    // box holds the first text's part, and the next text follows it.
     let layout = mapped(|b| {
         b.set_first_letter(key(9), &letter, None);
         b.text(key(1), "\u{201C}");
@@ -620,10 +618,9 @@ fn a_first_letter_is_its_text_nodes_text() {
     assert_eq!(source(&layout, 4, Before), Some((1, 4)));
 }
 
-/// Every offset of the content maps into the caller's text and back to
-/// where it started. A break opportunity the builder wrote is the exception:
-/// its two sides are one offset in the caller's text. The documents use
-/// every call and every white space rule.
+/// Every content offset maps to the source and back, in documents that use
+/// every call and many white space rules. The two sides of a generated break
+/// opportunity share one source offset.
 #[test]
 fn the_map_round_trips() {
     let upper = cased(TextCase::Uppercase, "en");
@@ -655,13 +652,13 @@ fn the_map_round_trips() {
     }
 }
 
-/// Checks that every offset of `content`'s text maps into the caller's text
-/// and back to where it started, where the map was recorded.
+/// Checks that every offset of `content`'s text maps to the source and back,
+/// if a map was recorded.
 ///
-/// A break opportunity the builder wrote is the exception: its two sides are
-/// one offset in the caller's text. Where the caller gave a key to several
-/// nodes (not `unique`), an offset comes back in the first of them that holds
-/// it, so the check asks only that both ways answer.
+/// The two sides of a generated break opportunity share one source offset.
+/// Where a key names several nodes (not `unique`), an offset comes back in
+/// the first of them that holds it, so the check asks only that both
+/// directions answer.
 pub(super) fn round_trips(content: &Content, unique: bool) {
     let text = &content.text;
     let Some(map) = content.offset_map() else {

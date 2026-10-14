@@ -7,8 +7,8 @@ use super::{count_allocations, text};
 use winkin::style::{ComputedStyle, Language, TextGroup, WordBreak};
 use winkin::{BuildOptions, ComputedBlockStyle, Context, Layout, NodeKey};
 
-/// Prose in `language`: `text` in paragraphs, some of it in a span that
-/// breaks words otherwise, so the line stream resumes at a seam.
+/// Builds `text` in paragraphs in `language`, some of it in a span with
+/// another word-break rule, so the line segmenter resumes at a seam.
 fn prose(layout: &mut Layout, cx: &mut Context, language: &str, text: &str) {
     let root = ComputedStyle {
         text: TextGroup {
@@ -35,11 +35,12 @@ fn prose(layout: &mut Layout, cx: &mut Context, language: &str, text: &str) {
     assert!(b.finish().is_complete());
 }
 
-/// Analyzing again allocates nothing: every table of the analysis and its
-/// scratch keep their capacity, the bidi resolver's among them, the
-/// segmenters are the context's, and ICU's line and grapheme iterators
-/// take none on the rule path. Arabic here is in a left-to-right
-/// paragraph, so its levels are resolved and kept.
+/// Analyzing again allocates nothing.
+///
+/// The analysis tables and scratch, the bidi resolver's included, keep
+/// their capacity; the segmenters are the context's; and ICU's line and
+/// grapheme iterators allocate nothing on the rule path. The Arabic is in
+/// a left-to-right paragraph, so its levels are resolved and kept.
 #[test]
 fn analyzing_latin_cjk_or_arabic_allocates_nothing_warm() {
     let documents = [
@@ -77,12 +78,11 @@ fn analyzing_latin_cjk_or_arabic_allocates_nothing_warm() {
 
 /// Thai allocates inside ICU and nowhere else.
 ///
-/// ICU breaks Thai, Lao, Khmer and Myanmar into lines with its
-/// dictionaries, or without the `dictionaries` feature with its LSTM.
-/// Either allocates on every run of such text, and ICU's public API takes
-/// no buffer. Everything of winkin's own still allocates nothing, as Latin
-/// built after it in the same layout shows. Should ICU stop allocating,
-/// this fails.
+/// ICU breaks Thai, Lao, Khmer and Myanmar lines with its dictionaries, or
+/// its LSTM without the `dictionaries` feature. Either allocates on every
+/// run of such text, and ICU's API takes no buffer. winkin itself allocates
+/// nothing, as Latin built after it in the same layout shows. If ICU stops
+/// allocating, this test fails.
 #[test]
 fn thai_allocates_inside_icu_and_only_there() {
     let thai = text(

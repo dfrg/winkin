@@ -24,12 +24,12 @@ fn collection() -> Collection {
     test_fonts::collection(&[latin, arabic(), han], han_fallback("Test Han"))
 }
 
-/// `text` in paragraphs, in `family` and `language`, each paragraph with
-/// its text again in a box with edges at another line height, an atomic
-/// inline with margins between, and a line at a fixed height, so that
-/// every path of the measure stage is taken: edges at a boundary, the
-/// used fonts of `normal`, a margin box, a leaded box. The intrinsic
-/// sizes are read after, as a host reads them.
+/// Builds `text` in paragraphs, in `family` and `language`, to take every
+/// path of measurement.
+///
+/// Each paragraph repeats its text in a box with edges at another line
+/// height, with an atomic inline with margins between, and a line at a
+/// fixed height. The intrinsic sizes are read after, as a host reads them.
 fn prose(layout: &mut Layout, cx: &mut Context, (family, language): (&str, &str), text: &str) {
     let families = [FontFamilyName::named(family)];
     let root = ComputedStyle {
@@ -92,11 +92,10 @@ fn prose(layout: &mut Layout, cx: &mut Context, (family, language): (&str, &str)
     assert!(layout.intrinsic_sizes().max_content > 0.0);
 }
 
-/// Measuring again allocates nothing: the prefix is built in the buffer the
-/// last build's was, which shaping filled with advances, and every other
-/// table of the measurements keeps its capacity. So for Latin with
-/// ligatures and kerns, Arabic in a left-to-right paragraph, Han falling
-/// back to a font of other metrics, and the three mixed.
+/// Measuring again allocates nothing.
+///
+/// The prefix sums reuse the last build's buffer, which shaping filled with
+/// advances, and every other measurement table keeps its capacity.
 #[test]
 fn measuring_allocates_nothing_warm() {
     let arabic =
@@ -163,10 +162,10 @@ fn plain(layout: &mut Layout, cx: &mut Context, text: &str) {
     assert!(b.finish().is_complete());
 }
 
-/// Content that keeps its shaped advances, having an atomic inline, and
-/// content that keeps none, built into one layout in turn, longer and
-/// shorter, allocates nothing warm: the advances keep their capacity, or
-/// the context's room holds them. So for a layout first built with either.
+/// Content that keeps its shaped advances (it has an atomic inline) and
+/// content that keeps none, built into one layout in turn at different
+/// lengths, allocate nothing warm, whichever came first. The advances keep
+/// their capacity, or the context holds them.
 #[test]
 fn content_keeping_and_dropping_advances_in_turn_allocates_nothing_warm() {
     let how = ("Test Latin", "en");

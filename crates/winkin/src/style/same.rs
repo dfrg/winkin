@@ -1,23 +1,20 @@
-//! How a style compares and hashes: every value by its bits.
+//! Style equality and hashing, by each value's bits.
 //!
 //! The builder interns the facts a style lowers into, and its memo finds a
-//! style given again by its bits. Equal values share an id through a hash
-//! table. That needs an equality that is an equivalence and a hash that
-//! agrees with it. `f32`'s `==` is neither: NaN is unequal to itself, and
-//! `0.0` equals `-0.0` with different bits. So every value in a style
-//! compares and hashes by its bits, through [`Same`]. The style groups'
-//! `PartialEq`, `Eq` and `Hash` are written in its terms. Two styles whose
-//! lengths differ only in the sign of a zero make two keys. That costs one
-//! more lowering and never gives a wrong answer.
+//! repeated style by its bits. A hash table needs an equality that is an
+//! equivalence and a hash that agrees with it. `f32`'s `==` is neither: NaN
+//! is unequal to itself, and `0.0 == -0.0` with different bits. So every
+//! style value compares and hashes by its bits through [`Same`], and the
+//! style groups' `PartialEq`, `Eq` and `Hash` use it. Two styles that differ
+//! only in a zero's sign make two keys, which costs one more lowering.
 //!
-//! A list or a string a style borrows compares and hashes by its content,
-//! element by element. The builder's memo never hashes one: it keys a style
-//! by the ids its lists were interned to.
+//! A borrowed list or string compares and hashes by content. The builder's
+//! memo never hashes one: it keys a style by the ids its lists were
+//! interned to.
 //!
-//! The style reuses parlance's types as they are, such as a weight, a slope
-//! or a wrapping keyword. Several of them implement neither `Hash` nor `Eq`.
-//! This file implements [`Same`] for each, which is why it is a trait of the
-//! crate's own rather than a derive.
+//! Several of parlance's types, such as weights and wrapping keywords, have
+//! no `Hash` or `Eq`. [`Same`] is the crate's own trait so this file can
+//! implement it for them.
 
 use core::hash::{Hash, Hasher};
 use core::mem;
@@ -29,7 +26,7 @@ use parlance::{
 
 /// Equality and hashing by bits, for the values a style holds.
 pub(crate) trait Same {
-    /// Whether the two hold the same bits.
+    /// Returns whether the two hold the same bits.
     fn same(&self, other: &Self) -> bool;
 
     /// Feeds the bits to `state`, agreeing with [`same`](Self::same).
@@ -56,7 +53,7 @@ macro_rules! same_by_value {
 pub(crate) use same_by_value;
 
 /// Writes `PartialEq`, `Eq` and `Hash` for a type in terms of its [`Same`], so
-/// that a style's parts can be compared and put in a hash table by callers too.
+/// hosts can compare a style's parts and put them in hash tables.
 macro_rules! eq_and_hash_by_bits {
     ($($ty:ty),* $(,)?) => {$(
         impl PartialEq for $ty {

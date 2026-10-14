@@ -1,6 +1,6 @@
 //! Where a text run's clusters stand for carets, emphasis marks and
-//! selections: along the line, a ligature shared evenly among the clusters
-//! it draws, and across the line in combined text.
+//! selections: along the line, with a ligature shared evenly among its
+//! clusters, and across the line in combined text.
 //!
 //! [`TextRun::places`](super::TextRun::places) and
 //! [`TextRun::across_places`](super::TextRun::across_places) make the walks
@@ -15,34 +15,31 @@ use crate::stages::shape::{ClusterGlyphs, GlyphStore, ShapedText};
 use crate::unit::{self, InlineLayoutUnit, LayoutUnit};
 use crate::work;
 
-/// A text run's clusters where a caret and a mark see them, in logical
-/// order: returned by
-/// [`TextRun::places`](super::TextRun::places).
+/// A text run's clusters as carets and marks see them, in logical order:
+/// returned by [`TextRun::places`](super::TextRun::places).
 ///
-/// A cluster's extent is its own, where it draws glyphs of its own; a
-/// ligature's advance, all on the cluster that starts it, is shared evenly
-/// among the clusters it draws (it and the continuations after it), each
-/// share counted from the ligature's logical start, as Blink divides a
-/// ligature among its graphemes (`AddEmphasisMarkToBloberizer`, and
-/// `ShapeResult::CaretPositionForOffset` for carets).
+/// A cluster with glyphs of its own keeps its own extent. A ligature's
+/// advance, all on its first cluster, is shared evenly among that cluster
+/// and the continuations after it, counted from the ligature's logical
+/// start, as Blink divides a ligature among its graphemes
+/// (`AddEmphasisMarkToBloberizer`, and `ShapeResult::CaretPositionForOffset`
+/// for carets).
 pub(crate) struct Places<'a> {
     walk: ClusterWalk<'a>,
     /// The run's shaping, whose glyph words say which clusters continue a
     /// ligature.
     shaped: &'a ShapedText,
-    /// The run's last cluster boundary, which a ligature's clusters end at
-    /// the latest.
+    /// The run's end, which bounds a ligature's clusters.
     end: ClusterId,
     rtl: bool,
-    /// The ligature being shared out: its start and end along the line, how
-    /// many clusters it draws, and how many of them were handed out.
+    /// The ligature being shared out: its start and end along the line, its
+    /// cluster count, and how many clusters were returned.
     ligature: Option<(InlineLayoutUnit, InlineLayoutUnit, usize, usize)>,
 }
 
 impl<'a> Places<'a> {
-    /// Returns the places of the clusters `walk` walks, a text run's, which
-    /// `shaped` shaped and which end at `end`, reading right to left where
-    /// `rtl`.
+    /// Creates the places of a text run's clusters from `walk`, with its
+    /// shaping `shaped`, its end `end`, and its direction `rtl`.
     pub(super) fn new(
         walk: ClusterWalk<'a>,
         shaped: &'a ShapedText,
@@ -58,8 +55,8 @@ impl<'a> Places<'a> {
         }
     }
 
-    /// How many clusters from `cluster` a ligature starting there draws: it
-    /// and the continuations after it in the run.
+    /// Returns how many clusters a ligature starting at `cluster` covers:
+    /// `cluster` and the continuations after it in the run.
     fn drawn_by(&self, cluster: ClusterId) -> usize {
         let mut count = 1;
         let mut next = cluster.get() + 1;
@@ -79,8 +76,8 @@ impl<'a> Places<'a> {
 }
 
 impl Iterator for Places<'_> {
-    /// A cluster, and where it starts and ends along the line, from the line
-    /// box's left, exactly.
+    /// A cluster, and its exact start and end along the line, from the line
+    /// box's left.
     type Item = (ClusterId, InlineLayoutUnit, InlineLayoutUnit);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -106,8 +103,8 @@ impl Iterator for Places<'_> {
     }
 }
 
-/// The `k`th of `count` even shares of `start..end`, counted from the
-/// logical start: its left and right, right to left from `end`.
+/// Returns the left and right of the `k`th of `count` even shares of
+/// `start..end`, counted from the logical start: from `end` where `rtl`.
 fn share(
     start: InlineLayoutUnit,
     end: InlineLayoutUnit,
@@ -117,7 +114,7 @@ fn share(
 ) -> (InlineLayoutUnit, InlineLayoutUnit) {
     let whole = i128::from((end - start).raw());
     let count = i128::from(index_to_u32(count.max(1)));
-    // Exactly on the grid: the n-th boundary of the shares.
+    // The n-th share boundary, exactly on the grid.
     let at = |n: usize| {
         let raw = whole * i128::from(index_to_u32(n)) / count;
         InlineLayoutUnit::from_raw(i64::try_from(raw).unwrap_or_default())
@@ -129,17 +126,19 @@ fn share(
     }
 }
 
-/// A combined run's clusters where a caret and a selection see them across
-/// its line, in logical order: returned by
+/// A combined run's clusters as carets and selections see them across the
+/// line, in logical order: returned by
 /// [`TextRun::across_places`](super::TextRun::across_places).
 pub(crate) struct AcrossPlaces<'a> {
-    /// The paragraph's glyphs, which a unit's are: no line breaks inside one.
+    /// The paragraph's glyphs, which hold the unit's, since no line breaks
+    /// inside a unit.
     glyphs: &'a GlyphStore,
     /// The line's baseline, from the line box's top, which the unit's
     /// glyphs are placed about.
     baseline: f32,
-    /// The run's next cluster, and where its clusters in the unit end.
+    /// The run's next cluster.
     next: ClusterId,
+    /// The end of the run's clusters in the unit.
     end: ClusterId,
     /// Where the unit ends.
     unit_end: ClusterId,
@@ -149,7 +148,7 @@ pub(crate) struct AcrossPlaces<'a> {
     /// The next such boundary after it: the next cluster with glyphs, or
     /// the unit's end.
     to: (ClusterId, f32),
-    /// Where the unit ends across the line.
+    /// The unit's end across the line.
     last: f32,
 }
 
@@ -193,10 +192,11 @@ impl<'a> AcrossPlaces<'a> {
         places
     }
 
-    /// Where `at`'s first glyph is drawn across the line, where it is in
-    /// the unit and has glyphs of its own.
-    /// On layout's grid, to the nearest 1/64, as Chrome's caret rectangles
-    /// are `LayoutUnit`s.
+    /// Returns where `at`'s first glyph is drawn across the line, or `None`
+    /// where `at` is past the unit or has no glyphs of its own.
+    ///
+    /// Rounds to the 1/64 layout grid, as Chrome's caret rectangles are
+    /// `LayoutUnit`s.
     fn drawn(&self, at: ClusterId) -> Option<f32> {
         if at >= self.unit_end {
             return None;
@@ -209,8 +209,8 @@ impl<'a> AcrossPlaces<'a> {
         }
     }
 
-    /// The first boundary after `after` a cluster's glyphs give, or the
-    /// unit's end, and where it stands.
+    /// Returns the first cluster after `after` with glyphs, or the unit's
+    /// end, and where it stands.
     fn next_drawn(&self, after: ClusterId) -> (ClusterId, f32) {
         let mut at = after;
         loop {
@@ -225,8 +225,8 @@ impl<'a> AcrossPlaces<'a> {
         }
     }
 
-    /// Where the boundary before `at` stands, `at` being from `from` to
-    /// `to`: theirs, or its even share of the span between them.
+    /// Returns where the boundary before `at` stands, between `from` and
+    /// `to`: at either, or at its even share of the span between them.
     fn boundary(&self, at: ClusterId) -> f32 {
         let ((from, start), (to, end)) = (self.from, self.to);
         if at <= from {
@@ -242,8 +242,8 @@ impl<'a> AcrossPlaces<'a> {
 }
 
 impl Iterator for AcrossPlaces<'_> {
-    /// A cluster, and where it starts and ends across the line, from the
-    /// line box's top.
+    /// A cluster, and its start and end across the line, from the line box's
+    /// top.
     type Item = (ClusterId, f32, f32);
 
     fn next(&mut self) -> Option<Self::Item> {

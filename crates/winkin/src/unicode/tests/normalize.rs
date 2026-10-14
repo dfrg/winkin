@@ -1,9 +1,8 @@
-//! harfrust's primitives proved against ICU: the pairwise steps, built up
-//! here into whole normalizers, NFD and NFC as UAX #15 defines them, must
-//! normalize as ICU's own normalizers do -- every character, every pair that
-//! composes, a random corpus of the sequences the rules turn on, and
-//! Unicode's `NormalizationTest.txt` where the cargo registry has it -- and
-//! HarfBuzz's own properties must be harfrust's (0.14.0).
+//! Normalization tests against ICU:
+//! - the pairwise steps, built into NFD and NFC as UAX #15 defines them,
+//!   normalize as ICU does: every character, every composing pair, a random
+//!   corpus, and `NormalizationTest.txt` where the cargo registry has it;
+//! - HarfBuzz's own properties match harfrust 0.14.0's.
 
 use alloc::vec::Vec;
 use core::array;
@@ -16,7 +15,7 @@ use icu_properties::{CodePointMapData, CodePointSetData};
 
 use crate::unicode::normalize::*;
 
-/// ICU's own normalizers, the oracle.
+/// ICU's normalizers, the oracle.
 const ICU_NFD: DecomposingNormalizerBorrowed<'static> = DecomposingNormalizerBorrowed::new_nfd();
 const ICU_NFC: ComposingNormalizerBorrowed<'static> = ComposingNormalizerBorrowed::new_nfc();
 
@@ -25,7 +24,8 @@ fn chars() -> impl Iterator<Item = char> {
     (0..=0x10FFFF_u32).filter_map(char::from_u32)
 }
 
-/// `ch` decomposed in full, a step at a time through both halves, onto `out`.
+/// Appends `ch`, fully decomposed one step at a time through both halves,
+/// to `out`.
 fn push_decomposed(ch: char, out: &mut Vec<char>) {
     match decompose(ch) {
         None => out.push(ch),
@@ -38,9 +38,9 @@ fn push_decomposed(ch: char, out: &mut Vec<char>) {
     }
 }
 
-/// The canonical decomposition of `text` (UAX #15 D68): each character
-/// decomposed in full, then each run of non-starters sorted by combining
-/// class, stably.
+/// Returns the canonical decomposition of `text` (UAX #15 D68): each
+/// character fully decomposed, then each run of non-starters stably sorted
+/// by combining class.
 fn nfd(text: &[char]) -> Vec<char> {
     let mut out = Vec::new();
     for &ch in text {
@@ -60,18 +60,19 @@ fn nfd(text: &[char]) -> Vec<char> {
     out
 }
 
-/// The canonical composition of `text` (UAX #15 D117): its decomposition,
-/// and each character composed onto the last starter before it that it is
-/// not blocked from -- blocked where a character between has a class of zero
-/// or one at least its own -- where the pair has a primary composite.
+/// Returns the canonical composition of `text` (UAX #15 D117).
+///
+/// Each character of the decomposition composes onto the last starter before
+/// it where the pair has a primary composite, unless blocked: a character
+/// between has class zero or a class at least its own.
 fn nfc(text: &[char]) -> Vec<char> {
     let mut chars = nfd(text);
     let Some(&first) = chars.first() else {
         return chars;
     };
     let mut starter = 0;
-    // The class of the last character kept since the starter, and past any
-    // class where the text starts with no starter, so nothing composes.
+    // The class of the last character kept since the starter. Text that
+    // starts without a starter begins above every class, so nothing composes.
     let mut last = match combining_class(first) {
         0 => 0,
         _ => 256,
@@ -105,8 +106,8 @@ fn icu_nfc(text: &[char]) -> Vec<char> {
     ICU_NFC.normalize_iter(text.iter().copied()).collect()
 }
 
-/// Every character alone decomposes and composes as ICU's normalizers
-/// have it, and within the bound the replay's buffers are sized by.
+/// Every character alone decomposes and composes as ICU does, within
+/// [`MAX_DECOMPOSITION`].
 #[test]
 fn every_character_normalizes_as_icu_does() {
     let mut longest = 0;
@@ -129,10 +130,9 @@ fn every_character_normalizes_as_icu_does() {
     assert!(steps <= MAX_DECOMPOSITION, "{steps} steps");
 }
 
-/// A step of decomposition to a pair is undone by composing the pair
-/// exactly where the composite is its own NFC, which is every pair that
-/// composes, Hangul's included: a primary composite is the one character
-/// whose decomposition the pair is. Singletons compose from nothing.
+/// Composing a decomposed pair gives back the composite exactly where the
+/// composite is its own NFC, which covers every composing pair, Hangul
+/// included. Singletons compose from nothing.
 #[test]
 fn every_pair_that_composes_composes_back() {
     let (mut pairs, mut excluded, mut singletons) = (0, 0, 0);
@@ -169,9 +169,9 @@ fn every_pair_that_composes_composes_back() {
     assert_eq!((pairs, excluded, singletons), (11_172 + 961, 85, 1_035));
 }
 
-/// The combining class is Unicode's, every character: ICU's, but for the
-/// 34 marks Unicode 18 assigns with a class, which harfrust's tables have
-/// and ICU 2.3's, of Unicode 17, leave unassigned.
+/// Every character's combining class is ICU's, except the 34 marks with a
+/// class that Unicode 18 assigns, which ICU 2.3 (Unicode 17) leaves
+/// unassigned.
 #[test]
 fn every_combining_class_is_unicodes() {
     let classes = CodePointMapData::<CanonicalCombiningClass>::new();
@@ -203,7 +203,7 @@ impl Lcg {
     }
 }
 
-/// What the corpus is drawn from: the characters normalization turns on.
+/// The characters the corpus draws from: those normalization acts on.
 const POOL: &[char] = &[
     // Starters, and precomposed letters that decompose in one step, two
     // and three, with and without a composite after further marks.
@@ -366,7 +366,7 @@ const POOL: &[char] = &[
 ];
 
 /// Two hundred thousand sequences of one to sixteen characters from
-/// [`POOL`] normalize as ICU's normalizers normalize them.
+/// [`POOL`] normalize as ICU does.
 #[test]
 fn a_random_corpus_normalizes_as_icu_does() {
     let mut random = Lcg(0x5EED_C0DE_F0E5);
@@ -389,8 +389,8 @@ fn a_random_corpus_normalizes_as_icu_does() {
     assert!(composed > 150_000, "{composed}");
 }
 
-/// Where the cargo registry holds the copy of Unicode's
-/// `NormalizationTest.txt` that icu_normalizer 2.3's tests read, if it does.
+/// Returns the path of the `NormalizationTest.txt` that icu_normalizer
+/// 2.3's tests read, if the cargo registry holds it.
 fn normalization_test() -> Option<PathBuf> {
     let home = env::var_os("CARGO_HOME").map(PathBuf::from).or_else(|| {
         env::var_os("USERPROFILE")
@@ -414,8 +414,8 @@ fn normalization_test() -> Option<PathBuf> {
     None
 }
 
-/// Unicode's own tests of NFD and NFC (`NormalizationTest.txt`, 17.0), where
-/// the registry has them: for each line's five columns, c3 and c5 are the
+/// Unicode's NFD and NFC tests (`NormalizationTest.txt`, 17.0) pass, where
+/// the registry has them. Of each line's five columns, c3 and c5 are the
 /// decompositions and c2 and c4 the compositions.
 #[test]
 fn unicodes_normalization_tests_pass() {
@@ -459,9 +459,9 @@ fn unicodes_normalization_tests_pass() {
     assert!(lines > 19_000, "{lines} lines");
 }
 
-/// HarfBuzz's modified classes are harfrust's table
-/// (`MODIFIED_COMBINING_CLASS`, transcribed), with its three characters of
-/// their own, for every character.
+/// For every character, the modified combining class matches harfrust's
+/// table (`MODIFIED_COMBINING_CLASS`, transcribed), including its three
+/// single-mark entries.
 #[test]
 fn modified_classes_are_harfrusts() {
     let mut table: [u8; 256] = array::from_fn(|class| class as u8);
@@ -516,7 +516,8 @@ fn harfbuzzs_default_ignorables_are_unicodes_less_its_exceptions() {
     );
 }
 
-/// The variation selectors are the 256, marks and default-ignorables all.
+/// The variation selectors are the 256, and all are marks and
+/// default-ignorables.
 #[test]
 fn variation_selectors_are_the_256() {
     let selectors: Vec<char> = chars().filter(|&ch| is_variation_selector(ch)).collect();

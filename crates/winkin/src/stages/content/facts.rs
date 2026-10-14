@@ -1,37 +1,32 @@
-//! The facts the writer lowers each style into. The content keeps no style:
-//! every later stage reads these facts instead.
+//! The facts the writer lowers each style into. The content keeps no style;
+//! later stages read these facts instead.
 //!
-//! There are four kinds: what text in a style is, what shapes alike, what
-//! font selection selects fonts for, and what a box is. Each is interned
-//! once, by value, and a node names it by id.
+//! **Lowered once, by the writer.** The writer lowers each style as it
+//! takes it: it puts lengths on the grid as their readers do, resolves
+//! sides for the block's writing mode, and answers the style's tests
+//! (`edge_breaks_shaping`, `white_space_hangs`, what bidi resolves upright).
+//! Facts that need a font or the content belong to the first stage that
+//! has them: the used size, the primary font, `line-height: normal`, tab
+//! stops in spaces.
 //!
-//! **Lowered once, by the writer.** The writer lowers each opening call's
-//! style as it takes it. It puts lengths on the grid as their readers do,
-//! resolves sides for the block's writing mode, and answers the style's
-//! tests (`edge_breaks_shaping`, `white_space_hangs`, what bidi resolves
-//! upright). A later stage reads the answer, not the style. Facts that need
-//! a font or the content belong to the first stage that has them: the used
-//! size, the primary font, `line-height: normal`, tab stops in spaces.
-//!
-//! **Nested keys, coarsest to finest.**
+//! **Four kinds, each interned by value and named by id:**
 //! - A [`FontRequest`] is what font selection selects fonts for.
-//! - A [`ShapingFacts`] names one and adds the other shaping properties.
-//!   Equal [`ShapingFactsId`]s are text that shapes alike, as Blink's equal
-//!   `Font` is.
-//! - A [`TextFacts`] names one and adds every other inherited fact.
-//! - [`BoxFacts`] hold a box's non-inherited facts. This follows CSS's split
+//! - A [`ShapingFacts`] names a request and adds the other shaping
+//!   properties. Equal [`ShapingFactsId`]s shape alike, as an equal `Font`
+//!   does in Blink.
+//! - A [`TextFacts`] names a shaping row and adds every other inherited
+//!   fact.
+//! - A [`BoxFacts`] holds a box's non-inherited facts, following CSS's split
 //!   between inherited properties and the rest.
 //!
-//! **A style given again is not lowered again.** Its text facts are a
-//! function of it, and the builder's memo (`memo`) holds what each style was
-//! lowered into. A box's facts also depend on its node's kind, so they are
-//! lowered at each call, comparing one row. In debug builds and the tests
-//! the oracle (`facts_check`) compares every record the writer hands a node with
-//! its own projection of the style.
+//! **A repeated style is not lowered again.** The builder's memo (`memo`)
+//! holds the facts each style lowered into; box facts are held for the last
+//! node kind only. In debug builds and tests the oracle (`facts_check`)
+//! compares every row the writer gives a node with its own projection of
+//! the style.
 //!
-//! The ids are `u16`, each defined once by its `define_id!` below. A
-//! document with more distinct facts gives the rest a stand-in and reports
-//! it in [`BuildReport::replaced_styles`](crate::BuildReport).
+//! The ids are `u16`. Past that many distinct rows a node takes a stand-in,
+//! counted in [`BuildReport::replaced_styles`](crate::BuildReport).
 
 use alloc::boxed::Box;
 use core::hash::{Hash, Hasher};
@@ -43,53 +38,52 @@ use super::{ContentFlags, NodeId, NodeKind};
 use crate::data::{Id, Staging, Table, define_flags, define_id, heap_bytes};
 use crate::style::{
     BaseDirection, BoxDecorationBreak, ComputedBlockStyle, ComputedStyle, Direction,
-    DominantBaseline, EdgesGroup, EmphasisSide, EmphasisSkip, FontVariantPosition,
-    HangingPunctuation, Hyphens, InitialLetter, LengthPercentage, LineBreak, LineClamp, LineHeight,
-    OrientationGroup, OverflowWrap, RubyGroup, TabSize, TextAlign, TextAlignLast, TextBoxEdge,
-    TextBoxTrim, TextCombineUpright, TextEdgeOver, TextEdgeUnder, TextFit, TextFitKind,
-    TextFitTarget, TextGroupAlign, TextIndent, TextJustify, TextOrientation, TextOverflow,
-    TextSpacingTrim, TextWrapMode, TextWrapStyle, UnicodeBidi, VerticalAlign, WhiteSpaceCollapse,
-    WordBreak, WritingMode,
+    DominantBaseline, EdgesGroup, EmphasisSide, EmphasisSkip, FirstLineVariant,
+    FontVariantPosition, HangingPunctuation, Hyphens, InitialLetter, LengthPercentage, LineBreak,
+    LineClamp, LineHeight, OrientationGroup, OverflowWrap, RubyGroup, TabSize, TextAlign,
+    TextAlignLast, TextBoxEdge, TextBoxTrim, TextCombineUpright, TextEdgeOver, TextEdgeUnder,
+    TextFit, TextFitKind, TextFitTarget, TextGroupAlign, TextIndent, TextJustify, TextOrientation,
+    TextOverflow, TextSpacingTrim, TextWrapMode, TextWrapStyle, UnicodeBidi, VerticalAlign,
+    WhiteSpaceCollapse, WordBreak, WritingMode,
 };
 use crate::style::{Same, same_by_value, style_struct};
 use crate::unit::{LayoutUnit, TextUnit};
 
 define_id! {
-    /// The id of a distinct [`TextFacts`] row in a layout.
+    /// Indexes a layout's table of distinct [`TextFacts`].
     ///
-    /// A node names one for each variant (`Node.text`, `first_line_text`).
-    /// The id has sixteen bits. Past them a node takes its parent's.
+    /// A node names one per variant (`Node.text`, `first_line_text`). Where
+    /// the table is full, a node takes its parent's.
     pub(crate) struct TextFactsId(u16);
 }
 
 define_id! {
-    /// The id of a distinct [`ShapingFacts`] row in a layout.
+    /// Indexes a layout's table of distinct [`ShapingFacts`].
     ///
-    /// Equal ids are text that shapes alike. The id has sixteen bits. Past
-    /// them a node takes its parent's text facts.
+    /// Equal ids shape alike. Where the table is full, a node takes its
+    /// parent's text facts.
     pub(crate) struct ShapingFactsId(u16);
 }
 
 define_id! {
-    /// The id of a distinct [`FontRequest`] in a layout.
+    /// Indexes a layout's table of distinct [`FontRequest`]s.
     ///
-    /// A request is font selection's unit of work. The id has sixteen bits.
-    /// Past them a node takes its parent's text facts.
+    /// A request is font selection's unit of work. Where the table is full,
+    /// a node takes its parent's text facts.
     pub(crate) struct FontRequestId(u16);
 }
 
 define_id! {
-    /// The id of a distinct [`BoxFacts`] row in a layout.
+    /// Indexes a layout's table of distinct [`BoxFacts`].
     ///
-    /// A node names one for each variant (`Node.box_`, `first_line_box`).
-    /// The id has sixteen bits. Past them a node takes
-    /// [`BoxFactsId::INITIAL`].
+    /// A node names one per variant (`Node.box_`, `first_line_box`). Where
+    /// the table is full, a node takes [`BoxFactsId::INITIAL`].
     pub(crate) struct BoxFactsId(u16);
 }
 
 define_id! {
-    /// The id of a box's margin, border and padding as its style gives them,
-    /// in the table of those with a percentage.
+    /// Indexes the table of box edges (margin, border and padding as the
+    /// style gives them) that have a percentage.
     ///
     /// Row 0 stands for none: a box whose edges have no percentage keeps the
     /// lengths it was lowered with, whatever the basis.
@@ -105,7 +99,7 @@ impl BoxFactsId {
     /// The id of [`BoxFacts::INITIAL`], the table's first row.
     ///
     /// A node that is no box has it, and a box takes it when the table is
-    /// full. The row is stored only once another row is stored after it.
+    /// full. The row is stored only once another row follows it.
     pub(super) const INITIAL: Self = Self(0);
 }
 
@@ -137,10 +131,10 @@ impl<A: Same, B: Same> Same for (A, B) {
     }
 }
 
-/// How a style's text stands in the block's lines.
+/// How a style's text is oriented in the block's lines.
 ///
-/// `writing-mode` and `text-orientation` decide it together. The writer
-/// lowers it, and the analysis stands each cluster by it.
+/// `writing-mode` and `text-orientation` decide it together. Analysis
+/// orients each cluster by it.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum TextSetting {
     /// In a horizontal line.
@@ -148,20 +142,21 @@ pub(crate) enum TextSetting {
     /// Each cluster by its first character's Vertical_Orientation:
     /// `text-orientation: mixed` in `vertical-rl` and `vertical-lr`.
     Mixed,
-    /// Upright but for a vertical script's characters: `upright`.
+    /// `upright`: upright, except characters of a vertical-only script,
+    /// which go on their side.
     Upright,
-    /// On its side: `sideways`, and every text in `sideways-rl` and
-    /// `sideways-lr`, whose lines are set as horizontal ones turned.
+    /// On its side: `sideways`, and all text in `sideways-rl` and
+    /// `sideways-lr`, whose lines are horizontal lines rotated.
     Sideways,
 }
 
 impl TextSetting {
-    /// Returns how text set `orientation` stands in a block of
+    /// Returns the setting of text with `orientation` in a block of
     /// `writing_mode`.
     ///
     /// `text-orientation` applies only in the vertical typographic modes
     /// (CSS Writing Modes 4, section 5.1). `sideways-rl` and `sideways-lr`
-    /// set every character on its side whatever it says.
+    /// set every character on its side regardless.
     fn new(orientation: TextOrientation, writing_mode: WritingMode) -> Self {
         match writing_mode {
             WritingMode::HorizontalTb => Self::Horizontal,
@@ -177,20 +172,19 @@ impl TextSetting {
 
 /// `line-height` as the writer lowers it.
 ///
-/// `normal` waits for the measurements, which have the primary font. A
-/// factor is taken of the computed size on layout's grid. A length stays as
-/// given: the measurements round it onto the grid, and font selection takes
-/// it as it is to size an initial letter.
+/// `normal` waits for measuring, which has the primary font. A factor is
+/// resolved against the computed size on the grid. A length stays as given:
+/// measuring rounds it onto the grid, and font selection uses it unrounded
+/// to size an initial letter.
 #[derive(Copy, Clone, Debug)]
 pub(crate) enum TextLineHeight {
     /// The primary font's line spacing.
     Normal,
-    /// A factor of the computed size, each truncated onto the grid, as
+    /// A factor times the computed size, each truncated onto the grid, as
     /// Blink keeps a number as a percentage of the size.
     Factor(LayoutUnit),
-    /// A length in pixels, as given. The measurements round it onto the
-    /// grid, saturating. Font selection takes one that is not finite as
-    /// nothing.
+    /// A length in pixels, as given. Measuring rounds it onto the grid,
+    /// saturating. Font selection treats a non-finite length as zero.
     Length(f32),
 }
 
@@ -208,7 +202,7 @@ impl TextLineHeight {
     }
 
     /// Returns the line height in pixels, as Chrome's `ComputedLineHeight`
-    /// gives it, with `normal` as the height for `normal`.
+    /// gives it, using `normal` for `line-height: normal`.
     ///
     /// An initial letter is sized to span lines of this height.
     pub(crate) fn px(self, normal: LayoutUnit) -> f32 {
@@ -242,7 +236,7 @@ impl Same for TextLineHeight {
 }
 
 define_flags! {
-    /// What text in a style is, as bits (see [`TextFacts`]).
+    /// Boolean text facts (see [`TextFacts`]).
     pub(crate) struct TextFlags(u16) {
         /// `text-wrap-mode: wrap`.
         pub(crate) const WRAPS = 1 << 0;
@@ -254,89 +248,81 @@ define_flags! {
         pub(crate) const HANGS_CONDITIONALLY = 1 << 2;
         /// `hyphens: none`.
         pub(crate) const HYPHENS_NONE = 1 << 3;
-        /// The text wraps, and `overflow-wrap` is `anywhere` or
-        /// `break-word`: an emergency break is allowed.
+        /// The text wraps and `overflow-wrap` is `anywhere` or `break-word`,
+        /// so an emergency break is allowed.
         pub(crate) const EMERGENCY = 1 << 4;
         /// `overflow-wrap: anywhere`, which lowers min-content to the widest
-        /// cluster. `break-word` does not.
+        /// cluster; `break-word` does not.
         pub(crate) const ANYWHERE = 1 << 5;
         /// The content language is Japanese or Chinese, which the line
         /// segmenter tailors for under `line-break: normal` and `loose`.
         pub(crate) const CJK_LINE_BREAKS = 1 << 6;
-        /// Set upright in a vertical typographic line, or combined whole:
-        /// bidi resolves each cluster as one left-to-right unit.
+        /// Upright in a vertical typographic line, or combined whole: bidi
+        /// resolves each cluster as one left-to-right unit.
         pub(crate) const UPRIGHT_BIDI = 1 << 7;
         /// `direction: rtl`.
         pub(crate) const RTL = 1 << 8;
         /// `text-emphasis-style` sets marks.
         pub(crate) const EMPHASIS = 1 << 9;
-        /// `text-autospace` spaces a letter's seam. It needs
-        /// `ideograph-alpha`, and text not set upright in a vertical line,
-        /// where Chrome ends a seam (`kVerticalUpright`).
+        /// `text-autospace` adds space between ideographs and letters
+        /// (`ideograph-alpha`). Never set for text upright in a vertical
+        /// line, which Chrome classes as `kVerticalUpright`.
         pub(crate) const AUTOSPACE_ALPHA = 1 << 10;
-        /// `text-autospace` spaces a digit's seam. It needs
-        /// `ideograph-numeric`, and text not upright in a vertical line.
+        /// `text-autospace` adds space between ideographs and digits
+        /// (`ideograph-numeric`). Never set for text upright in a vertical
+        /// line.
         pub(crate) const AUTOSPACE_NUMERIC = 1 << 11;
     }
 }
 
 style_struct! {
-    /// What text in a style is: every inherited fact a later stage reads.
-    ///
-    /// There is one row per distinct set of facts, named by each node in
-    /// each variant. A text node's are its container's. A row is about 44
+    /// Every inherited fact of a style that a later stage reads. At most 44
     /// bytes.
     ///
-    /// The row holds inherited properties only. Styles that differ only in
-    /// a box's properties share a row. So does a first-line style that
-    /// differs only in its transform, which the writer applies. The
-    /// analysis facts are pinned: a node's first-line row differs from its
-    /// own only in the shaping, the emphasis, the line height and the
-    /// spacing.
+    /// Each node names one row per variant; a text node takes its
+    /// container's. Styles that differ only in box properties share a row,
+    /// as does a first-line style that differs only in its transform, which
+    /// the writer applies. The analysis facts are pinned: a node's
+    /// first-line row differs from its own only in shaping, emphasis, line
+    /// height and spacing.
     pub(crate) struct TextFacts {
-        /// What it shapes as, and through it the font request.
+        /// Its shaping facts, which name the font request.
         pub(crate) shaping: ShapingFactsId,
         pub(crate) flags: TextFlags,
-        // What the analysis stage reads.
-        /// `line-break`.
+        // Read by analysis.
         pub(crate) line_break: LineBreak,
-        /// `word-break`.
         pub(crate) word_break: WordBreak,
         /// `white-space-collapse`.
         pub(crate) collapse: WhiteSpaceCollapse,
-        /// How it stands in the block's lines.
+        /// How it is oriented in the block's lines.
         pub(crate) setting: TextSetting,
         /// What `text-combine-upright` combines in a vertical typographic
-        /// line. It is `none` elsewhere (CSS Writing Modes 4, section 9.1).
-        /// Digits are clamped to two to four, as CSS takes the integer.
+        /// line; `none` elsewhere (CSS Writing Modes 4, section 9.1).
+        /// Digits are clamped to 2 to 4, as CSS takes the integer.
         pub(crate) combine: TextCombineUpright,
-        // What font selection reads.
+        // Read by font selection.
         /// `hyphenate-character`, or `None` for `auto`.
         pub(crate) hyphen: Option<HyphenStringId>,
-        // What the measurements, the breaker, line layout and the readers
-        // read.
-        /// `line-padding` on layout's grid, truncated as a box's padding is.
+        // Read by measuring, the breaker, line layout and the readers.
+        /// `line-padding` on the grid, truncated as a box's padding is.
         ///
-        /// The measurements charge it to a line at the end where this text
-        /// holds the line's outermost content. Line layout places it inside
-        /// the box there. It is zero for a length that is not finite and
-        /// positive. Chrome does not parse `line-padding` at all.
+        /// Measuring charges it to a line at an end where this text holds
+        /// the line's outermost content, and line layout places it inside
+        /// the box there. It is zero unless the length is finite and
+        /// positive. Chrome does not parse `line-padding`.
         pub(crate) padding: LayoutUnit,
-        /// `hanging-punctuation`.
         pub(crate) hanging: HangingPunctuation,
-        /// The side of the line its emphasis marks take in the block's
+        /// The side of the line its emphasis marks go on in the block's
         /// writing mode (`EmphasisPosition::side`).
         pub(crate) emphasis_side: EmphasisSide,
-        /// `text-emphasis-skip`.
         pub(crate) emphasis_skip: EmphasisSkip,
-        /// `text-justify`.
         pub(crate) justify: TextJustify,
         /// `dominant-baseline`, which is inherited.
         pub(crate) dominant: DominantBaseline,
-        /// `line-height`, for the measurements and the initial letter.
+        /// `line-height`, for measuring and the initial letter.
         pub(crate) line_height: TextLineHeight,
-        /// `tab-size`, for the measurements, which count spaces in the
-        /// primary font.
+        /// `tab-size`, for measuring, which counts spaces in the primary
+        /// font.
         pub(crate) tab_size: TabSize,
     }
 }
@@ -344,8 +330,8 @@ style_struct! {
 impl TextFacts {
     /// Lowers the text facts of `style` in a block of `writing_mode`.
     ///
-    /// `shaping` names its shaping facts. `cjk` says whether its language is
-    /// Japanese or Chinese.
+    /// `shaping` names its shaping facts; `cjk` is set where its language
+    /// is Japanese or Chinese.
     fn new(
         style: &StyleKey,
         shaping: ShapingFactsId,
@@ -382,9 +368,9 @@ impl TextFacts {
         flags.set(TextFlags::RTL, style.bidi.direction == Direction::Rtl);
         flags.set(TextFlags::EMPHASIS, text.emphasis.marks);
         // `text-orientation` has no effect in the sideways modes, so upright
-        // text ends a seam only in a vertical typographic mode. Chrome's
-        // `TextAutoSpace` reads the font's orientation, which is horizontal
-        // there.
+        // text ends an autospace boundary only in a vertical typographic
+        // mode. Chrome's `TextAutoSpace` reads the font's orientation, which
+        // is horizontal there.
         let upright_in_vertical =
             vertical && orientation.text_orientation == TextOrientation::Upright;
         flags.set(
@@ -395,8 +381,8 @@ impl TextFacts {
             TextFlags::AUTOSPACE_NUMERIC,
             text.autospace.ideograph_numeric && !upright_in_vertical,
         );
-        // Truncates `line-padding` onto the grid, as a box's padding is.
-        // A length that is not finite and positive gives zero; no computed
+        // Truncates `line-padding` onto the grid, as a box's padding is. A
+        // length that is not finite and positive gives zero; no computed
         // value is one.
         let padding = style.line.padding;
         let padding = if padding.is_finite() && padding > 0.0 {
@@ -431,7 +417,7 @@ impl TextFacts {
         }
     }
 
-    /// Whether every flag of `flag` is set.
+    /// Whether every flag in `flag` is set.
     #[inline]
     pub(crate) fn has(&self, flag: TextFlags) -> bool {
         self.flags.contains(flag)
@@ -468,7 +454,7 @@ impl HoldsFlags for TextFacts {
 
 define_flags! {
     /// Which spacings of a [`ShapingFacts`] row are fixed: a nonzero length
-    /// with no percentage, as Chrome's `HasFixedSpacing` has it.
+    /// with no percentage, as in Chrome's `HasFixedSpacing`.
     pub(crate) struct FixedSpacing(u8) {
         /// `letter-spacing`.
         pub(crate) const LETTER = 1 << 0;
@@ -479,36 +465,32 @@ define_flags! {
 
 style_struct! {
     /// What shapes alike: the font request and the other shaping
-    /// properties.
+    /// properties. At most 16 bytes.
     ///
     /// The font request holds the font group, the family list, the feature
     /// and variation settings and the language. This row adds
     /// `letter-spacing`, `word-spacing`, `text-spacing-trim`,
-    /// `text-orientation` and `text-combine-upright`. A row is 16 bytes.
+    /// `text-orientation` and `text-combine-upright`.
     ///
-    /// Equal ids are text that shapes alike, as Blink ends a shaping run
-    /// where the `Font` differs. The shaping walk, the font walk's position
-    /// runs and divided graphemes, and a shaped run's link
-    /// (`ShapedRun.shaping`) compare them.
+    /// Equal ids shape alike, as Blink ends a shaping run where the `Font`
+    /// differs. The shaping walk, the font walk's position runs and split
+    /// graphemes, and `ShapedRun.shaping` compare them.
     pub(crate) struct ShapingFacts {
-        /// What font selection selects fonts for.
         pub(crate) font: FontRequestId,
-        /// `letter-spacing` on glyph geometry's grid, rounded to the
-        /// nearest 1/65536 px as Chrome's
-        /// `TextRunLayoutUnit::FromFloatRound` rounds it.
+        /// `letter-spacing` in `TextUnit`, rounded to the nearest 1/65536 px
+        /// as Chrome's `TextRunLayoutUnit::FromFloatRound` rounds it.
         ///
-        /// The measurements add it after a cluster. With the request's
-        /// `spaced`, it also turns optional ligatures off, so both read one
-        /// rounding. It saturates, and NaN gives zero.
+        /// Measuring adds it after each cluster. Through the request's
+        /// `spaced`, it also turns optional ligatures off, so both use the
+        /// same rounding. It saturates, and NaN gives zero.
         pub(crate) letter: TextUnit,
-        /// `word-spacing`, its percentage taken of the computed size and the
-        /// sum rounded as `letter-spacing` is.
+        /// `word-spacing`, its percentage resolved against the computed size
+        /// and the sum rounded as `letter-spacing` is.
         ///
-        /// The measurements add it after a word separator, and the breaker
-        /// adds it after one on a line edge it reshapes. It saturates, and
-        /// NaN gives zero.
+        /// Measuring adds it after each word separator, and the breaker adds
+        /// it after one at a line edge it reshapes. It saturates, and NaN
+        /// gives zero.
         pub(crate) word: TextUnit,
-        /// `text-spacing-trim`.
         pub(crate) trim: TextSpacingTrim,
         /// `text-orientation` and `text-combine-upright`.
         pub(super) orientation: OrientationGroup,
@@ -520,10 +502,7 @@ style_struct! {
 
 impl ShapingFacts {
     /// Lowers the shaping facts of `style`, given its font request `font`
-    /// and its letter spacing on the grid `letter`.
-    ///
-    /// A spacing is fixed as Chrome's `HasFixedSpacing` has it: a length
-    /// with no percentage, and not zero.
+    /// and its rounded letter spacing `letter`.
     fn new(style: &StyleKey, font: FontRequestId, letter: TextUnit) -> Self {
         let text = &style.text;
         let word = TextUnit::from_px(text.word_spacing.resolve(style.font.computed_size()));
@@ -566,25 +545,26 @@ impl HoldsFlags for ShapingFacts {
 }
 
 style_struct! {
-    /// What font selection selects fonts for: its unit of work.
+    /// What font selection selects fonts for: its unit of work. At most 72
+    /// bytes.
     ///
     /// Font selection resolves each request once into a `FontResolution`.
     /// The row holds the font properties, the lists, the language, and the
-    /// three facts of the text that choose features. It is about 72 bytes.
+    /// three text facts that choose features.
     pub(crate) struct FontRequest {
-        /// The font properties, the computed size and the lists among them.
+        /// The font properties, including the computed size and the lists.
         pub(crate) font: FontKey,
-        /// The content language; `und` where none was given.
+        /// The content language; `und` where the style sets none.
         pub(crate) language: LanguageId,
         /// The used `initial-letter`, set only on the block's initial
         /// letter.
         pub(crate) initial_letter: InitialLetter,
-        /// The text is set upright or mixed in a vertical typographic line.
-        /// It shapes with the vertical forms of the features chosen for its
+        /// The text is upright or mixed in a vertical typographic line. It
+        /// shapes with the vertical forms of the features chosen for its
         /// spacing, as Blink's `IsVerticalAnyUpright` chooses them.
         pub(crate) upright: bool,
-        /// Its letter spacing is not zero on glyph geometry's grid, which
-        /// turns optional ligatures off.
+        /// Its rounded letter spacing is nonzero, which turns optional
+        /// ligatures off.
         pub(crate) spaced: bool,
         /// Its `text-spacing-trim` trims punctuation, which turns `chws` on.
         pub(crate) trims_punctuation: bool,
@@ -593,7 +573,7 @@ style_struct! {
 
 impl FontRequest {
     /// Lowers the font request of `style` in a block of `writing_mode`,
-    /// given its letter spacing on the grid `letter`.
+    /// given its rounded letter spacing `letter`.
     fn new(style: &StyleKey, writing_mode: WritingMode, letter: TextUnit) -> Self {
         Self {
             font: style.font,
@@ -621,9 +601,9 @@ impl HoldsFlags for FontRequest {
 }
 
 define_flags! {
-    /// What a box is, as bits (see [`BoxFacts`]).
+    /// Boolean box facts (see [`BoxFacts`]).
     pub(crate) struct BoxFlags(u16) {
-        /// It draws something of its own the caller keeps (`paints`).
+        /// It paints a background, a border or a box shadow (`paints`).
         pub(crate) const PAINTS = 1 << 0;
         /// Its text is decorated (`decorates`).
         pub(crate) const DECORATES = 1 << 1;
@@ -641,7 +621,7 @@ define_flags! {
         /// `text-box-trim` trims its over edge to `text-box-edge`'s.
         pub(crate) const TRIMS_OVER = 1 << 7;
         /// It is the block's initial letter, whose ink takes room at its
-        /// edges however its own edges are set.
+        /// edges whatever its own edges are.
         pub(crate) const INITIAL_LETTER = 1 << 8;
         /// `text-box-trim` trims its under edge to `text-box-edge`'s.
         pub(crate) const TRIMS_UNDER = 1 << 9;
@@ -655,11 +635,13 @@ define_flags! {
         const EDGE_ALPHABETIC = 1 << 13;
         /// `text-box-edge`'s under edge is `ideographic` or `ideographic-ink`.
         const EDGE_IDEOGRAPHIC_UNDER = 1 << 14;
+        /// It draws an outline (`outlines`).
+        pub(crate) const OUTLINES = 1 << 15;
     }
 }
 
 impl BoxFlags {
-    /// Returns the flags that hold `text-box-trim` and `text-box-edge`.
+    /// Returns the flags encoding `text-box-trim` and `text-box-edge`.
     ///
     /// The edges are kept only where something is trimmed. `ideographic-ink`
     /// is kept as `ideographic`, which it measures as.
@@ -696,24 +678,25 @@ impl BoxFlags {
 }
 
 style_struct! {
-    /// What a box is: its non-inherited facts, lowered for the block's
-    /// writing mode.
+    /// A box's non-inherited facts, lowered for the block's writing mode.
+    /// At most 48 bytes.
     ///
     /// Inline boxes, ruby containers and annotations, `::first-letter`
     /// boxes and atomic inlines have one. A node that is no box has
-    /// [`BoxFacts::INITIAL`]. A row is about 40 bytes.
+    /// [`BoxFacts::INITIAL`].
     ///
-    /// Of what `::first-line` may change, only `vertical-align` is a box's
-    /// (`pinned_first_line`). That is why a node has a first-line row.
+    /// Of what `::first-line` may change, only `vertical-align` is a box
+    /// property (`pinned_first_line`), which is why a node has a first-line
+    /// row.
     pub(crate) struct BoxFacts {
         pub(super) flags: BoxFlags,
-        /// The room it takes along the line at each end, as `(line-left,
+        /// The room it takes along the line at each end, `(line-left,
         /// line-right)`.
         ///
         /// Each is the margin, border and padding on the physical side the
         /// writing mode puts there, truncated onto the grid
         /// (`EdgesGroup::inline`). Its direction, [`BoxFlags::RTL`], says
-        /// which one an opening or a closing edge takes.
+        /// which one the opening and closing edges take.
         pub(crate) room: (LayoutUnit, LayoutUnit),
         /// Its margins along the line, `(line-left, line-right)`, on the
         /// grid. A culled box and its edges read them.
@@ -725,18 +708,16 @@ style_struct! {
         /// Its padding and border across the line, `(over, under)`, on the
         /// grid. A kept box's extent adds them to its font's.
         pub(crate) across: (LayoutUnit, LayoutUnit),
-        /// Its margin, border and padding as the style gives them, where a
-        /// margin or padding has a percentage: `room`, `margin_line`,
-        /// `margin_across` and `across` are resolved from them again for
-        /// each basis.
+        /// Its edges as the style gives them, where a margin or padding has
+        /// a percentage; `room`, `margin_line`, `margin_across` and `across`
+        /// resolve from them again for each basis.
         pub(super) edges: EdgesId,
         /// `vertical-align` where it applies, and `baseline` elsewhere.
         ///
         /// It applies to inline boxes, `::first-letter` boxes and atomic
-        /// inlines. A length stays as given for the measurements, which
-        /// have the fonts that a percentage and the keywords need.
+        /// inlines. A length stays as given for measuring, which has the
+        /// fonts that a percentage and the keywords need.
         pub(crate) align: VerticalAlign,
-        /// `unicode-bidi`.
         pub(crate) bidi: UnicodeBidi,
         /// `ruby-position`, `ruby-align` and `ruby-overhang`.
         pub(crate) ruby: RubyGroup,
@@ -744,9 +725,8 @@ style_struct! {
 }
 
 impl BoxFacts {
-    /// No edges, no shift and nothing painted.
-    ///
-    /// A culled box has these facts, and so does every node that is no box.
+    /// No edges, no shift and nothing painted: the facts of a culled box
+    /// and of every node that is no box.
     pub(super) const INITIAL: Self = Self {
         flags: BoxFlags::NONE,
         room: (LayoutUnit::ZERO, LayoutUnit::ZERO),
@@ -759,16 +739,16 @@ impl BoxFacts {
         ruby: RubyGroup::INITIAL,
     };
 
-    /// Lowers the box facts of a node of `kind` set in `style`, in a block
-    /// of `writing_mode` whose percentages are of `basis` pixels. `edges`
-    /// names the style's edges where they have a percentage.
+    /// Lowers the box facts of a node of `kind` in `style`, in a block of
+    /// `writing_mode`, resolving percentages against `basis` pixels.
+    /// `edges_id` names the style's edges where they have a percentage.
     ///
     /// - A container (an inline box, a ruby container or annotation, a
     ///   `::first-letter` box) has every fact, `vertical-align` only where
     ///   it applies.
-    /// - An atomic inline has only its `vertical-align`. Its margins are in
-    ///   its own row.
-    /// - Anything else, the block and floats among them, has none.
+    /// - An atomic inline has only its `vertical-align`; its margins are in
+    ///   its [`Atomic`](super::Atomic) row.
+    /// - Anything else, including the block and floats, has none.
     fn new(
         style: &StyleKey,
         kind: NodeKind,
@@ -791,6 +771,7 @@ impl BoxFacts {
         let rtl = style.bidi.direction == Direction::Rtl;
         let mut flags = BoxFlags::NONE;
         flags.set(BoxFlags::PAINTS, style.paints);
+        flags.set(BoxFlags::OUTLINES, style.outlines);
         flags.set(BoxFlags::DECORATES, style.decorates);
         flags.set(BoxFlags::HAS_EDGES, edges.any());
         flags.set(
@@ -803,12 +784,12 @@ impl BoxFacts {
             style.line.text_box_edge,
         ));
         flags.set(BoxFlags::INITIAL_LETTER, style.line.initial_letter.is_set());
-        // An edge stops shaping as Blink's `ShouldBreakShapingBeforeBox`
-        // and `AfterBox` say: margin, border or padding on that inline side,
-        // or `vertical-align` other than `baseline`. Any `unicode-bidi`
-        // stops it too, as Blink ends a run at every bidi control. A box
-        // that only paints is shaped across. The test reads the unrounded
-        // lengths, as Blink tests the computed ones.
+        // An edge stops shaping as in Blink's `ShouldBreakShapingBeforeBox`
+        // and `AfterBox`: margin, border or padding on that inline side, or
+        // `vertical-align` other than `baseline`. Any `unicode-bidi` stops
+        // it too, as Blink ends a run at every bidi control. A box that only
+        // paints is shaped across. The test reads the unrounded lengths, as
+        // Blink tests the computed ones.
         let breaks_everywhere = !matches!(style.line.vertical_align, VerticalAlign::Baseline)
             || style.bidi.unicode_bidi != UnicodeBidi::Normal;
         let any_along = |opens: bool| {
@@ -845,8 +826,8 @@ impl BoxFacts {
         facts
     }
 
-    /// Resolves `edges`, its style's, onto the grid, their percentages taken
-    /// of `basis` pixels, in a block of `writing_mode`.
+    /// Resolves `edges`, from its style, onto the grid in a block of
+    /// `writing_mode`, with percentages against `basis` pixels.
     fn resolve(&mut self, edges: &EdgesGroup, writing_mode: WritingMode, basis: f32) {
         let edges = edges.used(basis);
         let (padding, border) = (
@@ -859,14 +840,14 @@ impl BoxFacts {
         self.across = (padding.0 + border.0, padding.1 + border.1);
     }
 
-    /// Whether every flag of `flag` is set.
+    /// Whether every flag in `flag` is set.
     #[inline]
     pub(crate) fn has(&self, flag: BoxFlags) -> bool {
         self.flags.contains(flag)
     }
 
-    /// Returns whether `text-box-trim` trims its over edge and its under
-    /// edge, and the `text-box-edge` they are trimmed to.
+    /// Returns whether `text-box-trim` trims its over and under edges, and
+    /// the `text-box-edge` they are trimmed to.
     pub(crate) fn text_box(&self) -> (bool, bool, TextBoxEdge) {
         let has = |flag| self.flags.contains(flag);
         let over = if has(BoxFlags::EDGE_CAP) {
@@ -892,7 +873,7 @@ impl BoxFacts {
         )
     }
 
-    /// Whether its opening edge (`opens`) or its closing edge stops
+    /// Whether its opening edge (if `opens`) or its closing edge stops
     /// shaping.
     #[inline]
     pub(crate) fn breaks_shaping(&self, opens: bool) -> bool {
@@ -935,17 +916,17 @@ impl HoldsFlags for BoxFacts {
 
 /// The block-container properties and the facts of the block as a whole.
 ///
-/// It holds a [`ComputedBlockStyle`] without its
-/// styles, which the builder lowers as the block node's own. It adds what
-/// the block's own style says of the whole block, lowered by the builder.
+/// It holds a [`ComputedBlockStyle`] without its styles, which the builder
+/// lowers as the block node's. It adds what the block's style says of the
+/// whole block.
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub(crate) struct BlockFacts {
-    /// The base direction bidi sets the block's paragraphs at.
+    /// The base direction of the block's paragraphs.
     ///
     /// It is the block's direction, or `auto` where its `unicode-bidi` is
     /// `plaintext`. With `auto` each paragraph takes its first strong
-    /// character's (CSS Writing Modes 3, section 2.4.2), as Blink's
-    /// `BidiParagraph` does.
+    /// character's direction (CSS Writing Modes 3, section 2.4.2), as
+    /// Blink's `BidiParagraph` does.
     pub(crate) direction: BaseDirection,
     pub(crate) writing_mode: WritingMode,
     pub(crate) text_align: TextAlign,
@@ -955,38 +936,41 @@ pub(crate) struct BlockFacts {
     pub(crate) text_overflow: TextOverflow,
     pub(crate) line_clamp: LineClamp,
     pub(crate) text_group_align: TextGroupAlign,
-    /// `text-box-trim` on the block.
     pub(crate) text_box_trim: TextBoxTrim,
-    /// `text-box-edge` on the block.
     pub(crate) text_box_edge: TextBoxEdge,
     /// The direction the block's `unicode-bidi` overrides every paragraph
     /// in, or `None` where it overrides none.
     ///
     /// Under `bidi-override` and `isolate-override` each paragraph starts
-    /// with an override in the block's own `direction`.
+    /// with an override in the block's `direction`.
     pub(crate) overrides: Option<Direction>,
     /// Its lines are set on the central baseline.
     ///
-    /// This holds when its text stands upright or mixed in a vertical
-    /// typographic line. Blink sets every box of an inline formatting
-    /// context on the baseline its block's style chooses.
+    /// True when its text is upright or mixed in a vertical typographic
+    /// line. Blink sets every box of an inline formatting context on the
+    /// baseline its block's style chooses.
     pub(crate) central_baseline: bool,
     /// Its content language is in the Chinese macrolanguage, where
-    /// `text-autospace` takes some narrow characters for ideographs.
+    /// `text-autospace` treats some narrow characters as ideographs.
     pub(crate) chinese: bool,
-    /// Its initial letter's box, where it has one.
-    ///
-    /// The writer writes it as it writes the box. That box is the only
-    /// one that keeps `initial-letter`.
+    /// Its initial letter's box, where it has one: the only box that keeps
+    /// `initial-letter`. The writer sets it as it writes the box.
     pub(crate) initial_letter: Option<NodeId>,
+    /// Its own style paints (`ComputedStyle::paints`) and decorates its
+    /// text (`ComputedStyle::decorates`), as `(paints, decorates)`.
+    pub(crate) paints: (bool, bool),
+    /// The same of its `::first-line` style, or of its own where it has
+    /// none.
+    pub(crate) first_line_paints: (bool, bool),
 }
 
 impl BlockFacts {
-    /// Every property at its initial value, reading left to right, with no
-    /// root style lowered.
+    /// Every property at its initial value, left to right, with no root
+    /// style lowered.
     ///
     /// A layout never built holds it, and
-    /// [`ComputedBlockStyle::new`](crate::ComputedBlockStyle::new) sets it.
+    /// [`ComputedBlockStyle::new`](crate::ComputedBlockStyle::new) takes its
+    /// initial values from it.
     pub(crate) const INITIAL: Self = Self {
         direction: BaseDirection::Ltr,
         writing_mode: WritingMode::HorizontalTb,
@@ -1007,10 +991,12 @@ impl BlockFacts {
         central_baseline: false,
         chinese: false,
         initial_letter: None,
+        paints: (false, false),
+        first_line_paints: (false, false),
     };
 
-    /// Lowers the block `block` describes, reading what its own style
-    /// `root` says of the whole block.
+    /// Lowers `block`, reading what its style `root` says of the whole
+    /// block.
     pub(super) fn new(block: &ComputedBlockStyle<'_>, root: &ComputedStyle<'_>) -> Self {
         let bidi = root.bidi;
         let vertical = block.writing_mode.is_vertical_typographic();
@@ -1043,6 +1029,21 @@ impl BlockFacts {
                 .as_ref()
                 .is_some_and(|language| is_chinese(language.language())),
             initial_letter: None,
+            paints: (root.paints, root.decorates),
+            first_line_paints: block
+                .first_line
+                .map_or((root.paints, root.decorates), |style| {
+                    (style.paints, style.decorates)
+                }),
+        }
+    }
+
+    /// Returns whether its own style in `variant` paints, and whether it
+    /// decorates its text, as `(paints, decorates)`.
+    pub(crate) fn style_paints(&self, variant: FirstLineVariant) -> (bool, bool) {
+        match variant {
+            FirstLineVariant::Standard => self.paints,
+            FirstLineVariant::FirstLine => self.first_line_paints,
         }
     }
 
@@ -1053,19 +1054,19 @@ impl BlockFacts {
     }
 }
 
-/// `text-fit` as line breaking reads it: 8 bytes.
+/// `text-fit` as line breaking reads it. 8 bytes.
 ///
-/// The content keeps it with its extras, where a block sets `text-fit`, so
-/// that the block's facts, which every relayout reads, stay small.
+/// The content keeps it in its extras, so the block's facts, which every
+/// relayout reads, stay small.
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub(crate) struct TextFitFacts {
     pub(crate) kind: TextFitKind,
     pub(crate) target: TextFitTarget,
-    /// The bound the limit sets on a scale: the most text grows,
-    /// `max(limit, 1)`, or the least it shrinks to, `min(limit, 1)`.
+    /// The bound the limit sets on the scale: at most `max(limit, 1)` for
+    /// `grow`, at least `limit` clamped to `0..=1` for `shrink`.
     ///
-    /// Without a limit, or with one that is not a number, it is infinity for
-    /// `grow` and zero for `shrink`, which bound nothing.
+    /// Without a limit, or with a NaN one, it is infinity for `grow` and
+    /// zero for `shrink`, which bound nothing.
     pub(crate) bound: f32,
 }
 
@@ -1092,8 +1093,8 @@ impl TextFitFacts {
     }
 }
 
-/// Whether `language` is one of the Chinese macrolanguage's, as Blink's
-/// `LayoutLocale::IsMacrolanguageChinese` lists them from the IANA registry.
+/// Whether `language` is in the Chinese macrolanguage, as listed by Blink's
+/// `LayoutLocale::IsMacrolanguageChinese` from the IANA registry.
 pub(super) fn is_chinese(language: &str) -> bool {
     matches!(
         language,
@@ -1119,9 +1120,8 @@ pub(super) fn is_chinese(language: &str) -> bool {
     )
 }
 
-/// The row a lookup in a fact table returns when it misses.
-///
-/// A lookup of an id the content handed out never misses.
+/// The row a text facts lookup returns when it misses, which never happens
+/// for an id the content handed out.
 static INITIAL_TEXT: TextFacts = TextFacts {
     shaping: ShapingFactsId(0),
     flags: TextFlags::WRAPS.union(TextFlags::WHITE_SPACE_HANGS),
@@ -1160,8 +1160,6 @@ static INITIAL_REQUEST: FontRequest = FontRequest {
 };
 
 /// The layout's fact tables, each distinct row stored once.
-///
-/// The writer lowers every style through it (see the module documentation).
 pub(crate) struct Facts {
     texts: Table<TextFactsId, TextFacts>,
     shapings: Table<ShapingFactsId, ShapingFacts>,
@@ -1170,7 +1168,8 @@ pub(crate) struct Facts {
     boxes: Option<Box<BoxTables>>,
 }
 
-/// The rooms the builder writes a new layout's fact tables in.
+/// The rooms the builder writes a new layout's fact tables in. The box
+/// tables are not staged.
 pub(super) struct FactsStaging {
     texts: Staging<Table<TextFactsId, TextFacts>>,
     shapings: Staging<Table<ShapingFactsId, ShapingFacts>>,
@@ -1178,7 +1177,7 @@ pub(super) struct FactsStaging {
 }
 
 impl FactsStaging {
-    /// Empty rooms, allocating nothing.
+    /// Creates empty rooms, allocating nothing.
     pub(super) const fn new() -> Self {
         Self {
             texts: Staging::new(Table::new()),
@@ -1200,8 +1199,8 @@ impl Facts {
         staging.requests.lend(&mut self.requests);
     }
 
-    /// Leaves the tables at their lengths and takes the rooms of `staging`
-    /// back.
+    /// Copies the tables to exact-length allocations where needed and takes
+    /// the rooms of `staging` back.
     pub(super) fn settle(&mut self, staging: &mut FactsStaging) {
         staging.texts.settle(&mut self.texts);
         staging.shapings.settle(&mut self.shapings);
@@ -1212,20 +1211,19 @@ impl Facts {
 /// The tables of [`Facts`] that only content with boxes fills.
 #[derive(Default)]
 struct BoxTables {
-    /// Each distinct box's facts, [`BoxFacts::INITIAL`] first once another
-    /// row is stored.
+    /// The distinct box facts, [`BoxFacts::INITIAL`] first once another row
+    /// is stored.
     boxes: Table<BoxFactsId, BoxFacts>,
-    /// The edges of boxes with percentage margins or padding, row 0 standing
+    /// The edges of boxes with percentage margins or padding; row 0 stands
     /// for none.
     edges: Table<EdgesId, EdgesGroup>,
 }
 
-/// The result of lowering a style: the id, or none if a table was full,
-/// and the flags its new rows set.
+/// The result of lowering a style.
 pub(super) struct Lowered<I> {
     /// The id, or `None` where a table was full.
     pub(super) id: Option<I>,
-    /// The content flags its new rows hold.
+    /// The content flags its new rows set.
     pub(super) flags: ContentFlags,
 }
 
@@ -1243,9 +1241,8 @@ impl Facts {
     /// Empties every table, keeping its capacity.
     ///
     /// [`BoxFacts::INITIAL`] takes the box table's first id without being
-    /// stored, until a row is stored after it (see
-    /// [`lower_box`](Self::lower_box)). Content with no box then allocates
-    /// nothing for boxes, as the content stores no `und` and no settings.
+    /// stored until a row follows it (see [`lower_box`](Self::lower_box)),
+    /// so content with no box allocates nothing for boxes.
     pub(super) fn clear(&mut self) {
         self.texts.clear();
         self.shapings.clear();
@@ -1258,9 +1255,9 @@ impl Facts {
 
     /// Lowers `style` into its text facts, in a block of `writing_mode`.
     ///
-    /// It interns the font request, the shaping facts and the text facts in
-    /// turn, each found through the build's `lookup`. `languages` holds
-    /// the style's language. The id is `None` where a table is full.
+    /// Interns the font request, the shaping facts and the text facts in
+    /// turn, through the build's `lookup`. `languages` holds the style's
+    /// language. The id is `None` where a table is full.
     pub(super) fn lower_text(
         &mut self,
         lookup: &mut Lookup,
@@ -1283,11 +1280,11 @@ impl Facts {
         Lowered { id: text, flags }
     }
 
-    /// Lowers the box facts of a node of `kind` set in `style`, in a block
-    /// of `writing_mode` whose percentages are of `basis` pixels.
+    /// Lowers the box facts of a node of `kind` in `style`, in a block of
+    /// `writing_mode`, resolving percentages against `basis` pixels.
     ///
-    /// It finds them through `lookup` and interns them if they are new.
-    /// The id is `None` where the table is full.
+    /// Interns them through `lookup` if they are new. The id is `None`
+    /// where the table is full.
     pub(super) fn lower_box(
         &mut self,
         lookup: &mut Lookup,
@@ -1298,7 +1295,7 @@ impl Facts {
     ) -> Lowered<BoxFactsId> {
         let mut flags = ContentFlags::NONE;
         // A container's edges with a percentage, kept for the next basis.
-        // Where their table is full, the box keeps the lengths it has now.
+        // Where their table is full, the box keeps its current lengths.
         let edges = if kind.is_container() && style.edges.has_percentage() {
             let table = &mut self.boxes.get_or_insert_with(Box::default).edges;
             if table.is_empty() {
@@ -1315,9 +1312,9 @@ impl Facts {
                 flags,
             };
         }
-        // Stores the initial row before the first other row. It is then
-        // found among the few rows compared, and `Lookup` indexes it with
-        // them once the table holds more.
+        // Store the initial row before the first other row, so lookups find
+        // it among the few rows compared and `Lookup` indexes it once the
+        // table grows.
         let boxes = &mut self.boxes.get_or_insert_with(Box::default).boxes;
         if boxes.is_empty() {
             boxes.push_bounded(BoxFacts::INITIAL, "an empty table has room");
@@ -1326,11 +1323,11 @@ impl Facts {
         Lowered { id, flags }
     }
 
-    /// Resolves every box's edges again, their percentages taken of `basis`
-    /// pixels, in a block of `writing_mode`.
+    /// Resolves every box's percentage edges again against `basis` pixels,
+    /// in a block of `writing_mode`.
     ///
     /// Rows keep their ids: a row with percentage edges names them, so two
-    /// rows that resolve alike at one basis stay apart at another.
+    /// rows that resolve alike at one basis stay distinct at another.
     pub(super) fn resolve_boxes(&mut self, writing_mode: WritingMode, basis: f32) {
         let Some(BoxTables {
             boxes,
@@ -1351,8 +1348,8 @@ impl Facts {
 
     /// Returns the text facts `id` names.
     ///
-    /// Every id in the content came from this table, so the lookup cannot
-    /// miss. A miss is a bug, and returns the initial style's facts.
+    /// Every id in the content came from this table, so a miss is a bug; it
+    /// returns the initial style's facts.
     #[inline]
     pub(crate) fn text(&self, id: TextFactsId) -> &TextFacts {
         self.texts.get(id).unwrap_or_else(|| {
@@ -1361,7 +1358,7 @@ impl Facts {
         })
     }
 
-    /// The shaping facts `id` names.
+    /// Returns the shaping facts `id` names.
     #[inline]
     pub(crate) fn shaping(&self, id: ShapingFactsId) -> &ShapingFacts {
         self.shapings.get(id).unwrap_or_else(|| {
@@ -1370,7 +1367,7 @@ impl Facts {
         })
     }
 
-    /// The font request `id` names.
+    /// Returns the font request `id` names.
     #[inline]
     pub(crate) fn request(&self, id: FontRequestId) -> &FontRequest {
         self.requests.get(id).unwrap_or_else(|| {
@@ -1379,7 +1376,7 @@ impl Facts {
         })
     }
 
-    /// The box facts `id` names.
+    /// Returns the box facts `id` names.
     #[inline]
     pub(crate) fn box_facts(&self, id: BoxFactsId) -> &BoxFacts {
         let found = self
@@ -1399,33 +1396,30 @@ impl Facts {
         self.shaping(self.text(id).shaping).font
     }
 
-    /// Yields every font request with its id, in the order they were
-    /// interned.
-    ///
-    /// The block's comes first, then its first line's, then each node's
-    /// in order. Each request is font selection's unit of work.
+    /// Returns every font request with its id, in interning order: the
+    /// block's, then its first line's, then each node's in order.
     pub(crate) fn requests(&self) -> impl ExactSizeIterator<Item = (FontRequestId, &FontRequest)> {
         self.requests.iter()
     }
 
-    /// How many font requests there are.
+    /// Returns the number of font requests.
     pub(crate) fn request_count(&self) -> usize {
         self.requests.len()
     }
 
-    /// Every text facts row's id, in the order they were interned.
+    /// Returns every text facts id, in interning order.
     pub(crate) fn text_ids(&self) -> impl ExactSizeIterator<Item = TextFactsId> {
         self.texts.ids()
     }
 
-    /// How many distinct text facts there are, which the tests count.
+    /// Returns the number of distinct text facts rows.
     #[cfg(test)]
     pub(crate) fn text_count(&self) -> usize {
         self.texts.len()
     }
 
-    /// How many distinct box facts there are, the initial row among them
-    /// once it is stored, which the tests count.
+    /// Returns the number of distinct box facts rows, including the initial
+    /// row once it is stored.
     #[cfg(test)]
     pub(crate) fn box_count(&self) -> usize {
         self.boxes.as_deref().map_or(0, |tables| tables.boxes.len())
@@ -1433,9 +1427,8 @@ impl Facts {
 }
 
 /// Returns `value`'s id in `table`, found through `lookup`, or `None` where
-/// the table is full.
-///
-/// A new value is interned, and its content flags are added to `flags`.
+/// the table is full. A new value is interned and its content flags added
+/// to `flags`.
 fn intern<I, T>(
     lookup: &mut Lookup,
     table: &mut Table<I, T>,
@@ -1454,16 +1447,15 @@ where
     Some(id)
 }
 
-/// A fact row that sets content flags when it is first interned.
-///
-/// The flags summarize what the content holds, so later stages can skip
-/// work the content never needs.
+/// A fact row that sets content flags when it is first interned, so later
+/// stages can skip work the content never needs.
 trait HoldsFlags {
     fn content_flags(&self) -> ContentFlags;
 }
 
 impl HoldsFlags for EdgesGroup {
-    /// Edges are kept only where a margin or padding has a percentage.
+    /// Returns [`ContentFlags::PERCENTAGES`]: edges are kept only where a
+    /// margin or padding has a percentage.
     fn content_flags(&self) -> ContentFlags {
         ContentFlags::PERCENTAGES
     }

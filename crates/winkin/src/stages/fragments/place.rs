@@ -10,11 +10,11 @@
 //! - truncation, on a line cut for an ellipsis (`cut`);
 //! - the items, then the ruby annotation lines (`annotations`).
 //!
-//! **Alignment** is Chrome's `LineOffsetForTextAlign`. It sees the content,
-//! and only the fitting part of preserved white space before a forced break
-//! or the block's end. It moves the whole line, tabs included.
+//! Alignment is Chrome's `LineOffsetForTextAlign`. It sees the content, and
+//! only the fitting part of preserved white space before a forced break or
+//! the block's end. It moves the whole line, tabs included.
 //!
-//! **Bidi** follows Chrome.
+//! Bidi follows Chrome:
 //! - L1: the line's trailing preserved white space takes the paragraph's
 //!   level. Under `break-spaces` it splits from the text before it, as
 //!   Blink's `SplitTrailingBidiPreservedSpace` does, only where it ends
@@ -24,7 +24,7 @@
 //!   Blink's `BidiReorder` does. A piece with no level of its own takes the
 //!   next piece's, or the paragraph's at the line's end.
 //!
-//! **Each phase has its own scratch:** [`LinePieces`], [`LineBoxes`],
+//! Each phase has its own scratch: [`LinePieces`], [`LineBoxes`],
 //! [`LeafCounts`] and [`LineRubies`]. Each goes only to the phases that use
 //! it, and is cleared, never dropped.
 
@@ -431,11 +431,12 @@ pub(crate) struct PlaceScratch {
     pieces: LinePieces,
     /// Its kept boxes and their box parts.
     boxes: LineBoxes,
-    /// Where its box parts' items go, and their paint order.
+    /// Where its box parts' items go, and their box order.
     counts: LeafCounts,
     /// Its ruby columns and their annotation lines.
     rubies: LineRubies,
-    /// The room a new layout's fragment items are written in.
+    /// The context's room for a new layout's fragment items, which the
+    /// layout's table keeps at its exact length after (see [`Staging`]).
     pub(super) items: Staging<Table<FragmentItemId, FragmentItem>>,
 }
 
@@ -855,7 +856,7 @@ impl<'a> Placer<'a> {
         // Positions: assigned left to right. Each box's edges sit at its
         // leftmost and rightmost parts.
         pieces.place(offset.start, &boxes.rooms, Some(counts));
-        // Static positions: where the anchors stand, now that they are
+        // Static positions: where the anchors stand, once the pieces are
         // placed.
         if self.gates.has_anchors {
             self.place_anchors(pieces, out, line, offset);
@@ -1057,7 +1058,7 @@ impl<'a> Placer<'a> {
     /// justification row `justified`, then its pieces' items in visual order.
     ///
     /// Each box part's item comes before the items inside it. `counts`
-    /// counts the leaf items, and the box items link in paint order.
+    /// counts the leaf items, and the box items link in box order.
     #[allow(clippy::too_many_arguments)]
     fn emit(
         &self,

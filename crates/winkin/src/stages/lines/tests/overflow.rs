@@ -1,8 +1,10 @@
 //! Overflow tests. They pin:
 //! - a word with nowhere to break overflowing, unless `overflow-wrap` or
 //!   `word-break: break-all` lets it break;
+//! - an emergency break before a box that allows it;
 //! - spaces ending an overflowing line staying on it;
-//! - a paragraph whose prefix goes back breaking as Chrome's walk does;
+//! - a paragraph whose prefix goes back breaking, and measuring its
+//!   min-content, as Chrome does;
 //! - a negative margin after an overflow letting the line fit on.
 
 use super::*;
@@ -10,9 +12,9 @@ use crate::style::FirstLineVariant;
 
 /// A word with nowhere to break overflows its line, which holds it whole.
 ///
-/// `overflow-wrap: anywhere` and `break-word` break it where they must, a
-/// line at a time. Under `nowrap` there is no break to offer, so it
-/// overflows however it may break. The results match Chrome.
+/// `overflow-wrap: anywhere` and `break-word` break it only where they must,
+/// a line at a time. Under `nowrap` it overflows whatever its
+/// `overflow-wrap`. The results match Chrome.
 #[test]
 fn a_word_with_nowhere_to_break_overflows_unless_it_may_break() {
     let mut fixture = fixture();
@@ -34,7 +36,8 @@ fn a_word_with_nowhere_to_break_overflows_unless_it_may_break() {
         } else {
             assert_eq!(texts(&layout), ["XXX", "XXX", "XXX", "X"], "{wrap:?}");
             assert_eq!(end_kinds(&layout)[0], EndKind::Emergency);
-            // Narrower than a glyph, a line keeps one, overflowing.
+            // In a band narrower than a glyph, each line holds one and
+            // overflows.
             fixture.lay_out(&mut layout, 5.0);
             assert_eq!(layout.lines().len(), 10, "{wrap:?}");
             assert!(records(&layout)[0].flags.contains(LineFlags::OVERFLOWS));
@@ -49,9 +52,9 @@ fn a_word_with_nowhere_to_break_overflows_unless_it_may_break() {
 
 /// `overflow-wrap` is the last resort.
 ///
-/// A word that fits on a line of its own goes there first, and only one
-/// that fits nowhere is broken. A word in a style that may not break
-/// overflows at its first opportunity even where a later one might.
+/// A word that fits on a line of its own moves there first. Only a word
+/// that fits nowhere breaks. A word whose style forbids the break overflows
+/// at its first opportunity, even where a later word may break.
 #[test]
 fn overflow_wrap_breaks_only_what_fits_nowhere() {
     let mut fixture = fixture();
@@ -61,7 +64,8 @@ fn overflow_wrap_breaks_only_what_fits_nowhere() {
     fixture.text(&mut layout, &breaking, "YY XXXXXXX");
     fixture.lay_out(&mut layout, 100.0);
     assert_eq!(texts(&layout), ["YY ", "XXXXX", "XX"]);
-    // `XX` may not break and `YYYY` may: the first word overflows whole.
+    // `XXXX` may not break and `YYYYYY` may, so the first word overflows
+    // whole.
     let plain = ahem(20.0);
     fixture.build(&mut layout, &ComputedBlockStyle::new(&plain), |b| {
         b.text(NodeKey(1), "XXXX ");
@@ -76,8 +80,8 @@ fn overflow_wrap_breaks_only_what_fits_nowhere() {
 
 /// An emergency break before a box opens where the text after it may break.
 ///
-/// `XX<span>XX</span>` 40 wide, the span alone allowing `overflow-wrap`,
-/// breaks before the span, as Chrome's retry breaks before the first
+/// In a 40 px band, `XX<span>XX</span>` with `overflow-wrap` on the span
+/// alone breaks before the span. Chrome's retry breaks before the first
 /// character of the text that allows it.
 #[test]
 fn an_emergency_break_before_a_box_reads_the_text_after_it() {
@@ -118,9 +122,9 @@ fn break_all_breaks_between_letters() {
 
 /// Under `break-spaces` the spaces are content and do not hang.
 ///
-/// A break that fits wraps the space after it. But where the line already
-/// overflows at its first opportunity and only spaces follow, they stay on
-/// that line rather than make lines of their own.
+/// A break that fits wraps the space after it. Where the line overflows at
+/// its first opportunity and only spaces follow, the spaces stay on that
+/// line instead of making lines of their own.
 #[test]
 fn spaces_ending_an_overflowing_line_stay_on_it() {
     let mut fixture = fixture();
@@ -140,13 +144,8 @@ fn spaces_ending_an_overflowing_line_stay_on_it() {
 }
 
 /// A paragraph whose prefix goes back, as with a negative margin, is walked
-/// rather than searched.
-///
-/// The search needs a prefix that only goes forward. The walk goes from the
-/// line's start to the first boundary that does not fit, as Chrome's
-/// breaker walks every paragraph. Here the third `X` overflows before the
-/// margin takes it back, so the line ends at its first opportunity, which
-/// fits.
+/// instead of searched, and stops at the first boundary that does not fit,
+/// as Chrome does.
 #[test]
 fn a_paragraph_that_goes_back_ends_its_line_at_the_first_overflow() {
     let mut fixture = fixture();
@@ -182,11 +181,10 @@ fn a_paragraph_that_goes_back_ends_its_line_at_the_first_overflow() {
 }
 
 /// Min-content measures a paragraph whose prefix goes back as Chrome's
-/// breaker sets it in no room: a box opening with a negative margin where a
-/// line may end stays on the line where it brings it back, and a later
-/// opportunity that fits takes the line on. Chrome 155, 10px Ahem,
-/// `width: min-content` (WPT `inline-negative-margin-001`'s inline-block
-/// rows and probes like them):
+/// breaker sets it in no room.
+///
+/// Chrome 155, 10px Ahem, `width: min-content` (WPT
+/// `inline-negative-margin-001`, and cases like it):
 /// - `123 <span -80>1234 </span>` and `123 <span -80>123 </span>`: 0;
 /// - `XXXXX <span -50>X</span> X X X`: 10;
 /// - `XXX<span -40>X</span> YY`: 20;
@@ -231,18 +229,14 @@ fn min_content_takes_a_negative_margin_back_as_chrome_does() {
     }
 }
 
-/// Where no opportunity before an overflow fits, a negative margin after it
-/// may bring the line back within the room. The line then fits on from
-/// there, as any line does.
+/// A negative margin after an overflow can bring the line back within its
+/// room, and the line then fits on from there.
 ///
-/// Chrome 155 sets these in a 40 px block of 10 px Ahem (WPT
-/// `inline-negative-margin-001`, and probes like it):
-/// - `XXXXX <span -60>XXX</span>` on one line: the span takes the five `X`
-///   and the space back;
-/// - `XXXXX <span -40>XXX</span>` on two, the span starting the second: the
-///   line overflows to its end;
-/// - `XXXXX <span -50>X</span> X X X` as `XXXXX X X` and `X X`: the line
-///   fits on from where the margin brings it back.
+/// Chrome 155 sets these in 40 px of 10 px Ahem (WPT
+/// `inline-negative-margin-001`, and cases like it):
+/// - `XXXXX <span -60>XXX</span>` on one line;
+/// - `XXXXX <span -40>XXX</span>` on two, the span starting the second;
+/// - `XXXXX <span -50>X</span> X X X` as `XXXXX X X` and `X X`.
 #[test]
 fn a_negative_margin_after_an_overflow_lets_the_line_fit_on() {
     let mut fixture = fixture();

@@ -1,12 +1,13 @@
-//! Tests of font selection in vertical lines: a line's metrics are centred
-//! as Chrome 153 sets Ahem, with the odd pixel over.
+//! Tests of line metrics in vertical lines: centred as Chrome 153 sets
+//! Ahem, with the odd pixel over.
 
 use super::*;
 
-/// Ahem's line metrics at `size` in a block whose lines run as
-/// `writing_mode` says, its text standing as `orientation` says: ascent,
-/// descent, where the alphabetic baseline is under the line's own, and the
-/// em box, in pixels.
+/// Returns Ahem's line metrics at `size` in a block of `writing_mode` with
+/// text in `orientation`, in pixels.
+///
+/// The values are the ascent, the descent, the alphabetic baseline's offset
+/// below the line's own, and the em box's over and under.
 fn ahem_lines(writing_mode: WritingMode, orientation: TextOrientation, size: f32) -> [f32; 5] {
     let mut fixture = fixture_with(&[]);
     let mut layout = Layout::new();
@@ -32,13 +33,14 @@ fn ahem_lines(writing_mode: WritingMode, orientation: TextOrientation, size: f32
 }
 
 /// A vertical line whose text is upright or mixed is centred on the central
-/// baseline: its height, whole pixels, split with the odd pixel over, as
-/// Blink's `FontMetrics::IntAscentInternal(kCentralBaseline)` splits it and
-/// as Chrome 153 sets Ahem on the `centering.html` probe page: 15px, 12 over
-/// the alphabetic baseline and 3 under it, is 8 over and 7 under; 17px 9
-/// and 8; 13px 7 and 6; 21px 11 and 10. Its em box is the size halved on
-/// the grid. Sideways text, and the sideways modes, keep the alphabetic
-/// metrics.
+/// baseline. Its height in whole pixels is split with the odd pixel over,
+/// as Blink's `FontMetrics::IntAscentInternal(kCentralBaseline)` splits it.
+///
+/// Chrome 153 sets Ahem so on the `centering.html` probe page: at 15 px, 12
+/// over the alphabetic baseline and 3 under it become 8 over and 7 under;
+/// 17 px gives 9 and 8, 13 px 7 and 6, and 21 px 11 and 10. The em box is
+/// the size halved on the grid. Sideways text, the sideways modes and
+/// horizontal text keep the alphabetic metrics.
 #[test]
 fn a_vertical_line_is_centred_with_its_odd_pixel_over() {
     use TextOrientation::{Mixed, Sideways, Upright};

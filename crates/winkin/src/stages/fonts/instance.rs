@@ -1,10 +1,10 @@
-//! Font instances, kept in the context across layouts.
+//! Font instances, cached on the context across layouts.
 //!
 //! An instance holds everything apart from size that makes two runs shape
 //! differently: a font ([`FontKey`]) at a point in its design space, with its
 //! synthesis, its OpenType features and its `@font-face` metric descriptors.
 //! It holds its record ([`UsedInstance`]) and the font's unscaled metrics at
-//! its coordinates, both made when the instance is. A used font shares the
+//! its coordinates, both made with the instance. A used font shares the
 //! record and scales the metrics to its size.
 //!
 //! **A face** is a font held whole at its default coordinates. Every
@@ -16,12 +16,12 @@
 //! shares fonts ([`SharedFonts`]), a face it lacks is cloned from the shared
 //! set, or made there.
 //!
-//! **An instance is found without reading a byte.** Its key is what was
-//! asked of the font: [`fontwich::Font::key`], the merged variation settings
-//! in user space, the synthesis, the resolved features and the metric
-//! overrides. The coordinates are normalized once, when the instance is
-//! made. Two keys that normalize alike cost an extra cache entry, never a
-//! wrong answer. No layout holds an [`InstanceId`].
+//! **Finding an instance reads no font data.** Its key is what was asked of
+//! the font: [`fontwich::Font::key`], the merged variation settings in user
+//! space, the synthesis, the resolved features and the metric overrides.
+//! The coordinates are normalized once, when the instance is made. Two keys
+//! that normalize alike cost an extra cache entry, never a wrong answer. No
+//! layout holds an [`InstanceId`].
 //!
 //! **Variations** merge by tag, the later winning, in Chrome's order (Blink's
 //! `FontCustomPlatformData`, measured against Chrome 153):
@@ -31,8 +31,8 @@
 //! 4. `opsz` at the used size under `font-optical-sizing: auto`, where
 //!    neither setting names `opsz`.
 //!
-//! A platform font may take the matching axes alone, as Chrome on Windows and
-//! Linux leaves its variations to the platform
+//! A platform font may take the matching axes alone, as Chrome on Windows
+//! and Linux leaves its variations to the platform
 //! ([`PlatformFontVariations`]).
 
 use alloc::boxed::Box;
@@ -61,9 +61,8 @@ define_id! {
     ///
     /// Instances live across layouts, so two layouts setting text in one
     /// font share its bytes and metrics. Only font selection holds an id,
-    /// in its scratch, for one build. A used font shares the instance's
-    /// record of everything it is shaped and drawn with. No layout holds an
-    /// id, so the table may drop entries between builds.
+    /// in its scratch, for one build. No layout holds one, so the table may
+    /// drop entries when the next build starts.
     pub(super) struct InstanceId(u32);
 }
 
@@ -84,7 +83,7 @@ pub(super) struct Face {
     /// The font's family, by which a new collection says whether it still
     /// has the font.
     family: Family,
-    /// The font's bytes, on which each instance's record takes a count.
+    /// The font's bytes, which each instance's record shares.
     pub(super) bytes: FontBytes,
     /// The font held whole at its default coordinates.
     pub(super) font: Font,
@@ -98,10 +97,10 @@ style_struct! {
     /// A font's `@font-face` metric descriptors, as ratios of the em.
     ///
     /// They are `size-adjust` and the ascent, descent and line gap
-    /// overrides. fontwich carries them without applying them. A used font
+    /// overrides. fontwich carries them without applying them; a used font
     /// applies them, as Chrome does. `size-adjust` multiplies the size a
-    /// font is used at, unless `font-size-adjust` sets it. Each override
-    /// replaces its metric at that size.
+    /// font is used at, unless `font-size-adjust` sets the size. Each
+    /// override replaces its metric at the used size.
     pub(super) struct FaceOverrides {
         /// `size-adjust`: the used size is multiplied by it.
         size_adjust: Option<f32>,
@@ -171,7 +170,8 @@ pub(crate) struct Instance {
     /// Its record, which every used font set in it shares.
     ///
     /// It holds the font, its bytes, its coordinates, its synthesis and its
-    /// features. The last three are part of the key.
+    /// features. The synthesis and features are part of the key; the
+    /// coordinates follow from `request`.
     used: Arc<UsedInstance>,
 }
 
@@ -191,7 +191,7 @@ impl Instance {
         &self.unscaled
     }
 
-    /// Whether this is the instance `key` names.
+    /// Returns whether this is the instance `key` names.
     fn is(&self, key: &Key<'_>) -> bool {
         let used = &*self.used;
         used.key() == key.font
@@ -203,7 +203,7 @@ impl Instance {
     }
 }
 
-/// Whether two lists of variation settings hold the same bits.
+/// Returns whether two lists of variation settings hold the same bits.
 fn same_settings(a: &[FontVariation], b: &[FontVariation]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(a, b)| a.same(b))
 }
@@ -266,8 +266,7 @@ pub(super) struct InstanceRequest<'a> {
     /// The size the font is used at, in pixels, which `opsz` follows under
     /// `font-optical-sizing: auto`.
     pub(super) size: f32,
-    /// The font's `@font-face` metric descriptors, which its size was
-    /// worked out with.
+    /// The font's `@font-face` metric descriptors, which set its size.
     pub(super) overrides: FaceOverrides,
     /// Whether this is a platform font whose variations are left to font
     /// matching, so only the axes matching sets apply.
@@ -279,21 +278,21 @@ pub(super) struct InstanceRequest<'a> {
 /// Each instance is a font as a style asks for it, with its bytes, its
 /// coordinates and its unscaled metrics. There is one face per font.
 ///
-/// This is a cache, trimmed between builds to the instances used last,
-/// since no layout holds an [`InstanceId`]. A change of collection keeps
-/// the instances of the fonts the new collection still has, since a font's
-/// key is its bytes' id, which fontwich keeps stable. A face is made only
-/// for a font that font selection reads, and goes at the first trim no
-/// instance is cut from it.
+/// It is a cache. No layout holds an [`InstanceId`], so each build's start
+/// trims it, dropping the instances used longest ago. A change of
+/// collection keeps the instances of the fonts the new collection still
+/// has, since a font's key is its bytes' id, which fontwich keeps stable. A
+/// face is made only for a font that font selection reads, and goes at the
+/// first trim once no instance is cut from it.
 pub(crate) struct Instances {
     table: LruCache<InstanceId, Instance>,
-    /// The faces the instances are cut from, one a font.
+    /// The faces the instances are cut from, one per font.
     ///
-    /// They are dropped by count, not by use, so their capacity is never
-    /// reached.
+    /// A face goes when no instance is cut from it, not by use, so the
+    /// table has no capacity limit.
     faces: LruCache<FaceId, Face>,
     /// Whether a face was made or lost an instance since the last trim, so
-    /// that a face no instance is cut from may be left.
+    /// that the next trim looks for faces no instance is cut from.
     faces_changed: bool,
     /// Working memory for one request's merged variation settings.
     request: Vec<FontVariation>,
@@ -318,8 +317,8 @@ impl Instances {
         }
     }
 
-    /// Drops every instance and face, keeping `capacity` instances from now
-    /// on and the shared fonts.
+    /// Drops every instance and face, keeping the shared fonts, and sets the
+    /// capacity to `capacity` instances.
     pub(super) fn clear(&mut self, capacity: usize) {
         *self = Self::new(capacity, self.shared.take());
     }
@@ -332,8 +331,8 @@ impl Instances {
     /// Drops the instances used longest ago down to the capacity, and every
     /// face no instance is cut from.
     ///
-    /// Font selection calls it between builds, when no [`InstanceId`] is
-    /// held.
+    /// The context calls it when no [`InstanceId`] is held: as a build
+    /// starts, and when its cache limits change.
     pub(super) fn trim(&mut self) {
         let Self {
             table,
@@ -360,15 +359,15 @@ impl Instances {
         table.retain(|_, instance| faces.get(instance.face).is_some(), |_, _| {});
     }
 
-    /// Whether the face of the font `key` names is held.
+    /// Returns whether the face of the font `key` names is held.
     pub(super) fn has_face(&self, key: FontKey) -> bool {
         self.faces
             .peek(face_hash(key), |face| face.key == key)
             .is_some()
     }
 
-    /// Returns the bytes of the fonts the faces hold, which the collection
-    /// shares.
+    /// Returns the size in bytes of the font data the faces hold, which the
+    /// collection shares.
     pub(super) fn face_bytes(&self) -> usize {
         self.faces
             .iter()
@@ -390,13 +389,13 @@ impl Instances {
         self.all().find(|instance| instance.used.key() == key)
     }
 
-    /// Every instance, for tests to look at.
+    /// Returns every instance, for tests.
     #[cfg(test)]
     pub(super) fn all(&self) -> impl Iterator<Item = &Instance> {
         self.table.iter().map(|(_, instance)| instance)
     }
 
-    /// Every face, for tests to see one made per font.
+    /// Returns every face, for tests to see one made per font.
     #[cfg(test)]
     pub(super) fn faces(&self) -> impl Iterator<Item = &Face> {
         self.faces.iter().map(|(_, face)| face)
@@ -416,7 +415,8 @@ impl Instances {
     /// `font`.
     ///
     /// `synthesis` is the font's synthesis for the style. The settings merge
-    /// in Chrome's order (see the module documentation). Each tag appears
+    /// in Chrome's order (see the module documentation); under
+    /// `matching_only`, only the synthesis's settings apply. Each tag appears
     /// once, at the value set last, in tag order. A value that is not a
     /// finite number sets nothing.
     fn merge_variations(
@@ -452,14 +452,14 @@ impl Instances {
 
     /// Finds or makes the instance `font` is set in as `request` asks.
     ///
-    /// Finding one reads nothing. The key is fontwich's font key and what
-    /// the font's record and the style give, with the variations and
+    /// Finding one reads no font data. The key is fontwich's font key and
+    /// what the font's record and the style give, with the variations and
     /// features merged in working memory.
     ///
-    /// Making one cuts the font from its face at the normalized settings,
-    /// so it shares what every instance of the font has read. The face is
-    /// made the first time, which loads the bytes. It also reads the
-    /// unscaled metrics, once per context.
+    /// Making one cuts the font from its face at the merged settings, so it
+    /// shares what every instance of the font has read. The face is made the
+    /// first time, which loads the bytes. Making an instance also reads its
+    /// unscaled metrics.
     ///
     /// Returns `None` where the font's bytes are not here (pending, or a
     /// file that cannot be read) or are not a font read-fonts reads. Also
@@ -514,9 +514,10 @@ impl Instances {
         let face_id = find_or_make_face(faces, shared.as_ref(), family, font)?;
         *faces_changed = true;
         let face = faces.get_mut(face_id)?;
-        // Cut from the face, so it shares what every instance of the font
-        // has read of it. Each setting is clamped to its axis and mapped by
-        // `fvar` and then `avar`. A tag the font has no axis for is dropped.
+        // The instance is cut from the face, so it shares what every
+        // instance of the font has read of it. Each setting is clamped to
+        // its axis and mapped by `fvar` and then `avar`. A tag the font has
+        // no axis for is dropped.
         // The default instance holds no coordinates: it is the face's font.
         let held =
             face.font
@@ -553,13 +554,13 @@ impl Instances {
         Some(made)
     }
 
-    /// How many instances there are.
+    /// Returns how many instances there are.
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.table.len()
     }
 
-    /// How many faces there are.
+    /// Returns how many faces there are.
     #[cfg(test)]
     pub(crate) fn face_count(&self) -> usize {
         self.faces.len()
@@ -605,8 +606,8 @@ fn find_or_make_face(
 }
 
 impl HeapBytes for Instances {
-    /// Its tables, its working memory, and each instance's settings and
-    /// record with the record's coordinates and features.
+    /// Counts its tables, its working memory, and each instance's settings,
+    /// record, coordinates and features.
     ///
     /// The fonts' bytes do not count, since the collection shares them;
     /// [`face_bytes`](Self::face_bytes) counts them apart. Nor does what
@@ -635,10 +636,10 @@ impl HeapBytes for Instances {
     }
 }
 
-/// Whether `family`'s variations are left to font matching.
+/// Returns whether `family`'s variations are left to font matching.
 ///
-/// True for a platform font when the config's choice `platform` follows
-/// Chrome.
+/// They are for a platform font when `platform` is `MatchingOnly`, which
+/// follows Chrome.
 pub(super) fn variations_left_to_matching(
     family: &Family,
     platform: PlatformFontVariations,

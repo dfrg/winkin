@@ -1,13 +1,13 @@
 //! Shift tests. They pin:
-//! - a box's `vertical-align` shift, measured where no line decides it;
-//! - `super` and `sub` from the font's offsets, and `dominant-baseline`, each
-//!   where the config applies it;
-//! - shifts of any size saturating on the grid.
+//! - `vertical-align` shifts that don't depend on the line;
+//! - `super` and `sub` from the font's offsets, and `dominant-baseline`,
+//!   under the config options that enable them;
+//! - saturation for shifts of any size.
 
 use super::*;
 use crate::style::FirstLineVariant;
 
-/// `style` with `dominant-baseline: baseline`.
+/// Returns `style` with `dominant-baseline` set to `baseline`.
 fn on_baseline<'a>(style: &ComputedStyle<'a>, baseline: DominantBaseline) -> ComputedStyle<'a> {
     ComputedStyle {
         line: LineGroup {
@@ -18,7 +18,7 @@ fn on_baseline<'a>(style: &ComputedStyle<'a>, baseline: DominantBaseline) -> Com
     }
 }
 
-/// The measure stage's shift of each node that has one, in pixels.
+/// Returns each stored shift as `(node, px)`.
 fn node_shifts(layout: &Layout) -> Vec<(usize, f32)> {
     layout
         .measured()
@@ -29,14 +29,10 @@ fn node_shifts(layout: &Layout) -> Vec<(usize, f32)> {
         .collect()
 }
 
-/// The shifts that do not depend on the line are the measure stage's, as
-/// Chrome's `ApplyBaselineShift` has them: `super` a third of the parent's
-/// size and a pixel up, truncated on the grid, `sub` a fifth and a pixel
-/// down, both of the parent's size and not the box's own; a length itself,
-/// truncated; a percentage of the box's own line height; and nothing for
-/// `middle`, `text-top`, `text-bottom`, `top` and `bottom`, which the lines
-/// settle, nor for the block's own `vertical-align`, which places it in a
-/// line outside it.
+/// Fixed shifts follow Chrome's `ApplyBaselineShift`: `super` is a third of
+/// the parent's size plus a pixel up, `sub` a fifth plus a pixel down, both
+/// truncated; a length truncates; a percentage is of the box's own line
+/// height. Edge alignments and the block's own `vertical-align` store none.
 #[test]
 fn a_boxs_shift_is_measured_where_no_line_decides_it() {
     use crate::style::VerticalAlign;
@@ -83,8 +79,8 @@ fn a_boxs_shift_is_measured_where_no_line_decides_it() {
             style.line.vertical_align
         );
     }
-    // Nested, each against its own parent's size: 10 px's third is 3 and a
-    // third, truncated, and a pixel.
+    // Nested, each uses its parent's size: a third of 10 px, truncated, plus
+    // a pixel.
     fixture.build(&mut layout, &ComputedBlockStyle::new(&root), |b| {
         b.open_box(NodeKey(2), &vertically(&small, VerticalAlign::Super), None);
         b.open_box(NodeKey(3), &vertically(&small, VerticalAlign::Super), None);
@@ -95,9 +91,9 @@ fn a_boxs_shift_is_measured_where_no_line_decides_it() {
     assert_eq!(node_shifts(&layout), [(1, 7.65625), (2, 4.328125)]);
 }
 
-/// Under `SuperSubPosition::FontMetrics` a superscript and a subscript
-/// move by the parent's primary font's `OS/2` offsets, 480 units up and 140
-/// down in the test fonts: 9.6 and 2.8 at 20 px, rounded onto the grid.
+/// Under `SuperSubPosition::FontMetrics`, `super` and `sub` use the parent
+/// font's `OS/2` offsets: 480 units up and 140 down, so 9.6 and 2.8 px at
+/// 20 px, rounded to the grid.
 #[test]
 fn super_and_sub_can_follow_the_fonts_offsets() {
     use crate::style::VerticalAlign;
@@ -118,13 +114,10 @@ fn super_and_sub_can_follow_the_fonts_offsets() {
     assert_eq!(node_shifts(&layout), [(1, 9.59375), (3, -2.796875)]);
 }
 
-/// `dominant-baseline` moves nothing by default, as Chrome moves nothing
-/// outside SVG; under `DominantBaselines::Applied` a box sets its dominant
-/// baseline where its parent's is, in its own font against its parent's, so
-/// a box inheriting its parent's in its parent's font does not move, the
-/// block's own included, and one in another font moves by the difference.
-/// A box so moved keeps its fragment; an atomic
-/// inline, which has no font's baselines, is not moved.
+/// `dominant-baseline` moves nothing by default, as in Chrome outside SVG.
+/// Under `DominantBaselines::Applied` a box in another font moves by the
+/// difference between its baseline and its parent's, and keeps its
+/// fragment. A box in its parent's font and an atomic inline don't move.
 #[test]
 fn dominant_baseline_moves_a_box_only_where_the_config_applies_it() {
     use crate::style::DominantBaseline;
@@ -178,8 +171,7 @@ fn dominant_baseline_moves_a_box_only_where_the_config_applies_it() {
     );
 }
 
-/// A length or a factor of any size, or not a number, measures into a valid
-/// stage: every shift saturates on the grid, and not a number is nothing.
+/// Lengths and factors of any size, or NaN, measure without panicking.
 #[test]
 fn any_shift_gives_valid_measurements() {
     use crate::style::VerticalAlign;

@@ -1,6 +1,6 @@
 //! Public view tests.
 //!
-//! This file holds the context, the builder and the shared views. It pins
+//! This file holds the context, the builder and the shared views, and pins
 //! that every degenerate area reads without panicking. The children pin:
 //! - `text_runs`: lines and text runs, their fonts, clusters and glyphs;
 //! - `boxes`: box edges between items, culled boxes and atomic inlines;
@@ -62,13 +62,14 @@ pub(crate) fn primary_id(layout: &Layout, text: TextFactsId) -> Option<UsedFontI
     Some(layout.fonts().resolution(request)?.primary)
 }
 
-/// `extents`' two ends, to print as a pair.
+/// Returns the two ends of `extents`, to print as a pair.
 fn ends(extents: InlineExtents) -> (f32, f32) {
     (extents.left, extents.right)
 }
 
-/// A context over Ahem, a Latin font with ligatures and a kerned pair, one
-/// whose advances fall between layout's grid, and an Arabic one.
+/// Returns a context with Ahem, a Latin font with ligatures and a kerned
+/// pair, a font whose advances fall between grid points, and an Arabic
+/// font.
 fn context() -> Context {
     let mut narrow = TestFont::new("Test Narrow", &[(0x20, 0x7E)]);
     narrow.advances = (0x20u8..=0x7E).map(|b| (char::from(b), 333)).collect();
@@ -87,7 +88,7 @@ fn build(
     assert!(b.finish().is_complete());
 }
 
-/// Every text run of line `n`.
+/// Returns every text run of line `n`.
 fn runs(layout: &Layout, n: usize) -> Vec<TextRun<'_>> {
     layout
         .line(n)
@@ -102,10 +103,11 @@ fn runs(layout: &Layout, n: usize) -> Vec<TextRun<'_>> {
         .unwrap_or_default()
 }
 
-/// The room each line's items take, walked as a painter walks them: each
-/// box's own edges before and after its part, and each leaf where it
-/// stands. Checks that every leaf stands where the walk has got to, and
-/// returns each line's pen at its end.
+/// Walks each line's items as a painter does, adding each box's edges
+/// before and after its part and each leaf's advance.
+///
+/// Checks that every leaf stands where the walk has reached, and returns
+/// each line's pen at its end.
 fn walk(layout: &Layout) -> Vec<f32> {
     let mut ends = Vec::new();
     for line in layout.lines() {
@@ -164,7 +166,7 @@ fn marked(size: f32, skip: EmphasisSkip) -> ComputedStyle<'static> {
 }
 
 /// Before any break, and after a rebuild, there is nothing to read; and
-/// every degenerate area reads, items and glyphs and boxes, without
+/// every degenerate area reads its items, glyphs and boxes without
 /// panicking.
 #[test]
 fn any_area_gives_valid_reads() {

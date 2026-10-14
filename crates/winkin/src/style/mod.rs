@@ -5,24 +5,25 @@
 //! [`EdgesGroup`] and [`RubyGroup`]. [`ComputedBlockStyle`] adds first-line
 //! styles and block-container properties.
 //!
-//! The host runs the cascade and retains paint-only properties, including
-//! colors, decoration lines, shadows and emphasis shapes, indexed by node key.
-//! The builder copies and interns required values; it retains no borrowed
+//! The host runs the cascade and keeps paint-only properties, such as
+//! colors, decoration lines, shadows and emphasis shapes, by node key. The
+//! builder copies and interns the values it needs and keeps no borrowed
 //! styles. Reusing styles and lists does not allocate.
 //!
 //! # Values
 //!
-//! Supply computed values. Resolve inheritance, `match-parent`, containing-block
-//! percentages and font-relative lengths before building. Retain values that
-//! CSS preserves or layout must resolve: unitless line height, percentage word
-//! spacing, percentage vertical alignment and `font-size-adjust` metrics.
+//! Supply computed values. Resolve inheritance, `match-parent`,
+//! containing-block percentages and font-relative lengths before building.
+//! Keep the values that CSS computes as given or that layout resolves:
+//! unitless line heights, percentage letter and word spacing, percentage
+//! vertical alignment and `font-size-adjust` metrics.
 //!
-//! Initial values follow CSS, except where Chrome computes a different initial
-//! value, as documented for `text-autospace` and `ruby-position`.
+//! Initial values are those CSS specifies, except for `text-autospace` and
+//! `ruby-position`, whose initial values are those Chrome computes.
 
 // - `font`, `text`, `emphasis` (part of the text group), `line`, `bidi`,
-//   `orientation`, `edges` and `ruby`: the values of one style group each,
-//   with their initial values. `block` holds the values a block has one of.
+//   `orientation`, `edges` and `ruby`: one style group's values each, with
+//   their initial values. `block` holds the block container's values.
 // - `same`: equality and hashing by bits, which the builder's memo keys on.
 // - `first_line`: the first-line variant and the tables kept for it.
 mod bidi;
@@ -58,20 +59,23 @@ use crate::stages::content::BlockFacts;
 use crate::unit::LayoutUnit;
 
 style_struct! {
-    /// The font group: what selects a font, and what shapes in it.
+    /// The font properties: those that select a font and those that shape
+    /// with it.
     ///
-    /// It borrows the family list and the settings lists for the call.
+    /// Borrows the family list and the settings lists for the builder call.
     pub struct FontGroup<'a> {
-        /// The CSS family list in preference order.
+        /// `font-family`, in preference order.
         ///
-        /// The language-specific Standard font follows the list, matching Chrome's
-        /// `-webkit-standard` fallback. An empty list uses only that font.
-        /// For example, on Windows, Simplified Chinese defaults to Microsoft YaHei,
-        /// while `serif` resolves to SimSun.
+        /// The platform's standard font for the language follows the list,
+        /// and an empty list uses only that font. On Windows, for example,
+        /// Simplified Chinese text defaults to Microsoft YaHei, while `serif`
+        /// gives SimSun.
         pub families: &'a [FontFamilyName<'a>],
-        /// The computed `font-size`, in pixels, before `font-size-adjust`.
+        /// The computed `font-size`, in CSS pixels, before `font-size-adjust`.
         ///
-        /// `font-size-adjust` is applied during layout after font selection.
+        /// Layout applies `font-size-adjust` after font selection. A size that
+        /// is negative or not finite is zero, and sizes above 10,000 px are
+        /// 10,000 px.
         pub size: f32,
         /// `font-weight`.
         pub weight: FontWeight,
@@ -105,7 +109,8 @@ style_struct! {
 }
 
 impl FontGroup<'_> {
-    /// Every font property at its initial value: `medium`, which is 16 px.
+    /// Every font property at its initial value, with a size of `medium`,
+    /// 16 px.
     pub const INITIAL: Self = Self {
         families: &[],
         size: 16.0,
@@ -132,9 +137,9 @@ const MAX_FONT_SIZE: f32 = 10_000.0;
 
 /// Returns `px` as a usable font size, clamped as Chrome clamps a computed size.
 ///
-/// A size that is not finite or is below zero becomes zero. A size above
+/// A size that is negative or not finite becomes zero, and one above
 /// [`MAX_FONT_SIZE`] becomes that. Every size a font is used at, computed or
-/// adjusted, passes through here, so no caller or font value escapes it.
+/// adjusted, passes through here.
 pub(crate) fn sanitized_font_size(px: f32) -> f32 {
     if px.is_finite() && px > 0.0 {
         px.min(MAX_FONT_SIZE)
@@ -144,7 +149,8 @@ pub(crate) fn sanitized_font_size(px: f32) -> f32 {
 }
 
 style_struct! {
-    /// Whitespace, wrapping, breaking, transforms, spacing and emphasis properties.
+    /// The text properties: white space, wrapping, breaking, transforms,
+    /// spacing, justification and emphasis.
     ///
     /// Borrows `hyphenate-character` for the builder call.
     pub struct TextGroup<'a> {
@@ -178,16 +184,17 @@ style_struct! {
         pub tab_size: TabSize,
         /// `letter-spacing`, as a length plus a percentage.
         ///
-        /// Percentages use the computed font size and inherit unchanged.
-        /// Layout resolves them, matching CSS Text 4 and Chrome. Under
-        /// `text-fit`, a length with no percentage keeps its size while the
-        /// text scales, and a percentage scales with it.
+        /// A percentage is of the computed font size and inherits as a
+        /// percentage. Layout resolves it, as CSS Text 4 specifies. Under
+        /// `text-fit`, the percentage scales with the text and the length
+        /// does not.
         pub letter_spacing: LengthPercentage,
         /// `word-spacing`, as a length plus a percentage.
         ///
-        /// Percentages use the computed font size, not the space width, and
-        /// inherit unchanged. Layout resolves them, matching CSS Text 4 and
-        /// Chrome.
+        /// A percentage is of the computed font size, not the space width,
+        /// and inherits as a percentage. Layout resolves it, as CSS Text 4
+        /// specifies. Under `text-fit`, the percentage scales with the text
+        /// and the length does not.
         pub word_spacing: LengthPercentage,
         /// `text-autospace`.
         pub autospace: TextAutospace,
@@ -228,7 +235,7 @@ impl TextGroup<'_> {
 }
 
 style_struct! {
-    /// The line group: how tall text makes a line, and where it sits in it.
+    /// The line properties: how tall text makes a line, and where it sits.
     pub struct LineGroup {
         /// `line-height`.
         pub height: LineHeight,
@@ -238,7 +245,7 @@ style_struct! {
         pub dominant_baseline: DominantBaseline,
         /// `initial-letter` and `initial-letter-align`.
         pub initial_letter: InitialLetter,
-        /// `line-padding`, in pixels. Supported by winkin but not Chrome.
+        /// `line-padding`, in CSS pixels. Chrome does not support it.
         pub padding: f32,
         /// `text-box-trim` on an inline box.
         ///
@@ -266,7 +273,7 @@ impl LineGroup {
 }
 
 style_struct! {
-    /// The bidi group.
+    /// The bidi properties.
     pub struct BidiGroup {
         /// `direction`.
         pub direction: Direction,
@@ -284,7 +291,7 @@ impl BidiGroup {
 }
 
 style_struct! {
-    /// The orientation group, read in vertical lines.
+    /// The orientation properties, read in vertical lines.
     pub struct OrientationGroup {
         /// `text-orientation`.
         pub text_orientation: TextOrientation,
@@ -305,23 +312,23 @@ style_struct! {
     /// Margin, border and padding on physical sides. Not inherited.
     ///
     /// Percentages in margins and padding are of the containing block's
-    /// inline size, which a layout takes from [`BuildOptions::percentage_basis`]
-    /// and [`Layout::measure`]. Layout maps edges to the writing mode and
-    /// truncates lengths toward zero on the 1/64-pixel grid, matching Chrome:
-    /// 10.012 px becomes 10 px and 10.99 px becomes 10.984375 px.
+    /// inline size, set by [`BuildOptions::percentage_basis`] and
+    /// [`Layout::measure`]. Layout maps the sides to the writing mode and
+    /// truncates each length toward zero onto a 1/64 px grid, as Chrome
+    /// does: 10.012 px becomes 10 px and 10.99 px becomes 10.984375 px.
     ///
     /// [`BuildOptions::percentage_basis`]: crate::BuildOptions::percentage_basis
     /// [`Layout::measure`]: crate::Layout::measure
     pub struct EdgesGroup {
-        /// `margin`, in pixels and as a fraction of the basis.
+        /// `margin`, in CSS pixels plus a fraction of the basis.
         pub margin: Sides<LengthPercentage>,
-        /// Used `border-width` in pixels, or zero for border style `none`.
+        /// The used `border-width` in CSS pixels, or zero for `border-style: none`.
         ///
-        /// Snap widths before building, matching Chrome: positive widths below
-        /// one pixel become one; larger widths round down to whole pixels.
-        /// Thus 0.5 px becomes 1 px and 2.5 px becomes 2 px.
+        /// Snap widths before building, as Chrome does: a positive width
+        /// below 1 px becomes 1 px, and a larger one rounds down to whole
+        /// pixels. So 0.5 px becomes 1 px and 2.5 px becomes 2 px.
         pub border: Sides<f32>,
-        /// `padding`, in pixels and as a fraction of the basis.
+        /// `padding`, in CSS pixels plus a fraction of the basis.
         pub padding: Sides<LengthPercentage>,
         /// `box-decoration-break`.
         pub decoration_break: BoxDecorationBreak,
@@ -343,7 +350,7 @@ impl EdgesGroup {
         self.margin.any() || self.border.any() || self.padding.any()
     }
 
-    /// Whether a margin or padding has a percentage.
+    /// Returns whether a margin or padding has a percentage.
     pub(crate) fn has_percentage(&self) -> bool {
         self.margin.has_percentage() || self.padding.has_percentage()
     }
@@ -370,18 +377,15 @@ pub(crate) struct UsedEdges {
 }
 
 impl UsedEdges {
-    /// Returns the room a box takes along the line at each end.
+    /// Returns the room a box takes along the line at each end, as
+    /// `(line-left, line-right)`.
     ///
-    /// The pair is `(line-left, line-right)`. Each end sums the margin,
-    /// border and padding on the physical side `writing_mode` puts there.
-    /// Each length is truncated onto layout's grid, as Chrome makes a
-    /// `LayoutUnit` from a float.
+    /// Each end sums the margin, border and padding on the physical side
+    /// `writing_mode` puts there, each truncated onto the layout grid as
+    /// Chrome makes a `LayoutUnit` from a float.
     ///
-    /// Every stage that charges a box's edges reads this: measurement for the
-    /// prefix sums, the breaker for a line's ends, and line layout for the
-    /// pieces. So fitting and placing cannot disagree. The caller picks the
-    /// end an opening or closing edge takes from the edge's bidi level. The
-    /// sides across the line take no room on it.
+    /// Measurement, the breaker and line layout all read this, so fitting
+    /// and placing agree. The caller picks an edge's end by its bidi level.
     pub(crate) fn inline(&self, writing_mode: WritingMode) -> (LayoutUnit, LayoutUnit) {
         let side = |sides: Sides<f32>| sides.along_line_on_grid(writing_mode);
         let (margin, border, padding) = (side(self.margin), side(self.border), side(self.padding));
@@ -393,7 +397,7 @@ impl UsedEdges {
 }
 
 style_struct! {
-    /// The ruby group.
+    /// The ruby properties.
     pub struct RubyGroup {
         /// `ruby-position`.
         pub position: RubyPosition,
@@ -437,9 +441,9 @@ initial_is_default!(
 /// Computed layout properties for a box or inline element.
 ///
 /// Used for blocks, inline boxes, atomic inlines, floats, ruby containers
-/// and annotations. Properties are grouped by subject. Variable-length values
-/// are borrowed during the builder call, then copied or interned; the layout
-/// retains no borrowed styles.
+/// and annotations. Properties are grouped by subject. Lists and strings are
+/// borrowed for the builder call, then copied or interned; the layout keeps
+/// no borrowed styles.
 ///
 /// ```
 /// use winkin::style::{ComputedStyle, FontFamilyName, FontGroup, FontWeight, GenericFamily};
@@ -472,28 +476,46 @@ pub struct ComputedStyle<'a> {
     pub edges: EdgesGroup,
     /// The ruby properties.
     pub ruby: RubyGroup,
-    /// Whether the box paints a background, border or outline. Not inherited.
+    /// Whether the box paints a background, a border or a box shadow. Not
+    /// inherited.
     ///
-    /// Decoration lines do not count. Boxes that only decorate text may be
-    /// culled, but [`Line::paints`](crate::Line::paints) still returns their
+    /// Outlines and decoration lines do not count; see
+    /// [`outlines`](Self::outlines) and [`decorates`](Self::decorates). A box
+    /// that paints nothing and draws no outline may be culled: it keeps no
+    /// fragment, and its fragments are derived from its descendants when
+    /// asked for. [`Line::paints`](crate::Line::paints) still returns its
     /// decorations.
     ///
-    /// Affects fragment retention only, not geometry. Culled-box fragments
-    /// are derived from descendants on demand.
+    /// It also decides how a line ends in the box's own text where the line
+    /// ends at white space shaped with the text around it. With `paints`,
+    /// the text before a dropped collapsible space, or before spaces that
+    /// hang, is shaped again without them and ends at its own advance.
+    /// Without it, the text keeps any kerning against those spaces.
+    /// Alignments other than `start` and `left`, and
+    /// [`decorates`](Self::decorates) on the box or a box around it, have
+    /// the same effect.
     pub paints: bool,
-    /// Whether the box specifies an underline, overline or line-through.
+    /// Whether the box draws an outline. Not inherited.
     ///
-    /// Not inherited. Does not retain a box fragment. [`Line::paints`](crate::Line::paints)
-    /// queries decoration styles only for boxes that set this flag, culled
-    /// or retained.
+    /// An outlined box keeps its fragment, as a box that
+    /// [`paints`](Self::paints) does. Unlike `paints`, it leaves a line's
+    /// end as the paragraph shaped it.
+    pub outlines: bool,
+    /// Whether the box sets an underline, overline or line-through. Not
+    /// inherited.
+    ///
+    /// Does not keep a box fragment. [`Line::paints`](crate::Line::paints)
+    /// asks for decoration styles only for boxes that set this flag. A line
+    /// ending in text inside the box ends as [`paints`](Self::paints)
+    /// describes.
     pub decorates: bool,
 }
 
 impl ComputedStyle<'static> {
     /// Returns the initial style.
     ///
-    /// Uses CSS initial values, except for Chrome defaults documented for
-    /// `text-autospace` and `ruby-position`.
+    /// Uses the CSS initial values, except for `text-autospace` and
+    /// `ruby-position`, which take the values Chrome computes.
     pub const fn initial() -> Self {
         Self {
             font: FontGroup::INITIAL,
@@ -504,6 +526,7 @@ impl ComputedStyle<'static> {
             edges: EdgesGroup::INITIAL,
             ruby: RubyGroup::INITIAL,
             paints: false,
+            outlines: false,
             decorates: false,
         }
     }
@@ -518,14 +541,11 @@ impl Default for ComputedStyle<'static> {
 impl<'a> ComputedStyle<'a> {
     /// Returns `first_line` with only the properties `::first-line` may change.
     ///
-    /// Those come from `first_line`, and the rest from `self`, the element's
-    /// own style. `::first-line` may change the font, the spacing, the
-    /// transform, `line-height`, `vertical-align`, emphasis and
-    /// `ruby-position`. Anything else
-    /// is pinned to the element's. Honoring it would make analysis depend on
-    /// where the first line ends, which only line breaking knows. A cascade
-    /// that already applies this list passes the same values, and this
-    /// changes nothing.
+    /// The font, letter and word spacing, `text-transform`, `line-height`,
+    /// `vertical-align`, emphasis and `ruby-position` come from
+    /// `first_line`; the rest come from `self`. Taking any other property
+    /// would make analysis depend on where the first line ends, which only
+    /// line breaking knows.
     pub(crate) fn pinned_first_line<'b>(&self, first_line: &ComputedStyle<'b>) -> ComputedStyle<'b>
     where
         'a: 'b,
@@ -555,11 +575,11 @@ impl<'a> ComputedStyle<'a> {
 
 /// Computed styles and container properties for one block.
 ///
-/// [`Layout::builder`](crate::Layout::builder) uses `style` for text inheritance
-/// and inline properties. The host owns the block box, so margin, border,
-/// padding, vertical alignment, inline text-box trimming and paint flags in
-/// `style` are ignored for that box. Block `text-box-trim` is specified
-/// separately here, along with other container properties.
+/// [`Layout::builder`](crate::Layout::builder) uses `style` for the
+/// block's text and inline properties. The host lays out the block box, so
+/// the margin, border, padding, vertical alignment, inline text-box trimming
+/// and paint flags in `style` are ignored for it. The block's
+/// `text-box-trim` and its other container properties are fields here.
 ///
 /// ```
 /// use winkin::style::{TextAlign, WritingMode};
@@ -575,18 +595,18 @@ impl<'a> ComputedStyle<'a> {
 /// ```
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub struct ComputedBlockStyle<'a> {
-    /// The block's own computed style.
-    ///
-    /// Its inline properties, and what its text inherits.
+    /// The block's computed style: its inline properties, and what its text
+    /// inherits.
     pub style: &'a ComputedStyle<'a>,
-    /// The block `::first-line` style, if present.
+    /// The block's `::first-line` style, or `None`.
     ///
-    /// Supply first-line styles for descendant nodes as needed. Nodes without
-    /// one use their ordinary styles.
+    /// Descendant nodes take first-line styles of their own through the
+    /// builder. A node without one uses its ordinary style.
     pub first_line: Option<&'a ComputedStyle<'a>>,
     /// The base direction of the block's paragraphs.
     ///
-    /// `Auto` uses the first strong character of each paragraph.
+    /// `Auto` takes each paragraph's direction from its first strong
+    /// character.
     pub direction: BaseDirection,
     /// `writing-mode`.
     pub writing_mode: WritingMode,
@@ -615,7 +635,7 @@ pub struct ComputedBlockStyle<'a> {
 impl<'a> ComputedBlockStyle<'a> {
     /// Creates a block style with `style` and initial container properties.
     ///
-    /// Uses LTR writing and no `::first-line` style.
+    /// Sets left-to-right horizontal text and no `::first-line` style.
     pub const fn new(style: &'a ComputedStyle<'a>) -> Self {
         let initial = BlockFacts::INITIAL;
         Self {
@@ -637,7 +657,7 @@ impl<'a> ComputedBlockStyle<'a> {
     }
 }
 
-/// The initial style, which the crate's tests make a default block in.
+/// The initial style, for the tests' default block.
 #[cfg(test)]
 static INITIAL_STYLE: ComputedStyle<'static> = ComputedStyle::initial();
 
@@ -645,8 +665,8 @@ static INITIAL_STYLE: ComputedStyle<'static> = ComputedStyle::initial();
 impl Default for ComputedBlockStyle<'static> {
     /// Returns the initial block in the initial style.
     ///
-    /// Tests set block-container properties on it, then swap in their own
-    /// style with `ComputedBlockStyle { style, ..block }`.
+    /// Tests set container properties on it and swap in their own style
+    /// with `ComputedBlockStyle { style, ..block }`.
     fn default() -> Self {
         Self::new(&INITIAL_STYLE)
     }

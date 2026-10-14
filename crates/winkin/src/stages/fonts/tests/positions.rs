@@ -9,15 +9,15 @@
 
 use super::*;
 
-/// A superscript at 30 px in `families`.
+/// Returns a superscript style at 30 px in `families`.
 fn style_super<'a>(families: &'a [FontFamilyName<'a>]) -> ComputedStyle<'a> {
     let mut style = sized(families, 30.0);
     style.font.variant_position = FontVariantPosition::Super;
     style
 }
 
-/// How a test font draws a superscript synthesized at 30 px: its `OS/2`'s
-/// 650 units big and 480 up, as the text is fed.
+/// Returns how a test font draws a superscript synthesized at 30 px: by its
+/// `OS/2`, 650 units big and 480 up, with the text's case kept.
 fn super_30px() -> UsedSynthesis {
     UsedSynthesis::Synthesized {
         case: CaseMap::Keep,
@@ -26,8 +26,8 @@ fn super_30px() -> UsedSynthesis {
     }
 }
 
-/// Whether every cluster of `layout` is set in one used font, drawn as
-/// `synthesis` says, shaping with `features`.
+/// Returns whether every cluster of `layout` is set in one used font, drawn
+/// as `synthesis` says, shaping with `features`.
 fn all_set(layout: &Layout, synthesis: UsedSynthesis, features: &[(&str, u16)]) -> bool {
     let clusters = layout.analysis().clusters.len();
     text_runs(layout).len() == 1
@@ -38,7 +38,7 @@ fn all_set(layout: &Layout, synthesis: UsedSynthesis, features: &[(&str, u16)]) 
 }
 
 /// A run whose every character the font's `sups` or `subs` covers takes the
-/// feature, drawn as the font draws it, at its size, on the baseline.
+/// feature, drawn as the font draws it, at the run's size, on the baseline.
 #[test]
 fn a_run_the_feature_covers_whole_takes_it() {
     let mut fixture = fixture_with(&[superscripts()]);
@@ -53,9 +53,9 @@ fn a_run_the_feature_covers_whole_takes_it() {
 }
 
 /// By CSS Fonts 4, a run with one character the feature does not cover is
-/// synthesized whole, the covered ones among it, from the glyphs the feature
-/// would have replaced, so no feature. The run goes on across inline boxes
-/// in its style, and ends at text set otherwise.
+/// synthesized whole, covered characters included. The synthesis uses the
+/// glyphs the feature would have replaced, so no feature. The run continues
+/// across inline boxes in its style, and ends at text set otherwise.
 #[test]
 fn a_run_the_feature_does_not_cover_whole_is_synthesized_whole() {
     let mut fixture = fixture_with(&[superscripts()]);
@@ -66,8 +66,8 @@ fn a_run_the_feature_does_not_cover_whole_is_synthesized_whole() {
         fixture.span(&mut layout, &style, text);
         assert!(all_set(&layout, super_30px(), &[]), "{text}");
     }
-    // Two boxes of one style are one run: the letter in the second takes
-    // the feature from the figures in the first.
+    // Two boxes of one style are one run: the letter in the second denies
+    // the feature to the figures in the first.
     fixture.spans(&mut layout, &style, &[(&style, "12"), (&style, "a")]);
     assert!(all_set(&layout, super_30px(), &[]));
     // Text set otherwise between them makes them two, each decided alone.
@@ -88,8 +88,8 @@ fn a_run_the_feature_does_not_cover_whole_is_synthesized_whole() {
 /// cover makes the run synthesized, as Firefox counts it
 /// (`gfxFont::SupportsSubSuperscript` asks every character of the run, and
 /// WPT's `font-variant-position-05` names the space). What has no glyph to
-/// vary -- a default-ignorable, which the shaper hides, and a cluster that
-/// draws nothing -- is passed over.
+/// vary is passed over: a default-ignorable, which the shaper hides, and a
+/// cluster that draws nothing.
 #[test]
 fn a_space_counts_and_what_draws_nothing_does_not() {
     let mut fixture = fixture_with(&[superscripts()]);
@@ -108,7 +108,7 @@ fn a_space_counts_and_what_draws_nothing_does_not() {
 }
 
 /// A font without the feature under the run's script has the run
-/// synthesized, and the line keeps the height its metrics make.
+/// synthesized, and the used font keeps the line metrics of the plain font.
 #[test]
 fn a_font_without_the_feature_synthesizes_the_run() {
     let mut fixture = fixture_with(&[plain()]);
@@ -132,9 +132,9 @@ fn a_font_without_the_feature_synthesizes_the_run() {
     assert_eq!(cluster_used_font(&layout, 0).metrics.ascent, line);
 }
 
-/// Chrome's way, `FeaturesOnly`, and `font-synthesis-position: none` never
-/// synthesize: the feature is asked for, and whatever it does not cover is
-/// drawn as it is.
+/// `FeaturesOnly`, which is Chrome's behaviour, and
+/// `font-synthesis-position: none` never synthesize. The feature is asked
+/// for, and whatever it does not cover is drawn as it is.
 #[test]
 fn features_only_never_synthesizes() {
     let mut fixture = fixture_with(&[plain(), superscripts()]);
@@ -159,8 +159,8 @@ fn features_only_never_synthesizes() {
 }
 
 /// A synthesized position is sized and raised by the font's own `OS/2`
-/// alone: `super_sub`, which is `vertical-align`'s, moves nothing. A size
-/// outside a third of an em to one em is two thirds.
+/// alone. The `super_sub` config, which is `vertical-align`'s, changes
+/// nothing. A size outside a third of an em to one em becomes two thirds.
 #[test]
 fn a_synthesized_position_reads_the_fonts_metrics_and_not_super_sub() {
     let mut odd = plain();
@@ -188,9 +188,9 @@ fn a_synthesized_position_reads_the_fonts_metrics_and_not_super_sub() {
     );
 }
 
-/// What a font's feature covers is read once per font, script and feature,
-/// kept across builds, and read again alike in a new context over the same
-/// fonts, which holds none.
+/// A feature's coverage is read once per font, script and feature, and kept
+/// across builds. A new context over the same fonts starts with none and
+/// reads the same coverage again.
 #[test]
 fn a_features_coverage_is_read_once_and_again_alike() {
     let mut fixture = fixture_with(&[superscripts()]);
@@ -204,8 +204,8 @@ fn a_features_coverage_is_read_once_and_again_alike() {
     let read = coverages.first().expect("one coverage").clone();
     let digits: Vec<u32> = ('0'..='9').map(u32::from).collect();
     assert_eq!(read.chars().collect::<Vec<_>>(), digits);
-    // Latin text asks under `latn`, where figures alone ask under `DFLT`;
-    // and `sub` asks for `subs`.
+    // Latin text asks under `latn`, figures alone under `DFLT`, and `sub`
+    // asks for `subs`.
     fixture.span(&mut layout, &style, "2x");
     assert_eq!(fixture.cx.font_context().coverages().len(), 2);
     style.font.variant_position = FontVariantPosition::Sub;
@@ -223,8 +223,8 @@ fn a_features_coverage_is_read_once_and_again_alike() {
 }
 
 /// A `sups` reached only through a contextual lookup covers nothing, since no
-/// set of characters can say what a context allows: the run is synthesized,
-/// though the font draws the figures with it.
+/// set of characters can say what a context allows. The run is synthesized,
+/// though the font draws the figures with the feature.
 #[test]
 fn a_feature_only_a_context_reaches_covers_nothing() {
     let mut fixture = fixture_with(&[contextual_superscripts()]);

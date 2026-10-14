@@ -1,19 +1,16 @@
 //! The Unicode bidirectional algorithm's resolution of a paragraph's levels
 //! (UAX #9: P2–P3, X1–X10, W1–W7, N0–N2, I1–I2 and L1's separator half).
 //!
-//! [`resolve_bidi`] takes the units [`input`](super::input) builds, one per
-//! cluster and per control a style synthesizes, and fills in a level per
-//! unit. [`reset_separators`] then applies L1's separator half and hands
-//! each unit's final level out in order. Line layout reorders (L2) with
-//! `unicode::reorder_bidi`.
+//! [`resolve_bidi`] fills in a level for each unit [`input`](super::input)
+//! builds. [`reset_separators`] then applies L1's separator half and hands
+//! out each unit's final level in order. Line layout reorders (L2) with
+//! `unicode::reorder_bidi` and applies the rest of L1, as Chrome resets by
+//! the white space left at a line's end.
 //!
-//! The units come from analysis, which cannot make the mistakes a public
-//! resolver checks for: every class is one UAX #9 defines, the brackets are
+//! The input is trusted: every class is one UAX #9 defines, the brackets are
 //! in order and inside the paragraph, and `levels` has a slot per unit.
-//! Splitting text into bidi paragraphs (P1) is the caller's: a B unit inside
-//! the slice resets the embeddings (X8) but takes no new base level. The
-//! line-dependent half of L1 is line layout's, as Chrome resets by the white
-//! space left at a line's end.
+//! Bidi paragraphs (P1) are split before resolution. A B unit inside the
+//! slice resets the embeddings (X8) but sets no new base level.
 
 use alloc::vec::Vec;
 use core::mem;
@@ -26,15 +23,14 @@ use crate::unicode::{BidiBracket, BidiClass, OVERRIDE_MASK, REMOVED_BY_X9_MASK};
 /// One unit of a paragraph's bidi input: a class, and whether it is a
 /// control a style synthesized rather than a cluster.
 ///
-/// Clusters arrive in order, one unit each, so a cluster's level goes back
-/// to it by counting the cluster units before it. A unit only needs to say
-/// which of the two it is, so it takes two bytes. The class cannot say it,
-/// since the text may hold bidi controls of its own, which are clusters.
+/// Clusters arrive in order, one unit each, so a cluster's level is found
+/// by counting the cluster units before it. The class cannot tell the two
+/// apart, since bidi controls in the text are clusters.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub(crate) struct BidiUnit {
     pub(crate) class: BidiClass,
-    /// The unit is a control a style synthesized, whose level goes nowhere;
-    /// if not, it is the next cluster, whose level it has.
+    /// Whether the unit is a synthesized control, whose level is dropped,
+    /// rather than the next cluster.
     pub(crate) control: bool,
 }
 
@@ -50,23 +46,24 @@ const RTL_MASK: u32 = BidiClass::RIGHT_TO_LEFT_EMBEDDING.mask()
 
 /// Reusable working memory for [`resolve_bidi`].
 ///
-/// Holds nothing meaningful between calls. The analysis scratch keeps one
-/// across paragraphs, so its buffers are not reallocated each time.
+/// Holds nothing between calls. The analysis scratch keeps one across
+/// paragraphs, so its buffers are not reallocated.
 #[derive(Clone, Default)]
 pub(crate) struct BidiScratch {
     /// One entry per FSI in the paragraph, in logical order.
     fsi_entries: Vec<FsiEntry>,
     /// FSIs still waiting for a strong character, innermost last.
     pending_fsi: Vec<PendingFsi>,
-    /// The paragraph's classes as the X rules rewrite them, then, past the
-    /// paragraph, the isolating run sequence being resolved where it is not
-    /// one unbroken range, with what X9 removes left out.
+    /// The paragraph's classes after the X rules. Past them, a copy of the
+    /// isolating run sequence being resolved, without what X9 removes, when
+    /// the sequence is not one unbroken range.
     types: Vec<BidiClass>,
-    /// Bracket pairs of the isolating run sequence being resolved, in
-    /// sequence positions. Rebuilt for each sequence and not read afterwards.
+    /// The bracket pairs of the isolating run sequence being resolved, in
+    /// sequence positions. Rebuilt for each sequence.
     bracket_pairs: Vec<(u32, u32)>,
     runs: Vec<Run>,
-    /// Paragraph positions of the copied sequence in `types`, one per entry.
+    /// The paragraph position of each entry of the copied sequence in
+    /// `types`.
     indices: Vec<u32>,
 }
 
@@ -96,9 +93,11 @@ impl BidiScratch {
             + bytes(&self.indices)
     }
 
-    /// Resolves the direction of every FSI (P3) and returns the paragraph's
-    /// first strong character's level outside any isolate (P2), in one
-    /// forward pass that stops once nothing more can be learned.
+    /// Resolves the direction of every FSI (P3) and returns the level of the
+    /// first strong character outside any isolate (P2).
+    ///
+    /// One forward pass; without an FSI (`fsi` false) it stops at that
+    /// first strong character.
     fn scan_isolates(&mut self, units: &[BidiUnit], fsi: bool) -> Option<u8> {
         const STRONG_START_MASK: u32 = BidiClass::LEFT_TO_RIGHT.mask()
             | BidiClass::RIGHT_TO_LEFT.mask()
@@ -124,8 +123,8 @@ impl BidiScratch {
                 }
             } else if class == BidiClass::POP_DIRECTIONAL_ISOLATE {
                 depth = depth.saturating_sub(1);
-                // Drop every FSI this PDI closed, so that a later strong
-                // character cannot settle one of them.
+                // Drops every FSI this PDI closed, so a later strong
+                // character cannot settle it.
                 while self
                     .pending_fsi
                     .last()
@@ -156,15 +155,14 @@ impl BidiScratch {
     }
 }
 
-/// Resolves the embedding level of every unit of a paragraph into `levels`,
-/// one per unit, and returns the base level.
+/// Resolves the embedding level of each unit of a paragraph into `levels`
+/// and returns the base level.
 ///
 /// `brackets` lists the paired brackets in ascending `index` order. `mask`
 /// holds every class among the units, or more. `base_level` is `Some(0)`
 /// for left to right, `Some(1)` for right to left, or `None` to take it
-/// from the first strong character (P2, P3).
-///
-/// The levels stop short of L1: [`reset_separators`] finishes them.
+/// from the first strong character (P2, P3). The levels stop short of L1,
+/// which [`reset_separators`] applies.
 pub(crate) fn resolve_bidi(
     scratch: &mut BidiScratch,
     units: &[BidiUnit],
@@ -194,14 +192,13 @@ pub(crate) fn resolve_bidi(
     base_level
 }
 
-/// Applies the half of L1 that needs no line, and hands each unit's final
+/// Applies the half of L1 that needs no line and hands each unit's final
 /// level to `each`, in order.
 ///
-/// A segment or paragraph separator goes to the base level, with the white
-/// space and isolate controls before it. A unit X9 removed never got a
-/// level of its own, so it takes the one before it, as found when it is
-/// reached. A run of white space and isolate controls is handed out only
-/// once the unit after it says whether a separator resets it.
+/// A segment or paragraph separator, and the white space and isolate
+/// controls before it, go to the base level. A unit X9 removed takes the
+/// level before it. A run of white space and isolate controls is handed out
+/// once the next unit shows whether a separator resets it.
 pub(crate) fn reset_separators(
     units: &[BidiUnit],
     levels: &mut [u8],
@@ -212,7 +209,7 @@ pub(crate) fn reset_separators(
         ISOLATE_MASK | BidiClass::POP_DIRECTIONAL_ISOLATE.mask() | BidiClass::WHITE_SPACE.mask();
     const SEPARATOR: u32 =
         BidiClass::SEGMENT_SEPARATOR.mask() | BidiClass::PARAGRAPH_SEPARATOR.mask();
-    // Where the run that a separator would reset starts, if one is open.
+    // The start of the open run a separator would reset.
     let mut pending: Option<usize> = None;
     let mut before = base;
     for at in 0..units.len().min(levels.len()) {
@@ -242,8 +239,8 @@ pub(crate) fn reset_separators(
     }
 }
 
-/// Hands out the levels of `range`, first setting the white space and
-/// isolate controls in it at `base` where a separator ends it (`resets`).
+/// Hands out the levels of `range`, first setting its white space and
+/// isolate controls to `base` if a separator ends it (`resets`).
 fn flush(
     units: &[BidiUnit],
     levels: &mut [u8],
@@ -266,7 +263,7 @@ fn is_isolate_initiator(ty: BidiClass) -> bool {
     ty.mask() & ISOLATE_MASK != 0
 }
 
-/// Returns a default bidi type for a level.
+/// Returns L for an even level and R for an odd one.
 fn class_from_level(level: u8) -> BidiClass {
     if level & 1 == 0 {
         BidiClass::LEFT_TO_RIGHT
@@ -275,10 +272,9 @@ fn class_from_level(level: u8) -> BidiClass {
     }
 }
 
-/// The direction rule N0 assigns to a class when scanning inside a bracket
-/// pair, where European and Arabic numbers count as right-to-left.
-///
-/// Returns [`BidiClass::OTHER_NEUTRAL`] for classes that carry no direction.
+/// Returns the direction rule N0 gives `ty` inside a bracket pair, where
+/// numbers count as R, or [`BidiClass::OTHER_NEUTRAL`] for a class with no
+/// direction.
 #[inline]
 fn n0_strong_dir(ty: BidiClass) -> BidiClass {
     const N0_RTL_MASK: u32 = BidiClass::EUROPEAN_NUMBER.mask()
@@ -303,7 +299,7 @@ fn find_limit_by_mask(types: &[BidiClass], offset: usize, mask: u32) -> usize {
             .unwrap_or(types.len() - offset)
 }
 
-/// Resolves one paragraph, bundling the buffers the rules work across.
+/// The buffers the rules share while resolving one paragraph.
 struct Resolver<'a> {
     scratch: &'a mut BidiScratch,
     units: &'a [BidiUnit],
@@ -313,10 +309,9 @@ struct Resolver<'a> {
 }
 
 impl Resolver<'_> {
-    /// X1 through X9, and BD7: walks the explicit embedding, override and
-    /// isolate controls, assigning each unit its embedding level and
-    /// applying any override in force, while splitting the units X9 keeps
-    /// into level runs.
+    /// Applies X1 through X9 and BD7: assigns each unit its embedding level,
+    /// applies any override in force, and splits the units X9 keeps into
+    /// level runs.
     fn resolve_levels(&mut self) {
         let base = self.base_level;
         let len = self.units.len();
@@ -329,8 +324,7 @@ impl Resolver<'_> {
         let scratch = &mut *self.scratch;
         scratch.types.clear();
         scratch.runs.clear();
-        // The run being gathered: its level, its first unit and the unit
-        // after its last kept one.
+        // The run being gathered.
         let mut open: Option<Run> = None;
 
         for (i, (unit, level)) in self.units.iter().zip(self.levels.iter_mut()).enumerate() {
@@ -338,8 +332,8 @@ impl Resolver<'_> {
             let tmask = t.mask();
             if tmask & EXPLICIT_MASK != 0 {
                 let is_isolate = tmask & ISOLATE_MASK != 0;
-                // X5c: an FSI acts as RLI or LRI according to the direction
-                // `scan_isolates` worked out for it.
+                // X5c: an FSI acts as RLI or LRI by the direction
+                // `scan_isolates` found for it.
                 let is_rtl = if t == BidiClass::FIRST_STRONG_ISOLATE && i + 1 < len {
                     let mut fsi_level = 0;
                     if let Some(entry) = scratch.fsi_entries.get(fsi_cursor)
@@ -439,14 +433,13 @@ impl Resolver<'_> {
         scratch.runs.extend(open);
     }
 
-    /// X10 and BD13: sets each run's eos and links the runs into isolating
-    /// run sequences.
+    /// Applies X10 and BD13: sets each run's eos and links the runs into
+    /// isolating run sequences.
     ///
-    /// A run ending in an isolate initiator continues into the run that
-    /// starts with the matching PDI, which is always at the same level, so
-    /// this keeps one stack per level of the runs awaiting their PDI. The
-    /// stacks are threaded through the runs' `stack_prev`, since a run
-    /// waits on one PDI at one level at most.
+    /// A run ending in an isolate initiator continues into the run starting
+    /// with the matching PDI, at the same level. Runs awaiting a PDI sit on
+    /// one stack per level, threaded through `stack_prev`, since a run waits
+    /// on at most one PDI.
     fn link_sequences(&mut self) {
         let base = self.base_level;
         let runs = &mut self.scratch.runs;
@@ -477,18 +470,18 @@ impl Resolver<'_> {
         }
     }
 
-    /// X10: resolves each isolating run sequence with the W, N and I rules.
+    /// Applies X10: resolves each isolating run sequence with the W, N and I
+    /// rules.
     ///
-    /// A sequence of one run, in a paragraph X9 removes nothing from, is one
-    /// unbroken range of `types` and is resolved there. Any other is copied
-    /// past the paragraph, with what X9 removes left out. `mask` holds every
-    /// class in the paragraph, which stands for each sequence's.
+    /// A sequence of one run, in a paragraph X9 removes nothing from, is
+    /// resolved in place in `types`. Any other is copied past the paragraph
+    /// without what X9 removes. `mask` holds every class in the paragraph and
+    /// stands in for a single-run sequence's classes.
     fn resolve_sequences(&mut self, mask: u32) {
         let len = self.units.len();
         for i in 0..self.scratch.runs.len() {
             let run = &self.scratch.runs[i];
-            // Runs that continue an earlier sequence are visited through that
-            // sequence's chain rather than started again here.
+            // A run continuing an earlier sequence is resolved with it.
             if run.in_sequence {
                 continue;
             }
@@ -534,8 +527,8 @@ impl Resolver<'_> {
     /// Applies rules W1 through W7, N0 through N2, and I1/I2 to the
     /// isolating run sequence in `types[range]`, whose units sit at `seq`.
     ///
-    /// `sequence_mask` holds the sequence's classes, or more, and skips the
-    /// rule groups none of them reach.
+    /// `sequence_mask` holds the sequence's classes, or more; rule groups
+    /// none of them reach are skipped.
     fn resolve_sequence(
         &mut self,
         range: Range<usize>,
@@ -668,8 +661,7 @@ impl Resolver<'_> {
         // N0
         let start = seq.pos(0);
         let end = seq.pos(len - 1);
-        // Index of the first bracket at or after the sequence, or the length
-        // when the sequence has none.
+        // The index of the first bracket at or after the sequence's start.
         let bracket_start = match self
             .brackets
             .binary_search_by(|bracket| bracket.index.cmp(&(start as u32)))
@@ -711,7 +703,6 @@ impl Resolver<'_> {
                 let mut strong_scan = 0;
                 let mut preceding_strong = BidiClass::OTHER_NEUTRAL;
                 for &(open, close) in &*bracket_pairs {
-                    // Back to usize once, so the rule below reads normally.
                     let (open, close) = (open as usize, close as usize);
                     let mut pair_dir = BidiClass::OTHER_NEUTRAL;
                     for i in open + 1..close {
@@ -746,9 +737,8 @@ impl Resolver<'_> {
                     }
                     types[open] = pair_dir;
                     types[close] = pair_dir;
-                    // Characters that were originally NSM and immediately
-                    // follow either bracket of the pair take the direction the
-                    // bracket resolved to.
+                    // Units originally NSM right after either bracket take the
+                    // pair's direction.
                     for after in [open + 1..close, close + 1..len] {
                         for i in after {
                             if self.units[seq.pos(i)].class != BidiClass::NONSPACING_MARK {
@@ -835,33 +825,29 @@ impl Resolver<'_> {
     }
 }
 
-/// The direction an FSI resolved to.
+/// The direction an FSI resolves to (P3).
 ///
-/// Rule P3 gives an FSI the direction of the first strong character inside it.
-/// `BidiScratch::scan_isolates` settles that in the same forward pass that
-/// finds the paragraph's own first strong character, so each FSI gets an entry
-/// here when it is reached and the entry is filled in by the first strong
-/// character that follows at the same isolate depth.
+/// `BidiScratch::scan_isolates` adds an entry when it reaches the FSI and
+/// fills it at the first strong character after it at the same isolate
+/// depth.
 #[derive(Copy, Clone)]
 struct FsiEntry {
-    /// Index of the FSI character in the paragraph.
+    /// The FSI's unit index in the paragraph.
     index: u32,
-    /// Level of the first strong character inside the isolate.
+    /// The level of the first strong character inside the isolate.
     ///
-    /// P3 defaults an FSI with no strong character to LTR, which is level 0,
-    /// so an entry that is never settled is already correct and needs no
-    /// separate "unresolved" state.
+    /// P3 defaults an FSI with no strong character to level 0, so an
+    /// unsettled entry is already correct.
     level: u8,
 }
 
-/// An FSI whose direction has not been settled yet.
+/// An FSI whose direction is not settled yet.
 #[derive(Copy, Clone)]
 struct PendingFsi {
-    /// Index into `BidiScratch::fsi_entries`.
+    /// The FSI's index in `BidiScratch::fsi_entries`.
     slot: u32,
-    /// The isolate depth just inside this FSI. A strong character settles the
-    /// FSI only when it appears at exactly this depth, so that characters
-    /// nested inside a further isolate do not count.
+    /// The isolate depth just inside this FSI. Only a strong character at
+    /// exactly this depth settles it, so nested isolates do not count.
     open_depth: u32,
 }
 
@@ -871,8 +857,8 @@ const MAX_STACK: usize = 125;
 #[derive(Copy, Clone)]
 struct LevelStackEntry {
     embedding_level: u8,
-    /// The direction characters are forced to by an enclosing LRO or RLO, or
-    /// [`BidiClass::OTHER_NEUTRAL`] when no override is in force.
+    /// The class an enclosing LRO or RLO forces, or
+    /// [`BidiClass::OTHER_NEUTRAL`] with no override in force.
     override_status: BidiClass,
     isolate_status: bool,
 }
@@ -930,8 +916,7 @@ impl LevelStack {
 
 /// An optional index into `BidiScratch::runs`.
 ///
-/// Stored as index + 1 so that the `NonZeroU32` niche keeps this to four
-/// bytes.
+/// Stored as index + 1, so the `NonZeroU32` niche keeps it to four bytes.
 #[derive(Copy, Clone, Default, PartialEq, Eq)]
 struct RunIndex(Option<NonZeroU32>);
 
@@ -953,28 +938,29 @@ impl RunIndex {
 #[derive(Copy, Clone)]
 struct Run {
     level: u8,
-    /// Start and end of the run in paragraph positions: its first and past
-    /// its last unit X9 keeps.
+    /// The run's paragraph positions: its first unit X9 keeps, and one past
+    /// its last.
     start: u32,
     end: u32,
-    /// The types treated as preceding and following the sequence this run
-    /// belongs to, per X10.
+    /// The classes taken as before and after the run's sequence (X10).
     sos: BidiClass,
     eos: BidiClass,
-    /// Whether this run can be joined to a neighbor, and in which direction.
+    /// Whether the run ends with an isolate initiator, which links it to the
+    /// run starting with the matching PDI.
     ends_with_isolate: bool,
+    /// Whether the run starts with a PDI.
     starts_with_pdi: bool,
-    /// Set once this run has been chained onto an earlier one, so that
-    /// `resolve_sequences` does not also start a sequence at it.
+    /// Whether the run continues an earlier run's sequence, so
+    /// `resolve_sequences` starts no sequence at it.
     in_sequence: bool,
-    /// The next run in this sequence, if any.
+    /// The next run in the sequence, if any.
     next: RunIndex,
     /// The run below this one on its level's stack in `link_sequences`.
     stack_prev: RunIndex,
 }
 
 impl Run {
-    /// A run at `level` starting at unit `start`, whose type is `first`.
+    /// Creates a run at `level` starting at unit `start`, of class `first`.
     fn new(level: u8, start: usize, first: BidiClass) -> Self {
         Self {
             level,
@@ -990,7 +976,7 @@ impl Run {
         }
     }
 
-    /// The run's paragraph positions.
+    /// Returns the run's paragraph positions.
     #[inline]
     fn range(&self) -> Range<usize> {
         self.start as usize..self.end as usize
@@ -1001,10 +987,10 @@ impl Run {
 /// positions.
 #[derive(Copy, Clone)]
 enum SeqPositions<'a> {
-    /// The sequence covers one unbroken range of the paragraph, so each
-    /// position is its offset from `start`.
+    /// One unbroken range of the paragraph, each position an offset from
+    /// `start`.
     Contiguous { start: u32, len: u32 },
-    /// The sequence skips paragraph positions, so they are listed.
+    /// The listed paragraph positions, where the sequence skips some.
     Scattered(&'a [u32]),
 }
 
@@ -1017,7 +1003,7 @@ impl SeqPositions<'_> {
         }
     }
 
-    /// Paragraph position of the `i`th unit of the sequence.
+    /// Returns the paragraph position of the sequence's `i`th unit.
     #[inline]
     fn pos(self, i: usize) -> usize {
         match self {
@@ -1026,11 +1012,10 @@ impl SeqPositions<'_> {
         }
     }
 
-    /// Position within the sequence of the unit at paragraph position `pos`,
-    /// if it is part of the sequence.
+    /// Returns the sequence position of the unit at paragraph position
+    /// `pos`, or `None` if the unit is not in the sequence.
     ///
-    /// Sequences are built in ascending paragraph order, so the scattered
-    /// case can binary search.
+    /// Positions ascend, so the scattered case binary searches.
     #[inline]
     fn find(self, pos: usize) -> Option<usize> {
         match self {

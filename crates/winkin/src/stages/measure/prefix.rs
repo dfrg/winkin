@@ -1,4 +1,4 @@
-//! Stored prefix measurements.
+//! The prefix advances and the line-edge cost table.
 
 use alloc::vec::Vec;
 use core::ops::Range;
@@ -11,17 +11,15 @@ use crate::unit::LayoutUnit;
 
 use super::LineEdgeCost;
 
-/// The prefix advances: the running sum of the room taken up to each cluster
-/// boundary.
+/// The running sum of the width up to each cluster boundary, in 48.16
+/// `InlineLayoutUnit`s.
 ///
-/// Each sum includes the closing box edges that lead the boundary, and the
-/// text's end has one too. A line's width is then one subtraction.
-///
-/// Readers use only these methods, so the representation can change. Fitting
-/// reads each position rounded up to layout's grid from its paragraph's
-/// start. Painting reads the differences exactly.
+/// Each sum includes the closing box edges that lead its boundary, and the
+/// text's end has a sum too, so a line's width is one subtraction. Fitting
+/// reads positions rounded up to the 26.6 grid from the paragraph's start;
+/// painting reads exact differences.
 pub(crate) struct PrefixAdvances {
-    /// One more entry than clusters: 8 bytes a cluster.
+    /// One more entry than clusters: 8 bytes per cluster.
     pub(super) sums: Vec<InlineLayoutUnit>,
 }
 
@@ -34,17 +32,15 @@ impl PrefixAdvances {
         self.sums.clear();
     }
 
-    /// Whether it holds no sum: a variant the build had no use for.
+    /// Returns whether it holds no sum, as for a variant the build doesn't use.
     pub(super) fn is_empty(&self) -> bool {
         self.sums.is_empty()
     }
 
-    /// Returns the exact running sums before each of `clusters`, as
-    /// [`get`](Self::get) gives them.
+    /// Returns the exact sums at the start of each of `clusters`, for readers
+    /// such as painting that walk many in a row.
     ///
-    /// A reader that walks many in a row, such as a painter drawing a run's
-    /// glyphs, takes them from one slice. Empty where the range is not the
-    /// text's.
+    /// Empty where the range is out of bounds.
     #[inline]
     pub(crate) fn positions(&self, clusters: Range<ClusterId>) -> &[InlineLayoutUnit] {
         self.sums
@@ -52,8 +48,7 @@ impl PrefixAdvances {
             .unwrap_or_default()
     }
 
-    /// The running sum at boundary `at`, exactly: everything before it, and
-    /// the closing edges that lead the items there. Past the end, the end's.
+    /// Returns the exact sum at boundary `at`, or the end's sum past the end.
     #[inline]
     pub(crate) fn get(&self, at: ClusterId) -> InlineLayoutUnit {
         match self.sums.get(at.get()) {
@@ -62,25 +57,23 @@ impl PrefixAdvances {
         }
     }
 
-    /// Where fitting reads boundary `at` in the paragraph starting at
-    /// `origin`: its position from the paragraph's start, rounded up to
-    /// layout's grid, as Chrome's cached character positions are
-    /// (`ToCeil<LayoutUnit>` of the running sum). Still 48.16, so a
-    /// paragraph past the grid's range fits as exactly as any other.
+    /// Returns the fitting position of boundary `at` in the paragraph that
+    /// starts at `origin`.
     ///
-    /// It measures from the paragraph's start because Chrome's positions
-    /// start again at each item and this crate's at each paragraph. A
-    /// paragraph's first item then rounds exactly as Chrome's does, wherever
-    /// the paragraph before ended.
+    /// The distance from the paragraph's start rounds up to the 26.6 grid, as
+    /// Chrome's cached character positions do (`ToCeil<LayoutUnit>`), but
+    /// stays 48.16 so a long paragraph fits exactly. Chrome's positions
+    /// restart at each item; restarting at each paragraph makes a
+    /// paragraph's first item round as Chrome's does.
     #[inline]
     pub(crate) fn fit_position(&self, origin: ClusterId, at: ClusterId) -> InlineLayoutUnit {
         (self.get(at) - self.get(origin)).ceil_to_grid()
     }
 
-    /// The fitting width of the clusters from `from` to `to` in the
-    /// paragraph starting at `origin`, on layout's grid:
-    /// `⌈P[to] − P[origin]⌉ − ⌈P[from] − P[origin]⌉`, the boxes opening at
-    /// `from` and closing at `to` included. Saturates past the grid's range.
+    /// Returns the fitting width from `from` to `to` in the paragraph that
+    /// starts at `origin`: `⌈P[to] − P[origin]⌉ − ⌈P[from] − P[origin]⌉`.
+    ///
+    /// Includes the boxes opening at `from` and closing at `to`. Saturates.
     #[inline]
     #[cfg(test)]
     pub(super) fn fit_width(
@@ -92,20 +85,17 @@ impl PrefixAdvances {
         (self.fit_position(origin, to) - self.fit_position(origin, from)).to_layout()
     }
 
-    /// The exact advance from boundary `from` to boundary `to`, which is what
-    /// painting reads: `P[to] − P[from]`.
+    /// Returns the exact advance `P[to] − P[from]`.
     #[inline]
     pub(crate) fn advance(&self, from: ClusterId, to: ClusterId) -> InlineLayoutUnit {
         self.get(to) - self.get(from)
     }
 }
 
-/// The line-edge costs: what a line pays or gains because it starts or ends
-/// at a boundary.
+/// The line-edge costs: what a line pays or gains for starting or ending at
+/// a boundary.
 ///
-/// The table holds one [`LineEdgeCost`] per boundary that has any, sorted by
-/// boundary, and only where a line can start or end. It is sparse and empty
-/// for plain text. The breaker looks only in paragraphs flagged
-/// [`HAS_EDGE_COSTS`](super::MeasureFlags::HAS_EDGE_COSTS). A boundary with
-/// no entry costs nothing.
+/// One [`LineEdgeCost`] per boundary that has one, sorted by boundary. Empty
+/// for plain text. The breaker reads it only in paragraphs flagged
+/// [`HAS_EDGE_COSTS`](super::MeasureFlags::HAS_EDGE_COSTS).
 pub(super) type LineEdgeCosts = SortedTable<LineEdgeCost>;

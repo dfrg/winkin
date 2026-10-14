@@ -7,21 +7,23 @@
 //! - `select` chooses a font for each cluster and writes the font runs.
 //!   Its `pick` tries a candidate list on a grapheme, `choice` makes a
 //!   candidate's used fonts, `kept` keeps a candidate across clusters
-//!   without asking the list, and `generated` chooses the
-//!   fonts of a hyphen and an ellipsis.
-//! - `used` interns the used fonts and works out the size each is used at.
+//!   without asking the list, and `generated` chooses the fonts of a hyphen
+//!   and an ellipsis.
+//! - `used` interns the used fonts and computes the size each is used at.
 //! - `coverage` says whether a font covers a cluster, and which
 //!   presentation a cluster asks for.
-//! - `features` works out the OpenType features and synthesized capitals.
+//! - `features` resolves the OpenType features and synthesized capitals.
 //! - `positions` reads what a font's `sups` or `subs` covers.
-//! - `context`, `lists` and `instance` hold the caches kept across layouts.
+//! - `context` holds the caches kept across layouts: the family lists
+//!   (`lists`), the instances and faces (`instance`), and the feature
+//!   offers and coverages.
 //! - `shared` holds the faces several contexts share.
 //! - `metrics` computes a used font's line metrics.
 //! - `resolution` holds a font request's used size and primary font.
 //!
-//! [`Fonts`] names nothing of the context's, so later stages read it without
-//! the caches. Font runs tile the clusters, and the first line has its own
-//! runs where `::first-line` changes a font.
+//! [`Fonts`] holds no id into the context, so later stages read it without
+//! the caches. Font runs tile the clusters. The first line has its own runs
+//! where `::first-line` changes how its text shapes.
 
 mod context;
 mod coverage;
@@ -72,13 +74,12 @@ use metrics::UnscaledMetrics;
 use select::{RunScratch, Selecting};
 
 /// The `@font-face` faces still downloading that some cluster wants, each
-/// once: no list until a face is wanted. Selection's pickers add to it.
+/// once. `None` until a face is wanted.
 type WantedFaces = Option<Box<Vec<FaceId>>>;
 
 pub(crate) use context::FontContext;
 pub(crate) use lists::NamedListId;
-// Private to font selection: no layout holds one of the context's
-// instances, so nothing after this stage names one.
+// Private to font selection: no layout holds an instance of the context.
 use instance::Instance;
 pub(crate) use metrics::{FontLineMetrics, LineBaseline};
 pub(super) use resolution::FontResolution;
@@ -87,18 +88,18 @@ use used::{InitialLetterGrid, UsedFontInterner, adjusted_size, used_size};
 
 /// What font selection reads: the content, its analysis and some config.
 ///
-/// The config choices travel with the input, so a config change reaches a
-/// layout when it is next built.
+/// The config travels with the input, so a config change reaches a layout
+/// when it is next built.
 pub(crate) struct FontInput<'a> {
     pub(crate) content: &'a Content,
-    /// The build's feature and variation settings and hyphen strings, which
-    /// the content's facts name.
+    /// The build's feature settings, variation settings and hyphen strings,
+    /// which the content's facts name by id.
     pub(crate) lists: &'a Lists,
     /// The nodes whose text holds a soft hyphen a line may break after, in
-    /// text order, each with the first such cluster, as analysis found them.
+    /// text order, each with its first such cluster.
     pub(crate) hyphen_nodes: &'a [(NodeId, ClusterId)],
     pub(crate) analysis: &'a Analysis,
-    /// The language text whose style names none chooses its fonts in
+    /// The language that text whose style names none chooses its fonts in
     /// (`Config::default_language`).
     pub(crate) default_language: Language,
     /// Which of a font's metrics give a line's ascent, descent and line gap
@@ -114,28 +115,28 @@ pub(crate) struct FontInput<'a> {
 
 /// Font selection's working memory.
 ///
-/// It holds nothing between calls and keeps its capacity.
+/// Each build clears it, keeping its capacity. Measurement reads the
+/// generated texts' fonts and the block's space from it as the build
+/// finishes; nothing reads it after.
 pub(crate) struct FontScratch {
-    /// The layout's used fonts by what they are: the instance each was made
-    /// from, which only this build keeps, and its size and synthesis.
+    /// An index over the layout's used fonts by the instance each was made
+    /// from, its size and its synthesis. Only this build keeps the
+    /// instance ids.
     used_index: HashTable<(u64, Option<InstanceId>, UsedFontId)>,
-    /// The text facts of the text holding a soft hyphen a line may break
-    /// after, each once, in order: those whose hyphen a font is chosen for.
+    /// The text facts of text holding a soft hyphen a line may break after,
+    /// each once, in order: those a hyphen's fonts are chosen for.
     hyphenated: Vec<TextFactsId>,
-    /// The generated texts' fonts, which measurement shapes the generated
-    /// texts in as the build finishes. Nothing reads them after the build.
+    /// The generated texts' fonts, which measurement shapes them in.
     generated: GeneratedFonts,
-    /// The advance of U+0020 in the font a space falls back to among the
-    /// block's listed fonts, where its primary font maps none: what a
-    /// `tab-size` in spaces counts there, as Chrome sizes such a tab.
-    /// Measurement reads it as the build finishes; nothing reads it after.
+    /// The advance of U+0020 that a `tab-size` in spaces counts where the
+    /// block's primary font maps none, as Chrome sizes such a tab.
     block_space: Option<TextUnit>,
-    /// The run loop's.
+    /// The run loop's scratch.
     runs: RunScratch,
 }
 
 impl FontScratch {
-    /// Empty scratch, allocating nothing.
+    /// Returns empty scratch, allocating nothing.
     pub(crate) const fn new() -> Self {
         Self {
             used_index: HashTable::new(),
@@ -146,7 +147,7 @@ impl FontScratch {
         }
     }
 
-    /// Forgets everything, keeping the capacity.
+    /// Empties it, keeping the capacity.
     fn clear(&mut self) {
         self.used_index.clear();
         self.hyphenated.clear();
@@ -155,18 +156,17 @@ impl FontScratch {
         self.runs.clear();
     }
 
-    /// The fonts of the generated texts the last build may need.
+    /// Returns the fonts of the generated texts the last build may need.
     pub(crate) fn generated(&self) -> &GeneratedFonts {
         &self.generated
     }
 
-    /// Returns the advance of the space a `tab-size` in spaces counts in the
-    /// last build, where the block's primary font maps no U+0020: that of
-    /// the first of the block's listed fonts that maps one, at the block's
-    /// used size.
+    /// Returns the space advance a `tab-size` in spaces counts in the last
+    /// build, where the block's primary font maps no U+0020.
     ///
-    /// `None` where the primary maps a space, whose own advance counts, or
-    /// where no listed font maps one.
+    /// The advance is that of the first of the block's listed fonts that
+    /// maps U+0020, at the block's used size. `None` where the primary maps
+    /// a space, whose own advance counts, or where no listed font maps one.
     pub(crate) fn block_space(&self) -> Option<TextUnit> {
         self.block_space
     }
@@ -176,11 +176,11 @@ heap_bytes! {
     FontScratch { used_index, hyphenated, generated, runs; block_space }
 }
 
-/// Selects fonts for the content of `input` into `out`.
+/// Selects fonts for the content of `input` into `out`, clearing and
+/// filling it whole.
 ///
-/// First resolves each font request, then selects the text's runs, then the
-/// first line's where needed, then the generated texts' fonts. Uses the
-/// context's caches in `cx`, and clears and fills `out` whole.
+/// Resolves every font request, then selects the text's runs, the first
+/// line's runs where needed, and the generated texts' fonts.
 ///
 /// Returns how many used fonts were replaced because the table was full.
 pub(crate) fn select_fonts(
@@ -197,8 +197,8 @@ pub(crate) fn select_fonts(
     } = *input;
     out.clear();
     scratch.clear();
-    // The language a style naming none chooses its fonts in, kept for the
-    // shaping stage and the breaker to shape in.
+    // Kept on the fonts, so shaping and the breaker shape in the language
+    // the fonts were chosen in.
     let default_language = DefaultLanguage::new(input.default_language);
     out.default_language = default_language;
     hyphenated_texts(input, &mut scratch.hyphenated);
@@ -257,8 +257,8 @@ pub(crate) fn select_fonts(
     selecting.used.replaced
 }
 
-/// Returns the block's text facts, standard and first-line, where a line may
-/// be cut for an ellipsis: those an ellipsis is set in.
+/// Returns the block's standard and first-line text facts, which an
+/// ellipsis is set in, or `None` where no line may be cut.
 fn ellipsis_texts(content: &Content) -> Option<(TextFactsId, TextFactsId)> {
     let block = NodeId::BLOCK;
     let nodes = &content.nodes;
@@ -273,11 +273,11 @@ fn ellipsis_texts(content: &Content) -> Option<(TextFactsId, TextFactsId)> {
 /// Resolves each font request, in request order, into `resolutions`: its
 /// used size and its primary font.
 ///
-/// Every request is resolved before any run, so a run's fallback when the
-/// used fonts fill is always there.
+/// Every request is resolved before any run, so the primary font a run
+/// falls back to when the used fonts fill is always there.
 ///
-/// Returns the advance of the space the block counts a `tab-size` in, where
-/// its primary font maps none (see [`FontScratch::block_space`]).
+/// Returns the space advance a `tab-size` in spaces counts where the block's
+/// primary font maps none (see [`FontScratch::block_space`]).
 fn resolve_requests(
     input: &FontInput<'_>,
     default_language: DefaultLanguage,
@@ -289,15 +289,13 @@ fn resolve_requests(
     } = sel;
     let content = input.content;
     let facts = &content.facts;
-    // The text an initial letter is sized against: the block's own, as its
-    // first line has it. The builder lowers it before any node's, so its
-    // request is resolved first.
+    // An initial letter is sized against the block's first-line text. The
+    // builder lowers it before any node's, so its request resolves first.
     let paragraph_text = content
         .nodes
         .text_facts(NodeId::BLOCK, FirstLineVariant::FirstLine);
     let paragraph = facts.text_request(paragraph_text);
-    // The grid an initial letter is sized to, made from the paragraph's
-    // primary font once it is sized.
+    // Made from the paragraph's primary font once that is sized.
     let mut grid: Option<InitialLetterGrid> = None;
     // The block's own text, whose space a `tab-size` in spaces counts.
     let block = facts.text_request(
@@ -336,8 +334,8 @@ fn resolve_requests(
         if let Some((family, index)) = space_font {
             block_space = space_advance(input, request, &family, index, &resolution, &mut caches);
         }
-        // Where even a primary does not fit, the last used font stands in:
-        // the table is full, so there is one.
+        // Where even a primary does not fit, the last used font stands in.
+        // The table is full, so there is one.
         let last = interner.used.table.last_id().unwrap_or(UsedFontId::new(0));
         resolution.primary = interner.intern_or(
             instance,
@@ -360,8 +358,8 @@ fn resolve_requests(
     block_space
 }
 
-/// Whether the font `primary` names, as its family and its index there,
-/// maps no U+0020.
+/// Returns whether the font `primary` names, by family and index, maps no
+/// U+0020.
 fn maps_no_space(primary: &(Family, usize)) -> bool {
     let (family, index) = primary;
     family
@@ -370,11 +368,11 @@ fn maps_no_space(primary: &(Family, usize)) -> bool {
         .is_some_and(|font| !font.charset().contains(' '))
 }
 
-/// Returns the advance of U+0020 in font `index` of `family` at the size
-/// `resolution` uses its fonts at: the space a block whose primary font maps
-/// none counts a `tab-size` in.
+/// Returns the advance of U+0020 in font `index` of `family`, at the size
+/// `resolution` gives that font.
 ///
-/// `None` where the font's instance cannot be made.
+/// A block whose primary font maps no space counts a `tab-size` in this
+/// advance. `None` where the font's instance cannot be made.
 #[cold]
 fn space_advance(
     input: &FontInput<'_>,
@@ -406,8 +404,9 @@ fn space_advance(
 /// Sizes `request`'s primary font `font`, of `family`, into `resolution`,
 /// and returns its instance at that size with the size in pixels.
 ///
-/// `grid` is the grid an initial letter is sized to, once the paragraph's
-/// primary is sized. `None` where the instance cannot be made.
+/// `grid` is the grid an initial letter is sized to, `None` until the
+/// paragraph's primary is sized. Returns `None` where the instance cannot be
+/// made.
 fn size_primary(
     input: &FontInput<'_>,
     request: &FontRequest,
@@ -421,8 +420,8 @@ fn size_primary(
     let line_metrics = input.line_metrics;
     let upright = request.upright;
     let computed = request.font.computed_size();
-    // The primary's capitals are Latin's, the script it is chosen for; its
-    // text is set as a run's would be.
+    // The primary's capitals are read under Latin, the script it is chosen
+    // for, and planned as a run's would be.
     let offered = if request.font.variant_caps == FontVariantCaps::Normal {
         OfferedFeatures::NONE
     } else {
@@ -436,9 +435,9 @@ fn size_primary(
         offered,
         request.font.synthesis.small_caps,
     );
-    // The position's feature as the request asks: the primary measures the
-    // text and draws what no font covers, and a run the feature does not
-    // cover is synthesized in the font it chose.
+    // The primary takes the position feature as the request asks. It
+    // measures the text and draws what no font covers. A run its feature
+    // does not cover is synthesized in the run's own font.
     let variations = table.variation_settings().get(request.font.variations);
     let matching_only = variations_left_to_matching(family, input.platform_font_variations);
     let overrides = FaceOverrides::new(font);
@@ -464,17 +463,16 @@ fn size_primary(
         && let Some(at) = caches.instances.get(measured)
     {
         let unscaled = at.unscaled();
-        // `font-size-adjust` sets the size every font of the request is used
-        // at, the primary's own among them (Blink's
-        // `FontBuilder::UpdateAdjustedSize`): one used size a request, not
-        // one a font.
+        // `font-size-adjust` sets one used size for every font of the
+        // request, measured on the primary, as Blink's
+        // `FontBuilder::UpdateAdjustedSize` does.
         if adjusts
             && let Some(size) = adjusted_size(request, computed, unscaled, &overrides, line_metrics)
         {
             resolution.adjust_to(size);
         }
-        // An initial letter is set at the size that spans the lines it is
-        // sized to, whatever its own says (Chrome's `ComputeInitialLetterFont`).
+        // An initial letter is set at the size that spans its lines,
+        // whatever its own size says (Chrome's `ComputeInitialLetterFont`).
         // Only the block's initial letter's request sets one.
         if let Some(grid) = letter_grid
             && let Some(size) = grid.letter_size(request, computed, unscaled, line_metrics)
@@ -493,6 +491,7 @@ fn size_primary(
 /// height and its primary font's metrics and size.
 ///
 /// `paragraph` is that primary's instance, used font and size in pixels.
+/// A primary with no instance gives default metrics.
 fn initial_letter_grid(
     input: &FontInput<'_>,
     paragraph_text: TextFactsId,
@@ -519,11 +518,11 @@ fn initial_letter_grid(
 }
 
 /// Selects the first line's runs over `reach`, where `::first-line` changes
-/// a font or a transform.
+/// how text shapes or transforms.
 ///
-/// This is the text's loop over the first paragraph, in the facts
-/// `::first-line` gives each node and the first line's characters. The
-/// first-line requests' primary fonts are already resolved with the rest.
+/// Runs the text's loop over the first paragraph, with the first-line facts
+/// and characters. The first-line requests' primary fonts are already
+/// resolved with the rest.
 fn select_first_line(
     text_in: &select::Input<'_>,
     reach: Range<ClusterId>,
@@ -546,10 +545,9 @@ fn select_first_line(
 /// Selects the string and fonts of each generated text into `out`, in facts
 /// order.
 ///
-/// A hyphen is set for each text facts in `hyphenated`, the facts of text
-/// holding a soft hyphen a line may break after. An ellipsis is set for the
-/// block's standard and first-line facts in `ellipsis`, where a line may be
-/// cut.
+/// A hyphen is set for each text facts in `hyphenated`. An ellipsis is set
+/// for the block's standard and first-line facts in `ellipsis`, `None` where
+/// no line may be cut.
 fn select_generated_texts(
     text_in: &select::Input<'_>,
     hyphenated: &[TextFactsId],
@@ -575,12 +573,11 @@ fn select_generated_texts(
 /// Collects into `out` the text facts of text holding a soft hyphen a line
 /// may break after, each once and in order.
 ///
-/// These are the facts a hyphen is set in. The first-line facts are added
-/// too where a soft hyphen falls in the first line's reach, so its hyphen
-/// takes the first-line style as in Chrome. Measured in Chrome 153, a hyphen
-/// on a 40px `::first-line` is 40px wide. The analysis lists the nodes
-/// holding one, each with its first, which falls in the reach where any
-/// does, since the reach starts at the text's start.
+/// These are the facts a hyphen is set in. A node's first-line facts are
+/// added too where its first soft hyphen falls in the first line's reach,
+/// so the hyphen takes the first-line style, as in Chrome. The reach starts
+/// at the text's start, so a node with any soft hyphen in it has its first
+/// there.
 fn hyphenated_texts(input: &FontInput<'_>, out: &mut Vec<TextFactsId>) {
     out.clear();
     let content = input.content;
@@ -597,17 +594,17 @@ fn hyphenated_texts(input: &FontInput<'_>, out: &mut Vec<TextFactsId>) {
     out.dedup();
 }
 
-/// A normalized OpenType variation coordinate stored as 2.14 fixed-point bits.
+/// A normalized OpenType variation coordinate in 2.14 fixed point.
 ///
-/// Represents values from -1 to 1. Uses `i16` for interoperability with
-/// renderers such as vello, peniko, swash and parley.
+/// Values range from -1.0 to 1.0, with 1.0 stored as 16384. Renderers such
+/// as vello, peniko, swash and parley take coordinates in this form.
 pub type NormalizedCoord = i16;
 
 define_id! {
     /// Names a used font in a layout's table of [`UsedFont`]s.
     ///
-    /// Sixteen bits. A layout that needs more distinct used fonts gets its
-    /// style's primary font for the rest, and reports it.
+    /// Sixteen bits. Past that many used fonts, a run takes its style's
+    /// primary font, and the build reports the replacement.
     pub(crate) struct UsedFontId(u16);
 }
 
@@ -625,9 +622,9 @@ define_id! {
 
 /// How a used font's text is fed to the shaper: as written, or case-mapped.
 ///
-/// A case-mapped character is labelled with the byte of the one it came
-/// from. So the text keeps the author's case, and an uppercased `ß` is two
-/// glyphs in one cluster.
+/// A case-mapped character is labelled with the byte offset of the one it
+/// came from. So the text keeps the author's case, and an uppercased `ß` is
+/// two glyphs in one cluster.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub(crate) enum CaseMap {
     /// As written.
@@ -644,7 +641,7 @@ pub(crate) enum CaseMap {
 ///
 /// It is [`default_language`](crate::config::Config::default_language) as of
 /// the build that chose the fonts. Shaping and the breaker's reshaping read
-/// it from here, so they use the fonts' language even if the config changed.
+/// it here, so they use the fonts' language even after a config change.
 ///
 /// Chrome uses its default locale for every font and shaping question
 /// (`FontDescription::LocaleOrDefault`):
@@ -655,14 +652,14 @@ pub(crate) enum CaseMap {
 /// - the script `HanKerning` probes.
 ///
 /// Line breaking, hyphenation, `text-transform`, `text-autospace` and
-/// `text-emphasis-position` do not take it: they read the style's own
-/// locale, or none.
+/// `text-emphasis-position` ignore it. They read the style's own locale, or
+/// none.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub(crate) struct DefaultLanguage(Language);
 
 impl DefaultLanguage {
     /// Returns a default of `language`. `und` means none, which leaves each
-    /// run to its own script.
+    /// run to its script.
     const fn new(language: Language) -> Self {
         Self(language)
     }
@@ -679,7 +676,7 @@ impl DefaultLanguage {
 /// It covers synthesized small capitals, unicase from small capitals, and a
 /// synthesized superscript or subscript. The line metrics stay those of the
 /// used font's size, so a synthesized superscript does not make its line
-/// taller. Chrome's smaller small-capitals font does not either.
+/// taller, as Chrome's smaller small-capitals font does not.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub(crate) enum UsedSynthesis {
     /// The glyphs are the used font's, at its size, on the baseline.
@@ -692,13 +689,14 @@ pub(crate) enum UsedSynthesis {
         case: CaseMap,
         /// The size the glyphs are set at.
         glyph_size: TextUnit,
-        /// How far above the baseline they sit: negative below.
+        /// How far above the baseline they sit; negative is below.
         raise: LayoutUnit,
     },
 }
 
 impl UsedSynthesis {
-    /// The size glyphs are set at, where the used font's size is `size`.
+    /// Returns the size glyphs are set at, where the used font's size is
+    /// `size`.
     fn glyph_size(self, size: TextUnit) -> TextUnit {
         match self {
             Self::None => size,
@@ -706,7 +704,7 @@ impl UsedSynthesis {
         }
     }
 
-    /// How far above the baseline the glyphs are drawn.
+    /// Returns how far above the baseline the glyphs are drawn.
     pub(crate) fn raise(self) -> LayoutUnit {
         match self {
             Self::None => LayoutUnit::ZERO,
@@ -714,7 +712,7 @@ impl UsedSynthesis {
         }
     }
 
-    /// How the text is fed to the shaper.
+    /// Returns how the text is fed to the shaper.
     pub(super) fn case(self) -> CaseMap {
         match self {
             Self::None => CaseMap::Keep,
@@ -739,9 +737,10 @@ pub(crate) struct UsedFont {
     /// The used size, after `font-size-adjust` and `@font-face`
     /// `size-adjust`. Its line metrics are at this size.
     pub(crate) size: TextUnit,
-    /// Small capitals and positions synthesized here.
+    /// The small capitals and positions synthesized here.
     pub(crate) synthesis: UsedSynthesis,
-    /// The line metrics at `size`, read as the context's [`Config`](crate::config::Config) says.
+    /// The line metrics at `size`, read from the metrics the build's
+    /// [`LineMetricsSource`] names.
     pub(crate) metrics: FontLineMetrics,
 }
 
@@ -751,24 +750,22 @@ pub(crate) struct UsedFont {
 /// again. The context's instance and every used font in every layout share
 /// it through an `Arc`.
 ///
-/// It holds everything shaping and drawing need. Nothing here names the
-/// context, so the context may drop anything between calls. A layout is read
-/// and broken again without it, so one thread can paint a layout while the
-/// context builds the next.
+/// It holds the whole font, so a layout reshapes and draws without the
+/// context, and the context may drop its caches between calls. One thread
+/// can paint a layout while the context builds the next.
 pub(crate) struct UsedInstance {
-    /// The font's bytes: a count taken on their `Arc`, never a copy of the
-    /// file, of which the font is `index`.
+    /// The font's bytes, shared through an `Arc` and never copied.
     pub(crate) bytes: FontBytes,
-    /// Which font in them: its index in a collection file, 0 otherwise.
+    /// The font's index in a collection file, 0 otherwise.
     pub(crate) index: u32,
-    /// The font held whole at the instance's coordinates, sharing with
-    /// every other instance of it what the coordinates do not change.
+    /// The font held whole at the instance's coordinates. It shares with
+    /// every other instance of the font what the coordinates do not change.
     pub(super) font: Font,
-    /// Its normalized coordinates as 2.14 bits, as a renderer takes them:
-    /// none at the font's default.
+    /// The normalized coordinates in 2.14, as a renderer takes them; empty
+    /// at the font's default.
     pub(crate) coords: Box<[NormalizedCoord]>,
-    /// The OpenType features it shapes with, in order: the list the
-    /// instance was made with, which is its key's.
+    /// The OpenType features it shapes with, in order: the list in the
+    /// instance's key.
     pub(super) features: Box<[FontFeature]>,
     /// Whether its glyphs are emboldened, which harfrust does not apply.
     pub(crate) embolden: bool,
@@ -778,7 +775,7 @@ pub(crate) struct UsedInstance {
 }
 
 impl UsedInstance {
-    /// fontwich's key for the font: its bytes' id and its index.
+    /// Returns fontwich's key for the font: its bytes' id and its index.
     pub(crate) fn key(&self) -> FontKey {
         FontKey {
             source: self.bytes.id(),
@@ -788,7 +785,7 @@ impl UsedInstance {
 }
 
 impl fmt::Debug for UsedInstance {
-    // Not the font held whole, which says nothing the rest does not.
+    // Leaves out the font held whole, which adds nothing to the key.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("UsedInstance")
             .field("font", &self.key())
@@ -801,8 +798,8 @@ impl fmt::Debug for UsedInstance {
 }
 
 impl UsedFont {
-    /// The size its glyphs are shaped and drawn at: its used size, or the
-    /// smaller one synthesized small capitals and positions are set at.
+    /// Returns the size its glyphs are shaped and drawn at: its used size,
+    /// or the smaller size of synthesized small capitals and positions.
     #[inline]
     pub(crate) fn glyph_size(&self) -> TextUnit {
         self.synthesis.glyph_size(self.size)
@@ -813,7 +810,7 @@ impl UsedFont {
 /// glyph.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub(crate) struct GlyphInk {
-    /// Its left edge from the glyph's origin: negative where the ink
+    /// Its left edge from the glyph's origin; negative where the ink
     /// reaches back past it.
     pub(super) left: LayoutUnit,
     /// Its right edge from the glyph's origin.
@@ -826,13 +823,13 @@ pub(crate) struct GlyphInk {
 
 /// A layout's used fonts, by id.
 ///
-/// Each shares its instance's record, so it is read with the layout alone.
+/// Each shares its instance's record, so the layout alone reads them.
 pub(crate) struct UsedFonts {
     table: Table<UsedFontId, UsedFont>,
 }
 
 impl UsedFonts {
-    /// None, allocating nothing.
+    /// Returns an empty table, allocating nothing.
     const fn new() -> Self {
         Self {
             table: Table::new(),
@@ -844,32 +841,33 @@ impl UsedFonts {
         self.table.clear();
     }
 
-    /// The used font `id` names, or `None` for one the layout does not have.
+    /// Returns the used font `id` names, or `None` for one the layout does
+    /// not have.
     pub(crate) fn get(&self, id: UsedFontId) -> Option<&UsedFont> {
         self.table.get(id)
     }
 
-    /// How many there are.
     #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.table.len()
     }
 
-    /// Whether there are none. Only cleared data has none, since every
-    /// style has a primary font.
+    /// Returns whether there are none. Only cleared fonts have none, since
+    /// every style has a primary font.
     #[cfg(test)]
     fn is_empty(&self) -> bool {
         self.table.is_empty()
     }
 
-    /// Every used font with its id, in the order they were made.
+    /// Returns every used font with its id, in the order they were made.
     #[cfg(test)]
     fn iter(&self) -> impl DoubleEndedIterator<Item = (UsedFontId, &UsedFont)> + ExactSizeIterator {
         self.table.iter()
     }
 
-    /// Stores a used font in `instance` (or none) at `size`, drawn as
-    /// `synthesis` says. `None`, storing nothing, where the table is full.
+    /// Stores a used font in `instance`, or in none, at `size`, drawn as
+    /// `synthesis` says. Returns `None`, storing nothing, where the table is
+    /// full.
     ///
     /// Its line metrics are read as `source` says, about the block's
     /// `baseline`. It shares the instance's record through its `Arc`, so a
@@ -945,8 +943,8 @@ impl FirstLineState for FontRuns {
         Runs::clear(self);
     }
 
-    /// Whether there are none: where there are no clusters, and for the
-    /// first line where it was not selected again.
+    /// Returns whether there are none: where there are no clusters, and for
+    /// the first line where it was not selected again.
     fn is_empty(&self) -> bool {
         Runs::is_empty(self)
     }
@@ -958,7 +956,8 @@ impl Default for FontRuns {
     }
 }
 
-/// The kind of text inserted by layout, returned by [`TextRun::generated`](crate::TextRun::generated).
+/// A kind of text that layout inserts, as returned by
+/// [`TextRun::generated`](crate::TextRun::generated).
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Generated {
     /// The hyphen drawn where a line breaks at a soft hyphen.
@@ -979,19 +978,18 @@ pub(crate) enum GeneratedString {
     Hyphen,
     /// U+002D HYPHEN-MINUS, for `auto` where it does not.
     HyphenMinus,
-    /// The style's own `hyphenate-character`, which may be empty: a line
-    /// broken there is still hyphenated, and pays nothing for it.
+    /// The style's own `hyphenate-character`. An empty string still
+    /// hyphenates the line, at no width.
     HyphenateCharacter(HyphenStringId),
-    /// U+2026 HORIZONTAL ELLIPSIS, where the line style's primary font maps
-    /// it.
+    /// U+2026 HORIZONTAL ELLIPSIS, where the primary font maps it.
     Ellipsis,
     /// Three full stops, where it does not.
     FullStops,
 }
 
 impl GeneratedString {
-    /// Its text, the styles' own `hyphenate-character` strings being
-    /// `strings`.
+    /// Returns its text, reading the styles' own `hyphenate-character`
+    /// strings in `strings`.
     pub(super) fn text(self, strings: &HyphenStrings) -> &str {
         match self {
             Self::Hyphen => "\u{2010}",
@@ -1010,14 +1008,16 @@ impl GeneratedString {
 pub(crate) struct GeneratedText {
     /// What it says.
     pub(super) string: GeneratedString,
-    /// Its runs, in [`GeneratedFonts`]' table of them: one, in the style's
-    /// primary font, where that maps all of it.
+    /// The start of its runs in [`GeneratedFonts`]' table of them. Where
+    /// the style's primary font maps all of it, there is one run, in that
+    /// font.
     runs_start: GeneratedRunId,
+    /// The end of its runs, exclusive.
     runs_end: GeneratedRunId,
 }
 
 impl GeneratedText {
-    /// Its runs, in [`GeneratedFonts`]' table of them.
+    /// Returns its runs' ids in [`GeneratedFonts`]' table of them.
     fn runs(self) -> Range<GeneratedRunId> {
         self.runs_start..self.runs_end
     }
@@ -1034,7 +1034,7 @@ pub(crate) struct GeneratedRun {
 }
 
 impl GeneratedRun {
-    /// Where it ends, a byte offset into its text.
+    /// Returns where it ends, as a byte offset into its text.
     pub(super) fn end(self) -> usize {
         u32_to_index(self.end)
     }
@@ -1053,17 +1053,17 @@ impl GeneratedRun {
 /// The string depends on what the primary font maps, which is where Blink
 /// looks for U+2010 and U+2026. Its characters take fonts as the text's do,
 /// through the families and the fallback, as Blink's shaper does with the
-/// style's `Font`. Nearly always the primary maps all of it: one run.
+/// style's `Font`. The primary nearly always maps all of it, in one run.
 pub(crate) struct GeneratedFonts {
     /// Each text facts row's generated texts, in row order, a row's hyphen
     /// before its ellipsis.
     texts: Vec<(TextFactsId, Generated, GeneratedText)>,
-    /// Every text's runs, a text's together and in the text's order.
+    /// Every text's runs, each text's together and in order.
     runs: Table<GeneratedRunId, GeneratedRun>,
 }
 
 impl GeneratedFonts {
-    /// None, allocating nothing.
+    /// Returns an empty set, allocating nothing.
     const fn new() -> Self {
         Self {
             texts: Vec::new(),
@@ -1071,7 +1071,7 @@ impl GeneratedFonts {
         }
     }
 
-    /// Removes every style's, keeping the allocation.
+    /// Removes every text and run, keeping the allocation.
     fn clear(&mut self) {
         self.texts.clear();
         self.runs.clear();
@@ -1083,7 +1083,7 @@ impl GeneratedFonts {
         self.runs.get_slice(text.runs()).unwrap_or_default()
     }
 
-    /// Where the next text's runs start.
+    /// Returns where the next text's runs start.
     fn next_run(&self) -> GeneratedRunId {
         self.runs.next_id()
     }
@@ -1092,7 +1092,7 @@ impl GeneratedFonts {
     /// start at `start`.
     ///
     /// Extends the previous run instead where it is this text's and in the
-    /// same font. `None` where the table is full.
+    /// same font. Returns `None` where the table is full.
     fn push_run(&mut self, start: GeneratedRunId, end: usize, font: UsedFontId) -> Option<()> {
         let end = index_to_u32(end);
         if self.runs.next_id() > start
@@ -1125,8 +1125,8 @@ impl GeneratedFonts {
         self.texts.push((facts, kind, text));
     }
 
-    /// The generated text of `kind` of text with the text facts `facts`, or
-    /// `None` where it has none.
+    /// Returns the generated text of `kind` for the text facts `facts`, or
+    /// `None` where there is none.
     #[cfg(test)]
     fn text(&self, facts: TextFactsId, kind: Generated) -> Option<GeneratedText> {
         self.iter()
@@ -1134,9 +1134,9 @@ impl GeneratedFonts {
             .map(|(.., text)| text)
     }
 
-    /// Every generated text with its text facts, in row order, each row's
-    /// hyphen before its ellipsis. Measurement shapes and keeps them in this
-    /// order.
+    /// Returns every generated text with its text facts, in row order, each
+    /// row's hyphen before its ellipsis. Measurement shapes and keeps them in
+    /// this order.
     pub(super) fn iter(&self) -> impl Iterator<Item = (TextFactsId, Generated, GeneratedText)> {
         self.texts.iter().copied()
     }
@@ -1146,33 +1146,34 @@ impl GeneratedFonts {
 ///
 /// It holds the used fonts, the font runs, each request's resolution and
 /// the faces the content still wants. The generated texts' fonts stay in
-/// the font scratch, since only the build's measure reads them.
+/// the font scratch, since only the build's measurement reads them.
 pub(crate) struct Fonts {
     /// The used fonts.
     pub(crate) used: UsedFonts,
     /// The text's runs, and the first paragraph's under `::first-line`
-    /// where it changes a font or a transform. Both use fonts in `used`.
+    /// where it changes how text shapes or transforms. Both use fonts in
+    /// `used`.
     runs: FirstLine<FontRuns>,
     /// What each font request resolves to: its used size and primary font.
     ///
     /// The primary font is CSS's first available font: the first listed
-    /// font whose `unicode-range` holds U+0020 and whose data is loaded,
-    /// else the user agent's default for the language. Text is measured in
-    /// it, and it draws clusters no font covers. The builder lowers the
-    /// first line's requests beside the others.
+    /// font, the Standard font included, whose `unicode-range` holds U+0020
+    /// and whose data is loaded. Text is measured in it, and it draws
+    /// clusters no font covers. The builder lowers the first line's requests
+    /// beside the others.
     resolutions: Table<FontRequestId, FontResolution>,
     /// The `@font-face` faces still downloading that some cluster wants,
     /// each once. The host fetches them, and lays out again when they land.
     ///
     /// The list is made at the first face wanted, then cleared and kept.
     wanted: WantedFaces,
-    /// The language text whose style names none had its fonts chosen in,
-    /// and is shaped in.
+    /// The language that text whose style names none had its fonts chosen
+    /// in, and is shaped in.
     pub(super) default_language: DefaultLanguage,
 }
 
 impl Fonts {
-    /// Empty fonts, allocating nothing.
+    /// Returns empty fonts, allocating nothing.
     pub(crate) const fn new() -> Self {
         Self {
             used: UsedFonts::new(),
@@ -1184,7 +1185,7 @@ impl Fonts {
     }
 
     /// Empties it, keeping every allocation. A layout whose builder was
-    /// dropped unfinished holds this.
+    /// dropped unfinished holds empty fonts.
     pub(crate) fn clear(&mut self) {
         self.used.clear();
         self.runs.clear();
@@ -1208,15 +1209,15 @@ impl Fonts {
         self.runs.get(variant)
     }
 
-    /// Whether the first paragraph was selected again under its
-    /// `::first-line` styles: where it was not, the first line is set in
-    /// the text's fonts.
+    /// Returns whether the first paragraph was selected again under its
+    /// `::first-line` styles. Where it was not, the first line is set in the
+    /// text's fonts.
     pub(super) fn has_first_line_runs(&self) -> bool {
         self.runs.has_first_line()
     }
 
-    /// What font request `request` resolves to, or `None` for one the
-    /// content does not have.
+    /// Returns what font request `request` resolves to, or `None` for one
+    /// the content does not have.
     pub(crate) fn resolution(&self, request: FontRequestId) -> Option<&FontResolution> {
         self.resolutions.get(request)
     }
@@ -1235,37 +1236,37 @@ impl Fonts {
     /// `request`.
     ///
     /// The gap is an eighth of the primary font's ideographic advance (its
-    /// size where it has no 水), rounded to the nearest 16.16. Chrome's
-    /// `Font::TextAutoSpaceInlineSize` divides `IdeographicInlineSize` the
-    /// same way. The advance is a stored metric, so no font table is read.
-    /// Zero where the request has no used font.
+    /// size where it has no 水), rounded to the nearest 16.16 `TextUnit`.
+    /// Chrome's `Font::TextAutoSpaceInlineSize` divides
+    /// `IdeographicInlineSize` the same way. The advance is a stored metric,
+    /// so no font table is read. Zero where the request has no used font.
     pub(super) fn autospace_gap(&self, request: FontRequestId) -> TextUnit {
         self.primary_font(request)
             .map_or(TextUnit::from_px(0.0), |used| {
                 let ic = i64::from(used.metrics.ideographic_advance.raw());
-                // To the nearest, halves away from zero, which no advance of a
-                // font is below.
+                // Rounds halves up, which is away from zero: an advance is
+                // never negative.
                 TextUnit::from_raw(i32::try_from((ic + 4) / 8).unwrap_or(0))
             })
     }
 
     /// Returns the heap bytes of the first line's runs, which
     /// [`heap_bytes`](crate::data::HeapBytes::heap_bytes) also counts. Their
-    /// fonts are the shared used fonts.
+    /// used fonts are the text's, counted once.
     pub(crate) fn first_line_heap_bytes(&self) -> usize {
         self.runs.first_line_heap_bytes()
     }
 }
 
 heap_bytes! {
-    /// Its tables; not the fonts' bytes, each a count taken on the file
-    /// the collection holds.
+    /// Its tables. The instance records and font bytes, which the context
+    /// and the collection share, do not count.
     Fonts { used, runs, resolutions, wanted; default_language }
 }
 
 heap_bytes! {
-    /// Its table; not the instances' records, each a count taken on the
-    /// context's.
+    /// Its table. The instance records, shared with the context, do not
+    /// count.
     UsedFonts { table }
 }
 

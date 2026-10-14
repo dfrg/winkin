@@ -3,9 +3,9 @@
 //!   case names;
 //! - clusters drawn from a mixture of forms;
 //! - Hangul as harfrust's Hangul shaper takes it;
-//! - harfrust itself: over random fonts and the clusters normalization turns
-//!   on, a font covers a cluster exactly where harfrust shapes it with no
-//!   `.notdef`.
+//! - agreement with harfrust: over random fonts and the clusters
+//!   normalization turns on, a font covers a cluster exactly where harfrust
+//!   shapes it with no `.notdef`.
 
 use std::path::{Path, PathBuf};
 use std::{env, eprintln, fs};
@@ -16,7 +16,7 @@ use icu_normalizer::{ComposingNormalizerBorrowed, DecomposingNormalizerBorrowed}
 use super::*;
 use crate::unicode;
 
-/// A font named `family` mapping exactly `chars`, and nothing else.
+/// Returns a font named `family` that maps exactly `chars`.
 fn named(family: &str, chars: &[char]) -> TestFont {
     let mut code_points: Vec<u32> = chars.iter().map(|&ch| u32::from(ch)).collect();
     code_points.sort_unstable();
@@ -25,13 +25,14 @@ fn named(family: &str, chars: &[char]) -> TestFont {
     TestFont::new(family, &ranges)
 }
 
-/// A font mapping exactly `chars`, and nothing else.
+/// Returns a font that maps exactly `chars`.
 fn mapping(chars: &[char]) -> TestFont {
     named("Test Normalized", chars)
 }
 
-/// Whether a font mapping exactly `chars` covers the cluster `text`, which
-/// harfrust must agree with.
+/// Returns whether a font mapping exactly `chars` covers the cluster `text`.
+///
+/// Asserts that harfrust agrees.
 fn covers(chars: &[char], text: &str) -> bool {
     let bytes = mapping(chars).build();
     let font = fontwich::Font::from_data(bytes.clone(), 0);
@@ -48,9 +49,8 @@ const E_ACUTE: char = '\u{E9}';
 const ACUTE: char = '\u{301}';
 const DIAERESIS: char = '\u{308}';
 
-/// A font with the precomposed letter covers it, and so does one with only
-/// its pieces, which harfrust decomposes it into; one with neither does
-/// not.
+/// A font with the precomposed letter covers it. So does one with only its
+/// pieces, which harfrust decomposes it into. One with neither does not.
 #[test]
 fn a_letter_is_covered_whole_or_in_pieces() {
     assert!(covers(&[E_ACUTE], "\u{E9}"));
@@ -67,19 +67,19 @@ fn decomposed_text_is_covered_composed() {
     assert!(!covers(&['e'], "e\u{301}"));
 }
 
-/// A singleton decomposition is followed: U+212B is U+00C5, and a font
-/// with U+00C5 draws it.
+/// A singleton decomposition is followed: U+212B is U+00C5, so a font with
+/// U+00C5, or with its pieces, draws it.
 #[test]
 fn a_singleton_is_followed() {
     assert!(covers(&['\u{C5}'], "\u{212B}"));
     assert!(covers(&['A', '\u{30A}'], "\u{212B}"));
 }
 
-/// `ǘ` in a font with `ü` and U+0301 and neither `ǘ` nor U+0308: harfrust
-/// decomposes it a step, to `ü` and U+0301, and stops, the font having
-/// `ü`. Its decomposed form needs U+0308 and its composed one `ǘ`, so
-/// neither form alone is in the font. Written decomposed, or half composed,
-/// it is covered alike: harfrust composes what the font has.
+/// `ǘ` in a font with `ü` and U+0301 and neither `ǘ` nor U+0308 is covered.
+/// harfrust decomposes it one step, to `ü` and U+0301, and stops there
+/// because the font has `ü`. Neither the fully decomposed nor the composed
+/// form is in the font. Written decomposed or half composed, it is covered
+/// alike, since harfrust composes what the font has.
 #[test]
 fn a_cluster_in_a_mixture_of_forms_is_covered() {
     let font = ['\u{FC}', ACUTE];
@@ -92,17 +92,17 @@ fn a_cluster_in_a_mixture_of_forms_is_covered() {
     assert!(!covers(&['u', DIAERESIS], "\u{1D8}"));
 }
 
-/// A cluster is composed a pair at a time, each composite one the font
-/// maps: `ǘ` from `ü` and U+0301, and from `u` and its two marks only where
-/// the font has the `ü` the first pair makes. Its composed form alone is
-/// not enough, as it was when coverage tried whole forms.
+/// A cluster is composed a pair at a time, and each composite must be one
+/// the font maps. `ǘ` comes from `ü` and U+0301, and from `u` and its two
+/// marks only where the font has the `ü` the first pair makes. Its composed
+/// form alone is not enough.
 #[test]
 fn a_cluster_is_composed_a_pair_at_a_time() {
     assert!(covers(&['\u{1D8}'], "\u{FC}\u{301}"));
     assert!(!covers(&['\u{1D8}'], "u\u{308}\u{301}"));
     assert!(covers(&['\u{FC}', '\u{1D8}'], "u\u{308}\u{301}"));
-    // `ệ` from `ẹ` and U+0302, and from `e` and its marks, written in
-    // either order, only with the `ẹ` on the way.
+    // `ệ` comes from `ẹ` and U+0302, and from `e` and its marks in either
+    // order only where the font has the `ẹ` between.
     assert!(covers(&['\u{1EC7}'], "\u{1EB9}\u{302}"));
     assert!(!covers(&['\u{1EC7}'], "e\u{323}\u{302}"));
     let font = ['\u{1EB9}', '\u{1EC7}'];
@@ -110,11 +110,13 @@ fn a_cluster_is_composed_a_pair_at_a_time() {
     assert!(covers(&font, "e\u{302}\u{323}"));
 }
 
-/// A mark composes onto its starter past a mark of a lower class, and not
-/// past one of the same class or a starter: U+0323 (220) sorts before
-/// U+0302 (230), so `ê` composes from `e` past it; a second mark of U+0301's
-/// class blocks it; and the combining grapheme joiner, a mark of class
-/// zero, is a starter of its own and blocks it too.
+/// A mark composes onto its starter past a mark of a lower class, but not
+/// past one of the same class or a starter:
+/// - U+0323 (220) sorts before U+0302 (230), so `ê` composes from `e` past
+///   it;
+/// - a second mark of U+0301's class blocks it;
+/// - the combining grapheme joiner, of class zero, is a starter of its own
+///   and blocks it too.
 #[test]
 fn a_mark_composes_where_nothing_blocks_it() {
     assert!(covers(&['\u{EA}', '\u{323}'], "e\u{323}\u{302}"));
@@ -125,7 +127,7 @@ fn a_mark_composes_where_nothing_blocks_it() {
 }
 
 /// A space the font lacks is drawn with U+0020's glyph, and U+2011 with
-/// U+2010's; U+2000, which decomposes to U+2002, is drawn with U+2002's
+/// U+2010's. U+2000, which decomposes to U+2002, is drawn with U+2002's
 /// where the font has that and not U+0020.
 #[test]
 fn a_space_and_a_hyphen_are_faked() {
@@ -138,9 +140,9 @@ fn a_space_and_a_hyphen_are_faked() {
     assert!(!covers(&['\u{2003}'], "\u{2002}"));
 }
 
-/// A default-ignorable harfrust hides does not keep a font from a cluster;
-/// one it draws, a Hangul filler, does. The fourth Mongolian free variation
-/// selector is hidden as harfrust 0.14.0 hides it, where 0.13.3 drew it.
+/// A default-ignorable that harfrust hides does not keep a font from a
+/// cluster. One it draws, a Hangul filler, does. The fourth Mongolian free
+/// variation selector is hidden, as harfrust 0.14.0 hides it.
 #[test]
 fn a_default_ignorable_harfrust_hides_keeps_no_font_from_a_cluster() {
     assert!(covers(&['a', 'b'], "a\u{200D}b"));
@@ -151,8 +153,7 @@ fn a_default_ignorable_harfrust_hides_keeps_no_font_from_a_cluster() {
     assert!(covers(&['\u{1100}', '\u{1160}'], "\u{1100}\u{1160}"));
 }
 
-/// A character none of whose forms the font has is not covered, after all
-/// three rounds.
+/// A character none of whose forms the font has is not covered.
 #[test]
 fn what_nothing_draws_is_not_covered() {
     assert!(!covers(&['a'], "a\u{4E2D}"));
@@ -161,8 +162,8 @@ fn what_nothing_draws_is_not_covered() {
 }
 
 /// A variation sequence is taken as written, as harfrust takes a cluster
-/// with a selector in it: its base where the font maps it, the selector
-/// hidden, and nothing decomposed.
+/// with a selector: its base where the font maps it, the selector hidden,
+/// and nothing decomposed.
 #[test]
 fn a_variation_sequence_is_taken_as_written() {
     assert!(covers(&['\u{2603}'], "\u{2603}\u{FE0F}"));
@@ -173,11 +174,12 @@ fn a_variation_sequence_is_taken_as_written() {
     assert!(covers(&[E_ACUTE], "e\u{301}\u{FE00}"));
 }
 
-/// Hangul as harfrust's Hangul shaper takes it: jamo composed into a
-/// syllable the font has, a syllable the font lacks written as the jamo it
-/// has, a syllable and a trailing consonant composed, and a syllable with a
-/// trailing consonant the font lacks drawn as the syllable before it and
-/// the consonant.
+/// Hangul is covered as harfrust's Hangul shaper takes it:
+/// - jamo composed into a syllable the font has;
+/// - a syllable the font lacks drawn as the jamo it has;
+/// - a syllable and a trailing consonant composed;
+/// - a syllable with a trailing consonant that the font lacks drawn as the
+///   syllable without it and the consonant.
 #[test]
 fn hangul_is_taken_as_its_shaper_takes_it() {
     let (ga, gak) = ('\u{AC00}', '\u{AC01}');
@@ -189,20 +191,22 @@ fn hangul_is_taken_as_its_shaper_takes_it() {
     assert!(covers(&[gak], "\u{AC00}\u{11A8}"));
     assert!(covers(&[ga, '\u{11A8}'], "\u{AC01}"));
     assert!(!covers(&[ga], "\u{AC01}"));
-    // An old leading consonant, which composes to nothing.
+    // An archaic leading consonant, which composes into no syllable.
     assert!(!covers(&[ga], "\u{1113}\u{1161}"));
     assert!(covers(&['\u{1113}', '\u{1161}'], "\u{1113}\u{1161}"));
 }
 
-/// Where the whole forms said a font covered a cluster harfrust draws a
-/// `.notdef` in, the font is refused now and the cluster falls back, as
-/// Chrome's does. Vietnamese
-/// with the tone typed after a precomposed vowel: no pair composes `ê` and
-/// U+0323, and a font with `ệ` and neither mark, as Noto Sans CJK and Source
-/// Han are, is left with U+0323; one with the marks and `ẹ` is not, harfrust
-/// decomposing `ê` to reach `ệ` through `ẹ`. A composite missing on the way:
-/// `Ở` from `O` U+031B U+0309 and `Ὅ` from `Ο` U+0314 U+0301 in fonts that
-/// have them and not `Ơ` or `Ὁ`.
+/// A font in which harfrust draws a cluster with a `.notdef` is refused, and
+/// the cluster falls back, as Chrome's does, though a whole form of the
+/// cluster is in the font.
+///
+/// - Vietnamese with the tone typed after a precomposed vowel: no pair
+///   composes `ê` and U+0323. A font with `ệ` and neither mark, such as
+///   Noto Sans CJK and Source Han, is left with U+0323. A font with the
+///   marks and `ẹ` is not: harfrust decomposes `ê` to reach `ệ` through
+///   `ẹ`.
+/// - A composite missing on the way: `Ở` from `O` U+031B U+0309 and `Ὅ`
+///   from `Ο` U+0314 U+0301, in fonts that have them and not `Ơ` or `Ὁ`.
 #[test]
 fn what_the_whole_forms_overclaimed_falls_back() {
     assert!(!covers(&['\u{EA}', '\u{1EC7}'], "\u{EA}\u{323}"));
@@ -241,8 +245,8 @@ fn what_the_whole_forms_overclaimed_falls_back() {
     assert_eq!(fixture.families(&layout), ["Test Marks Too"]);
 }
 
-/// Where only harfrust's normalizer draws a cluster, the font asked for
-/// keeps it, where the whole forms sent it to a later font mid-word.
+/// Where only harfrust's normalizer draws a cluster in the font asked for,
+/// that font keeps it, and no later font takes it mid-word.
 #[test]
 fn the_font_asked_for_keeps_what_harfrust_draws_in_it() {
     let mut fixture = fixture_with(&[
@@ -258,11 +262,13 @@ fn the_font_asked_for_keeps_what_harfrust_draws_in_it() {
     assert_eq!(fixture.families(&layout), ["Test Pinyin", "Test Pinyin"]);
 }
 
-/// Where the cargo registry's checkout of parley holds its development
-/// fonts, Roboto: it has `ü` and U+0301 and not `ǘ`
-/// or U+0308, so harfrust draws the pinyin tones the whole forms missed, and
-/// it has `Ὅ` and not `Ὁ` or U+0314, so harfrust leaves `Ο` U+0314 U+0301
-/// with a `.notdef` the whole forms missed.
+/// Roboto, from parley's development fonts in the cargo git checkout, is
+/// covered as harfrust draws it; the test is skipped without the checkout.
+///
+/// - It has `ü` and U+0301 and not `ǘ` or U+0308, so harfrust draws the
+///   pinyin tones, which no whole form covers.
+/// - It has `Ὅ` and not `Ὁ` or U+0314, so harfrust leaves `Ο` U+0314
+///   U+0301 with a `.notdef`, though a whole form covers it.
 #[test]
 fn a_real_font_is_covered_as_harfrust_draws_it() {
     let Some(bytes) = roboto() else {
@@ -284,8 +290,8 @@ fn a_real_font_is_covered_as_harfrust_draws_it() {
     }
 }
 
-/// parley_dev's Roboto, from the cargo git checkout of parley, if there is
-/// one.
+/// Returns parley_dev's Roboto from the cargo git checkout of parley, if
+/// there is one.
 fn roboto() -> Option<Vec<u8>> {
     let home = env::var_os("CARGO_HOME").map(PathBuf::from).or_else(|| {
         env::var_os("USERPROFILE")
@@ -314,7 +320,7 @@ fn roboto() -> Option<Vec<u8>> {
 }
 
 /// The characters the random fonts of [`coverage_is_what_harfrust_draws`]
-/// draw from, and the clusters it asks about, all set by harfrust's default
+/// map from, and the clusters it asks about, all set by harfrust's default
 /// shaper: Latin and Greek letters in their composed and decomposed forms
 /// and the pieces between, spaces, hyphens, a joiner and a selector.
 const LATIN_POOL: &[char] = &[
@@ -386,10 +392,11 @@ const HANGUL_CLUSTERS: &[&str] = &[
     "\u{1100}",
 ];
 
-/// Whether harfrust shapes `text` in the font `bytes` hold, as the
-/// shaping stage sets up its buffer, with no `.notdef`: in Hangul where
-/// `text` starts with a jamo or a syllable, in Greek where with a Greek
-/// letter, and in Latin otherwise.
+/// Returns whether harfrust shapes `text` in the font `bytes` hold with no
+/// `.notdef`, with the buffer set up as shaping sets it up.
+///
+/// The script is Hangul where `text` starts with a jamo or a syllable,
+/// Greek where it starts with a Greek letter, and Latin otherwise.
 fn harfrust_draws(bytes: &[u8], text: &str) -> bool {
     let script = match text.chars().next().map_or(0, u32::from) {
         0x1100..=0x11FF | 0xAC00..=0xD7A3 => Script::HANGUL,
@@ -408,9 +415,11 @@ fn harfrust_draws(bytes: &[u8], text: &str) -> bool {
     buffer.glyph_infos().iter().all(|glyph| glyph.glyph_id != 0)
 }
 
-/// Whether `font` covered `text` before harfrust's normalizer was
-/// replayed: as written, fully decomposed or fully composed, each with the
-/// allowances, and Unicode's default-ignorables for HarfBuzz's.
+/// Returns whether `font` covers `text` in a whole form: as written, fully
+/// decomposed or fully composed, each with the shaper's substitutions, and
+/// with Unicode's default-ignorables standing in for HarfBuzz's.
+///
+/// This is the baseline that replaying harfrust's normalizer improves on.
 fn covered_in_a_whole_form(font: &fontwich::Font, text: &str) -> bool {
     fn draws(charset: &fontwich::Charset, mut chars: impl Iterator<Item = char>) -> bool {
         chars.all(|ch| {
@@ -429,11 +438,10 @@ fn covered_in_a_whole_form(font: &fontwich::Font, text: &str) -> bool {
         || draws(charset, nfc.normalize_iter(text.chars()))
 }
 
-/// Over random fonts, each mapping each character of a pool or not, and
-/// the clusters of the pool, coverage says a font covers a cluster exactly
-/// where harfrust draws it in that font with no `.notdef`; and where the
-/// whole forms coverage tried before say otherwise, harfrust is the one it
-/// agrees with.
+/// Over random fonts, each mapping a random subset of a pool, coverage says
+/// a font covers one of the pool's clusters exactly where harfrust draws it
+/// with no `.notdef`. Some clusters' whole forms disagree with harfrust, and
+/// coverage follows harfrust there.
 #[test]
 fn coverage_is_what_harfrust_draws() {
     struct Lcg(u64);

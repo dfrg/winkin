@@ -4,17 +4,17 @@
 //! Start at: [`analyze`], then `ClusterWriter::visit_item` in `walk`.
 //!
 //! - `walk` walks the items and the text once and writes every table.
+//! - `classify` classifies characters for the walk.
 //! - `breaks` holds the line segmenters' keys and the line stream.
 //! - `graphemes` finds the grapheme boundaries clusters start at.
-//! - `ascii` and `pairs` answer most Latin breaks without ICU.
+//! - `ascii` and `pairs` answer most Latin-1 breaks without ICU.
 //! - `scripts` resolves each cluster's script and splits the runs.
 //! - `bidi` builds each paragraph's bidi input and resolves its levels.
 //! - `context` caches the segmenters in the [`Context`](crate::Context).
 //! - `clusters`, `items`, `paragraphs` and `runs` own the stored tables.
 //!
 //! Every per-character table is indexed by [`ClusterId`]. An analyzed
-//! content always has at least one paragraph. Later stages borrow the
-//! finished [`Analysis`] and never write to it.
+//! content has at least one paragraph. Later stages only read [`Analysis`].
 
 mod ascii;
 mod bidi;
@@ -51,8 +51,7 @@ pub use runs::{BidiLevel, RunOrientation};
 pub(crate) use runs::{ScriptRun, ScriptRuns};
 use walk::ClusterWriter;
 
-/// What the analysis stage reads: the content, and the one choice of the
-/// context's config it makes.
+/// The input to analysis: the content and one config choice.
 pub(crate) struct AnalysisInput<'a> {
     pub(crate) content: &'a Content,
     /// Whether a small kana may start a line under `line-break: normal`
@@ -60,27 +59,26 @@ pub(crate) struct AnalysisInput<'a> {
     pub(crate) small_kana: SmallKana,
 }
 
-/// The analysis stage's working memory, which holds nothing between calls
-/// and keeps its capacity.
+/// The working memory of analysis, kept on the context for its capacity.
+///
+/// Only `hyphen_nodes` is read after a call; the rest holds nothing between
+/// calls.
 pub(crate) struct AnalysisScratch {
-    /// The runs found so far, in text order, before their scripts are all
-    /// known: a run of Common characters takes the script that follows it,
-    /// and its paragraph's levels are known only when the paragraph ends.
+    /// The runs found so far, in text order, held until their scripts and
+    /// levels are known. A run of Common characters takes the script that
+    /// follows it, and levels are known when the paragraph ends.
     pending_runs: Vec<scripts::PendingRun>,
     /// A paragraph's bidi input and the resolver's working memory.
     bidi: bidi::BidiInput,
-    /// A ruby column's base and what follows the column, which a break
-    /// after the column is decided by.
+    /// A ruby column's base and the text after the column, which decide a
+    /// break after the column.
     column_text: String,
-    /// The nodes whose text holds a soft hyphen a line may break after, in
-    /// text order, each with the first such cluster. A node is listed again
-    /// only where another node's text comes between. Font selection reads
-    /// them as the build finishes.
+    /// See [`AnalysisScratch::hyphen_nodes`].
     hyphen_nodes: Vec<(NodeId, ClusterId)>,
 }
 
 impl AnalysisScratch {
-    /// Empty scratch, allocating nothing.
+    /// Returns empty scratch, allocating nothing.
     pub(crate) fn new() -> Self {
         Self {
             pending_runs: Vec::new(),
@@ -90,17 +88,17 @@ impl AnalysisScratch {
         }
     }
 
-    /// Returns the nodes whose text holds a soft hyphen a line may break
-    /// after, in text order, each with the first such cluster, as the last
-    /// analysis found them.
+    /// Returns the nodes whose text holds a breakable soft hyphen, each with
+    /// its first such cluster, in text order, from the last analysis.
     ///
-    /// A node is listed again only where another node's text comes between.
+    /// A node repeats only where another node's text comes between. Font
+    /// selection reads this to choose the hyphen's font.
     pub(crate) fn hyphen_nodes(&self) -> &[(NodeId, ClusterId)] {
         &self.hyphen_nodes
     }
 
-    /// Records that `cluster`, in `node`'s text, is a soft hyphen a line may
-    /// break after, unless the last node recorded is `node`.
+    /// Records `cluster` as a breakable soft hyphen in `node`, unless `node`
+    /// is the last node recorded.
     fn push_hyphen_node(&mut self, node: NodeId, cluster: ClusterId) {
         let nodes = &mut self.hyphen_nodes;
         if nodes.last().is_none_or(|&(last, _)| last != node) {
@@ -119,29 +117,27 @@ impl Default for AnalysisScratch {
     }
 }
 
-/// The paragraph the writer is gathering, which `walk` writes and `bidi`
-/// resolves when it ends.
+/// The open paragraph, which `walk` fills and `bidi` resolves when it ends.
 #[derive(Default)]
 struct ParagraphState {
-    /// Whether one has begun and not ended.
+    /// Whether a paragraph has begun and not ended.
     open: bool,
-    /// Its first cluster.
     start: ClusterId,
-    /// The item holding its first cluster, where its bidi input starts.
+    /// The item holding the first cluster, where the bidi input starts.
     first_item: ItemId,
     flags: ParagraphFlags,
-    /// A style synthesizes a bidi control in it: a box with `unicode-bidi`
-    /// or an annotation opens or closes in it, or is open across its start,
-    /// or the block overrides bidi.
+    /// Whether a style synthesizes a bidi control here: a box with
+    /// `unicode-bidi` or an annotation opens or closes inside the paragraph
+    /// or is open across its start, or the block overrides bidi.
     controls: bool,
-    /// Every bidi class of its characters, a bit each.
+    /// The bidi classes of its characters, one bit per class.
     classes: u32,
     east_asian: bool,
 }
 
 impl ParagraphState {
-    /// Whether it holds anything right to left or a control, which can take
-    /// a cluster off its level.
+    /// Returns whether a cluster may leave the paragraph's level: the
+    /// paragraph has a synthesized control or a right-to-left class.
     fn may_differ(&self) -> bool {
         self.controls || self.classes & classify::LEVEL_CLASSES != 0
     }
@@ -150,8 +146,7 @@ impl ParagraphState {
 /// Analyzes the content of `input` into `out` in one pass over the items
 /// and the text.
 ///
-/// Uses the context's segmenters in `cx` and works in `scratch`. Clears and
-/// fills `out`; nothing else writes it.
+/// Clears and fills `out`; nothing else writes it.
 pub(crate) fn analyze(
     input: &AnalysisInput<'_>,
     cx: &AnalysisContext,
@@ -163,8 +158,8 @@ pub(crate) fn analyze(
     scratch.pending_runs.clear();
     scratch.hyphen_nodes.clear();
     scratch.bidi.begin();
-    // Room for every item's first cluster, and for the clusters: at most one
-    // a character, which in Latin and CJK is one a character exactly.
+    // A text has at most one cluster per character, and Latin and CJK text
+    // has exactly one.
     out.clusters.reserve(content.text.as_str().chars().count());
     out.item_clusters.reserve(content.items.len());
     let mut writer = ClusterWriter::new(input, cx, scratch, out);
@@ -175,43 +170,38 @@ pub(crate) fn analyze(
 }
 
 define_id! {
-    /// Names a cluster, the finest unit, which every per-character table is
-    /// indexed by. A position between clusters is the id of
-    /// the cluster after it, and the end of the text is the number of
-    /// clusters.
+    /// Indexes the clusters, the finest unit of analysis.
+    ///
+    /// A position between clusters is the id of the cluster after it. The end
+    /// of the text is the cluster count.
     pub(crate) struct ClusterId(u32);
 }
 
 define_id! {
-    /// Names a paragraph, in text order.
+    /// Indexes the paragraphs, in text order.
     pub(crate) struct ParagraphId(u32);
 }
 
 define_id! {
-    /// Names a script run, in text order.
+    /// Indexes the script runs, in text order.
     pub(crate) struct ScriptRunId(u32);
 }
 
 /// The analysis of a content: its clusters, items, paragraphs and runs.
-///
-/// Each table answers its own questions. The flags of every paragraph are
-/// kept together too.
 pub(crate) struct Analysis {
-    /// The clusters.
     pub(crate) clusters: Clusters,
-    /// Where each item's clusters are.
+    /// The clusters of each item.
     pub(crate) item_clusters: ItemClusters,
-    /// The paragraphs, in text order: one at least, but in an analysis
-    /// cleared.
+    /// The paragraphs, in text order. There is at least one, except in a
+    /// cleared analysis.
     pub(crate) paragraphs: Paragraphs,
-    /// The runs, in text order.
+    /// The script runs, in text order.
     pub(crate) runs: ScriptRuns,
-    /// The tables few texts fill, made the first time an analysis keeps a
-    /// row in one. The box keeps the layout's record a pointer wide where
-    /// they are empty.
+    /// The rarely filled tables, boxed on first use so that an analysis
+    /// without them costs one pointer.
     extras: Option<Box<AnalysisExtras>>,
-    /// Every paragraph's flags together, for a stage to decline on the
-    /// whole content at once.
+    /// The union of every paragraph's flags, so a stage can skip work for
+    /// the whole content.
     pub(crate) flags: ParagraphFlags,
 }
 
@@ -230,9 +220,8 @@ impl Analysis {
 
     /// Empties the analysis, keeping every allocation.
     ///
-    /// Also what a layout holds when its builder was dropped without
-    /// finishing: its content, and no analysis, which has no paragraph at
-    /// all where an analyzed content always has one.
+    /// A cleared analysis has no paragraph. A layout holds one when its
+    /// builder was dropped without finishing.
     pub(crate) fn clear(&mut self) {
         self.clusters.clear();
         self.item_clusters.clear();
@@ -245,15 +234,15 @@ impl Analysis {
     }
 
     /// Returns the levels of the bidi controls that line layout reorders
-    /// with, in item order.
+    /// with, in item order. Empty when no paragraph has any.
     pub(super) fn control_levels(&self) -> &[ControlLevel] {
         self.extras
             .as_deref()
             .map_or(&[], |extras| extras.control_levels.as_slice())
     }
 
-    /// Records `levels` as the bidi controls' levels, making the box the
-    /// first time there are any.
+    /// Replaces the control levels with `levels`, boxing the extras on first
+    /// use.
     fn set_control_levels(&mut self, levels: &[ControlLevel]) {
         if levels.is_empty() && self.extras.is_none() {
             return;
@@ -266,14 +255,14 @@ impl Analysis {
     /// Returns the clusters the block's first line can reach, if `content`
     /// restyles anything under `::first-line`.
     ///
-    /// `content` is the content this analysis is of. The range is the first
-    /// paragraph, since no line crosses a forced break. Returns `None` if
-    /// nothing is restyled or there is no text.
+    /// `content` is the analyzed content. The range is the first paragraph,
+    /// since no line crosses a forced break. Returns `None` if nothing is
+    /// restyled or there is no text.
     ///
-    /// Blink shapes the whole text again for `::first-line`
-    /// (`ShapeTextForFirstLineIfNeeded`). Bounding it by the first paragraph
-    /// loses nothing the first line can hold. The font, shaping and measure
-    /// stages each run their first-line variant over this range.
+    /// Font selection, shaping and measurement run their first-line variants
+    /// over this range. Blink reshapes the whole text instead
+    /// (`ShapeTextForFirstLineIfNeeded`), which gives the first line nothing
+    /// more.
     pub(crate) fn first_line_reach(&self, content: &Content) -> Option<Range<ClusterId>> {
         if !content.flags.contains(ContentFlags::FIRST_LINE_RESTYLE) {
             return None;
@@ -291,8 +280,9 @@ heap_bytes! {
 #[derive(Default)]
 struct AnalysisExtras {
     /// The levels of the bidi controls that line layout reorders with, in
-    /// item order: those below the clusters on both sides. Only isolates
-    /// beside right-to-left text keep any.
+    /// item order. These are a box's controls whose level is below the
+    /// clusters on both sides, and every absolutely positioned box's anchor.
+    /// Only paragraphs with right-to-left text and mixed levels keep any.
     control_levels: Vec<ControlLevel>,
 }
 

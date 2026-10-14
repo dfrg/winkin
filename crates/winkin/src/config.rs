@@ -1,20 +1,20 @@
-//! Configuration for behavior not determined by CSS properties.
+//! Configuration for behavior that CSS properties do not determine.
 //!
 //! [`Config`] selects font line metrics, superscript offsets and other
-//! implementation choices. Hit-testing behavior is selected per call through
-//! [`PastLines`], and word motion through [`Motion`](crate::selection::Motion).
+//! implementation choices. Hit testing takes [`PastLines`] per call, and
+//! word motion takes [`Motion`](crate::selection::Motion).
 //!
-//! Contexts use the platform preset by default. Presets generally match Chrome,
-//! but follow CSS for known Chrome limitations in platform font variations
-//! and position synthesis. Individual fields can reproduce those limitations.
-//! [`Config::spec`] selects specification behavior where it differs.
+//! A context starts with the preset for its platform. The presets are
+//! modelled on Chrome on each platform, except that they follow CSS for
+//! platform font variations and position synthesis; fields reproduce
+//! Chrome there. [`Config::spec`] follows CSS wherever it differs.
 
 use parlance::Language;
 
 /// Layout configuration beyond CSS properties.
 ///
-/// Set with [`Context::set_config`](crate::Context::set_config).
-/// Start from a preset and override individual fields:
+/// Set with [`Context::set_config`](crate::Context::set_config). Start
+/// from a preset and override fields:
 ///
 /// ```
 /// use winkin::config::{Config, Pretty};
@@ -27,18 +27,18 @@ use parlance::Language;
 pub struct Config {
     /// The font metrics used for line ascent, descent and line gap.
     pub line_metrics: LineMetricsSource,
-    /// The font-selection and shaping language when no style language is set.
+    /// The language for font selection and shaping where no style sets one.
     ///
     /// Controls generic-family resolution, fallback, regional Han forms,
-    /// localized glyphs and synthesized small capitals. Chrome presets use
-    /// `en`, matching an English UI; [`Config::spec`] uses `und`.
+    /// localized glyphs and synthesized small capitals. The Chrome presets
+    /// use `en`, as for an English UI; [`Config::spec`] uses `und`.
     ///
     /// `und` selects fonts by the script of each run, including Han fonts
     /// for spaces and punctuation within Han runs.
     ///
-    /// Does not supply a language for line breaking, hyphenation,
-    /// `text-transform` or `text-autospace`. Changes take effect on rebuild;
-    /// line-edge reshaping retains the language used during the build.
+    /// Not used for line breaking, hyphenation, `text-transform` or
+    /// `text-autospace`. Changes take effect on rebuild; reshaping at line
+    /// edges keeps the language of the build.
     pub default_language: Language,
     /// The offset for `vertical-align: super` and `sub`.
     ///
@@ -46,18 +46,18 @@ pub struct Config {
     pub super_sub: SuperSubPosition,
     /// Whether `dominant-baseline` affects inline alignment.
     ///
-    /// The Chrome presets ignore the property, matching Chrome outside SVG.
+    /// The Chrome presets ignore the property, as Chrome does outside SVG.
     /// Changes take effect on rebuild.
     pub dominant_baseline: DominantBaselines,
     /// Whether to synthesize missing `font-variant-position` glyphs.
     ///
-    /// CSS requires synthesis if `sups` or `subs` does not cover the run;
+    /// CSS requires synthesis where `sups` or `subs` does not cover the run;
     /// Chrome applies only the feature. Changes take effect on rebuild.
     pub position_synthesis: PositionSynthesis,
     /// The variation settings applied to platform fonts.
     ///
-    /// Selects all CSS variations or only matching variations, as on Chrome
-    /// for Windows and Linux. Changes take effect on rebuild.
+    /// Applies every CSS variation, or only the matching axes as Chrome on
+    /// Windows and Linux does. Changes take effect on rebuild.
     pub platform_font_variations: PlatformFontVariations,
     /// Whether small kana may start a line under `line-break: normal`.
     ///
@@ -65,7 +65,7 @@ pub struct Config {
     pub small_kana: SmallKana,
     /// The punctuation-trimming rule for `text-spacing-trim`.
     ///
-    /// Selects font `halt` support, as in Chrome, or unconditional trimming.
+    /// Trims through the font's `halt` feature, as Chrome does, or always.
     /// Changes take effect on rebuild.
     pub punctuation_trim: PunctuationTrim,
     /// The fitting rule for `text-wrap-style: pretty`.
@@ -76,11 +76,11 @@ pub struct Config {
     ///
     /// Changes take effect at the next [`break_lines`](crate::Layout::break_lines) call.
     pub tab_justification: TabJustification,
-    /// Whether whitespace preceding an ellipsis cut is retained.
+    /// Whether white space just before an ellipsis is kept.
     ///
     /// Changes take effect at the next [`break_lines`](crate::Layout::break_lines) call.
     pub ellipsis_space: EllipsisSpace,
-    /// The characters eligible for `word-spacing`, including leading spaces.
+    /// The characters `word-spacing` applies to, leading spaces included.
     ///
     /// Changes take effect on rebuild.
     pub word_spacing: WordSpacing,
@@ -88,34 +88,33 @@ pub struct Config {
     ///
     /// Changes take effect on rebuild.
     pub ruby_overhang: RubyOverhangRule,
-    /// Whether a ruby base may break when an annotation cannot.
+    /// Whether a ruby base may break where an annotation cannot.
     ///
-    /// Either keeps an unbreakable annotation on the first piece, matching
-    /// Chrome, or requires a break opportunity in every nonempty annotation,
-    /// as CSS Ruby does. Changes affect lines on relayout and intrinsic sizes
-    /// on rebuild.
+    /// Either keeps an unbreakable annotation on the first piece, as Chrome
+    /// does, or requires a break opportunity in every nonempty annotation,
+    /// as CSS Ruby does. Changes apply to lines on relayout and to intrinsic
+    /// sizes on rebuild.
     pub ruby_break_within: RubyBreakWithin,
     /// The space reserved for emphasis marks.
     ///
-    /// Either uses space remaining below the preceding line, matching Chrome,
+    /// Either uses the room left below the preceding line, as Chrome does,
     /// or expands each marked line equally. Changes take effect on relayout.
     pub emphasis_room: EmphasisRoom,
 }
 
 impl Config {
-    /// Returns the Windows Chrome preset.
+    /// Returns the preset modelled on Chrome on Windows.
     ///
-    /// Uses DirectWrite line metrics. Defaults to English font selection; see
+    /// Uses DirectWrite line metrics and English font selection; see
     /// [`default_language`](Self::default_language).
     ///
-    /// All presets apply CSS variations to platform fonts and synthesize
-    /// missing position variants. Use [`PlatformFontVariations`] and
-    /// [`PositionSynthesis`] to reproduce Chrome limitations.
+    /// Every preset applies CSS variations to platform fonts and synthesizes
+    /// missing position variants. [`PlatformFontVariations`] and
+    /// [`PositionSynthesis`] reproduce Chrome there.
     pub fn chrome_windows() -> Self {
         Self {
             line_metrics: LineMetricsSource::Win,
-            // A tag that always parses: `und` could stand in only if the
-            // parser changed under it.
+            // "en" always parses; `und` is a fallback that never applies.
             default_language: Language::parse("en").unwrap_or(Language::UND),
             super_sub: SuperSubPosition::SizeRatio,
             dominant_baseline: DominantBaselines::Ignored,
@@ -133,9 +132,9 @@ impl Config {
         }
     }
 
-    /// Returns the macOS Chrome preset.
+    /// Returns the preset modelled on Chrome on macOS.
     ///
-    /// Uses `hhea` metrics regardless of `USE_TYPO_METRICS`, matching Core Text.
+    /// Uses `hhea` metrics whatever `USE_TYPO_METRICS` says, as Core Text does.
     pub fn chrome_mac() -> Self {
         Self {
             line_metrics: LineMetricsSource::Hhea,
@@ -143,10 +142,10 @@ impl Config {
         }
     }
 
-    /// Returns the Linux and BSD Chrome preset.
+    /// Returns the preset modelled on Chrome on Linux and BSD.
     ///
-    /// Uses typographic metrics when `USE_TYPO_METRICS` is set, otherwise
-    /// `hhea`, matching FreeType.
+    /// Uses typographic metrics where `USE_TYPO_METRICS` is set, else
+    /// `hhea`, as FreeType does.
     pub fn chrome_linux() -> Self {
         Self {
             line_metrics: LineMetricsSource::TypoOrHhea,
@@ -179,7 +178,7 @@ impl Config {
     /// - `position_synthesis` and `platform_font_variations`: the CSS
     ///   behavior, as in every preset.
     ///
-    /// Where CSS leaves the choice open, a portable value is used:
+    /// Where CSS leaves the choice open, it takes a portable value:
     /// - `line_metrics`: [`TypoOrHhea`](LineMetricsSource::TypoOrHhea), the
     ///   closest to the CSS Inline 3 advice to use typographic metrics, else
     ///   `hhea`.
@@ -208,8 +207,9 @@ impl Config {
 
     /// Returns the preset for the target platform.
     ///
-    /// Uses Windows settings on Windows, macOS settings on Apple platforms,
-    /// and Linux settings elsewhere, including WebAssembly and embedded targets.
+    /// The Windows preset on Windows, the macOS preset on Apple platforms,
+    /// and the Linux preset elsewhere, WebAssembly and embedded targets
+    /// included.
     pub fn platform() -> Self {
         if cfg!(windows) {
             Self::chrome_windows()
@@ -222,8 +222,7 @@ impl Config {
 }
 
 impl Default for Config {
-    /// Returns the preset for the platform this is built for, as
-    /// [`platform`](Config::platform) does.
+    /// Returns [`Config::platform`].
     fn default() -> Self {
         Self::platform()
     }
@@ -231,35 +230,35 @@ impl Default for Config {
 
 /// The source of font ascent, descent and line-gap metrics.
 ///
-/// Determines `line-height: normal`. Font metric sets can differ substantially:
-/// Consolas at 30 px has a Windows ascent of 28 px and typographic ascent
-/// of 22 px. If a required table is absent, `hhea` substitutes for `OS/2`,
-/// and the Windows metrics in `OS/2` substitute for `hhea`.
+/// Determines `line-height: normal`. The sets can differ widely: Consolas
+/// at 30 px has a Windows ascent of 28 px and a typographic ascent of
+/// 22 px. Where a table is missing, `hhea` stands in for `OS/2`, and the
+/// Windows metrics in `OS/2` for `hhea`.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum LineMetricsSource {
-    /// Uses `OS/2` Windows ascent and descent, matching DirectWrite.
+    /// The `OS/2` Windows ascent and descent, as DirectWrite reads them.
     ///
-    /// The line gap fills the remaining `hhea` line height rather than using
-    /// `hhea` line gap directly. For example, Yu Gothic specifies 1024 units
-    /// of gap but DirectWrite reports 645 after accounting for Windows extents.
+    /// The line gap is what remains of the `hhea` line height, not the
+    /// `hhea` line gap. Yu Gothic, for example, sets 1024 units of gap, and
+    /// DirectWrite reports 645 once the Windows extents are taken out.
     Win,
-    /// Uses `hhea` ascent, descent and line gap, matching Core Text.
+    /// The `hhea` ascent, descent and line gap, as Core Text reads them.
     Hhea,
-    /// Uses `OS/2` typographic metrics if `USE_TYPO_METRICS` is set.
-    ///
-    /// Otherwise uses [`Hhea`](Self::Hhea), matching FreeType.
+    /// The `OS/2` typographic metrics where `USE_TYPO_METRICS` is set, else
+    /// [`Hhea`](Self::Hhea), as FreeType reads them.
     TypoOrHhea,
 }
 
 /// How far `vertical-align: super` and `sub` move a box.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum SuperSubPosition {
-    /// Uses a font-size ratio, matching Chrome.
+    /// A ratio of the parent font size, as in Chrome.
     ///
-    /// Superscripts move up by one third of the parent font size plus one
-    /// pixel; subscripts move down by one fifth plus one pixel.
+    /// Superscripts move up by a third of the parent font size plus 1 px,
+    /// and subscripts down by a fifth plus 1 px. Selected by the Chrome
+    /// presets.
     SizeRatio,
-    /// Uses parent-font superscript and subscript offsets from `OS/2`.
+    /// The parent font's superscript and subscript offsets from `OS/2`.
     ///
     /// Selected by [`Config::spec`], following CSS Inline 3.
     FontMetrics,
@@ -267,82 +266,83 @@ pub enum SuperSubPosition {
 
 /// Whether `dominant-baseline` affects inline alignment.
 ///
-/// Either aligns boxes on the parent alphabetic baseline, matching Chrome,
-/// which resets the property to `auto` outside SVG, or aligns dominant
-/// baselines as CSS Inline 3 does, allowing ideographic alignment for CJK
-/// within Latin text. Chrome presets ignore the property; [`Config::spec`]
-/// selects `Applied`.
+/// Either aligns boxes on the parent's alphabetic baseline, as Chrome does
+/// outside SVG, or aligns dominant baselines as CSS Inline 3 specifies,
+/// which allows ideographic alignment for CJK within Latin text. The Chrome
+/// presets select `Ignored`; [`Config::spec`] selects `Applied`.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum DominantBaselines {
-    /// Uses the parent alphabetic baseline, ignoring `dominant-baseline`.
+    /// Aligns on the parent's alphabetic baseline, ignoring `dominant-baseline`.
     Ignored,
-    /// Aligns the box and parent dominant baselines.
+    /// Aligns the dominant baselines of the box and its parent.
     ///
-    /// Adjusts by the difference between their primary-font baseline offsets.
-    /// Inheriting the same baseline and font produces no shift. The block
-    /// baseline defines the line baseline.
+    /// Shifts by the difference between their primary fonts' baseline
+    /// offsets, so the same baseline and font give no shift. The block's
+    /// baseline is the line's.
     Applied,
 }
 
 /// Synthesis of missing superscript or subscript glyphs.
 ///
-/// CSS Fonts 4, section 6.5, requires synthesis for an entire contiguous run
-/// if any character lacks the requested variant. Chrome applies `sups` or
-/// `subs` without synthesis, leaving unsupported characters unchanged
+/// CSS Fonts 4, section 6.5, requires synthesis for a whole run where any
+/// character lacks the variant. Chrome applies `sups` or `subs` without
+/// synthesis and leaves the other characters unchanged
 /// (<https://issues.chromium.org/issues/352218916>).
 ///
-/// Presets use `SynthesizeMissing` to follow CSS. `FeaturesOnly` reproduces
+/// Every preset selects `SynthesizeMissing`. `FeaturesOnly` reproduces
 /// Chrome.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum PositionSynthesis {
-    /// Synthesizes missing position variants as required by CSS Fonts 4.
+    /// Synthesizes missing position variants, as CSS Fonts 4 requires.
     ///
-    /// A run fully covered by the feature uses it. Otherwise, if synthesis
-    /// is permitted, the whole run uses smaller, shifted glyphs based on
-    /// font `OS/2` size and offset metrics. Line metrics remain unchanged.
-    /// Selected by all presets.
+    /// A run the feature fully covers uses it. Otherwise, where
+    /// `font-synthesis-position` allows, the whole run is set in smaller,
+    /// shifted glyphs sized by the font's `OS/2` metrics. Line metrics do
+    /// not change. Selected by every preset.
     SynthesizeMissing,
-    /// Applies `sups` or `subs` without synthesizing missing glyphs.
+    /// Applies `sups` or `subs` without synthesis.
     ///
-    /// Unsupported characters remain unchanged, matching Chrome.
+    /// Characters the feature does not cover stay unchanged, as in Chrome.
     FeaturesOnly,
 }
 
 /// Variation support for system fonts.
 ///
-/// All presets use `All`. `MatchingOnly` reproduces Chrome on Windows and Linux,
-/// where system fonts use the platform-matched named instance and additional
-/// CSS variations apply only to web fonts. macOS applies all variations.
+/// Every preset selects `All`. `MatchingOnly` reproduces Chrome on Windows
+/// and Linux, where a system font uses its matched named instance and other
+/// CSS variations apply only to web fonts. Chrome on macOS applies every
+/// variation.
 ///
-/// For example, Chrome 153 on Windows ignores `'wdth' 75` for system
-/// Bahnschrift and `'wght' 700` for system Segoe UI Variable, while applying
+/// Chrome 153 on Windows, for example, ignores `'wdth' 75` for system
+/// Bahnschrift and `'wght' 700` for system Segoe UI Variable, but applies
 /// them to the same files loaded as web fonts.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum PlatformFontVariations {
-    /// Uses only matching axes and pinned named-instance coordinates.
+    /// Only the matching axes and the named instance's coordinates.
     ///
-    /// Includes weight, width and style but excludes additional
-    /// `font-variation-settings` and `font-optical-sizing`, matching Chrome
-    /// system fonts on Windows and Linux.
+    /// Weight, width and style apply; `font-variation-settings` and
+    /// `font-optical-sizing` do not. Chrome on Windows and Linux sets system
+    /// fonts so.
     MatchingOnly,
-    /// Applies all CSS variations in CSS order.
+    /// Every CSS variation, in CSS order.
     ///
-    /// Selected by all presets; matches Chrome on macOS and Firefox.
+    /// Selected by every preset. Chrome on macOS and Firefox set system
+    /// fonts so.
     All,
 }
 
 /// Whether a small kana may start a line under `line-break: normal`.
 ///
-/// A small kana is Line_Break CJ. Under `loose` it always may. Under `strict`
-/// it may only after a space or a U+200B.
+/// A small kana has Line_Break class CJ. Under `loose` it always may, and
+/// under `strict` only after a space or U+200B.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum SmallKana {
-    /// Allows small kana at line start, matching Chrome and ICU.
+    /// Small kana may start a line, as in Chrome and ICU.
     ///
-    /// ICU treats CJ as ideographic under `normal` and `loose`.
-    /// Selected by Chrome presets.
+    /// ICU treats CJ as ideographic under `normal` and `loose`. Selected by
+    /// the Chrome presets.
     MayStartLine,
-    /// Prevents breaks before small kana, as under `strict`.
+    /// No break before a small kana, as under `strict`.
     ///
     /// Selected by [`Config::spec`], following CSS Text (csswg-drafts#10363).
     Held,
@@ -350,19 +350,20 @@ pub enum SmallKana {
 
 /// Trimming of the blank half of full-width punctuation.
 ///
-/// CSS Text 4 requires trimming regardless of font support. Chrome trims
-/// only through the font `halt` feature. In Chrome 153 at 40 px, `漢「「漢`
-/// measures 140 px in Yu Gothic with `halt` and 160 px in MS Gothic without
-/// it.
+/// CSS Text 4 requires trimming whatever the font supports. Chrome trims
+/// only through the font's `halt` feature: at 40 px in Chrome 153, `漢「「漢`
+/// measures 140 px in Yu Gothic, which has `halt`, and 160 px in MS Gothic,
+/// which does not.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum PunctuationTrim {
-    /// Trims only through font `halt` support. Selected by Chrome presets.
+    /// Trims only through the font's `halt` feature. Selected by the Chrome
+    /// presets.
     FontFeature,
-    /// Trims even if the font has no `halt` feature.
+    /// Trims even where the font has no `halt` feature.
     ///
-    /// Fallback removes half the mark advance and shifts opening glyphs into
-    /// the retained half. MS Gothic `漢「「漢` then measures 140 px at 40 px.
-    /// Selected by [`Config::spec`].
+    /// Without `halt`, a mark loses half its advance and an opening mark's
+    /// glyph shifts into the half kept. MS Gothic `漢「「漢` then measures
+    /// 140 px at 40 px. Selected by [`Config::spec`].
     Always,
 }
 
@@ -376,116 +377,122 @@ impl PunctuationTrim {
 
 /// The fitting rule for `text-wrap-style: pretty`.
 ///
-/// Both rules minimize squared remaining space in the final lines and retain
-/// the greedy line count, matching Chrome. They differ
-/// in activation conditions, the number of lines considered and final-line
-/// requirements.
+/// Both rules minimize the squared room left in the final lines and keep
+/// the greedy line count, as Chrome does. They differ in when they apply,
+/// how many lines they reconsider, and what they ask of the last line.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Pretty {
-    /// Balances the last four lines, matching Chrome.
+    /// Balances the last four lines, as Chrome does.
     ///
-    /// Activates for a single unbreakable final word occupying less than a
-    /// third of the line, or consecutive hyphens on the second and third
-    /// lines from the end. Penalizes the final break opportunity most heavily.
+    /// Applies where the last line is one unbreakable word taking less than
+    /// a third of the line, or where the second and third lines from the end
+    /// both end in hyphens. Penalizes the last break opportunity most.
+    /// Selected by every preset.
     Limited,
-    /// Balances the last six lines with a stronger final-line penalty.
+    /// Balances the last six lines, with a stronger last-line penalty.
     ///
-    /// Also activates when the last line occupies less than a fifth of its
-    /// width. The penalty favors moving words to that line over improving
-    /// the preceding lines alone.
+    /// Also applies where the last line fills less than a fifth of its
+    /// width. The penalty favors moving words onto that line over evening
+    /// out the lines before it.
     Even,
 }
 
 /// Whether justification expands tabs or preserves tab stops.
 ///
 /// Expanding tabs as spaces, as Chrome does, shifts tab stops: 80, 120 and
-/// 160 may become 81, 121 and 162. Preserving tab widths and expanding only
-/// other opportunities keeps columns aligned.
+/// 160 may become 81, 121 and 162. Keeping tab widths keeps columns
+/// aligned.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum TabJustification {
-    /// Expands tabs as justification opportunities, matching Chrome.
+    /// Tabs expand as justification opportunities, as in Chrome. Selected by
+    /// the Chrome presets.
     Stretch,
-    /// Preserves tab widths and distributes space to other opportunities.
+    /// Tabs keep their widths, and the other opportunities take the space.
     ///
     /// Selected by [`Config::spec`], following CSS Text 4.
     KeepStops,
 }
 
-/// Whether whitespace immediately before an ellipsis cut is retained.
+/// Whether white space just before an ellipsis is kept.
 ///
-/// Retaining it matches Chrome, which keeps the fitting part of an item,
-/// trailing spaces included, but hides an item of which nothing fits. In
-/// Chrome 153, `XXXXXXXX XXXXXXXXXX` cut after the space draws
-/// `XXXXXXXX …`. Putting the space in a separate text node instead draws
-/// `XXXXXXXX…`.
+/// Chrome keeps the part of an item that fits, trailing spaces included,
+/// and hides an item of which nothing fits. In Chrome 153,
+/// `XXXXXXXX XXXXXXXXXX` cut after the space draws `XXXXXXXX …`; with the
+/// space in a text node of its own it draws `XXXXXXXX…`.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum EllipsisSpace {
-    /// Retains fitting whitespace before the ellipsis, matching Chrome.
+    /// White space that fits stays before the ellipsis, as in Chrome.
+    /// Selected by every preset.
     Kept,
-    /// Hides trailing whitespace so the ellipsis follows the last word.
+    /// Trailing white space is hidden, so the ellipsis follows the last word.
     Hidden,
 }
 
-/// The characters eligible for `word-spacing`.
+/// The characters `word-spacing` applies to.
 ///
-/// Either spaces U+0020 and U+00A0 only, matching Chrome, or all retained
-/// word separators, as CSS Text 3 does. Chrome excludes an initial U+0020
-/// unless the block preserves whitespace; CSS Text 3 includes
-/// script-specific separators and initial spaces. A preserving inline inside
-/// a collapsing block can expose the difference:
+/// Either U+0020 and U+00A0 only, as in Chrome, or every word separator
+/// kept, as CSS Text 3 specifies. Chrome skips a leading U+0020 unless the
+/// block preserves white space; CSS Text 3 includes it, and
+/// script-specific separators. An inline that preserves spaces in
+/// a block that does not shows the difference:
 /// `<p><span style="white-space: pre"> a</span></p>`.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum WordSpacing {
-    /// Spaces U+0020 and U+00A0 only.
+    /// U+0020 and U+00A0 only.
     ///
-    /// Initial U+0020 receives spacing only if the block preserves spaces
-    /// (`preserve`, `preserve-spaces` or `break-spaces`).
+    /// A leading U+0020 takes spacing only where the block preserves spaces
+    /// (`preserve`, `preserve-spaces` or `break-spaces`). Selected by the
+    /// Chrome presets.
     SpaceAndNoBreakSpace,
-    /// Spaces all CSS word separators, including initial separators.
+    /// Every CSS word separator, leading ones included.
     ///
-    /// Includes U+0020, U+00A0, Ethiopic U+1361, Aegean U+10100/U+10101,
-    /// Ugaritic U+1039F and Phoenician U+1091F. Selected by [`Config::spec`].
+    /// The separators are U+0020, U+00A0, Ethiopic U+1361, Aegean U+10100
+    /// and U+10101, Ugaritic U+1039F and Phoenician U+1091F. Selected by
+    /// [`Config::spec`].
     WordSeparators,
 }
 
 /// The permitted ruby annotation overhang.
 ///
-/// `ruby-overhang: none` disables overhang under either rule. In Chrome:
-/// - `auto` permits the smaller of the base inset and half the annotation
-///   font size, over text no larger than the ruby, up to half that text width;
-/// - `spaces` permits adjacent blank space, including space separators and
-///   blank halves of full-width punctuation, within the base inset;
-/// - annotations never overhang another column.
+/// `ruby-overhang: none` turns overhang off under either rule. In Chrome:
+/// - `auto` allows the smaller of the base inset and half the annotation
+///   font size, over text no larger than the ruby, up to half that text's
+///   width;
+/// - `spaces` allows overhang over the blank space beside the base, space
+///   separators and the blank halves of full-width punctuation included,
+///   within the base inset;
+/// - an annotation never overhangs another column.
 ///
-/// JLREQ, section 3.3.7, permits overhang only over kana to avoid ambiguous readings.
+/// JLREQ, section 3.3.7, allows overhang only over kana, to avoid
+/// ambiguous readings.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum RubyOverhangRule {
-    /// Permits overhang over adjacent text within size limits.
-    ///
-    /// Matches Chrome. Selected by all presets.
+    /// Overhang over the text beside the base, within size limits, as in
+    /// Chrome. Selected by every preset.
     AdjacentText,
-    /// Permits `auto` overhang over kana only, following JLREQ.
+    /// `auto` overhang over kana only, following JLREQ.
     ///
-    /// Limits it to one annotation em and half the excess width. `spaces`
-    /// permits blank-space overhang only, avoiding ambiguous readings over kanji.
+    /// Limited to one annotation em and half the excess width. `spaces`
+    /// allows overhang over blank space only, avoiding ambiguous readings
+    /// over kanji.
     KanaOnly,
 }
 
 /// Whether ruby splitting requires an opportunity in every annotation.
 ///
-/// Annotations are cut in proportion to the base. Either permits base-only
-/// breaks and keeps an unbreakable annotation on the first piece, matching
-/// Chrome, or requires a break opportunity in every nonempty annotation, as
-/// CSS Ruby does.
+/// Annotations are cut in proportion to the base. Either the base breaks
+/// alone and an unbreakable annotation stays on the first piece, as in
+/// Chrome, or every nonempty annotation needs a break opportunity, as CSS
+/// Ruby specifies.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub enum RubyBreakWithin {
-    /// Uses base break opportunities independently of annotations.
+    /// The base's break opportunities, whatever the annotations allow.
     ///
-    /// Unbreakable annotations remain on the first piece.
-    /// Selected by Chrome presets.
+    /// An unbreakable annotation stays on the first piece. Selected by the
+    /// Chrome presets.
     #[default]
     BaseOpportunities,
-    /// Requires a break opportunity in every nonempty annotation.
+    /// Breaks only where every nonempty annotation has an opportunity.
     ///
     /// Selected by [`Config::spec`], following CSS Ruby.
     AllLevels,
@@ -493,44 +500,46 @@ pub enum RubyBreakWithin {
 
 /// The space reserved above or below text for emphasis marks.
 ///
-/// Either uses available space below the preceding line or above the first
-/// line, matching Chrome, or expands every marked line equally.
+/// Either uses the room left below the preceding line, or above the first
+/// line, as Chrome does, or expands every marked line equally.
 ///
-/// Shared space can produce uneven line spacing. In Chrome 153, four marked
-/// lines at 40 px and `line-height: 1.5` occupy 250 px without space above
-/// the block; only the first line adds 10 px. Ruby annotations use Chrome
-/// spacing under either setting.
+/// Shared room can space lines unevenly. In Chrome 153, four marked lines
+/// at 40 px and `line-height: 1.5` take 250 px with no room above the
+/// block: only the first line grows, by 10 px. Ruby annotations take room
+/// as Chrome does under either setting.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum EmphasisRoom {
-    /// Uses space left by the preceding line before expanding this line.
+    /// Takes the room the preceding line leaves before growing the line.
     ///
-    /// The first line uses available space above the block.
-    /// Selected by Chrome presets.
+    /// The first line takes the room above the block. Selected by the
+    /// Chrome presets.
     Shared,
-    /// Expands each marked line by the required emphasis space.
+    /// Grows each marked line by the room its marks need.
     ///
-    /// Distributes expansion above and below in proportion to the marks.
-    /// Does not borrow from preceding lines; the first line can use space
-    /// above the block. Selected by [`Config::spec`].
+    /// The growth goes above and below as the marks need. Nothing is
+    /// borrowed from the preceding line, but the first line may take the
+    /// room above the block. Selected by [`Config::spec`].
     Uniform,
 }
 
-/// Hit-testing behavior outside line boxes.
+/// Hit-testing behavior for a point outside every line box.
 ///
-/// Uses the next line after the point, or the last line below all lines,
-/// matching Chrome.
+/// A point above a line or in a gap hits the next line, and a point below
+/// every line hits the last. This sets where on that line it lands.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum PastLines {
-    /// Hits the selected line at the same column, matching Windows.
+    /// The point's column on that line, as on Windows.
     Column,
-    /// Hits a line start, or the final line end below all lines, matching macOS and Linux.
+    /// The line's start, or the last line's end below every line, as on
+    /// macOS and Linux.
     LineEnds,
 }
 
 impl PastLines {
     /// Returns the hit-testing behavior for the target platform.
     ///
-    /// Preserves the column on Windows and selects line ends elsewhere.
+    /// [`Column`](Self::Column) on Windows and [`LineEnds`](Self::LineEnds)
+    /// elsewhere.
     pub const fn platform() -> Self {
         if cfg!(windows) {
             Self::Column
@@ -599,8 +608,7 @@ mod tests {
         assert_eq!(spec.default_language.as_str(), "und");
     }
 
-    /// The default is the preset for where the crate runs, so a caller that
-    /// never sets a config gets Chrome's behaviour there.
+    /// The default is the preset for the platform the crate is built for.
     #[test]
     fn the_default_is_the_platforms_preset() {
         let expected = if cfg!(windows) {

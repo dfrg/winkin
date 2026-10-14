@@ -6,7 +6,8 @@ use super::*;
 use crate::selection::{Affinity, Granularity, MotionDirection, Position, Selection};
 use crate::style::WhiteSpaceCollapse;
 
-/// The text of each line of `text`, set in `style` and broken at 60px.
+/// Returns the text of each line of `text`, set in `style` and broken at
+/// 60px.
 fn lines_of_text(cx: &mut Context, style: &ComputedStyle<'_>, text: &str) -> (Layout, Vec<String>) {
     let mut layout = Layout::new();
     build(cx, &mut layout, &ComputedBlockStyle::new(style), |b| {
@@ -47,8 +48,8 @@ fn a_line_breaks_between_a_space_and_its_marks_as_chrome_does() {
     }
 }
 
-/// The caret keeps to the grapheme a space and its marks make, across the
-/// line between them: one step goes from before the space to after the
+/// The caret treats a space and its marks as one grapheme across the line
+/// break between them: one step goes from before the space to after the
 /// marks.
 #[test]
 fn a_caret_steps_over_a_space_and_its_marks_whole() {

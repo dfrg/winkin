@@ -1,32 +1,31 @@
-//! Typed ids, and the only casts between an id and an index.
+//! Typed ids and the casts between ids and indexes.
 
 use core::fmt;
 use core::ops::Range;
 
 /// A typed index into a [`Table`](super::Table).
 ///
-/// Implemented only through [`define_id!`], which is what keeps every
-/// conversion between an id and a `usize` in this module.
+/// Implemented only through [`define_id!`], which keeps every conversion
+/// between an id and a `usize` in this module.
 pub(crate) trait Id: Copy + Eq + Ord + fmt::Debug {
     /// The largest index this id can name.
     const MAX: usize;
 
     /// The id naming `index`, or `None` if it is past [`MAX`](Self::MAX).
     ///
-    /// Anything that turns a caller's input into an id asks this, and refuses
-    /// rather than truncates.
+    /// Ids made from input go through this, so they are refused rather than
+    /// truncated.
     fn try_new(index: usize) -> Option<Self>;
 
-    /// The id naming `index`, which the calling code knows is in range.
+    /// The id naming `index`, which must be at most [`MAX`](Self::MAX).
     ///
-    /// `index` is an id or length of a [`Table`](super::Table), or one plus a
-    /// count bounded by the same table. A table never holds more than `MAX`
-    /// items, so its length is always an id this can make.
+    /// `index` is an id or length of a [`Table`](super::Table), or a count it
+    /// bounds. A table holds at most `MAX` items, so its length is always an
+    /// id.
     ///
-    /// Never panics. Debug builds check the range, and a failure there is a
-    /// bug in the crate, never something a caller did. In release a value
-    /// past `MAX` wraps. Anything a caller controls goes through
-    /// [`try_new`](Self::try_new) instead.
+    /// Never panics. Debug builds check the range; a failure is a bug in the
+    /// crate. In release a value past `MAX` wraps. Values from input go
+    /// through [`try_new`](Self::try_new).
     fn new(index: usize) -> Self;
 
     /// The index this id names.
@@ -80,12 +79,11 @@ macro_rules! define_id {
 }
 pub(crate) use define_id;
 
-/// A range of ids that walks its ids.
+/// Iteration over a range of ids.
 ///
-/// `Range<I>` is not an iterator for an id (that needs the unstable `Step`),
-/// so this walks it.
+/// `Range<I>` is not an iterator, since that needs the unstable `Step` trait.
 pub(crate) trait IdRange<I> {
-    /// Returns the ids from the range's start up to its end, in order.
+    /// Returns the ids in the range, in order.
     fn ids(self) -> impl DoubleEndedIterator<Item = I> + ExactSizeIterator;
 }
 
@@ -96,10 +94,9 @@ impl<I: Id> IdRange<I> for Range<I> {
     }
 }
 
-/// Packs `index`, an index or a count, into a `u32` for a record, saturating.
+/// Packs an index or a count into a `u32`, saturating at `u32::MAX`.
 ///
-/// Every table is indexed by an id of at most a `u32`, so no index is past
-/// it. A count past it saturates to `u32::MAX`.
+/// No id is wider than `u32`, so only a count can saturate.
 #[inline]
 pub(crate) fn index_to_u32(index: usize) -> u32 {
     u32::try_from(index).unwrap_or(u32::MAX)
@@ -107,8 +104,8 @@ pub(crate) fn index_to_u32(index: usize) -> u32 {
 
 /// Unpacks an index or a count packed by [`index_to_u32`].
 ///
-/// It saturates on a target whose `usize` is narrower than a `u32`, where a
-/// value that large is past the end of anything.
+/// Saturates where `usize` is narrower than `u32`; such a value is past the
+/// end of any table.
 #[inline]
 pub(crate) fn u32_to_index(packed: u32) -> usize {
     usize::try_from(packed).unwrap_or(usize::MAX)

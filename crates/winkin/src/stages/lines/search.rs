@@ -1,23 +1,17 @@
 //! Choosing a line's end in its band, as more of [`Breaker`]'s `impl`.
 //!
-//! **Chrome's grid.** A boundary's fitting position is its prefix sum from
-//! the paragraph's start, rounded up to 1/64. A line from `s` to `e` is
-//! `⌈P[e] − P[p]⌉ − ⌈P[s] − P[p]⌉` wide. It fits a band `W` wide when that
-//! is at most `W + 1/64`, as in Chrome's `AvailableWidthToFit`. A reshaped
-//! line adds the exact difference its pieces make, rounded the same way.
-//!
-//! **Searching.** The furthest boundary that fits is the last whose prefix
-//! sum is under one threshold. A gallop from the line's start and a bisection
-//! find it in O(log n) of the line's length. A paragraph with tabs, or whose
-//! prefix is not monotone, is walked a cluster at a time instead, as Chrome
-//! walks every paragraph. The walk sizes each tab as it meets it.
-//!
-//! **The opportunity.** From the furthest boundary, the fit steps forward
-//! over what hangs, since a space that overflows still hangs. It then steps
-//! back through the opportunity bitset, measuring each candidate exactly
-//! until one fits. If none fits, it takes an `overflow-wrap` break inside the
-//! word where allowed. Where a prefix goes back, a later opportunity may fit
-//! again. Otherwise it takes the first opportunity, overflowing.
+//! - **Chrome's grid.** A line from `s` to `e` in paragraph `p` is
+//!   `⌈P[e] − P[p]⌉ − ⌈P[s] − P[p]⌉` wide, rounded up to 1/64. It fits a
+//!   band `W` wide when that is at most `W + 1/64` (`AvailableWidthToFit`).
+//!   Reshaped pieces add their exact difference.
+//! - **Search.** The furthest boundary that fits is the last whose prefix
+//!   sum is under a threshold, found by gallop and bisection in O(log n). A
+//!   paragraph with tabs or a prefix that goes back is walked a cluster at
+//!   a time, as Chrome walks every paragraph.
+//! - **Opportunity.** From there the fit steps forward over what hangs, then
+//!   back through the opportunities, measuring each until one fits. Failing
+//!   that, it takes an `overflow-wrap` break, then the first opportunity,
+//!   overflowing.
 
 use super::{
     Breaker, EdgeShapeId, Fitted, Fitting, LineBand, LineFlags, LineHang, LineHead, LineStart,
@@ -35,11 +29,7 @@ use crate::unit::{InlineLayoutUnit, LayoutUnit};
 
 impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// Returns where `line` starts in `band`, and the paragraph's line-edge
-    /// costs sought at its start.
-    ///
-    /// That is its room, indent, start cost and tab origin, with its reshape
-    /// window. A fit and a measure of the line again as the fit did both
-    /// read it.
+    /// costs sought to its start.
     #[inline(always)]
     pub(super) fn line_start<'p>(
         &self,
@@ -56,8 +46,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         let indent = self.indent(para, start, first, area);
         let mut costs = self.edge_costs(para, start);
         let (start_cost, hang_start) = self.start_cost(&mut costs, start, first);
-        // A balanced paragraph's lines fit in an equally narrowed room, and
-        // are set in their full bands.
+        // A balanced paragraph's lines fit a narrowed room but keep their
+        // full bands.
         let band_width = (band.width() - self.hold.narrowing()).max(LayoutUnit::ZERO);
         let fixed = LineStart {
             para,
@@ -78,10 +68,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         (fixed, costs)
     }
 
-    /// Chooses the line `line` starts, fitted to `band`.
-    ///
-    /// Leaves the line's reshaped pieces in the edge tables after its
-    /// `head`.
+    /// Chooses the line `line` starts, fitted to `band`, leaving its reshaped
+    /// pieces in the edge tables after `head`.
     #[inline(always)]
     pub(super) fn fit(
         &mut self,
@@ -99,10 +87,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// Fits a line of a paragraph with breakable ruby, as
     /// [`fit_plain`](Self::fit_plain) does, and keeps its column pieces.
     ///
-    /// It first takes back what an earlier fit of this line kept. It sizes
-    /// the column the line continues before the fit, and records that
-    /// column's rest after it. It is out of line, as is `fit_plain`, so the
-    /// dispatch in [`fit`](Self::fit) inlines and stays small.
+    /// Takes back what an earlier fit of the line kept first. It is out of
+    /// line so the dispatch in [`fit`](Self::fit) stays small.
     #[inline(never)]
     fn fit_ruby(
         &mut self,
@@ -127,8 +113,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         fitted
     }
 
-    /// Fits the line `line` starts as [`fit`](Self::fit) says, splitting a
-    /// ruby column where one may break.
+    /// Fits the line `line` starts, splitting a ruby column where one may
+    /// break.
     #[inline(never)]
     fn fit_plain(
         &mut self,
@@ -155,8 +141,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         };
         let window = fixed.window;
 
-        // A planned end is kept if the line fits there. Otherwise the line
-        // is fitted as usual.
+        // A planned end is kept where the line fits there.
         if let Hold::End(end) = self.hold
             && end > start
             && end <= para.end
@@ -167,10 +152,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             }
         }
 
-        // The rest of the paragraph, where it fits: one subtraction, and a
-        // step back over what hangs. A walked paragraph may overflow on the
-        // way, so it skips this. The candidate is measured only where the
-        // end may fit; otherwise its edges are rewound as it would.
+        // The rest of the paragraph, where it fits. A walked paragraph may
+        // overflow on the way, so it skips this.
         if !para.walks() {
             if self.end_may_fit(&fitting) {
                 let whole = self.candidate(out, &mut fitting, para.end, false);
@@ -182,9 +165,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             }
         }
 
-        // The furthest boundary that fits: the last whose prefix sum is under
-        // the threshold. The threshold is the line's room from its start,
-        // less what the start's reshape adds.
+        // The threshold is the line's room from its start, less what the
+        // start's reshape adds.
         let delta = window.map_or(InlineLayoutUnit::ZERO, |window| window.delta);
         let threshold = fitting.line.fit_start
             + InlineLayoutUnit::from_layout(fitting.line.room - fitting.line.start_cost)
@@ -207,7 +189,6 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         {
             return fitted;
         }
-        // Forward over what hangs, then back to each opportunity in turn.
         let mut hung = furthest;
         while hung < para.end && self.clusters.hangs(hung) {
             hung = ClusterId::new(hung.get() + 1);
@@ -226,15 +207,14 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
                 return fitted;
             }
         }
-        // A mark that hangs past the end gives its advance back. So the
-        // opportunity after the furthest boundary may fit, though no later
-        // one can.
+        // A mark hanging past the end gives its advance back, so the next
+        // opportunity may still fit.
         if para.costs || para.seams {
             let end = self
                 .opportunity(hung..para.end, false, false)
                 .unwrap_or(para.end);
-            // A seam's room is given back too where the line ends at it, as
-            // Chrome's `AdjustOffsetForAutoSpacing` does.
+            // So does a seam's room, as in Chrome's
+            // `AdjustOffsetForAutoSpacing`.
             let flex =
                 para.costs && end_cost(para, &mut fitting.costs, end).flex > LayoutUnit::ZERO;
             let seam = para.seams && self.seam_before(para, end) > InlineLayoutUnit::ZERO;
@@ -258,10 +238,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             next = self.opportunity(start..ClusterId::new(end.get() - 1), true, false);
         }
 
-        // Nothing fits. Where the style allows `overflow-wrap`, take the last
-        // emergency break that fits before the first opportunity. Where none
-        // fits, take the first, which keeps at least one cluster. `nowrap`
-        // sets no emergency break.
+        // Nothing fits: take the last `overflow-wrap` break that fits before
+        // the first opportunity, or else the earliest one, overflowing.
         let opportunity = self.opportunity(start..para.end, false, false);
         let first_break = opportunity.unwrap_or(para.end);
         let before = ClusterId::new(first_break.get() - 1);
@@ -283,8 +261,6 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             return fitted;
         }
 
-        // A prefix that goes back, as under a negative inline margin, may
-        // bring a later opportunity within the room.
         if !para.monotone
             && !para.tabs
             && let Some(first) = opportunity
@@ -293,9 +269,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             return fitted;
         }
 
-        // Otherwise take the first opportunity, overflowing. Where only
-        // spaces follow it, they end this line rather than make their own.
-        // If its reshaped edges bring it within the room, it fits after all.
+        // Otherwise take the first opportunity, overflowing, with any spaces
+        // that alone follow it. Its reshaped edges may still make it fit.
         let end = match opportunity {
             Some(end) if self.clusters.only_spaces(end..para.end) => para.end,
             Some(end) => end,
@@ -308,15 +283,12 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         settle(&fitting, &candidate).unwrap_or_else(|| overflowing(&fitting, &candidate))
     }
 
-    /// Returns the line `fitting` starts, fitted again from the first
-    /// opportunity after `first` within the room, where nothing up to
-    /// `first` fits.
+    /// Returns the line `fitting` starts, ended at the last opportunity after
+    /// `first` that fits, where nothing up to `first` fits.
     ///
     /// Only a prefix that goes back, as under a negative inline margin, can
-    /// fit again past an overflow. Chrome's breaker goes on past an overflow
-    /// that no opportunity before it can end. Where the line comes back
-    /// within the room, it fits on as any line does, and ends at the last
-    /// opportunity before its next overflow (WPT
+    /// fit again past an overflow. Chrome's breaker goes on past such an
+    /// overflow and ends the line before its next one (WPT
     /// `inline-negative-margin-001`). `None` where no later opportunity fits.
     #[cold]
     #[inline(never)]
@@ -340,20 +312,17 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             }
             at = later;
         }
-        // Each candidate replaces the last one's reshaped edges, so the one
-        // kept is measured again.
+        // Each candidate replaces the last one's pieces, so the kept one is
+        // measured again.
         let candidate = self.candidate(out, fitting, fits?, false);
         settle(fitting, &candidate)
     }
 
     /// Returns whether the line `fitting` starts may fit to its paragraph's
-    /// end, weighing it without its candidate where nothing there reshapes.
+    /// end, weighed from the prefix without measuring a candidate.
     ///
-    /// Such a line reaches the prefix to the end less the paragraph's
-    /// hanging tail, and is weighed as [`settle`] weighs it. Returns `true`
-    /// where that does not hold: a start window, seams, tabs, a start
-    /// inside the hanging tail, or spaces at the end the text was shaped
-    /// across.
+    /// Returns `true` where the prefix alone cannot tell: a start window,
+    /// seams, tabs, a start inside the hanging tail, or a reshaped end.
     #[inline]
     fn end_may_fit(&self, fitting: &Fitting<'_, '_>) -> bool {
         let line = &fitting.line;
@@ -385,8 +354,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// Returns the last boundary from `start` to `end` whose prefix sum is at
     /// most `threshold`, and how many positions it compared.
     ///
-    /// Gallops, then bisects, over a prefix that does not decrease. Returns
-    /// `start` where nothing past it fits.
+    /// The prefix must not decrease. Returns `start` where nothing past it
+    /// fits.
     fn search(
         &self,
         fitting: &Fitting<'_, '_>,
@@ -407,10 +376,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// Does what [`search`](Self::search) does, one boundary at a time,
     /// stopping at the first that does not fit.
     ///
-    /// It serves a prefix that may go back, where Chrome stops at the first
-    /// overflow, and a paragraph with tabs, sizing each tab as it meets it.
-    /// The tabs' widths go in the breaker's scratch for the candidates to
-    /// read. It is out of line so the searching fit around it stays small.
+    /// It serves a prefix that may go back and a paragraph with tabs. It
+    /// records each tab's width in the scratch for the candidates.
     #[inline(never)]
     fn walk(
         &mut self,
@@ -426,8 +393,6 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         if line.para.tabs {
             self.scratch.tabs.begin(line);
         }
-        // Segment by segment, with each tab's item and the first item at the
-        // current boundary.
         let mut boundary = None;
         // The furthest boundary that fits, and where the walk stopped.
         let (furthest, stopped) = 'walk: {
@@ -459,10 +424,9 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
 }
 
 /// Returns the last position from `low` to `end` that `fits`, galloping
-/// from `low` and then halving between the last that fits and the first
-/// that does not.
+/// from `low` and then bisecting.
 ///
-/// `fits` holds up to some position and of none after it. `low` is taken
+/// `fits` holds up to some position and for none after it. `low` is taken
 /// to fit, and is returned where nothing past it does.
 pub(super) fn gallop_last(
     mut low: usize,
@@ -482,7 +446,6 @@ pub(super) fn gallop_last(
         low = probe;
         step = step.saturating_mul(2);
     };
-    // Bisect between them.
     while high - low > 1 {
         let middle = low + (high - low) / 2;
         if fits(middle) {
@@ -494,9 +457,8 @@ pub(super) fn gallop_last(
     low
 }
 
-/// Returns `(fits, width, flex taken)` for a candidate with its costs.
-///
-/// Takes the end cost's flex back where that makes it fit.
+/// Returns whether a candidate fits with its costs, its width, and whether
+/// it takes the end cost's flex back to fit.
 fn weigh(fitting: &Fitting<'_, '_>, candidate: &Candidate) -> (bool, LayoutUnit, bool) {
     let cost = candidate.cost;
     let content = candidate.content + fitting.line.start_cost;
@@ -539,7 +501,7 @@ impl Fitted {
     /// Returns the line `candidate` makes, `width` wide with its costs.
     ///
     /// `flex` says the end cost's flex is taken back, and `overflows` that
-    /// it overflows its room. Works out what hangs from the costs used.
+    /// the line overflows its room.
     fn new(
         fitting: &Fitting<'_, '_>,
         candidate: &Candidate,
@@ -555,9 +517,8 @@ impl Fitted {
             flags.insert(LineFlags::HYPHENATED);
         }
         let space = (candidate.full - candidate.content).max(LayoutUnit::ZERO);
-        // Preserved white space ending a paragraph hangs only where it
-        // overflows. Other space separators, where white space collapses,
-        // hang whole. Only a candidate at its paragraph's end is conditional.
+        // Only a candidate at its paragraph's end has white space that hangs
+        // only where it overflows.
         let unconditional = match candidate.conditional {
             Some(before) if space > LayoutUnit::ZERO => {
                 flags.insert(LineFlags::CONDITIONAL_HANG);
@@ -573,7 +534,6 @@ impl Fitted {
             hang: LineHang {
                 space,
                 unconditional,
-                // Hanging punctuation, from the costs used.
                 start: fitting.line.hang_start,
                 end: if flex {
                     candidate.cost.flex

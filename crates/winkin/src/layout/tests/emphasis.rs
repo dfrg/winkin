@@ -8,9 +8,12 @@
 
 use super::*;
 
-/// Chrome's numbers: marks over two Ahem ems at 40px on a line 80px tall. The text's em box is 20 down and 40 tall, so its baseline is 52,
-/// and the marks' own 20px ems stand on it, their baselines 16 in, centred
-/// on 20 and 60. They fit in the half-leading, so the line keeps its 80.
+/// An emphasis mark's em box stands on its text's em box, as in Chrome.
+///
+/// Marks over two Ahem ems at 40px on a line 80px tall: the text's em box
+/// is 20 down and 40 tall, so its baseline is 52, and the marks' own 20px
+/// ems stand on it, their baselines 16 in, centred on 20 and 60. They fit
+/// in the half-leading, so the line keeps its 80.
 #[test]
 fn an_emphasis_mark_sits_against_the_em_box_of_its_text() {
     let mut cx = context();

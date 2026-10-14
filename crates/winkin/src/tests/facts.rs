@@ -1,14 +1,13 @@
-//! Style fact tests, over random content. They pin:
-//! - every record the builder hands a node as its projection of the style the
-//!   caller gave, whether lowered then or found in the builder's memo;
-//! - the content's flags and the block's facts as the styles say them, the
-//!   check every debug build runs (`content::facts_check::check`), here in
-//!   release too;
-//! - what the writer gives a node beside its styles, as the content says
+//! Style fact tests over random content:
+//! - each record a node names is the projection of its style, whether
+//!   lowered or found in the builder's memo;
+//! - the content flags and block facts agree with the styles
+//!   (`content::facts_check::check`, which debug builds run), in release too;
+//! - the writer's other per-node data agrees with the content
 //!   (`content::check`, at the build's finish).
 //!
-//! The content is drawn as `fast.rs` and `segments.rs` draw it, in styles that
-//! set what the builder lowers: every writing mode and orientation, both
+//! The content is drawn as in `fast.rs` and `segments.rs`, in styles that set
+//! what the builder lowers: every writing mode and orientation, both
 //! directions and every `unicode-bidi`, edges and `vertical-align` of every
 //! kind, line heights, spacing, emphasis, `hyphenate-character`,
 //! `text-combine-upright`, ruby, `::first-letter` with and without
@@ -31,7 +30,7 @@ use crate::{
     BoxSize, ComputedBlockStyle, FloatSide, Layout, LayoutBuilder, NodeKey, OriginalDisplay,
 };
 
-/// Styles that set, each, something the builder lowers.
+/// Styles that each set something the builder lowers.
 fn styles(root: &ComputedStyle<'static>) -> Vec<ComputedStyle<'static>> {
     let mut out = vec![*root];
     let mut rtl = *root;
@@ -132,8 +131,8 @@ fn styles(root: &ComputedStyle<'static>) -> Vec<ComputedStyle<'static>> {
     out
 }
 
-/// The block styles: a writing mode each, now and then a first line
-/// restyled, and the root's own bidi.
+/// The block styles: one per writing mode, some with a restyled first line,
+/// each with the root's bidi.
 fn block<'a>(
     root: &'a ComputedStyle<'a>,
     first: &'a ComputedStyle<'a>,
@@ -153,7 +152,7 @@ fn block<'a>(
     block
 }
 
-/// One case's content: words, spans given first-line styles now and then,
+/// Builds one case's content: words, spans (some with first-line styles),
 /// atomic inlines, floats, ruby, forced breaks and a first letter.
 fn content(rng: &mut Rng, b: &mut LayoutBuilder<'_>, styles: &[ComputedStyle<'_>]) {
     let mut n = 1u64;
@@ -235,9 +234,9 @@ fn content(rng: &mut Rng, b: &mut LayoutBuilder<'_>, styles: &[ComputedStyle<'_>
     }
 }
 
-/// Every record a node names is its projection of the node's style, over
-/// random content: the check holds each in the builder as the build runs,
-/// and what the writer gives each node at its finish.
+/// Every record a node names is the projection of its style, checked in the
+/// builder as the build runs, and the writer's per-node data is checked at
+/// its finish.
 #[test]
 fn every_record_is_its_projection_of_the_nodes_style() {
     let mut fixture = Fixture::new(
@@ -267,7 +266,7 @@ fn every_record_is_its_projection_of_the_nodes_style() {
         let first = styles[rng.below(styles.len())];
         let block = block(&root, &first, &mut rng);
         fixture.build(&mut layout, &block, |b| content(&mut rng, b, &styles));
-        // Built again into the same layout: the tables cleared and kept.
+        // Built again into the same layout, whose tables are cleared and reused.
         check(layout.content());
     }
 }

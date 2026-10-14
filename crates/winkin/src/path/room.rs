@@ -1,11 +1,9 @@
-//! Room for lines along paths: each line as long as its own path.
+//! Exclusions that give each line the length of its own path.
 //!
-//! The breaker names the line it asks a band for by its index
-//! ([`Exclusions::band`]). So line `i` gets path `i` however often and in
-//! whatever order it is asked: again at its own height, again when balancing
-//! or `pretty` relays its paragraph from an earlier line, or again when a
-//! relayout starts over. Counting the asks instead gives a relaid paragraph
-//! the wrong paths.
+//! [`Exclusions::band`] receives the line index, so line `i` gets path `i`
+//! however often and in whatever order the breaker asks: at a new height,
+//! when balancing or `pretty` relays a paragraph, or on relayout. Counting
+//! calls instead would give a relaid paragraph the wrong paths.
 
 use super::TextPath;
 use crate::stages::lines::{
@@ -63,8 +61,8 @@ impl<P: TextPath> Exclusions for PathRoom<'_, P> {
             .get(line)
             .or(self.paths.last())
             .map_or(self.start, TextPath::length);
-        // A path shorter than the start, or of no length that is a number,
-        // leaves no room.
+        // A path shorter than the start, or with a NaN length, leaves no
+        // room.
         InlineExtents {
             left: self.start,
             right: length.max(self.start),

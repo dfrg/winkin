@@ -1,12 +1,11 @@
-//! Floats read back: which the lines reached, and where the host put each.
+//! Floats read back: which lines reached them, and where the host placed
+//! each.
 //!
-//! The host places floats; this reports what it was asked and how it
-//! answered. Each record is the float's margin box as the content has it, at
-//! the line-left and block-start edges the host gave, in the coordinates the
-//! lines were broken in. A host that tracks its own floats knows this
-//! already. A host that answers with [`NoExclusions`](crate::NoExclusions)
-//! puts each float where its line reaches it and forgets it, so it reads here
-//! where to draw each.
+//! Each record is the float's margin box from the content, at the line-left
+//! and block-start edges the host returned, in the area's coordinates. A
+//! host that tracks its own floats knows this already. A host that answers
+//! with [`NoExclusions`](crate::NoExclusions) keeps no record, so it reads
+//! here where to draw each float.
 
 use core::slice;
 
@@ -15,7 +14,7 @@ use crate::layout::Layout;
 use crate::stages::content::NodeKey;
 use crate::stages::lines::{BlockExtents, InlineExtents, LineFloat};
 
-/// A float placement returned by the host.
+/// A float and where the host placed it.
 ///
 /// Margin-box coordinates are relative to the [`Area`](crate::Area)
 /// used for line breaking.
@@ -31,7 +30,7 @@ pub struct FloatPlacement {
     /// Includes the host-provided position and the size passed to the builder,
     /// including margins. Values are truncated to the 1/64-pixel layout grid.
     pub inline: InlineExtents,
-    /// Its margin box across the block.
+    /// The margin-box extents across the block.
     pub block: BlockExtents,
 }
 
@@ -44,8 +43,8 @@ pub(super) struct Floats<'a> {
 }
 
 impl<'a> Floats<'a> {
-    /// The floats `records` of those `layout`'s lines placed, in the order
-    /// they were placed: one line's, or every one.
+    /// Creates the walk of `records`, the floats one line or every line of
+    /// `layout` placed, in placement order.
     pub(super) fn new(layout: &'a Layout, records: &'a [LineFloat]) -> Self {
         Self {
             layout,
@@ -80,9 +79,8 @@ impl Iterator for Floats<'_> {
     fn next(&mut self) -> Option<FloatPlacement> {
         loop {
             let record = self.records.next()?;
-            // Every record names a float of the content it was broken
-            // from; one that did not, which is a bug in the breaker, is
-            // passed over.
+            // Every record names a float of the content; one that does not
+            // would be a breaker bug, and is skipped.
             if let Some(placement) = self.placement(record) {
                 return Some(placement);
             }

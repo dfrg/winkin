@@ -1,5 +1,5 @@
 //! A line's kept boxes: their box parts in visual order, the room their
-//! edges take, and the links that set their paint order.
+//! edges take, and the links that chain them in box order.
 //!
 //! This follows Chrome's `InlineLayoutStateStack`. A box's parts are the
 //! runs of its pieces, its placeholder and its descendants', that
@@ -25,16 +25,15 @@ use crate::stages::measure::KeptBoxId;
 use crate::unit::{InlineLayoutUnit, LayoutUnit};
 use crate::work;
 
-/// How many items a line's leaves write before each visual place, which put
-/// each box part's item among the line's, and the scratch that sorts the
-/// box parts into paint order.
+/// How many items a line's leaves write before each visual place, which
+/// places each box part's item among the line's, and the scratch that sorts
+/// the box parts into box order.
 pub(super) struct LeafCounts {
     /// How many items the pieces before each visual place write, with the
     /// total after the last.
     leaves: Table<VisualId, u32>,
-    /// The box parts in paint order: by box in tree order, then by
-    /// where they start. Used only where reordering left the items in
-    /// another order.
+    /// The box parts in box order: by box in tree order, then by where they
+    /// start. Used only where reordering left the items in another order.
     painted: Vec<BoxPartId>,
 }
 
@@ -131,8 +130,9 @@ pub(super) struct LineBox {
     /// Its row among the kept boxes of the line's variant, which its box
     /// parts name.
     pub(super) kept: Option<KeptBoxId>,
-    /// The box around it on the line, and how deep it is among them.
+    /// The box around it on the line.
     pub(super) parent: Option<LineBoxId>,
+    /// How deep it is among the line's boxes.
     pub(super) depth: u32,
     /// How far its baseline is raised from the line's: its own shift plus
     /// every box's around it.
@@ -143,14 +143,16 @@ pub(super) struct LineBox {
     /// A `top` or `bottom` box inside it is placed from this.
     pinned: LayoutUnit,
     /// Whether it opens on the line, rather than continuing from the line
-    /// before, and whether it closes on it.
+    /// before.
     pub(super) opens: bool,
+    /// Whether it closes on the line.
     pub(super) closes: bool,
-    /// Whether its left and right sides are its own edges on the line.
+    /// Whether its left side is its own edge on the line.
     ///
     /// Its direction decides which of start and end is on the left. A box
     /// that clones has both on every line.
     pub(super) has_left: bool,
+    /// Whether its right side is its own edge on the line.
     pub(super) has_right: bool,
     /// The room its left and right edges take, margins included, and the
     /// margins alone; zero on a side that is not its edge.
@@ -158,10 +160,11 @@ pub(super) struct LineBox {
     pub(super) right_room: InlineLayoutUnit,
     pub(super) left_margin: InlineLayoutUnit,
     pub(super) right_margin: InlineLayoutUnit,
-    /// Where its leftmost box part starts and its rightmost ends,
-    /// visually, and the box part being found.
+    /// Where its leftmost box part starts, visually.
     pub(super) first_left: Option<VisualId>,
+    /// Where its rightmost box part ends, visually.
     pub(super) last_right: Option<VisualId>,
+    /// The box part being found.
     pub(super) active: Option<BoxPartId>,
 }
 
@@ -181,7 +184,7 @@ pub(super) struct BoxPart {
     /// here.
     pub(super) inner_left: InlineLayoutUnit,
     pub(super) inner_right: InlineLayoutUnit,
-    /// The item of the box part painted after it, or `None` for the last.
+    /// The item of the next box part in box order, or `None` for the last.
     pub(super) next: Option<FragmentItemId>,
 }
 
@@ -330,11 +333,10 @@ impl<'a> Placer<'a> {
     /// start a part. Boxes the previous piece is in and this one is not
     /// end one.
     ///
-    /// **Linear in the pieces and the parts**, however deep the boxes
-    /// nest. Each walk step starts or ends a part. Parts starting or
-    /// ending at one piece do so innermost first. So a running sum of the
-    /// edges met at that piece gives the room deeper boxes take inside the
-    /// next.
+    /// Linear in the pieces and the parts, however deep the boxes nest. Each
+    /// walk step starts or ends a part. Parts starting or ending at one
+    /// piece do so innermost first, so a running sum of the edges met at
+    /// that piece gives the room deeper boxes take inside the next.
     #[inline(never)]
     pub(super) fn box_parts(&self, pieces: &LinePieces, boxes: &mut LineBoxes) {
         let end = pieces.order.next_id();
@@ -612,10 +614,9 @@ impl<'a> Placer<'a> {
     }
 }
 
-/// Links each box part to the one painted after it, and returns the
-/// first.
+/// Links each box part to the next in box order, and returns the first.
 ///
-/// Paint order is by box in tree order, outermost first whatever reordering
+/// Box order is by box in tree order, outermost first whatever reordering
 /// did, then each box's parts left to right. `counts` holds the sort
 /// scratch.
 ///
@@ -625,8 +626,8 @@ impl<'a> Placer<'a> {
 /// and the parts before it in item order come first.
 ///
 /// The returned first link goes in the line's item; `None` where the line
-/// has no part. A painter follows the links instead of searching, so
-/// painting a line is linear in its items.
+/// has no part. A reader follows the links instead of searching, so walking
+/// a line's box items is linear in its items.
 #[inline(never)]
 pub(super) fn paint_order(
     counts: &mut LeafCounts,
@@ -649,8 +650,8 @@ pub(super) fn paint_order(
         FragmentItemId::new(head.get() + before + index.get() + 1)
     };
     // On a line that is not reordered, as on most lines, the items are in
-    // tree order already, so each paints after the one before and nothing
-    // is sorted. The links are written while the order is checked.
+    // tree order already, so each follows the one before and nothing is
+    // sorted. The links are written while the order is checked.
     let mut ordered = true;
     for index in (BoxPartId::new(0)..parts.next_id()).ids() {
         work::step();

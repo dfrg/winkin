@@ -7,15 +7,14 @@ use super::*;
 use crate::build::FloatSide;
 use crate::style::{FirstLineVariant, LengthPercentage, VerticalAlign, WritingMode};
 
-/// A box's edges' room along a line, `left` at its left and `right` at its
-/// right.
+/// Returns a box's edge widths along a line, `left` and `right`.
 fn edge_room(left: f32, right: f32) -> InlineEdges {
     InlineEdges { left, right }
 }
 
 /// The room between two items is exactly the edges of the boxes between
-/// them, which each kept box's part says: margin, border and padding on
-/// its own sides, and nothing on an open one.
+/// them, as each kept box part reports them: margin, border and padding on
+/// its closed sides, and nothing on an open one.
 #[test]
 fn the_room_between_items_is_the_edges_of_the_boxes_between_them() {
     let mut cx = context();
@@ -85,9 +84,9 @@ fn the_room_between_items_is_the_edges_of_the_boxes_between_them() {
     assert!(first[1].2);
 }
 
-/// A box that keeps a fragment is answered with its items; one that is
-/// culled, from its descendants', a part a line, as wide as they are and
-/// as tall as its text, open where it goes on past a line.
+/// A box that keeps a fragment is answered with its items. A culled box is
+/// answered from its descendants, one part per line, as wide as they are and
+/// as tall as its text, open where it continues past a line.
 #[test]
 fn a_culled_box_is_answered_from_what_it_holds() {
     let mut cx = context();
@@ -138,8 +137,8 @@ fn a_culled_box_is_answered_from_what_it_holds() {
         })
         .collect();
     assert_eq!(boxes, [kept[0].inline()]);
-    // Across two lines: a part on each, open on the side it goes on
-    // past, and none for a key no box has.
+    // Across two lines: a part on each, open on the side it continues past,
+    // and none for a key no box has.
     layout.break_lines(&mut cx, Area::new(60.0), &mut NoExclusions);
     let texts: Vec<&str> = layout
         .lines()
@@ -166,6 +165,22 @@ fn a_culled_box_is_answered_from_what_it_holds() {
     );
     assert_eq!(layout.box_fragments(NodeKey(3)).count(), 0, "a text node");
     assert_eq!(layout.box_fragments(NodeKey(99)).count(), 0);
+    // An outline keeps a fragment as a background does.
+    let outlines = ComputedStyle {
+        outlines: true,
+        ..root
+    };
+    build(&mut cx, &mut layout, &ComputedBlockStyle::new(&root), |b| {
+        b.text(NodeKey(1), "AA ");
+        b.open_box(NodeKey(2), &outlines, None);
+        b.text(NodeKey(3), "BB");
+        b.close_box();
+    });
+    layout.break_lines(&mut cx, Area::new(1000.0), &mut NoExclusions);
+    let outlined: Vec<_> = layout.box_fragments(NodeKey(2)).collect();
+    assert_eq!(outlined.len(), 1);
+    assert!(!outlined[0].is_culled());
+    assert_eq!(outlined[0].inline(), along(30.0, 50.0));
 }
 
 /// A culled box gives one part for each group of what it holds that
@@ -602,9 +617,9 @@ fn laid_out(layout: &Layout) -> String {
     read
 }
 
-/// Text with atomic inlines aligned every way, two of them inside a box
-/// that is aligned itself, sized by `size(n)` for the `n`th atomic inline,
-/// under a `::first-line` that sets the first line's text larger.
+/// Builds text with atomic inlines aligned every way, two of them inside a
+/// box that is aligned itself, the `n`th sized by `size(n)`, under a
+/// `::first-line` that sets the first line's text larger.
 fn aligned_atomics(
     cx: &mut Context,
     layout: &mut Layout,
@@ -833,8 +848,8 @@ fn measuring_what_changes_nothing_keeps_the_lines() {
 }
 
 /// Measures `layout`, built by `calls` with `built`, again with `sizes` and
-/// percentages of `basis`, and checks it lays out as content built with
-/// them at each of `widths`.
+/// percentages of `basis`, and checks that it lays out as content built
+/// with them at each of `widths`.
 fn measures_as_built(
     root: &ComputedStyle<'_>,
     calls: impl Fn(&mut LayoutBuilder<'_>, &dyn Fn(u64) -> BoxSize),
@@ -1096,8 +1111,8 @@ fn content_with_something_to_size_keeps_its_advances() {
     }
 }
 
-/// Text with `count` atomic inlines keyed `0..count`, the `n`th built with
-/// [`built_size`] of `n` modulo 10.
+/// Builds text with `count` atomic inlines keyed `0..count`, the `n`th
+/// built with [`built_size`] of `n` modulo 10.
 #[cfg(debug_assertions)]
 fn many_atomics(cx: &mut Context, layout: &mut Layout, block: &ComputedBlockStyle<'_>, count: u64) {
     let root = block.style;

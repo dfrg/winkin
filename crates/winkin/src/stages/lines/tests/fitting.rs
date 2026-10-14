@@ -1,17 +1,16 @@
 //! Fitting tests. They pin:
-//! - Ahem fitting exactly on Chrome's 1/64 grid, with its one 1/64 of room;
+//! - Ahem fitting exactly on Chrome's 1/64 grid, with one 1/64 of room;
 //! - widths rounded up from the paragraph's start;
 //! - the search agreeing with a plain greedy breaker over many widths;
-//! - a line's cost on a long paragraph.
+//! - a line's search cost on a long paragraph.
 
 use super::*;
 use crate::style::FirstLineVariant;
 
 /// In Ahem every glyph is an em, so a line holds what arithmetic says.
 ///
-/// At 20 px, `XX XX` fills 100 px exactly, the space after it hanging past
-/// the end. One 1/64 less still fits, as Chrome's `AvailableWidthToFit`
-/// allows; two less does not.
+/// `XX XX` at 20 px fills 100 px exactly. A band 1/64 narrower still fits
+/// it, as Chrome's `AvailableWidthToFit` allows; 2/64 narrower does not.
 #[test]
 fn ahem_fits_what_arithmetic_says_with_one_64th_to_spare() {
     let mut fixture = fixture();
@@ -41,12 +40,11 @@ fn ahem_fits_what_arithmetic_says_with_one_64th_to_spare() {
     }
 }
 
-/// A width is read from its paragraph's start, each end rounded up to
-/// 1/64, as Chrome reads its per-item positions.
+/// A width is measured from its paragraph's start, with each end rounded up
+/// to 1/64, as Chrome rounds its per-item positions.
 ///
-/// `i` is 1.6 px at 16 px in the narrow font, 102.4 of 1/64. So a
-/// paragraph of one `i` is 103/64 wide wherever the paragraph before it
-/// ended. Measured from the text's start, the second would be 102/64.
+/// `i` is 102.4/64 px, so each paragraph of one `i` is 103/64 wide. Measured
+/// from the text's start, the second would be 102/64.
 #[test]
 fn a_width_is_rounded_up_from_its_paragraphs_start() {
     let mut fixture = fixture();
@@ -64,11 +62,9 @@ fn a_width_is_rounded_up_from_its_paragraphs_start() {
     }
 }
 
-/// The searched breaker makes the same lines as a plain greedy breaker.
+/// The searching breaker makes the same lines as a plain greedy breaker.
 ///
-/// Each line ends at the last opportunity where it fits its band and its
-/// 1/64, hanging content left out, or else at the first. The text is Latin
-/// with ligatures and a kern, in boxes with edges, with preserved spaces
+/// The text has ligatures, a kern, boxes with edges, preserved spaces, tabs
 /// and forced breaks, at a thousand widths.
 #[test]
 fn the_search_agrees_with_a_straightforward_breaker() {
@@ -141,8 +137,8 @@ fn the_search_agrees_with_a_straightforward_breaker() {
                     b.text(next(), word);
                     b.line_break(next());
                 }
-                // A cloned box across several words: every line it reaches
-                // pays both its edges.
+                // A cloned box across several words, so every line it
+                // reaches pays both its edges.
                 20 => {
                     b.open_box(next(), &cloned, None);
                     b.text(next(), word);
@@ -158,15 +154,15 @@ fn the_search_agrees_with_a_straightforward_breaker() {
     });
     let advances = fixture.cx.shaped_advances();
     let analysis = layout.analysis();
-    // The paragraphs with tabs are walked, and the rest are searched.
+    // Paragraphs with tabs are walked; the rest are searched.
     let walked = analysis
         .paragraphs
         .iter()
         .filter(|(_, p)| p.flags.contains(ParagraphFlags::HAS_TABS))
         .count();
     assert!(walked > 0 && walked < analysis.paragraphs.len());
-    // Every tab is in the preserved box. The stops count in the block's
-    // space.
+    // Every tab is in the preserved box. Tab stops count in the block's
+    // space width.
     let block = layout
         .content()
         .nodes
@@ -205,17 +201,12 @@ fn the_search_agrees_with_a_straightforward_breaker() {
 
 /// Returns the lines a plain greedy breaker makes of `layout` at `width`.
 ///
-/// It tries every opportunity from the paragraph's end back. A line is
-/// measured from its start by the clusters' shaped `advances`, rounded up
-/// from the paragraph's start, with what hangs taken off.
-/// - A tab reaches from where it lands to the next multiple of eight
-///   `space`s from the line's start. Where that is nearer than half a
-///   space, it reaches the one after. It rounds up to 1/64, as Chrome sizes
-///   a tab of the initial `tab-size`.
-/// - A line starting or ending inside a cloned box pays the line-edge costs
-///   there.
+/// Each line ends at the last opportunity that fits its band plus 1/64,
+/// less what hangs, or else at the first. A tab reaches the next multiple of
+/// eight `space`s from the line's start, skipping one nearer than half a
+/// space, rounded up to 1/64.
 ///
-/// It handles text broken only where safe, with no `overflow-wrap` and no
+/// It handles only text broken where safe, with no `overflow-wrap` and no
 /// box edge before a tab.
 fn reference(
     layout: &Layout,
@@ -290,8 +281,8 @@ fn reference(
                     + cost(e, false)
                     <= room
             };
-            // The last that fits, or the first. Spaces after it join the
-            // line where nothing but spaces follows.
+            // The last that fits, or else the first. Where only spaces
+            // follow, they join the line.
             let only_spaces = |e: usize| {
                 (e..end).all(|c| {
                     matches!(
@@ -317,10 +308,9 @@ fn reference(
     lines
 }
 
-/// Fitting searches the prefix rather than walking it.
+/// Fitting searches the prefix sums instead of walking them.
 ///
-/// On a long paragraph a line costs a few comparisons for each doubling of
-/// its length, not one a cluster.
+/// A line costs a few comparisons for each doubling of its length.
 #[test]
 fn a_line_costs_a_logarithm_of_its_length() {
     let mut fixture = fixture();
@@ -345,8 +335,8 @@ fn a_line_costs_a_logarithm_of_its_length() {
         let clusters = layout.analysis().clusters.len();
         let per_line = layout.line_records().probes as f32 / lines as f32;
         let length = clusters as f32 / lines as f32;
-        // A gallop and a bisection: two comparisons for each doubling of
-        // the line's length, and a few over.
+        // A gallop and a bisection take two comparisons for each doubling
+        // of the line's length, plus a few.
         let bound = 2.0 * libm_log2(length) + 4.0;
         assert!(
             per_line <= bound,
@@ -355,7 +345,7 @@ fn a_line_costs_a_logarithm_of_its_length() {
     }
 }
 
-/// Returns `log2` without std.
+/// Returns `log2(x)` for `x` at least 1, linear between powers of two.
 fn libm_log2(x: f32) -> f32 {
     let mut n = 0.0;
     let mut x = x;

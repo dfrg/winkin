@@ -30,9 +30,8 @@ pub enum WhiteSpaceCollapse {
 }
 
 impl WhiteSpaceCollapse {
-    /// Whether spaces and tabs are kept as content.
-    ///
-    /// They are under `preserve`, `break-spaces` and `preserve-spaces`.
+    /// Returns whether spaces and tabs are kept, as under `preserve`,
+    /// `break-spaces` and `preserve-spaces`.
     pub(crate) fn keeps_spaces(self) -> bool {
         matches!(
             self,
@@ -40,28 +39,30 @@ impl WhiteSpaceCollapse {
         )
     }
 
-    /// Whether spaces and tabs collapse, as under `collapse` and `preserve-breaks`.
+    /// Returns whether spaces and tabs collapse, as under `collapse` and
+    /// `preserve-breaks`.
     ///
-    /// `discard` removes them, so neither this nor
-    /// [`keeps_spaces`](Self::keeps_spaces) holds there.
+    /// Under `discard`, neither this nor [`keeps_spaces`](Self::keeps_spaces)
+    /// holds.
     pub(crate) fn collapses_spaces(self) -> bool {
         matches!(self, Self::Collapse | Self::PreserveBreaks)
     }
 }
 
-/// `white-space-trim`: removal of collapsible whitespace at element edges.
+/// `white-space-trim`: removal of white space at an element's edges.
 ///
-/// Not inherited. Supported by winkin but not Chrome.
+/// Not inherited. Chrome does not support it.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub struct WhiteSpaceTrim {
     /// `discard-before`: the white space just before the element's start.
     pub discard_before: bool,
     /// `discard-after`: the white space just after the element's end.
     pub discard_after: bool,
-    /// `discard-inner`: removes leading and trailing whitespace.
+    /// `discard-inner`: the white space just inside the element's start and
+    /// end.
     ///
-    /// For blocks, also removes preserved whitespace through the first
-    /// segment break and from the last segment break, as for `<pre>`.
+    /// On a block, also removes preserved white space up to the first
+    /// segment break and from the last one, as for `<pre>`.
     pub discard_inner: bool,
 }
 
@@ -87,25 +88,26 @@ pub enum TextCase {
     Lowercase,
     /// The first letter of each word uppercase.
     Capitalize,
-    /// A single-character text node mapped to mathematical italic.
-    /// Ignores `full-width` and `full-size-kana`.
+    /// `math-auto`: a text node of one character in mathematical italic.
+    ///
+    /// Excludes `full-width` and `full-size-kana`.
     MathAuto,
 }
 
 /// `text-transform`.
 ///
-/// Applied while building, using the text language and full CSS case mappings.
-/// All layout operations use the transformed text. `capitalize` uses Unicode
-/// word boundaries.
+/// Applied while building, with the text's language and full case mappings.
+/// Layout and its positions use the transformed text. `capitalize` finds
+/// words by Unicode word boundaries.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub struct TextTransform {
     /// The case or exclusive mathematical transform.
     pub case: TextCase,
     /// `full-width`: converts characters to full-width forms.
     ///
-    /// Includes printable ASCII, half-width katakana and Hangul, and selected
-    /// symbols. Preserved spaces become U+3000. Applied after case mapping.
-    /// Supported even where Chrome requires a flag.
+    /// Covers printable ASCII, half-width katakana and Hangul, and some
+    /// symbols. A preserved space becomes U+3000. Applied after case mapping.
+    /// Chrome supports it only behind a flag.
     pub full_width: bool,
     /// `full-size-kana`: converts small kana to full-size forms.
     ///
@@ -137,11 +139,11 @@ impl TextTransform {
 
 /// `-webkit-text-security`: the character each grapheme of text is drawn as.
 ///
-/// Text set so is laid out with one mask character for each extended
-/// grapheme cluster, after `text-transform`. Spaces, tabs and segment breaks
-/// are masked like any other character, so none of them collapses or breaks
-/// a line. Offsets, carets and selections stay in the text as given: a mask
-/// is one caret stop, whatever its grapheme holds.
+/// Masked text is laid out as one mask character per extended grapheme
+/// cluster, after `text-transform`. Spaces, tabs and segment breaks are
+/// masked too, so none of them collapses or breaks a line. Offsets, carets
+/// and selections refer to the unmasked text, and each mask is one caret
+/// stop.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub enum TextSecurity {
     /// The text as written. The initial value.
@@ -186,7 +188,7 @@ pub enum LineBreak {
 /// `hyphens`.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub enum Hyphens {
-    /// No hyphenation: soft hyphens are no opportunity.
+    /// No hyphenation, not even at soft hyphens.
     None,
     /// Breaks at soft hyphens only. The initial value.
     #[default]
@@ -200,7 +202,7 @@ pub enum Hyphens {
 pub enum TabSize {
     /// A multiple of the advance of a space in the element's font.
     Spaces(f32),
-    /// A distance in pixels.
+    /// A distance in CSS pixels.
     Px(f32),
 }
 
@@ -232,12 +234,13 @@ impl Same for TabSize {
 }
 
 style_struct! {
-    /// A length plus a percentage of the applicable basis.
+    /// A length plus a percentage of a basis.
     ///
-    /// The basis is computed font size for `letter-spacing` and
-    /// `word-spacing`, and line width for `text-indent`.
+    /// The basis is the computed font size for `letter-spacing` and
+    /// `word-spacing`, the line width for `text-indent`, and the containing
+    /// block's inline size for margins and padding.
     pub struct LengthPercentage {
-        /// The length, in pixels.
+        /// The length, in CSS pixels.
         pub px: f32,
         /// The percentage, as a fraction: 1.0 is `100%`.
         pub fraction: f32,
@@ -256,15 +259,15 @@ impl LengthPercentage {
         Self { px, fraction: 0.0 }
     }
 
-    /// Whether it is zero whatever its basis: neither part is nonzero.
+    /// Returns whether it is zero at any basis.
     pub(crate) fn is_zero(self) -> bool {
         self.px == 0.0 && self.fraction == 0.0
     }
 
     /// Returns the length in pixels, with the percentage taken of `basis` pixels.
     ///
-    /// A NaN in either part or in `basis` gives a NaN. The grid it goes onto
-    /// takes a NaN as zero.
+    /// A NaN in either part or in `basis` gives a NaN, which the layout
+    /// grid takes as zero.
     pub(crate) fn resolve(self, basis: f32) -> f32 {
         self.px + self.fraction * basis
     }
@@ -288,13 +291,13 @@ pub struct TextAutospace {
 impl TextAutospace {
     /// `no-autospace`: nothing added.
     ///
-    /// This is the initial value as Chrome computes it.
+    /// The initial value as Chrome computes it; CSS gives `normal`.
     pub const NO_AUTOSPACE: Self = Self {
         ideograph_alpha: false,
         ideograph_numeric: false,
     };
 
-    /// `normal`: both.
+    /// `normal`: both kinds of space.
     pub const NORMAL: Self = Self {
         ideograph_alpha: true,
         ideograph_numeric: true,
@@ -311,39 +314,34 @@ pub enum TextSpacingTrim {
     Normal,
     /// No trimming.
     SpaceAll,
-    /// As `Normal`, but fewer line starts keep an opening mark's blank.
-    ///
-    /// An opening mark keeps its blank only at the start of the first line and
-    /// of a line after a forced break.
+    /// As `Normal`, but an opening mark keeps its blank only at the start of
+    /// the first line and of a line after a forced break.
     SpaceFirst,
-    /// As `Normal`, and an opening mark loses its blank at every line's start.
+    /// As `Normal`, and an opening mark loses its blank at every line start.
     TrimStart,
 }
 
 impl TextSpacingTrim {
-    /// Whether text set so trims any punctuation: all but `space-all`.
+    /// Returns whether text trims any punctuation: all but `space-all`.
     pub(crate) fn trims_punctuation(self) -> bool {
         self != Self::SpaceAll
     }
 
-    /// Whether text set so trims a wrapped line's opening mark.
-    ///
-    /// It does under `space-first` and `trim-start`, as Blink's
-    /// `ShouldTrimStartOfWrappedLine` says.
+    /// Returns whether a wrapped line's opening mark is trimmed: under
+    /// `space-first` and `trim-start`, as Blink's `ShouldTrimStartOfWrappedLine`.
     pub(crate) fn trims_wrapped_start(self) -> bool {
         matches!(self, Self::SpaceFirst | Self::TrimStart)
     }
 
-    /// Whether text set so trims a paragraph's opening mark.
-    ///
-    /// It does under `trim-start`, as Blink's `ShouldTrimStartOfParagraph`
-    /// says.
+    /// Returns whether a paragraph's opening mark is trimmed: under
+    /// `trim-start`, as Blink's `ShouldTrimStartOfParagraph`.
     pub(crate) fn trims_paragraph_start(self) -> bool {
         self == Self::TrimStart
     }
 }
 
-/// Whether a stop or comma at a line's end hangs.
+/// Whether a stop or comma at a line's end hangs: the end part of
+/// `hanging-punctuation`.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub enum HangEnd {
     /// It stays inside the line.
@@ -357,7 +355,7 @@ pub enum HangEnd {
 
 /// `hanging-punctuation`.
 ///
-/// Supported by winkin. Chrome parses it but does not apply it.
+/// Chrome parses it but does not apply it.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub struct HangingPunctuation {
     /// `first`: an opening bracket or quote at the first line's start.

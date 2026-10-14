@@ -1,26 +1,27 @@
-//! The position a point hits, as Chrome's `PositionForPoint` finds it in an inline formatting context.
+//! The position a point hits, as Chrome's `PositionForPoint` finds it in an
+//! inline formatting context.
 //!
-//! - The line is the one whose box holds the point. A box's bottom edge
-//!   belongs to the next line, as in `PositionForPointInInlineFormattingContext`.
-//!   The line box decides, not its glyphs.
-//! - Above the first line or in a gap, the next line is hit. Below the last,
-//!   the last is hit. [`PastLines`] says whether such a point keeps its column
-//!   (Windows) or goes to the line's start or end (macOS and Linux), as Blink's
-//!   `ShouldMoveCaretToHorizontalBoundaryWhenPastTopOrBottom` does.
-//! - In the line, the hit is in the leaf under the point. Where no leaf is
-//!   under it, the nearer leaf either side is hit at its near edge, a tie
-//!   going left. A box's room is so split at its middle, each half hitting
-//!   the position drawn on its side. Chrome's `PositionForPointInInlineBox`
-//!   prefers the leaf after; this follows the two positions a box edge has.
+//! - The line is the one whose line box holds the point; glyph extents play
+//!   no part. A box's bottom edge belongs to the next line, as in
+//!   `PositionForPointInInlineFormattingContext`.
+//! - Above the first line or in a gap, the next line is hit; below the last,
+//!   the last. [`PastLines`] says whether such a point keeps its column
+//!   (Windows) or goes to the line's start or end (macOS and Linux), as
+//!   Blink's `ShouldMoveCaretToHorizontalBoundaryWhenPastTopOrBottom` does.
+//! - In the line, the leaf under the point is hit. Where none is, the nearer
+//!   leaf on either side is hit at its near edge, a tie going left, so a
+//!   box's room splits at its middle and each half hits the position drawn
+//!   on its side. Chrome's `PositionForPointInInlineBox` prefers the leaf
+//!   after; this follows the two positions a box edge has.
 //! - In text, the hit is the nearer edge of the cluster under the point. On
-//!   an atomic inline it is before or after by its halves, the middle before.
-//! - A ruby annotation's text is hit where the point is on it. An ellipsis or
+//!   an atomic inline it is before or after by halves, the middle before.
+//! - Ruby annotation text is hit where the point is on it. An ellipsis or
 //!   hyphen passes the hit to the hidden text under it.
 //! - At the edge of a leaf in another direction, the hit is the position
 //!   whose caret is drawn there, as Blink's `BidiAdjustment::AdjustForHitTest`
 //!   finds it.
 //!
-//! The position is downstream, or upstream at its leaf's logical end. That
+//! The position is downstream, or upstream at its leaf's logical end, which
 //! keeps a click past a wrapped line's end on that line.
 
 use super::place::{self, ClusteredPosition, Leaf};
@@ -32,9 +33,10 @@ use crate::layout::{CrossExtents, Line};
 use crate::stages::lines::{InlineExtents, LineId};
 use crate::work;
 
-/// Returns the position the point `inline`, `block` hits, in the area's coordinates.
+/// Returns the position the point `(inline, block)` hits, in the area's
+/// coordinates.
 ///
-/// `None` before the layout has lines.
+/// Returns `None` where the layout has no lines.
 pub(crate) fn hit_test(
     layout: &Layout,
     inline: f32,
@@ -53,7 +55,7 @@ pub(crate) fn hit_test(
     Some(place::snap(layout, hit).position)
 }
 
-/// Where a point is across the lines.
+/// Where a point is relative to the line it hits.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 enum Beyond {
     /// In the line's box.
@@ -66,9 +68,9 @@ enum Beyond {
 
 /// Returns the line `block` falls on and where the point is relative to it.
 ///
-/// It is the line whose box holds `block`, else the first after it, else the
-/// last. `None` where the layout has no lines. It binary-searches the line
-/// boxes, which follow one another down the block.
+/// The line is the one whose box holds `block`, else the first after it,
+/// else the last. Returns `None` where the layout has no lines. Binary-searches
+/// the line boxes, which are ordered down the block.
 fn line_by_block(layout: &Layout, block: f32) -> Option<(Line<'_>, Beyond)> {
     let count = layout.lines().len();
     // The first line whose box ends past the point.
@@ -95,7 +97,7 @@ fn line_by_block(layout: &Layout, block: f32) -> Option<(Line<'_>, Beyond)> {
 
 /// Returns the position at `line`'s logical start, or its end where `end`.
 ///
-/// A point past the lines hits it on macOS and Linux.
+/// A point past the lines hits here under [`PastLines::LineEnds`].
 fn line_end(layout: &Layout, line: &Line<'_>, end: bool) -> ClusteredPosition {
     let clusters = line.record().clusters();
     let start = line.text_range().start;
@@ -129,20 +131,21 @@ fn line_hit(layout: &Layout, line: &Line<'_>, x: f32, y: f32) -> ClusteredPositi
     hit_point(layout, line, x, Some(y))
 }
 
-/// Returns the position `x` along `line`, from its box's left, hits at any height.
+/// Returns the position `x` along `line`, from its box's left, hits at any
+/// height.
 ///
-/// Line motion lands there, and so does a point past the lines.
+/// Line motion lands here, as does a point past the lines.
 pub(super) fn hit_x(layout: &Layout, line: &Line<'_>, x: f32) -> ClusteredPosition {
     hit_point(layout, line, x, None)
 }
 
 /// Returns the position `x` along `line` hits, at `y` across it where given.
 ///
-/// Only combined text reads `y`, since its characters stand across the line.
-/// Without `y`, combined text is hit as an atomic inline is.
+/// Only combined text reads `y`, since its characters are stacked across
+/// the line. Without `y`, combined text is hit as an atomic inline is.
 fn hit_point(layout: &Layout, line: &Line<'_>, x: f32, y: Option<f32>) -> ClusteredPosition {
-    // The leaf under the point, else the nearest after it and before it,
-    // each with the leaves beside it.
+    // The leaf under the point, else the nearest leaves after and before it,
+    // each with its neighbours.
     let mut under = None;
     let mut after: Option<(Beside<'_>, f32)> = None;
     let mut before: Option<(Beside<'_>, f32)> = None;
@@ -150,7 +153,8 @@ fn hit_point(layout: &Layout, line: &Line<'_>, x: f32, y: Option<f32>) -> Cluste
     let mut leaves = place::leaves(*line);
     while let Some(leaf) = leaves.next() {
         work::step();
-        // A nearest leaf found at the leaf before has this one on its right.
+        // This leaf is the right neighbour of a nearest leaf found just
+        // before.
         for (nearest, _) in [&mut after, &mut before].into_iter().flatten() {
             if nearest.open {
                 nearest.right = Some(leaf);
@@ -212,8 +216,8 @@ fn hit_point(layout: &Layout, line: &Line<'_>, x: f32, y: Option<f32>) -> Cluste
         }
     };
     let (position, kept) = adjusted(&beside, offset);
-    // The cluster the leaf found is the position's unless the hit moved to
-    // another offset beside it.
+    // The leaf's cluster stays valid unless the bidi adjustment moved the
+    // offset.
     ClusteredPosition::with_cluster(layout, position, cluster.filter(|_| kept))
 }
 
@@ -221,8 +225,9 @@ fn hit_point(layout: &Layout, line: &Line<'_>, x: f32, y: Option<f32>) -> Cluste
 #[derive(Copy, Clone)]
 struct Beside<'a> {
     leaf: Leaf<'a>,
-    /// The leaf before it in visual order, and the one after.
+    /// The leaf before it in visual order.
     left: Option<Leaf<'a>>,
+    /// The leaf after it in visual order.
     right: Option<Leaf<'a>>,
     /// Whether the leaf after it is still to come in the walk.
     open: bool,
@@ -230,12 +235,13 @@ struct Beside<'a> {
 
 /// Returns `offset` in the leaf `beside` holds, adjusted at a direction change.
 ///
-/// Where `offset` is at the leaf's visual edge and the leaf meeting that
-/// edge is nearer the paragraph's level, it returns that leaf's offset at
-/// the edge. That is the position whose caret is drawn there, as Blink's
+/// Where `offset` is at the leaf's visual edge and the leaf touching that
+/// edge has a lower level, returns that leaf's offset at the edge: the
+/// position whose caret is drawn there, as Blink's
 /// `BidiAdjustment::AdjustForHitTest` finds it. A leaf across a box's room
-/// does not meet the edge, since each side of the room has its own caret.
-/// With the position comes whether the offset is still `offset`.
+/// does not touch the edge, since each side of the room has its own caret.
+///
+/// Also returns whether the offset is unchanged.
 fn adjusted(beside: &Beside<'_>, offset: usize) -> (Position, bool) {
     let leaf = &beside.leaf;
     let right = leaf.edge_offset(true) == offset;
@@ -263,7 +269,6 @@ fn adjusted(beside: &Beside<'_>, offset: usize) -> (Position, bool) {
 /// Returns `offset` in `leaf` as a position, upstream at the leaf's logical end.
 ///
 /// Upstream keeps it on the leaf's line where the line wraps there.
-/// Elsewhere it is downstream.
 fn affine(leaf: &Leaf<'_>, offset: usize) -> Position {
     if offset == leaf.end && leaf.start < leaf.end {
         Position::new(offset, Affinity::Upstream)

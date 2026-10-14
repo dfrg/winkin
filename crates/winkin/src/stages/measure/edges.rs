@@ -1,7 +1,7 @@
 //! Box edges: the room the items at a boundary take along the line.
 //!
-//! [`edge_room`] is the one function every reader charges an edge by. The
-//! scan's line-end costs live in `scan/ends.rs`.
+//! Every reader charges an edge through [`edge_room`], so all agree with the
+//! prefix. The scan's line-end costs are in `scan/ends.rs`.
 
 use super::InitialLetter;
 use super::scan::BoundaryRoom;
@@ -12,41 +12,35 @@ use crate::style::FirstLineVariant;
 use crate::unit::{InlineLayoutUnit, LayoutUnit};
 use crate::work;
 
-/// Where a break at one boundary falls among the items there, read one item
-/// at a time, as Chrome's `RewindOverflow` rewinds to a break.
+/// The position of a break among the items at one boundary, fed one item at
+/// a time, as Chrome's `RewindOverflow` places it.
 ///
-/// A box that opens and closes at the boundary ends the line before: an
-/// empty box after a line's last space stays on it. A box that opens there
-/// and closes later starts the line after, and so does what follows it.
-/// Closes of earlier boxes end the line before. A ruby container's opening
-/// is no part of a line's end, nor is any opening after a forced break, as
-/// `HandleForcedLineBreak` takes only the close tags right after it.
-///
-/// An absolutely positioned box's anchor ends the line before only ahead of
-/// the boundary's first opening. Chrome's breaker may break after it there,
-/// since it takes the break opportunity of the item before it
-/// (`HandleOutOfFlowPositioned`). Elsewhere it starts the line after with
-/// everything after it, or with the box it is in, as `RewindOverflow` holds
-/// it untrailable. Where the line's trailing white space overflows, line
-/// layout moves the anchors that end the line to the next
-/// (`Placer::pieces`).
+/// - Closes of earlier boxes, and boxes that open and close at the boundary,
+///   end the line before.
+/// - A box that opens there and closes later starts the line after, with
+///   everything that follows it.
+/// - A ruby container's opening, and any opening after a forced break,
+///   starts the line after (`HandleForcedLineBreak`).
+/// - An out-of-flow anchor ends the line before only ahead of the
+///   boundary's first opening (`HandleOutOfFlowPositioned`); elsewhere it
+///   starts the line after.
 #[derive(Copy, Clone, Debug, Default)]
 pub(crate) struct BoundarySplit {
-    /// The boundary follows a forced break.
+    /// Whether the boundary follows a forced break.
     forced: bool,
-    /// The break is fixed: every item from here on starts the line after.
+    /// Whether the break is fixed: every later item starts the line after.
     held: bool,
-    /// A box opened at the boundary: Chrome's breaker can no longer break
-    /// after an anchor here.
+    /// Whether a box has opened at the boundary, so an anchor now starts the
+    /// line after.
     opened: bool,
-    /// How many boxes opened at the boundary are open still.
+    /// The number of boxes opened at the boundary that are still open.
     depth: u32,
-    /// The room of the boxes opened since the depth was last zero.
+    /// The edge room of the boxes opened since the depth was last zero.
     group: InlineLayoutUnit,
 }
 
 impl BoundarySplit {
-    /// Returns the split at boundary `at` before any of its items.
+    /// Returns the split at boundary `at` before any of its items is taken.
     pub(crate) fn new(analysis: &Analysis, at: ClusterId) -> Self {
         Self {
             forced: analysis.clusters.follows_forced_break(at),
@@ -54,8 +48,8 @@ impl BoundarySplit {
         }
     }
 
-    /// Takes an item of `kind` whose edge takes `room`, adding the room to
-    /// `before`, what ends the line before a break here, or to `after`.
+    /// Takes the next item, of `kind` with edge room `room`, adding the room
+    /// to `before` (ends the line before a break) or `after`.
     pub(crate) fn take(
         &mut self,
         kind: ItemKind,
@@ -94,7 +88,7 @@ impl BoundarySplit {
         }
     }
 
-    /// Returns whether an item taken so far starts the line after a break.
+    /// Returns whether the last item taken starts the line after a break.
     pub(crate) fn splits(&self) -> bool {
         self.held || self.depth > 0
     }
@@ -102,6 +96,9 @@ impl BoundarySplit {
 
 /// Returns the first item, from `from` on, that starts the line after a
 /// break at boundary `at`, as [`BoundarySplit`] places the break.
+///
+/// Skips annotation items. Where none starts the line after, returns the
+/// first item past the boundary.
 pub(crate) fn items_after_break(
     content: &Content,
     analysis: &Analysis,
@@ -134,18 +131,13 @@ pub(crate) fn items_after_break(
     first.unwrap_or(id)
 }
 
-/// Returns the room of the items at boundary `at`, as the prefix was built
-/// with it.
+/// Returns the room of the items at boundary `at`: the edges that end the
+/// line before a break there, which the prefix entry at `at` includes, and
+/// the rest, which it doesn't.
 ///
-/// The first value is the edges that end the line before a break there
-/// ([`BoundarySplit`]), which come before the prefix there. The second is
-/// the rest, which comes after it. See
-/// [`LineStages::pen`](crate::stages::LineStages::pen) and
-/// [`LineStages::cluster_advance`](crate::stages::LineStages::cluster_advance).
-///
-/// `from` is the first item at the boundary, or else the one holding the
-/// cluster after it. A reader asking about one boundary holds it. The scan
-/// walks the items itself.
+/// At the end of text that ends on a line, all room is in the first value.
+/// `from` is the first item at the boundary, or else the item containing
+/// the cluster after it.
 pub(super) fn boundary_room(
     content: &Content,
     analysis: &Analysis,
@@ -167,8 +159,7 @@ pub(super) fn boundary_room(
         room.add(content, letter, item);
         id = ItemId::new(id.get() + 1);
     }
-    // No line starts at the text's end. Where the last paragraph has
-    // clusters, everything there is the last line's, as in the scan.
+    // No line starts at the text's end, so the last line takes everything.
     let ends_on_a_line = analysis.paragraphs.ends_on_a_line();
     if at == analysis.clusters.end_id() && ends_on_a_line {
         return (room.leading_closes + room.rest, InlineLayoutUnit::ZERO);
@@ -179,18 +170,10 @@ pub(super) fn boundary_room(
 /// Returns the room `item`'s box takes along the line at its opening edge
 /// (`opens`) or its closing one.
 ///
-/// - A box takes the margin, border and padding of its inline start or
-///   end, in its own `direction`. Chrome charges an open tag and a close
-///   tag the same way.
-/// - The block's initial letter's box, `letter`, takes what its measure
-///   gave it: those edges less the letter's advance outside its ink.
-///
-/// `item` is a box's or a ruby container's opening or closing item. A box's
-/// edges come from its facts, which `::first-line` doesn't change.
-///
-/// The prefix, the breaker's costs and line layout's pieces all charge an
-/// edge through this function. So what line layout places adds up to what
-/// the prefix measured.
+/// A box takes the margin, border and padding at that end, in its own
+/// `direction`. The initial letter's box, `letter`, takes its stored room,
+/// less the letter's advance outside its ink. `::first-line` doesn't change
+/// box edges.
 pub(crate) fn edge_room(
     content: &Content,
     letter: Option<&InitialLetter>,
@@ -212,10 +195,7 @@ pub(crate) fn edge_room(
 }
 
 /// Returns the room a box with the facts `facts` takes at its inline start
-/// and its inline end.
-///
-/// These are its line-left and line-right sides, swapped for a box that
-/// reads right to left.
+/// and inline end.
 pub(super) fn logical_edges(facts: &BoxFacts) -> (LayoutUnit, LayoutUnit) {
     let (left, right) = facts.room;
     facts.direction().line_order(left, right)

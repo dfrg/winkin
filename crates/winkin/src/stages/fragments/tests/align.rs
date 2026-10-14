@@ -349,7 +349,7 @@ fn an_ideographic_space_before_preserved_spaces_hangs_only_where_they_overflow()
 /// White space ending a line hangs through a `<wbr>` or an opportunity that collapsing keeps.
 ///
 /// Both take no room and are opaque to collapsing, and Blink's line breaker
-/// passes over them. A U+200B the caller wrote is text, so the space before
+/// passes over them. A U+200B in the content is text, so the space before
 /// it stays on the line. The rows and the first case's min-content width are
 /// Chrome 153's, with 20 px Ahem in 100 px.
 #[test]
@@ -380,7 +380,7 @@ fn white_space_hangs_through_a_generated_opportunity() {
         "neither the space nor the U+200B draws"
     );
     assert_eq!(layout.intrinsic_sizes().min_content, 60.0);
-    // A U+200B the caller wrote is text, so the space before it stays.
+    // A U+200B in the content is text, so the space before it stays.
     fixture.block_text(
         &mut layout,
         &ComputedBlockStyle {

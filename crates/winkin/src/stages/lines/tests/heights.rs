@@ -20,8 +20,7 @@ use crate::{CrossExtents, InlineExtents};
 
 /// A line box is the strut united with everything on it.
 ///
-/// A line holding a larger box is taller, the lines stack, and the block
-/// ends after the last.
+/// The block ends after the last line.
 #[test]
 fn a_line_is_as_tall_as_what_is_on_it() {
     let mut fixture = fixture();
@@ -46,7 +45,7 @@ fn a_line_is_as_tall_as_what_is_on_it() {
         layout.line_records().block.block_end,
         LayoutUnit::from_px(60.0)
     );
-    // From where the area says the block starts.
+    // Lines start at the area's block start.
     let area = Area {
         block_start: 7.0,
         ..Area::new(160.0)
@@ -55,11 +54,11 @@ fn a_line_is_as_tall_as_what_is_on_it() {
     assert_eq!(layout.line(1).expect("a line").metrics().top, 27.0);
 }
 
-/// A line is widened only by the fonts its own text is shaped in, as
-/// Chrome's `AccumulateUsedFonts` reads the line's part of the shape
-/// result. One text item's `漢` falls back to a font twice as tall: the line
-/// holding it is 40px, and the Latin line before or after it keeps 20.
-/// Under a line height of its own, no font widens text.
+/// A line grows only for the fonts its own text is shaped in, as Chrome's
+/// `AccumulateUsedFonts` reads only the line's part of the shape result.
+///
+/// A `漢` in a font twice as tall makes its line 40px; Latin lines stay
+/// 20px. A fixed line height ignores the fonts.
 #[test]
 fn a_line_takes_only_the_fonts_on_it() {
     let mut tall = TestFont::cjk("Test Tall Han", false);
@@ -85,8 +84,8 @@ fn a_line_takes_only_the_fonts_on_it() {
         assert_eq!(texts(&layout), lines, "{text}");
         assert_eq!(heights(&layout), expected, "{text}");
     }
-    // Over many lines, each found after the line before, and again at
-    // other widths, every line with a `漢` on it is 40px and every other 20.
+    // Over many lines, and again at other widths, every line with a `漢` on
+    // it is 40px and every other line 20px.
     let text = "ab 漢 ab ab ab ab 漢漢 ab ab ab ab ab 漢 ab";
     fixture.text(&mut layout, &style, text);
     for width in [50.0, 30.0, 80.0, 50.0] {
@@ -111,11 +110,10 @@ fn a_line_takes_only_the_fonts_on_it() {
     assert_eq!(heights(&layout), [20.0, 20.0]);
 }
 
-/// A line that turns out taller than the strut is fitted again in the
-/// narrower band below.
+/// A line taller than the strut is fitted again in the narrower band it
+/// reaches.
 ///
-/// Floats a host has placed narrow the band from some height down. A line
-/// fitted at the strut's height that turns out taller reaches them.
+/// The host narrows the band from 30 px down.
 #[test]
 fn a_taller_line_is_refitted_to_the_band_it_reaches() {
     struct Shelf;
@@ -148,8 +146,8 @@ fn a_taller_line_is_refitted_to_the_band_it_reaches() {
     fixture.lay_out_with(&mut layout, Area::new(500.0), &mut Shelf);
     assert_eq!(texts(&layout)[0], "Y ");
     assert_eq!(layout.line(0).expect("a line").metrics().band.size(), 60.0);
-    // Where the first line is no taller than the strut it keeps its band,
-    // and the lines below the shelf have the narrower one.
+    // A first line no taller than the strut keeps its band, and the lines
+    // below the shelf take the narrower one.
     fixture.text(&mut layout, &root, "XX XX XX XX XX XX");
     fixture.lay_out_with(&mut layout, Area::new(500.0), &mut Shelf);
     assert_eq!(texts(&layout), ["XX XX XX ", "XX ", "XX ", "XX"]);
@@ -166,8 +164,8 @@ fn leaded<'a>(style: &ComputedStyle<'a>, height: LineHeight) -> ComputedStyle<'a
     }
 }
 
-/// Returns a box `block` pixels tall and 20 wide, with no baseline, so it
-/// stands on its bottom edge.
+/// Returns a box `block` pixels tall and 20 wide, with no baseline, so its
+/// bottom edge sits on the baseline.
 fn picture(block: f32) -> BoxSize {
     BoxSize {
         inline: 20.0,
@@ -187,7 +185,7 @@ fn extents(layout: &Layout) -> Vec<(f32, f32)> {
         .collect()
 }
 
-/// Returns the shift line `line` settled for each node, in pixels.
+/// Returns the shifts line `line` settles, as node and pixels.
 fn settled(layout: &Layout, line: usize) -> Vec<(usize, f32)> {
     let lines = layout.line_records();
     let record = &records(layout)[line];
@@ -200,9 +198,9 @@ fn settled(layout: &Layout, line: usize) -> Vec<(usize, f32)> {
 
 /// A picture on the baseline stands on it and grows the line above.
 ///
-/// Pinned to the line's top or bottom, it aligns against the strut, the
-/// aligned subtree, on its pinned side. One pinned each way settles against
-/// the other: 60 and 40 make a line of 60, not 100, as in Chrome.
+/// A picture pinned to the top or bottom aligns against the strut there.
+/// Pictures pinned each way settle against each other: 60 and 40 make a
+/// line of 60, not 100, as in Chrome.
 #[test]
 fn a_picture_pinned_to_the_top_or_bottom_is_the_line() {
     let mut fixture = fixture();
@@ -210,9 +208,10 @@ fn a_picture_pinned_to_the_top_or_bottom_is_the_line() {
     let root = ahem(20.0);
     let cases = [
         (VerticalAlign::Baseline, (60.0, 4.0), Vec::new()),
-        // Its top on the strut's: 60 high, the line's baseline 16 down it.
+        // Its top is on the strut's: 60 high, with the line's baseline 16
+        // down it.
         (VerticalAlign::Top, (16.0, 44.0), alloc::vec![(2, -44.0)]),
-        // Its bottom on the strut's, 4 under the baseline.
+        // Its bottom is on the strut's, 4 under the baseline.
         (VerticalAlign::Bottom, (56.0, 4.0), alloc::vec![(2, -4.0)]),
     ];
     for (align, extent, shifts) in cases {
@@ -225,8 +224,8 @@ fn a_picture_pinned_to_the_top_or_bottom_is_the_line() {
         assert_eq!(extents(&layout), [extent], "{align:?}");
         assert_eq!(settled(&layout, 0), shifts, "{align:?}");
     }
-    // One of each: the taller, pinned to the top, grows the subtree down.
-    // The shorter, pinned to its bottom, stands on that.
+    // One of each. The taller, pinned to the top, grows the line down. The
+    // shorter, pinned to the bottom, stands on that bottom.
     fixture.build(&mut layout, &ComputedBlockStyle::new(&root), |b| {
         b.text(NodeKey(1), "XX ");
         b.atomic(
@@ -246,8 +245,8 @@ fn a_picture_pinned_to_the_top_or_bottom_is_the_line() {
     fixture.lay_out(&mut layout, 500.0);
     assert_eq!(extents(&layout), [(16.0, 44.0)]);
     assert_eq!(settled(&layout, 0), [(2, -44.0), (4, -44.0)]);
-    // Line layout stands each where its line settled it: the first's top on
-    // the line's top, the second's bottom on its bottom.
+    // Line layout places each where the line settles it: the first's top on
+    // the line's top, the second's bottom on the line's bottom.
     let line = layout.line(0).expect("a line");
     let blocks: Vec<(f32, f32)> = line
         .items()
@@ -262,21 +261,19 @@ fn a_picture_pinned_to_the_top_or_bottom_is_the_line() {
 /// Each `vertical-align` value shifts a box as Chrome's
 /// `ApplyBaselineShift` does.
 ///
-/// - `middle` centres a box on its parent's baseline raised by half the
-///   parent's x-height.
-/// - `text-top` sets a box's top, leading included, on the top of its
-///   parent's text, and `text-bottom` its bottom on the bottom.
-/// - `super` and `sub` move by a third and a fifth of the parent's size,
-///   plus a pixel.
-/// - A length moves by itself, and a percentage by that share of the box's
-///   own line height.
+/// - `middle` centres a box half the parent's x-height above its baseline.
+/// - `text-top` and `text-bottom` align the box's leading edge with the
+///   parent's text edge.
+/// - `super` and `sub` move by a third and a fifth of the parent's font
+///   size, plus a pixel.
+/// - A percentage is of the box's own line height.
 #[test]
 fn every_value_of_vertical_align_moves_a_box_as_chrome_moves_it() {
     let mut fixture = fixture();
     let mut layout = Layout::new();
     let root = leaded(&ahem(20.0), LineHeight::Px(40.0));
     // A small box with a tall line: 10 px Ahem reaching 8 over its baseline
-    // and 2 under, and 10 of leading either side.
+    // and 2 under, with 10 of leading on each side.
     let small = leaded(&ahem(10.0), LineHeight::Px(30.0));
     let x_height = {
         fixture.text(&mut layout, &root, "X");
@@ -288,13 +285,13 @@ fn every_value_of_vertical_align_moves_a_box_as_chrome_moves_it() {
     let cases = [
         // Its extent is 18 over and 12 under, so its middle is 3 over.
         (VerticalAlign::Middle, half_x - 3.0, true),
-        // Its top, 18 over, on Ahem's 16.
+        // Its top, 18 over, goes on Ahem's 16.
         (VerticalAlign::TextTop, -2.0, true),
-        // Its bottom, 12 under, on Ahem's 4.
+        // Its bottom, 12 under, goes on Ahem's 4.
         (VerticalAlign::TextBottom, 8.0, true),
-        // A third of 20, truncated on the grid, and a pixel.
+        // A third of 20, truncated to the grid, plus a pixel.
         (VerticalAlign::Super, 7.65625, false),
-        // A fifth of 20 and a pixel, down.
+        // A fifth of 20 plus a pixel, down.
         (VerticalAlign::Sub, -5.0, false),
         (VerticalAlign::Px(6.5), 6.5, false),
         // Half its own line height of 30.
@@ -323,8 +320,8 @@ fn every_value_of_vertical_align_moves_a_box_as_chrome_moves_it() {
                 .to_px()
         };
         assert_eq!(got, up, "{align:?}");
-        // The box's text stands on its baseline, raised as much, and so
-        // does the box.
+        // The box and its text stand on the box's baseline, raised by the
+        // same amount.
         let metrics = layout.line(0).expect("a line").metrics();
         let baselines: Vec<(u64, f32)> = layout
             .line(0)
@@ -345,17 +342,14 @@ fn every_value_of_vertical_align_moves_a_box_as_chrome_moves_it() {
             };
             assert_eq!(baseline, expected, "{align:?}: {key}");
         }
-        // And the line reaches round it.
+        // The line contains the box.
         let reach = (18.0 + up).max(metrics.ascent);
         assert!(metrics.ascent >= reach, "{align:?}");
         assert!(metrics.descent >= 12.0 - up, "{align:?}");
     }
 }
 
-/// A box pinned to the top moves with everything it holds.
-///
-/// What it holds is not part of the subtree it is pinned against, so a
-/// large box inside it stands where its parent does.
+/// A box pinned to the top moves its content with it, even a larger box.
 #[test]
 fn a_pinned_box_takes_its_subtree_with_it() {
     let mut fixture = fixture();
@@ -373,9 +367,7 @@ fn a_pinned_box_takes_its_subtree_with_it() {
         b.close_box();
     });
     fixture.lay_out(&mut layout, 500.0);
-    // The pinned box reaches 32 over its baseline and 8 under, 40 in all,
-    // taller than the strut's 20. Its top is the strut's, 16 over the
-    // line's baseline, and the line grows down to take it.
+    // The 40 px pinned box's top is the strut's, so the line grows down.
     assert_eq!(extents(&layout), [(16.0, 24.0)]);
     assert_eq!(settled(&layout, 0), [(2, -16.0)]);
     let line = layout.line(0).expect("a line");
@@ -392,8 +384,8 @@ fn a_pinned_box_takes_its_subtree_with_it() {
 /// A box pinned to the top inside a raised box lands on the line's top, as
 /// CSS 2.1 aligns its subtree.
 ///
-/// Blink also moves it with the raised box, since it moves fragments by
-/// range. That is not copied.
+/// Blink also moves it with the raised box, because Blink shifts fragments
+/// by range. This layout does not.
 #[test]
 fn a_pinned_box_inside_a_raised_one_lands_on_the_lines_top() {
     let mut fixture = fixture();
@@ -421,7 +413,7 @@ fn a_pinned_box_inside_a_raised_one_lands_on_the_lines_top() {
         })
         .collect();
     // The raised text reaches 21 over the line's baseline, and the pinned
-    // box's 40 runs from the line's top.
+    // box's 40 px run from the line's top.
     assert_eq!(metrics.ascent, 21.0);
     assert!(tops.contains(&(5, 0.0)), "{tops:?}");
     assert!(tops.contains(&(3, 0.0)), "{tops:?}");
@@ -431,8 +423,7 @@ fn a_pinned_box_inside_a_raised_one_lands_on_the_lines_top() {
 /// A box open across a line's start holds its strut on the line, even with
 /// no text of its own there.
 ///
-/// Blink keeps an open box's text metrics for the next line the same way.
-/// A line of only its child's text is as tall as the box's line height.
+/// Blink carries an open box's text metrics to the next line the same way.
 #[test]
 fn a_box_open_across_a_break_holds_its_strut_there() {
     let mut fixture = fixture();
@@ -457,8 +448,8 @@ fn a_box_open_across_a_break_holds_its_strut_there() {
         });
         fixture.lay_out(&mut layout, 100.0);
         let heights: Vec<f32> = layout.lines().map(|line| line.metrics().height()).collect();
-        // Every line holds the tall box's strut, the last ones because it
-        // is open across their starts.
+        // Every line holds the tall box's strut, the later ones because the
+        // box is open across their starts.
         assert!(heights.len() >= 3, "{heights:?}");
         assert!(
             heights.iter().all(|&height| height == 60.0),
@@ -467,16 +458,10 @@ fn a_box_open_across_a_break_holds_its_strut_there() {
     }
 }
 
-/// Boxes pinned to the top ten thousand deep, with values of every size,
-/// break, lay out and read back into valid lines.
+/// Boxes nested ten thousand deep, with every `vertical-align` and values
+/// of every size, give valid lines.
 ///
-/// Every step walks the nesting as a stack, never by recursion, in time
-/// linear in it, and every sum saturates.
-///
-/// Every line holds a fragment of each kept box open across it, as in
-/// Chrome. So a deep nesting with a word at every depth sets on few lines.
-/// One holding its words at its innermost breaks into many lines, each
-/// carrying every box.
+/// Every step walks the nesting as a stack, and every sum saturates.
 #[test]
 fn deep_nestings_and_wild_values_break_into_valid_lines() {
     const DEPTH: u64 = 10_000;
@@ -543,13 +528,11 @@ fn deep_nestings_and_wild_values_break_into_valid_lines() {
     }
 }
 
-/// Reads `layout` back whole, as a host does, and checks every value read
-/// is a finite place.
+/// Reads all of `layout` as a host does, and checks every position is
+/// finite.
 ///
-/// The boxes are keyed from 0 to `depth`. It reads every line and item,
-/// every glyph, each line's paint with every thousandth box decorated, the
-/// fragments of every ninety-seventh box, the floats, the block's metrics
-/// and the intrinsic sizes.
+/// The boxes are keyed from 0 to `depth`; it samples their fragments and
+/// decorations.
 fn read_back_whole(layout: &Layout, depth: u64) {
     let finite_along = |along: InlineExtents| along.left.is_finite() && along.right.is_finite();
     let finite_across = |across: CrossExtents| across.over.is_finite() && across.under.is_finite();
@@ -599,9 +582,7 @@ fn read_back_whole(layout: &Layout, depth: u64) {
     assert!(sizes.min_content.is_finite() && sizes.max_content.is_finite());
 }
 
-/// A line keeps the shifts it settled, sorted by node.
-///
-/// A relayout at any width equals a fresh layout, shift for shift.
+/// A relayout settles the same shifts as a fresh layout, sorted by node.
 #[test]
 fn a_relayout_settles_what_a_fresh_layout_does() {
     let mut fixture = fixture();

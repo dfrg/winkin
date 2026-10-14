@@ -6,18 +6,15 @@
 //! Start at: [`LayoutBuilder::text`] and [`LayoutBuilder::open_box`], then
 //! [`LayoutBuilder::finish`].
 //!
-//! An engine drives the builder from its tree. A simple layout makes the same
-//! calls, fewer of them. Every call goes straight to the content's writer.
-//! The writer collapses white space, lowers each style into facts and checks
-//! every limit as it goes. The builder holds nothing but the writer.
+//! Each call goes straight to the content writer, which collapses white
+//! space, lowers each style into facts and checks every limit as it goes.
 //!
-//! **Nothing panics, and nothing fails.** Text past the content's limit, and
-//! nodes past what their ids can name, are dropped where they arrive. They
-//! drop whole characters and whole nodes at a time.
-//! [`finish`](LayoutBuilder::finish) counts them in its [`BuildReport`]. An
-//! unbalanced close is ignored. Whatever is still open when the build
-//! finishes is closed, ruby included. A builder dropped without finishing
-//! closes its content the same way, so a layout is never left half built.
+//! Nothing panics and nothing fails. Text past the content limit and nodes
+//! past what their ids can name are dropped as they arrive, in whole
+//! characters and whole nodes. [`finish`](LayoutBuilder::finish) counts them
+//! in its [`BuildReport`]. An unbalanced close is ignored. Finishing closes
+//! whatever is still open, ruby included. A builder dropped without
+//! finishing closes its content the same way.
 
 use core::hash::{Hash, Hasher};
 
@@ -37,8 +34,8 @@ use crate::style::{ComputedStyle, RubyPosition};
 pub struct BuildReport {
     /// The number of input text bytes dropped.
     ///
-    /// Text is dropped when the content reaches 2^30 − 1 bytes or its node
-    /// cannot be created.
+    /// Text is dropped once the content holds 2^30 − 1 bytes, or where its
+    /// node cannot be created.
     pub dropped_bytes: usize,
     /// The number of nodes dropped because a table was full.
     ///
@@ -48,24 +45,24 @@ pub struct BuildReport {
     pub dropped_nodes: usize,
     /// The number of styles replaced because a table was full.
     ///
-    /// Includes styles, their lists and their resolved properties. Lists
-    /// fall back to their initial values. Each kind of resolved property
-    /// (text, shaping, font selection and box properties) allows up to
-    /// 65,535 distinct values. Beyond this limit, text inherits the enclosing
-    /// box properties and boxes use invisible, edgeless defaults.
-    /// Content with this many distinct font requests may reach the font
-    /// limit first.
+    /// Includes styles, their lists and their resolved properties. A
+    /// replaced list takes its initial value. Each kind of resolved property
+    /// (text, shaping, font selection and box properties) holds up to
+    /// 65,535 distinct values. Past that, text takes the enclosing box's
+    /// properties, and a box is invisible and has no edges. Content with
+    /// this many distinct font requests may reach the font limit first.
     pub replaced_styles: usize,
     /// The number of font substitutions caused by a full font table.
     ///
     /// A layout holds up to 65,535 distinct font and size combinations.
-    /// Additional fonts fall back to the primary font for the style.
-    /// An additional primary font falls back to the last stored font.
+    /// A font past the limit is replaced by the style's primary font, and a
+    /// primary font past it by the last font stored.
     pub replaced_fonts: usize,
     /// The number of shaped glyphs dropped.
     ///
-    /// A layout holds up to 2^28 − 1 additional glyphs beyond the first glyph
-    /// of each cluster. Affected clusters retain their width but draw nothing.
+    /// A cluster with more than one glyph, or a glyph with an offset, keeps
+    /// its glyphs in a side table of about 2^28 entries. A cluster past
+    /// that keeps its width but draws nothing.
     pub dropped_glyphs: usize,
 }
 
@@ -77,8 +74,8 @@ impl BuildReport {
 
     /// Counts `bytes` of text dropped.
     ///
-    /// The counts saturate: a 32-bit host may go on pushing text long after
-    /// the content is full.
+    /// The counts saturate, since a 32-bit host may push text long after the
+    /// content is full.
     pub(crate) fn drop_bytes(&mut self, bytes: usize) {
         self.dropped_bytes = self.dropped_bytes.saturating_add(bytes);
     }
@@ -96,26 +93,25 @@ impl BuildReport {
 
 /// The border-box size of an atomic inline or float.
 ///
-/// The host must lay out the box before adding it. Margins are specified
-/// separately in the style.
+/// The host lays out the box before adding it. Margins come from the style.
 #[derive(Copy, Clone, PartialEq, Debug, Default)]
 pub struct BoxSize {
-    /// The border box's size along the line, in pixels.
+    /// The size along the line, in CSS pixels.
     pub inline: f32,
-    /// The border box's size across the line, in pixels.
+    /// The size across the line, in CSS pixels.
     pub block: f32,
-    /// The baseline offset from the block-start border edge, in pixels.
+    /// The baseline's offset from the block-start border edge, in CSS pixels.
     ///
-    /// If `None`, alignment uses the block-end margin edge. This applies to
-    /// replaced elements and inline-blocks without a line box.
+    /// `None` aligns the block-end margin edge instead, as for replaced
+    /// elements and inline-blocks without a line box.
     pub baseline: Option<f32>,
 }
 
 impl BoxSize {
     /// Returns the size as the content keeps it.
     ///
-    /// A size that is not finite, or is negative, becomes zero. A baseline that
-    /// is not finite becomes none.
+    /// A size that is negative or not finite becomes zero. A baseline that is
+    /// not finite becomes `None`.
     pub(crate) fn sanitized(self) -> Self {
         let size = |n: f32| if n.is_finite() && n > 0.0 { n } else { 0.0 };
         Self {
@@ -129,19 +125,16 @@ impl BoxSize {
 /// The float side: `float: left` or `float: right`.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub enum FloatSide {
-    /// The left.
+    /// `left`.
     #[default]
     Left,
-    /// The right.
+    /// `right`.
     Right,
 }
 
 impl FloatSide {
-    /// Returns the side an initial letter floats to in a paragraph at `level`.
-    ///
-    /// It is the paragraph's start: the right where it reads right to left,
-    /// the left where it reads left to right. Chrome places the letter's
-    /// exclusion where the line starts.
+    /// Returns the side an initial letter floats to in a paragraph at `level`:
+    /// the line's start, as Chrome places the letter's exclusion.
     pub(crate) fn from_level(level: BidiLevel) -> Self {
         if level.is_rtl() {
             Self::Right
@@ -160,13 +153,13 @@ impl FloatSide {
 pub enum OriginalDisplay {
     /// An inline-level box, such as `inline` or `inline-block`.
     ///
-    /// Its static position follows the anchor on the line.
+    /// Its static position is the anchor's place on the line.
     #[default]
     Inline,
     /// A block-level box, such as `block` or `flex`.
     ///
-    /// Its static position is at the inline-start edge of the area, below
-    /// the line if in-flow content precedes the anchor.
+    /// Its static position is at the area's inline-start edge, below the
+    /// line where in-flow content precedes the anchor.
     Block,
 }
 
@@ -175,16 +168,16 @@ pub enum OriginalDisplay {
 /// The line after the break starts below every float on these sides.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Clear {
-    /// The floats pulled to the left.
+    /// Left floats.
     Left,
-    /// The floats pulled to the right.
+    /// Right floats.
     Right,
-    /// The floats on both sides.
+    /// Floats on both sides.
     Both,
 }
 
 impl Clear {
-    /// Whether it clears the floats on `side`.
+    /// Returns whether it clears the floats on `side`.
     pub(crate) fn clears(self, side: FloatSide) -> bool {
         matches!(
             (self, side),
@@ -193,28 +186,28 @@ impl Clear {
     }
 }
 
-/// Options for a build: what to record, and the geometry to start with.
+/// Options for a build: what to record, and the starting geometry.
 ///
-/// Construct with [`Default::default`] and set the required fields.
+/// Construct with [`Default::default`] and set the fields needed.
 #[derive(Copy, Clone, Debug, Default)]
 #[non_exhaustive]
 pub struct BuildOptions {
-    /// Whether to record source offsets for position conversion.
+    /// Whether to record a map from layout text to source offsets.
     ///
-    /// The map relates layout text to the original text of each node, using
-    /// a few words per text node when no collapsing or transformation occurs.
+    /// The map relates the layout text to each node's original text. It
+    /// takes a few words per text node where nothing collapses or
+    /// transforms. Defaults to `false`.
     ///
     /// Without it, positions refer only to [`Layout::text`]. For a single
-    /// text node with no collapsing or transformation, these match the
+    /// text node where nothing collapses or transforms, these equal the
     /// source offsets.
     ///
     /// [`Layout::text`]: crate::Layout::text
     pub map_source: bool,
-    /// The width, in pixels, that percentage margins and padding of the
-    /// boxes are taken of: the containing block's inline size.
+    /// The basis of percentage margins and padding: the containing block's
+    /// inline size, in CSS pixels.
     ///
-    /// Defaults to zero. [`Layout::measure`] sets another without building
-    /// again.
+    /// Defaults to zero. [`Layout::measure`] sets another without a rebuild.
     ///
     /// [`Layout::measure`]: crate::Layout::measure
     pub percentage_basis: f32,
@@ -239,18 +232,17 @@ impl Hash for BuildOptions {
 /// Builds layout content in document order.
 ///
 /// Returned by [`Layout::builder`]. Text belongs to the innermost open box.
-/// Opening a container requires its computed style. The builder borrows the
-/// [`Context`](crate::Context) it was started with until it finishes or is
+/// Opening a container takes its computed style. The builder borrows the
+/// layout and the [`Context`](crate::Context) until it finishes or is
 /// dropped.
 ///
 /// [`Layout::builder`]: crate::Layout::builder
 pub struct LayoutBuilder<'a> {
     writer: ContentWriter<'a>,
-    /// The layout's analysis, fonts, shaped glyphs and measurements, which
-    /// finishing writes from the content.
+    /// The layout's analysis, fonts, shaped glyphs and measurements, written
+    /// when the builder finishes.
     stages: &'a mut PreparedStages,
-    /// Whether finishing prepared the layout, so dropping has nothing to
-    /// finish or undo.
+    /// Whether the layout is prepared, leaving nothing for `drop` to do.
     prepared: bool,
 }
 
@@ -265,9 +257,8 @@ impl<'a> LayoutBuilder<'a> {
 
     /// Appends source text for the node identified by `key`.
     ///
-    /// The builder collapses whitespace as required by the style.
-    /// Consecutive text calls with the same key form one node. Reusing a key
-    /// later creates a new node; it does not merge nonconsecutive nodes.
+    /// White space collapses as the style sets. Consecutive calls with the
+    /// same key form one node. A key used again later makes a new node.
     pub fn text(&mut self, key: NodeKey, text: &str) {
         self.writer.text(key, text);
     }
@@ -296,9 +287,10 @@ impl<'a> LayoutBuilder<'a> {
 
     /// Appends an atomic inline, such as an inline-block or replaced element.
     ///
-    /// `size` specifies the border box. `style` supplies margins and alignment.
-    /// The inline is represented by U+FFFC in the layout text, with a caret
-    /// position on each side and a bidi class. It ends a whitespace sequence.
+    /// `size` is the border box. `style` supplies margins and alignment.
+    /// The layout text holds U+FFFC for the inline, which has a caret
+    /// position on each side and takes part in bidi. It ends a run of
+    /// collapsible white space.
     pub fn atomic(
         &mut self,
         key: NodeKey,
@@ -312,7 +304,7 @@ impl<'a> LayoutBuilder<'a> {
     /// Appends a float anchor with the specified side and border-box size.
     ///
     /// The host places the float. The anchor adds no text and does not
-    /// interrupt whitespace collapsing.
+    /// interrupt white space collapsing.
     pub fn float(
         &mut self,
         key: NodeKey,
@@ -325,9 +317,9 @@ impl<'a> LayoutBuilder<'a> {
 
     /// Appends an anchor for an absolutely positioned box.
     ///
-    /// The anchor adds no text or width and produces no box fragment. It
-    /// preserves whitespace collapsing and line break opportunities. Its
-    /// line association at a break follows Chrome.
+    /// The anchor adds no text or width and makes no box fragment. White
+    /// space collapsing and break opportunities pass through it. Which line
+    /// it joins at a break is modelled on Chrome.
     ///
     /// `display` is the outer display before absolute positioning blockifies
     /// the box. After line breaking, [`Layout::static_positions`] reports
@@ -340,42 +332,42 @@ impl<'a> LayoutBuilder<'a> {
 
     /// Appends a forced line break (`<br>`).
     ///
-    /// The break is represented by `\n` in the layout text. It ends the
-    /// paragraph and removes adjacent collapsible whitespace.
-    /// Inside ruby, it becomes a space instead, matching Chrome.
+    /// The layout text holds `\n` for the break. It ends the paragraph and
+    /// removes the collapsible white space beside it. Inside ruby it is a
+    /// space instead, as in Chrome.
     pub fn line_break(&mut self, key: NodeKey) {
         self.writer.line_break(key, None);
     }
 
     /// Appends a forced line break that clears floats (`<br clear>`).
     ///
-    /// The next line starts below floats on the specified sides. A final
-    /// clearing break moves the block end below those floats.
-    /// Otherwise behaves like [`line_break`](Self::line_break).
-    /// Inside ruby, it becomes a space and clears no floats.
+    /// The next line starts below the floats on the sides `clear` names. A
+    /// final clearing break moves the block end below those floats.
+    /// Otherwise behaves like [`line_break`](Self::line_break). Inside ruby
+    /// it is a space and clears nothing.
     pub fn line_break_clearing(&mut self, key: NodeKey, clear: Clear) {
         self.writer.line_break(key, Some(clear));
     }
 
     /// Appends a soft break opportunity (`<wbr>`).
     ///
-    /// The opportunity is represented by U+200B in the layout text and does
-    /// not interrupt whitespace collapsing.
+    /// The layout text holds U+200B for the opportunity. It does not
+    /// interrupt white space collapsing.
     pub fn break_opportunity(&mut self) {
         self.writer.break_opportunity();
     }
 
     /// Opens a ruby container with `key` and `style`.
     ///
-    /// Following content forms the base until an annotation is opened.
-    /// Base text after an annotation starts the next column.
+    /// Content forms the base until an annotation opens. Base content after
+    /// an annotation starts the next column.
     ///
-    /// The container is an inline box: its edges occupy space, `unicode-bidi`
+    /// The container is an inline box: its edges take room, `unicode-bidi`
     /// applies, and [`Layout::box_fragments`](crate::Layout::box_fragments)
     /// returns its fragments.
     ///
-    /// A container nested in a base or annotation acts as an inline box.
-    /// Its annotations add levels to the containing column, matching Chrome.
+    /// A container nested in a base or an annotation is an inline box there.
+    /// Its annotations add levels to the enclosing column, as in Chrome.
     pub fn open_ruby(
         &mut self,
         key: NodeKey,
@@ -389,14 +381,14 @@ impl<'a> LayoutBuilder<'a> {
     /// Opens an annotation in the innermost ruby container.
     ///
     /// The annotation covers the base since the previous annotation or the
-    /// container start. Its side comes from the container, not `style`.
-    /// Ruby nested in a base retains its own annotation side. Use
+    /// container start. Its side comes from the container's style, not
+    /// `style`. Ruby nested in a base keeps its own side.
     /// [`open_annotation_with_position`](Self::open_annotation_with_position)
-    /// to specify a different annotation side.
+    /// sets another side.
     ///
     /// Closes any boxes or annotations open inside the container first.
-    /// Outside ruby, creates an anonymous container with an empty base;
-    /// [`close_annotation`](Self::close_annotation) closes both.
+    /// Outside ruby, opens an anonymous container with an empty base, which
+    /// [`close_annotation`](Self::close_annotation) closes with the annotation.
     pub fn open_annotation(
         &mut self,
         key: NodeKey,
@@ -408,8 +400,8 @@ impl<'a> LayoutBuilder<'a> {
 
     /// Opens an annotation with an explicit position.
     ///
-    /// Use the position of an annotation container (`<rtc>`) to override
-    /// the annotation and ruby styles. Otherwise behaves like
+    /// `position` overrides the side the container's style sets, as an
+    /// annotation container (`<rtc>`) does. Otherwise behaves like
     /// [`open_annotation`](Self::open_annotation). Close it with
     /// [`close_annotation`](Self::close_annotation).
     pub fn open_annotation_with_position(
@@ -439,32 +431,32 @@ impl<'a> LayoutBuilder<'a> {
 
     /// Sets the style and key for `::first-letter`.
     ///
-    /// The first letter in subsequent text, with surrounding punctuation,
-    /// forms a separate box. `first_line` supplies its first-line style,
+    /// The first letter of the text that follows, with the punctuation around
+    /// it, forms a box of its own. `first_line` supplies its first-line style,
     /// as in [`open_box`](Self::open_box); `None` uses `style`.
     ///
-    /// The letter is selected according to CSS Pseudo-Elements 4:
+    /// The letter is selected as CSS Pseudo-Elements 4 specifies:
     /// - leading whitespace remains outside the box;
     /// - leading punctuation and intervening spaces are included;
     /// - the letter is one grapheme cluster, including digits and symbols;
     /// - trailing punctuation and preceding spaces are included, except
     ///   opening punctuation and dashes.
     ///
-    /// If a text node ends with punctuation, selection continues in the
-    /// next node. The box contains only the portion in the first node,
-    /// matching Chrome. Each portion uses its own `text-transform`; the
-    /// letter uses the transform in `style`.
+    /// Where a text node ends in punctuation, selection continues in the
+    /// next node. The box holds only the part in the first node, as in
+    /// Chrome. Each part keeps its own `text-transform`; the letter takes the
+    /// transform in `style`.
     ///
-    /// Resolve `style` and `first_line` against the enclosing box. Calling
-    /// this method again before a letter is found replaces the styles, so
-    /// it may be called before each text node.
+    /// Resolve `style` and `first_line` against the enclosing box. A call
+    /// before a letter is found replaces the styles, so the method may be
+    /// called before each text node.
     ///
-    /// Only one first letter is selected per block. Calls are ignored after
-    /// selection or after an atomic inline, forced break, ruby container,
-    /// or text that prevents first-letter selection.
+    /// A block has at most one first letter. Calls are ignored once it is
+    /// found, and after an atomic inline, a forced break, a ruby container,
+    /// or text that can have no first letter.
     ///
-    /// Text runs use `key` for painting the pseudo-element.
-    /// [`Layout::box_fragments`] returns the resulting box.
+    /// The letter's text runs carry `key`, for painting the pseudo-element.
+    /// [`Layout::box_fragments`] returns its box.
     ///
     /// [`Layout::box_fragments`]: crate::Layout::box_fragments
     pub fn set_first_letter(
@@ -478,17 +470,17 @@ impl<'a> LayoutBuilder<'a> {
 
     /// Prepares the layout and reports dropped or replaced content.
     ///
-    /// Closes all open containers, then analyzes, selects fonts, shapes and
-    /// measures the content using the builder's context. Intrinsic sizes are
-    /// available after this call; see
-    /// [`Layout::intrinsic_sizes`](crate::Layout::intrinsic_sizes).
+    /// Closes every open container, then analyzes, selects fonts, shapes and
+    /// measures the content with the builder's context.
+    /// [`Layout::intrinsic_sizes`](crate::Layout::intrinsic_sizes) is
+    /// available after this call.
     pub fn finish(self) -> BuildReport {
         self.finish_with_provider(None)
     }
 
     /// Prepares the layout with the host's glyph metrics.
     ///
-    /// Pass the same provider, with stable strike settings, to
+    /// Pass the same provider, with the same strike settings, to
     /// [`Layout::break_lines_with_metrics`](crate::Layout::break_lines_with_metrics).
     pub fn finish_with_metrics(self, provider: &dyn FontMetricsProvider) -> BuildReport {
         self.finish_with_provider(Some(provider))
@@ -506,11 +498,10 @@ impl<'a> LayoutBuilder<'a> {
 
 impl Drop for LayoutBuilder<'_> {
     /// Closes the content of a builder dropped without
-    /// [`finish`](LayoutBuilder::finish), so the layout is valid for what was
-    /// built.
+    /// [`finish`](LayoutBuilder::finish), leaving a valid layout.
     ///
-    /// The layout is not prepared. It holds no analysis, fonts or glyphs
-    /// until it is built again, rather than those of other content.
+    /// The layout is not prepared: it holds no analysis, fonts or glyphs
+    /// until it is built again.
     fn drop(&mut self) {
         if !self.prepared {
             self.writer.finish();

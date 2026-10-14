@@ -1,7 +1,6 @@
 //! Block writing mode, alignment, indentation, wrapping and clamping values.
 
 use super::LengthPercentage;
-use crate::stages::analysis::BidiLevel;
 use crate::unit::LayoutUnit;
 
 /// `writing-mode`: which way a block's lines run and stack.
@@ -23,23 +22,23 @@ pub enum WritingMode {
 }
 
 impl WritingMode {
-    /// Whether it is a vertical typographic mode: `vertical-rl` or `vertical-lr`.
+    /// Returns whether it is a vertical typographic mode: `vertical-rl` or
+    /// `vertical-lr`.
     ///
-    /// In these modes `text-orientation` sets text upright or on its side,
-    /// and `text-combine-upright` combines it, as CSS Writing Modes 4 says.
-    /// The sideways modes set their lines as horizontal ones turned whole.
+    /// Only these modes read `text-orientation` and `text-combine-upright`,
+    /// as CSS Writing Modes 4 specifies. The sideways modes set horizontal
+    /// lines turned whole.
     pub(crate) fn is_vertical_typographic(self) -> bool {
         matches!(self, Self::VerticalRl | Self::VerticalLr)
     }
 
-    /// Whether its lines flip, which only `vertical-lr` does.
+    /// Returns whether its lines flip, which only `vertical-lr` does.
     ///
-    /// Its lines stack from the left and have their over side on the right.
-    /// So a line box's block-start side is its under side, as Chrome's
-    /// `IsFlippedLinesWritingMode` has it. `sideways-lr` also stacks lines
-    /// from the left, but they run up the page with their over side on the
-    /// left, as Blink's `LineOver` has it. Its block-start side is its over
-    /// side, as in every other mode.
+    /// Its lines stack from the left with their over side on the right, so
+    /// a line box's block-start side is its under side, as in Chrome's
+    /// `IsFlippedLinesWritingMode`. `sideways-lr` lines also stack from the
+    /// left, but run upward with their over side on the left (Blink's
+    /// `LineOver`), so they do not flip.
     pub(crate) fn flips_lines(self) -> bool {
         self == Self::VerticalLr
     }
@@ -64,19 +63,29 @@ pub enum TextAlign {
 }
 
 impl TextAlign {
-    /// Whether a line in a paragraph at bidi level `level` needs its exact end.
+    /// Returns whether every line in a block aligned `self`, with `last` on
+    /// its last line, needs its exact end.
     ///
-    /// It does where alignment moves the line by its width. This is Chrome's
-    /// `NeedsAccurateEndPosition`, which decides whether a break at a space
-    /// is reshaped.
-    pub(crate) fn needs_exact_end(self, level: BidiLevel) -> bool {
-        let rtl = level.is_rtl();
-        match self {
-            Self::Start => false,
-            Self::Left => rtl,
-            Self::Right => !rtl,
-            Self::End | Self::Center | Self::Justify => true,
-        }
+    /// This is the alignment half of Chrome's `NeedsAccurateEndPosition`,
+    /// which decides whether a line's end is reshaped at a space.
+    ///
+    /// Chrome reads both values on every line, and reads them before it
+    /// knows the line's direction. So `left` never needs it, and `right`
+    /// always does. Chrome 155, `XRAY bravo` in Times New Roman at 20px, 90px
+    /// wide: the `Y` is reshaped under `right`, `end`, `center` and
+    /// `justify`, in either direction, and under `start` with
+    /// `text-align-last: center`, but not under `left` in a right-to-left
+    /// block.
+    pub(crate) fn needs_exact_end(self, last: TextAlignLast) -> bool {
+        let aligned = matches!(self, Self::End | Self::Right | Self::Center | Self::Justify);
+        aligned
+            || matches!(
+                last,
+                TextAlignLast::End
+                    | TextAlignLast::Right
+                    | TextAlignLast::Center
+                    | TextAlignLast::Justify
+            )
     }
 }
 
@@ -105,8 +114,8 @@ pub enum TextAlignLast {
 impl TextAlignLast {
     /// Returns the alignment of a paragraph's last line in a block aligned `align`.
     ///
-    /// It resolves as Chrome's `GetTextAlign(is_last_line)` does. `auto` is
-    /// `align`, but `start` where `align` is `justify`.
+    /// `auto` gives `align`, or `start` where `align` is `justify`, as
+    /// Chrome's `GetTextAlign(is_last_line)` resolves it.
     #[inline]
     pub(crate) fn resolve(self, align: TextAlign) -> TextAlign {
         match self {
@@ -125,7 +134,7 @@ impl TextAlignLast {
 /// `text-indent`.
 #[derive(Copy, Clone, PartialEq, Debug, Default)]
 pub struct TextIndent {
-    /// The indent: a length plus a fraction of the line's width.
+    /// The indent: a length in CSS pixels plus a fraction of the area's width.
     pub amount: LengthPercentage,
     /// `hanging`: every line but the first is indented.
     pub hanging: bool,
@@ -136,8 +145,8 @@ pub struct TextIndent {
 impl TextIndent {
     /// Returns how far it indents a line in an area `width` wide.
     ///
-    /// A percentage is of the area's width, truncated onto the grid as
-    /// Chrome's `MinimumValueForLength` does.
+    /// The result is truncated onto the grid, as Chrome's
+    /// `MinimumValueForLength` does.
     pub(crate) fn length(self, width: LayoutUnit) -> LayoutUnit {
         LayoutUnit::from_px_truncated(self.amount.resolve(width.to_px()))
     }
@@ -160,7 +169,7 @@ pub enum TextWrapStyle {
 /// `text-overflow`.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub enum TextOverflow {
-    /// Overflow extends past the edge, for the caller to clip.
+    /// Overflow extends past the edge, for the host to clip.
     ///
     /// The initial value.
     #[default]
@@ -171,8 +180,8 @@ pub enum TextOverflow {
 
 /// `line-clamp` longhands from CSS Overflow 4.
 ///
-/// Limits retained lines. If text follows the last retained line, that line
-/// receives the block ellipsis (`block-ellipsis: auto`).
+/// Limits the lines kept. Where text follows the last line kept, that line
+/// takes the block ellipsis (`block-ellipsis: auto`).
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub enum LineClamp {
     /// No limit. The initial value.
@@ -180,21 +189,20 @@ pub enum LineClamp {
     None,
     /// At most this many lines: `max-lines`, with `continue: collapse`.
     ///
-    /// CSS never computes `Lines(0)`. It clamps nothing, as `None` does.
+    /// CSS never computes `Lines(0)`, which clamps nothing.
     Lines(u32),
     /// `line-clamp: auto`: `max-lines: none` with `continue: collapse`.
     ///
-    /// Retains the lines that end within
+    /// Keeps the lines that end within
     /// [`Area::block_end`](crate::Area::block_end), which the host sets from
-    /// the `height` or `max-height` of the block. Clamps nothing if
-    /// `block_end` is `None`. Chrome 153 supports this only behind a flag.
+    /// the block's `height` or `max-height`. Clamps nothing where
+    /// `block_end` is `None`. Chrome 153 supports it only behind a flag.
     Auto,
 }
 
 impl LineClamp {
-    /// Whether it may end the block before its text does.
-    ///
-    /// A nonzero count of lines may, and so may `auto`.
+    /// Returns whether it may end the block before its text does: a nonzero
+    /// count of lines, or `auto`.
     pub(crate) fn clamps(self) -> bool {
         match self {
             Self::Lines(lines) => lines > 0,
@@ -206,7 +214,7 @@ impl LineClamp {
 
 /// `text-group-align`.
 ///
-/// Supported by winkin but not Chrome.
+/// Chrome does not support it.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub enum TextGroupAlign {
     /// No group alignment. The initial value.
@@ -229,8 +237,7 @@ impl TextGroupAlign {
     ///
     /// `least` is the least room any line in the group spares, and `rtl`
     /// says whether the block reads right to left. A group at the left
-    /// moves by nothing, a group at the right by all of `least`, and a
-    /// centered group by half.
+    /// moves by nothing, at the right by `least`, and centered by half.
     pub(crate) fn left_inset(self, least: LayoutUnit, rtl: bool) -> LayoutUnit {
         match (self, rtl) {
             (Self::Start, false) | (Self::End, true) | (Self::Left, _) => LayoutUnit::ZERO,
@@ -243,11 +250,11 @@ impl TextGroupAlign {
 
 /// `text-fit`: scales the text of each line to fill it.
 ///
-/// Lines break at the text's own size, and each is scaled after. The scale
+/// Lines break at the text's own size, then each is scaled. The scale
 /// multiplies glyph advances, font metrics, `normal` and `<number>` line
-/// heights, and percentage spacing; lengths keep their size. It applies only
-/// to a block with no floats, initial letter or ruby, and does not change
-/// intrinsic sizes.
+/// heights, and percentage spacing; lengths keep their size. A line within
+/// 2 px of its room is not scaled. It applies only to a block with no
+/// floats, initial letter or ruby, and does not change intrinsic sizes.
 #[derive(Copy, Clone, PartialEq, Debug, Default)]
 pub struct TextFit {
     /// Whether text grows to fill a line, shrinks to fit it, or neither.
@@ -257,8 +264,7 @@ pub struct TextFit {
     /// The scale limit as a fraction, `1.5` for `150%`, or `None` for no
     /// limit.
     ///
-    /// Growing is held to at most `max(limit, 1)`, and shrinking to at least
-    /// `min(limit, 1)`.
+    /// Growing stops at `max(limit, 1)`, and shrinking at `min(limit, 1)`.
     pub limit: Option<f32>,
 }
 
@@ -286,8 +292,8 @@ pub enum TextFitKind {
 /// The second keyword of `text-fit`.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub enum TextFitTarget {
-    /// One scale for every line of the block: the least that fills the lines
-    /// it measures. The initial value.
+    /// One scale for every line of the block: the least scale any line
+    /// asks for. The initial value.
     #[default]
     Consistent,
     /// Each line takes its own scale, except a paragraph's last line.

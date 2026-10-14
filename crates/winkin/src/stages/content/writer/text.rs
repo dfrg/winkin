@@ -1,18 +1,17 @@
-//! Writing text: white space collapsing, transforms, masks, forced breaks, the
-//! offset map and the first line's text.
+//! Writes text: white space collapsing, transforms, masks, forced breaks,
+//! the offset map and the first-line text.
 //!
-//! A text call goes down a ladder, each rung adding one thing:
+//! A text call passes down a ladder, each rung adding one thing:
 //! - `text`: the builder's call;
-//! - `hold_math_text`: holds back a lone character `math-auto` may map, until
-//!   its source node goes on or ends;
-//! - `split_first_letter`: splits the text at the `::first-letter` box while
-//!   one is still to be found (`find_first_letter`);
+//! - `hold_math_text`: holds back a lone character `math-auto` may map
+//!   until its source node continues or ends;
+//! - `split_first_letter`: splits at the `::first-letter` box while one is
+//!   sought (`find_first_letter`);
 //! - `text_node_text`: finds or makes the text node;
-//! - `transform_text`: picks the transforms the node's text takes;
-//! - `collapse_text`: collapses white space, writing the text between it a
-//!   piece at a time;
-//! - `write_piece`: writes one piece, transformed, with its offset map units
-//!   and the first line's copy.
+//! - `transform_text`: picks the node's transforms;
+//! - `collapse_text`: collapses white space and writes the pieces between;
+//! - `write_piece`: writes one transformed piece, with its offset map units
+//!   and first-line copy.
 
 use alloc::boxed::Box;
 use alloc::string::String;
@@ -35,11 +34,10 @@ use crate::unicode::is_mark;
 use crate::work;
 
 impl ContentWriter<'_> {
-    /// Writes text from the text node `key`. Where a first letter is asked
-    /// for and not yet found, the text splits at the letter's end.
+    /// Writes text from text node `key`.
     ///
-    /// Only where some style asks for `math-auto` does the text go through
-    /// [`hold_math_text`](Self::hold_math_text).
+    /// Text goes through [`hold_math_text`](Self::hold_math_text) only once
+    /// some style uses `math-auto`.
     pub(crate) fn text(&mut self, key: NodeKey, text: &str) {
         if !self.content.flags.contains(ContentFlags::MATH_AUTO) {
             self.split_first_letter(key, text, false);
@@ -48,12 +46,12 @@ impl ContentWriter<'_> {
         self.hold_math_text(key, text);
     }
 
-    /// Writes text from the text node `key`, holding back a lone character
-    /// that `math-auto` may map until its node goes on or ends.
+    /// Writes text from text node `key`, holding back a lone character that
+    /// `math-auto` may map until the node continues or ends.
     ///
-    /// `math-auto` maps a source node only where it is one character, which
-    /// is known only once the node ends. Ending a text node writes a held
-    /// character (`end_math_text`), so this rung is entered again from below.
+    /// `math-auto` maps only one-character source nodes, known only when the
+    /// node ends. Ending a text node writes a held character
+    /// (`end_math_text`), which re-enters the ladder below this rung.
     #[inline(never)]
     fn hold_math_text(&mut self, key: NodeKey, text: &str) {
         match mem::replace(&mut self.text_node.math, MathText::None) {
@@ -95,11 +93,10 @@ impl ContentWriter<'_> {
         }
     }
 
-    /// Writes text from the text node `key`, split at the `::first-letter`
-    /// box while one is still to be found.
+    /// Writes text from text node `key`, split at the `::first-letter` box
+    /// while one is sought.
     ///
-    /// `single` says that `text` is the whole of a one-character source node
-    /// `math-auto` may map.
+    /// `single` means `text` is a whole one-character source node.
     #[inline]
     pub(super) fn split_first_letter(&mut self, key: NodeKey, text: &str, single: bool) {
         match self.letters.first_letter {
@@ -110,12 +107,11 @@ impl ContentWriter<'_> {
         }
     }
 
-    /// Writes text from the text node `key` while the first letter is still
-    /// to be found. Where the text holds the letter, it splits at the
-    /// letter's start and end, and the letter goes in its box.
+    /// Writes text from text node `key` while the first letter is sought,
+    /// splitting the letter out into its box if the text holds it.
     fn find_first_letter(&mut self, key: NodeKey, text: &str, single: bool) {
-        // Armed, or else after punctuation an earlier text ended with,
-        // whose box is already written.
+        // `None` when an earlier text's leading punctuation already has its
+        // box.
         let armed = match self.letters.first_letter {
             FirstLetter::Armed {
                 key,
@@ -128,8 +124,8 @@ impl ContentWriter<'_> {
                 return;
             }
         };
-        // The text is read as its own white space collapses: by its node's
-        // rules, or by those of the box it would be written in.
+        // Read with the white space rules of its node, or of the container
+        // a new node would go in.
         let holder = self
             .text_node_keyed(key)
             .unwrap_or_else(|| self.container());
@@ -140,8 +136,8 @@ impl ContentWriter<'_> {
                 self.first_letter_ends();
                 self.text_node_text(key, text, single);
             }
-            // The punctuation before the letter came from an earlier text,
-            // and the box holds only that part, as Chrome's does.
+            // The leading punctuation came from an earlier text; the box
+            // holds only that, as Chrome's does.
             (FirstLetterScan::Text { found, .. }, None) => {
                 if found {
                     self.letters.first_letter = FirstLetter::Done;
@@ -167,12 +163,12 @@ impl ContentWriter<'_> {
         }
     }
 
-    /// Writes text from the text node `key`, with no first letter in it, in
-    /// the current text node where it is `key`'s and in a new one otherwise.
+    /// Writes text from text node `key` into the current text node if it is
+    /// `key`'s, else into a new one.
     pub(super) fn text_node_text(&mut self, key: NodeKey, text: &str, single: bool) {
         let continues = self.text_node_keyed(key).is_some();
         if self.room.full {
-            // Nothing more fits: the text goes, and its node if it needed one.
+            // Nothing more fits: drop the text, and its node if new.
             self.room.report.drop_bytes(text.len());
             if !continues {
                 self.end_text();
@@ -184,14 +180,14 @@ impl ContentWriter<'_> {
             Some(node) if continues => node,
             _ => {
                 self.end_text();
-                // The rest of a text node the first letter was cut from goes
-                // on counting where the letter ended.
+                // The rest of a text node split by the first letter counts
+                // source bytes from the letter's end.
                 let base = match self.text_node.continues.take() {
                     Some((continued, at)) if continued == key => at,
                     _ => 0,
                 };
                 let around = self.container_facts();
-                // A node with room for its item, or neither.
+                // The node and its item both fit, or neither is written.
                 let node = if self.has_item_room(1) {
                     self.push_node(NodeKind::Text, around, key)
                 } else {
@@ -210,20 +206,17 @@ impl ContentWriter<'_> {
         self.transform_text(node, text, single);
     }
 
-    /// Writes `text` for `node`, the current text node, with the transforms
-    /// it takes.
+    /// Writes `text` for the current text node `node`.
     ///
-    /// The text follows the white space rules of the node's text facts. It
-    /// is transformed as its container says. Where the first-line style
-    /// transforms otherwise, the first line's text follows that style.
+    /// White space follows the node's text facts; transforms come from its
+    /// container.
     pub(super) fn transform_text(&mut self, node: NodeId, text: &str, single: bool) {
         let facts = self.text_facts(node);
         let (mode, wraps) = (facts.collapse, facts.has(TextFlags::WRAPS));
         let combined = facts.combine == TextCombineUpright::All;
         self.combined_text_arrives(combined);
         let transforms = self.container_transforms();
-        // The first line's own transform matters only while the first
-        // paragraph is being written, where it transforms otherwise.
+        // The first-line transform matters only within the first paragraph.
         let transforms = match self.first_line.mirror {
             Mirror::Done => transforms.without_first_line(),
             Mirror::Waiting | Mirror::Writing => transforms,
@@ -239,11 +232,11 @@ impl ContentWriter<'_> {
         }
     }
 
-    /// Keeps a combined unit whose text all collapsed away, with a zero
-    /// width space generated for it.
+    /// Gives a combined unit whose text all collapsed away a generated
+    /// U+200B.
     ///
-    /// The unit still sets one em across the line, at a line's end too, as
-    /// Blink's `LayoutTextCombine` is an inline block whatever its text.
+    /// The unit stays one em wide, even at a line end, as Blink's
+    /// `LayoutTextCombine` is an inline block whatever its text.
     #[cold]
     #[inline(never)]
     fn keep_empty_unit(&mut self, node: NodeId) {
@@ -255,15 +248,14 @@ impl ContentWriter<'_> {
         self.collapser.step(Event::Content { first: ZWSP });
     }
 
-    /// Writes `text` for the current text node, under its white space rules,
-    /// transformed as `transforms` say.
+    /// Writes `text` for the current text node with white space mode
+    /// `mode` and `transforms`.
     ///
-    /// The text is transformed a piece at a time, between the white space
-    /// that collapsing reads. No transform makes or takes collapsible white
-    /// space, and no case mapping reads its context past it. So the result
-    /// equals transforming the whole text and then collapsing it, as Chrome
-    /// does. Each piece knows the character before it, which capitalize
-    /// reads.
+    /// Pieces between collapsible white space are transformed separately.
+    /// No transform makes or removes collapsible white space, and no case
+    /// mapping reads context across it, so this equals transforming the
+    /// whole text and then collapsing, as Chrome does. Each piece gets the
+    /// character before it, for capitalize.
     pub(super) fn collapse_text(
         &mut self,
         mode: WhiteSpaceCollapse,
@@ -280,11 +272,11 @@ impl ContentWriter<'_> {
             self.write_masked(mask, transforms, before, text);
             return;
         }
-        // What the next text reads before it, whatever of this is kept.
+        // The next text's `before`, however much of this is kept.
         let mut before = mem::replace(&mut self.text_node.last_char, last);
-        // A lone space between two plain characters, where spaces collapse
-        // and nothing transforms them, is the one space its run owes, where
-        // the run began: it is written with the text around it.
+        // With collapsing spaces and no transform, a lone space between two
+        // plain characters is its run's own space, so it is written with
+        // the text around it.
         let lone_spaces =
             mode.collapses_spaces() && transforms.own.is_none() && !transforms.first_line_differs();
         let mut rest = text;
@@ -294,7 +286,7 @@ impl ContentWriter<'_> {
                 return;
             }
             let plain = plain_len(rest, !mode.keeps_spaces(), lone_spaces);
-            // `plain_len` stops only at the start of a character.
+            // `plain_len` returns a character boundary.
             let (content, tail) = rest.split_at(plain);
             if !content.is_empty() {
                 let kept = self.write_piece(content, None, transforms, before);
@@ -315,19 +307,17 @@ impl ContentWriter<'_> {
             let previous = mem::replace(&mut before, ch);
             rest = rest.get(len..).unwrap_or_default();
             let written = match ch {
-                // The CR of a CRLF is part of the segment break its LF
-                // makes, whatever the mode makes of that, as HTML normalizes
-                // a CRLF to an LF before CSS sees it.
+                // The CR of a CRLF belongs to the LF's segment break, as
+                // HTML normalizes CRLF to LF before CSS sees it.
                 '\r' if rest.starts_with('\n') => {
                     self.collapsed(len);
                     true
                 }
-                // Inside a ruby container or a combined unit no segment
-                // break is kept: each is one unit of a line, and no
-                // paragraph ends inside one. Where only breaks were kept it
-                // collapses as white space, and where spaces are kept it is
-                // one, as Blink has it (`should_not_preserve_newline` in
-                // ruby, `is_text_combine_` in a combined unit).
+                // Inside ruby or a combined unit no segment break is kept,
+                // since no paragraph ends there. It collapses where only
+                // breaks are kept and is a space where spaces are kept, as
+                // in Blink (`should_not_preserve_newline` in ruby,
+                // `is_text_combine_` in a combined unit).
                 '\n' => match (
                     mode,
                     self.ruby.innermost.is_some() || self.collapser.is_combining(),
@@ -340,22 +330,20 @@ impl ContentWriter<'_> {
                         self.white_space(true, wraps, len);
                         true
                     }
-                    // A segment break written as a space: where spaces
-                    // alone are kept, and in ruby where spaces are kept.
+                    // A space: with `preserve-spaces`, and in ruby or a
+                    // combined unit where spaces are kept.
                     (Ws::PreserveSpaces, _) | (Ws::Preserve | Ws::BreakSpaces, true) => {
                         self.write_piece(" ", Some(len), Transforms::NONE, ch) > 0
                     }
                     // A kept segment break: `preserve`, `break-spaces` and
-                    // `pre-line`.
+                    // `preserve-breaks`.
                     (Ws::Preserve | Ws::BreakSpaces | Ws::PreserveBreaks, false) => {
                         self.write_forced_break("\n", true)
                     }
                 },
-                // A space or a tab, which reaches here only where it
-                // collapses or is discarded, or a lone CR. CSS Text 3 makes
-                // a lone CR a space in all respects: collapsible where spaces
-                // collapse, and kept, hanging and breaking as one where they
-                // are kept.
+                // A space or tab (here only if it collapses or is
+                // discarded), or a lone CR, which CSS Text 3 treats as a
+                // space in all respects.
                 ' ' | '\t' | '\r' => match mode {
                     Ws::Discard => {
                         self.collapsed(len);
@@ -369,9 +357,9 @@ impl ContentWriter<'_> {
                         self.write_piece(" ", Some(len), transforms, previous) > 0
                     }
                 },
-                // VT, FF, NEL, U+2028 or U+2029 forces a break in every
-                // mode (CSS Text 3, section 5.1). In a ruby container, where
-                // no paragraph ends, it is a space, as a `<br>` there is.
+                // VT, FF, NEL, U+2028 and U+2029 force a break in every mode
+                // (CSS Text 3, section 5.1). In ruby it is a space, as a
+                // `<br>` there is.
                 _ if self.ruby.innermost.is_some() => {
                     let kept = self.write_piece(" ", Some(len), Transforms::NONE, ch) > 0;
                     if kept {
@@ -388,16 +376,13 @@ impl ContentWriter<'_> {
         }
     }
 
-    /// Writes `content`, which holds no collapsible white space, for the
-    /// current text node, transformed as `transforms` say.
+    /// Writes `content`, which has no collapsible white space, for the
+    /// current text node, and mirrors it to the first-line text.
     ///
-    /// `before` is the caller's character before it. Returns how many bytes
-    /// were kept: all of them unless the text or the items ran out. The first
-    /// line's text takes it too, under its own transform (see `first_line`).
-    ///
-    /// `stands` is how many bytes of the caller's text it stands for, where
-    /// it is not the caller's text itself: a space written for a carriage
-    /// return or a segment break.
+    /// `before` is the source character before it. `stands` is the source
+    /// byte count when `content` replaces source text (a space for a CR or
+    /// segment break). Returns the bytes of `content` kept: all unless the
+    /// text or items ran out.
     fn write_piece(
         &mut self,
         content: &str,
@@ -413,8 +398,8 @@ impl ContentWriter<'_> {
             return 0;
         };
         if transforms.first_line_differs() && self.first_line.mirror == Mirror::Waiting {
-            // The first text the first line transforms its own way: the
-            // first line's text starts as the text so far.
+            // The first text with a differing first-line transform starts
+            // the mirror with the text so far.
             let Content { text, extras, .. } = &mut *self.content;
             let extras = extras.get_or_insert_with(Box::default);
             extras.first_line_source.start(text);
@@ -437,9 +422,8 @@ impl ContentWriter<'_> {
                 }
                 kept
             }
-            // Room for the most this transform can make of it: written whole,
-            // in its context, and each of the caller's characters mapped to
-            // what it became.
+            // Room for the largest output: write it whole, in context, then
+            // map each source character to its output.
             Some(transformer) if content.len().saturating_mul(transformer.max_growth()) <= room => {
                 transformer.write(
                     content,
@@ -453,10 +437,8 @@ impl ContentWriter<'_> {
                 }
                 content.len()
             }
-            // Near the limit, a character at a time, each on its own, until
-            // one does not fit: the text is cut after the last of the
-            // caller's characters whose transform fits. What was kept maps
-            // as a piece written whole does.
+            // Near the limit, transform one character at a time and cut
+            // after the last one whose output fits.
             Some(transformer) => {
                 let mut kept = 0;
                 let mut previous = before;
@@ -485,8 +467,6 @@ impl ContentWriter<'_> {
                 kept
             }
         };
-        // What stands for the caller's text: one of the caller's characters
-        // written as another, or others.
         if let Some(len) = stands
             && kept > 0
         {
@@ -502,15 +482,14 @@ impl ContentWriter<'_> {
         kept
     }
 
-    /// Writes `text` for the current text node masked by `-webkit-text-security`:
-    /// one `mask` for each grapheme of the text as `transforms` transform it.
+    /// Writes `text` masked by `-webkit-text-security`: one `mask` per
+    /// grapheme of the transformed text.
     ///
-    /// Chrome masks the text before white space is processed
-    /// (`LayoutText::SecureText`), so every space, tab and segment break is
-    /// masked like any other character: none collapses, and none breaks a
-    /// line. Each of the caller's graphemes is one offset map unit, so a mask
-    /// is one caret stop. `before` is the character before `text`, which
-    /// capitalize reads.
+    /// Chrome masks before white space processing (`LayoutText::SecureText`),
+    /// so spaces, tabs and segment breaks are masked too; none collapses or
+    /// breaks a line. Each source grapheme is one offset map unit, so a mask
+    /// is one caret stop. `before` is the character before `text`, for
+    /// capitalize.
     fn write_masked(&mut self, mask: char, transforms: Transforms, mut before: char, text: &str) {
         self.content_arrives(mask, false);
         let mut buffer = [0; 4];
@@ -520,7 +499,7 @@ impl ContentWriter<'_> {
             return;
         };
         let mut boundaries = GraphemeClusterSegmenter::new().segment_str(text);
-        // The segmenter says 0 first.
+        // The segmenter yields 0 first.
         let mut start = boundaries.next().unwrap_or(0);
         for end in boundaries {
             work::step();
@@ -555,11 +534,10 @@ impl ContentWriter<'_> {
         }
     }
 
-    /// Returns how many graphemes `transformer` makes of `grapheme`, with
-    /// `before` the character before it.
+    /// Returns how many graphemes `transformer` makes of `grapheme`.
     ///
-    /// It writes the transform past the text's end and takes it back, so it
-    /// needs no buffer of its own. Where that does not fit, it counts one.
+    /// It writes the output past the text's end and truncates it again, so
+    /// it needs no buffer. If the output might not fit, it returns 1.
     fn transformed_graphemes(
         &mut self,
         transformer: TextTransformer,
@@ -577,7 +555,7 @@ impl ContentWriter<'_> {
             &mut self.content.text,
         );
         let written = self.content.text.get(mark..).unwrap_or_default();
-        // The segmenter says 0 first, and nothing more for no text.
+        // The segmenter yields 0 first, and only that for empty text.
         let count = GraphemeClusterSegmenter::new()
             .segment_str(written)
             .count()
@@ -586,8 +564,8 @@ impl ContentWriter<'_> {
         count
     }
 
-    /// Steps the collapser over a character of collapsible white space in the
-    /// current text node, `len` bytes of the caller's.
+    /// Steps the collapser over one collapsible white space character of
+    /// `len` source bytes.
     fn white_space(&mut self, segment_break: bool, wraps: bool, len: usize) {
         let anchor = self.anchor();
         let at = TextOffset::new(self.content.text.len());
@@ -599,8 +577,8 @@ impl ContentWriter<'_> {
             anchor,
         }) {
             Effect::Began => {
-                // The run's item, pushed now if the node has none, so that its
-                // id is the one the anchor named.
+                // Push the run's item now if the node has none, so its id is
+                // the anchor's.
                 if self.text_node.item.is_none() {
                     let item = self.open_item();
                     debug_assert_eq!(item, anchor.map(|anchor| anchor.item));
@@ -622,8 +600,8 @@ impl ContentWriter<'_> {
         }
     }
 
-    /// Records `len` bytes of the text node's text left out: collapsed away
-    /// or discarded, with nothing written for them.
+    /// Records `len` source bytes collapsed or discarded, with nothing
+    /// written.
     fn collapsed(&mut self, len: usize) {
         let at = TextOffset::new(self.content.text.len());
         let source = self.text_node.source..self.text_node.source.saturating_add(index_to_u32(len));
@@ -631,8 +609,8 @@ impl ContentWriter<'_> {
         self.content.record(|map| map.collapsed(source, at));
     }
 
-    /// Records in the offset map `len` bytes of the text node's text, written
-    /// as given from `at` (see [`is_joined`](Self::is_joined)).
+    /// Records `len` source bytes written unchanged at `at` (see
+    /// [`is_joined`](Self::is_joined)).
     fn written_as_given(&mut self, len: usize, at: TextOffset) {
         let joins = self.is_joined(at);
         self.content
@@ -640,11 +618,11 @@ impl ContentWriter<'_> {
         self.text_node.source = self.text_node.source.saturating_add(index_to_u32(len));
     }
 
-    /// Returns whether text written as given from `at` joins the offset map's
-    /// unit before it.
+    /// Whether text written unchanged at `at` joins the offset map unit
+    /// before it.
     ///
-    /// It does unless the block trims its kept white space and the text
-    /// follows a kept segment break, where the trim may cut.
+    /// It doesn't when the block trims kept white space and the text follows
+    /// a kept segment break, where the trim may cut.
     fn is_joined(&self, at: TextOffset) -> bool {
         !(self.trim.ends
             && self
@@ -654,8 +632,8 @@ impl ContentWriter<'_> {
                 .is_some_and(|before| before.ends_with('\n')))
     }
 
-    /// Returns where a run of white space beginning now would put its space,
-    /// or `None` if its item would not fit.
+    /// Returns where a run beginning now would put its space, or `None` if
+    /// its item would not fit.
     fn anchor(&self) -> Option<Anchor> {
         let item = match self.text_node.item {
             Some(item) => item,
@@ -669,17 +647,17 @@ impl ContentWriter<'_> {
         })
     }
 
-    /// Writes a forced break in the text node's item, `written` as the caller
-    /// wrote it. Returns false if it did not fit.
+    /// Writes the forced break `written` unchanged in the text node's item.
+    /// Returns false if it does not fit.
     ///
-    /// The break is a kept segment break, `\n` (`kept_segment_break`), or a
-    /// character that forces one in every white space mode: VT, FF, NEL,
-    /// U+2028 or U+2029. It takes the collapsible white space on both sides,
-    /// as every forced break does, and ends the first paragraph.
+    /// The break is a kept `\n` (`kept_segment_break`) or VT, FF, NEL,
+    /// U+2028 or U+2029. It removes collapsible white space on both sides
+    /// and ends the first paragraph, unless the leading trim is still
+    /// pending.
     ///
-    /// The block's leading trim treats a kept segment break as white space
-    /// and may cut after it, so it starts an offset map unit where the block
-    /// trims. The trim treats the other characters as content.
+    /// The leading trim treats a kept segment break as white space and may
+    /// cut after it, so it starts an offset map unit when the block trims.
+    /// The trim treats the other characters as content.
     fn write_forced_break(&mut self, written: &str, kept_segment_break: bool) -> bool {
         if !self.has_text_room(written.len()) {
             self.room.full = true;
@@ -706,8 +684,8 @@ impl ContentWriter<'_> {
             .source
             .saturating_add(index_to_u32(written.len()));
         if self.trim.lead.is_some() {
-            // Kept white space the block's leading trim is still to take,
-            // this break with it: the first paragraph has not ended.
+            // The leading trim will remove this break too, so the first
+            // paragraph has not ended.
             self.trim.lead = Some(TextOffset::new(self.content.text.len()));
         } else {
             self.first_line.mirror = Mirror::Done;
@@ -715,14 +693,14 @@ impl ContentWriter<'_> {
         true
     }
 
-    /// Records the offset map's units for `src`, the caller's text, which a
-    /// transform wrote from `mark` to the text's end.
+    /// Records offset map units for source text `src`, transformed into the
+    /// text from `mark` to the end.
     ///
-    /// `before` is the caller's character before it. A character the
-    /// transform made one of the same length is written as given. One it made
-    /// another length takes a `Variable` unit. Where the context mapped the
-    /// characters otherwise than each alone (a Greek accent dropped under a
-    /// capital), the whole piece is one unit.
+    /// A character mapped to one of the same length is recorded as
+    /// unchanged; one of another length gets a `Variable` unit. If context
+    /// changed the mapping (a Greek accent dropped under a capital), units
+    /// fall back to base characters with their marks, then to one unit for
+    /// the piece.
     fn transformed(
         &mut self,
         mark: TextOffset,
@@ -739,14 +717,13 @@ impl ContentWriter<'_> {
             return;
         };
         let written = text.get(mark.get()..).unwrap_or_default();
-        // Case mapping makes one ASCII character of one: the text as given.
+        // ASCII mapped to ASCII of the same length maps one to one.
         if src.is_ascii() && written.is_ascii() && src.len() == written.len() {
             map.identity(source, src.len(), mark, joins);
             return;
         }
-        // Each of the caller's characters against what the text's own
-        // transform made of it alone. Where those do not add up to what the
-        // piece made in its context, its units are taken back.
+        // Align each source character with its output alone; if that
+        // doesn't add up to the output in context, undo these units.
         let own = Transforms::new(Some(transformer), None);
         let words = &mut self.scratch.words;
         let back = map.mark();
@@ -779,11 +756,9 @@ impl ContentWriter<'_> {
         }
     }
 
-    /// Records the offset map's unit for what was written from `at` to the
-    /// text's end, standing for `len` bytes of the caller's text.
-    ///
-    /// The unit is written as given if it is as long, and `Variable`
-    /// otherwise.
+    /// Records the offset map unit for the text from `at` to the end, which
+    /// replaces `len` source bytes: unchanged if the lengths match, else
+    /// `Variable`.
     fn character_stands(&mut self, len: usize, at: TextOffset) {
         let written = self.content.text.len() - at.get();
         if written == len {
@@ -796,12 +771,11 @@ impl ContentWriter<'_> {
         }
     }
 
-    /// Makes a write of up to `bytes` to the first line's text with
-    /// `write`, while that text is being kept.
+    /// Runs `write`, which adds up to `bytes` to the first-line text, while
+    /// the mirror is writing.
     ///
-    /// It holds no more than the content's text may. Past that, which only
-    /// a first paragraph near the limit reaches, the first line draws what it
-    /// has and nothing further.
+    /// The first-line text is bounded by the text limit. If `bytes` would
+    /// pass it, mirroring stops and the first line draws what it has.
     fn mirror(&mut self, bytes: usize, write: impl FnOnce(&mut Self)) {
         if self.first_line.mirror != Mirror::Writing {
             return;
@@ -813,8 +787,8 @@ impl ContentWriter<'_> {
         }
     }
 
-    /// Returns whether the first line's text has room for `bytes` more. It
-    /// holds no more than the content's text may.
+    /// Whether the first-line text has room for `bytes` more within the
+    /// text limit.
     fn mirror_room(&self, bytes: usize) -> bool {
         let held = self
             .content
@@ -823,14 +797,12 @@ impl ContentWriter<'_> {
         held.saturating_add(bytes) <= self.room.limits.text
     }
 
-    /// Copies into the first line's text what
-    /// [`write_piece`](Self::write_piece) wrote from content offset
-    /// `mark`, of which `kept` bytes of the caller's `content` were kept.
+    /// Mirrors to the first-line text what
+    /// [`write_piece`](Self::write_piece) wrote from `mark`, of which `kept`
+    /// bytes of source `content` were kept.
     ///
-    /// Where the first line transforms the text its own way, it takes that
-    /// transform of the caller's text instead, aligned one caller's character
-    /// at a time. A piece cut at the text's limit is drawn on the first line
-    /// as the text has it.
+    /// With a differing first-line transform, it writes that transform of
+    /// the source instead. A piece cut at the text limit is copied as is.
     fn mirror_content(
         &mut self,
         content: &str,
@@ -856,34 +828,33 @@ impl ContentWriter<'_> {
         }
     }
 
-    /// Settles white space as content arrives.
+    /// Settles white space as content starting with `first` arrives.
     ///
-    /// A pending run writes its space. The block's leading trim cuts, unless
-    /// the content is kept white space (`white`).
+    /// A pending run writes its space. Unless the content is kept white
+    /// space (`white`), the leading trim cuts and an unarmed first letter is
+    /// ruled out.
     pub(super) fn content_arrives(&mut self, first: char, white: bool) {
         if let Effect::WriteSpace(run) = self.collapser.step(Event::Content { first }) {
             self.write_space(run);
         }
         if !white {
             self.lead_trim_ends();
-            // A first letter asked for from here on would not be first.
+            // A first letter requested after this would not be first.
             if self.letters.first_letter == FirstLetter::Unarmed {
                 self.letters.first_letter = FirstLetter::Done;
             }
         }
     }
 
-    /// Tells the collapser whether the text that follows is `combined`.
-    ///
-    /// A combined unit starting settles the run before it, as an atomic
-    /// inline does.
+    /// Tells the collapser whether the following text is `combined`. A
+    /// starting unit settles the run before it, as an atomic inline does.
     pub(super) fn combined_text_arrives(&mut self, combined: bool) {
         if let Effect::WriteSpace(run) = self.collapser.step(Event::Combined(combined)) {
             self.write_space(run);
         }
     }
 
-    /// Writes the space `run` owes, where it began.
+    /// Inserts the space `run` owes at the run's start, shifting later items.
     fn write_space(&mut self, run: Run) {
         let unit = self.text_node.run_unit.take();
         if !self.has_text_room(1) {
@@ -893,8 +864,7 @@ impl ContentWriter<'_> {
         }
         let at = run.at.get();
         let Content { text, items, .. } = &mut *self.content;
-        // The run's item, which takes the space, and every item written
-        // since, which moves along by it.
+        // The run's item grows by the space; every later item shifts.
         let end = items.next_id();
         let Some((anchor, after)) = items
             .get_slice_mut(run.item..end)
@@ -927,8 +897,8 @@ impl ContentWriter<'_> {
         });
     }
 
-    /// Ends the block's leading trim here, removing what was written through
-    /// its last segment break.
+    /// Ends the block's leading trim, removing the text through its last
+    /// kept segment break.
     pub(super) fn lead_trim_ends(&mut self) {
         let Some(cut) = self.trim.lead.take() else {
             return;
@@ -947,12 +917,12 @@ impl ContentWriter<'_> {
         }
     }
 
-    /// Applies the block's trailing trim, removing kept white space from the
-    /// first segment break after its last content.
+    /// Applies the block's trailing trim, removing kept white space from
+    /// the first segment break after the last content.
     pub(super) fn trim_end(&mut self) {
         let text = &self.content.text;
         let content_end = text.trim_end_matches(is_document_white_space).len();
-        // Never into an atomic inline or a forced break, which are content.
+        // Atomic inlines and forced breaks are content; never cut them.
         let last_object = self
             .content
             .items
@@ -978,8 +948,8 @@ impl ContentWriter<'_> {
         }
     }
 
-    /// Appends `text` to the text, extending `item`, which is the last item
-    /// that holds text. The room was checked.
+    /// Appends `text`, extending `item`, the last text-holding item, and
+    /// mirrors it. The caller has checked the room.
     pub(super) fn append(&mut self, item: ItemId, text: &str) {
         let at = TextOffset::new(self.content.text.len());
         self.content.text.push_str(text);
@@ -989,7 +959,7 @@ impl ContentWriter<'_> {
         });
     }
 
-    /// Extends `item`, the last item that holds text, to the text's end.
+    /// Extends `item`, the last text-holding item, to the text's end.
     fn extend(&mut self, item: ItemId) {
         let end = TextOffset::new(self.content.text.len());
         if let Some(item) = self.content.items.get_mut(item) {
@@ -997,7 +967,7 @@ impl ContentWriter<'_> {
         }
     }
 
-    /// Returns the current text node's item, pushed now if it has none, or
+    /// Returns the current text node's item, pushing one if needed, or
     /// `None` if there is no text node or no room.
     fn open_item(&mut self) -> Option<ItemId> {
         if let Some(item) = self.text_node.item {
@@ -1009,18 +979,16 @@ impl ContentWriter<'_> {
         Some(item)
     }
 
-    /// Writes a break opportunity the builder generated, U+200B, as a text
-    /// item of `node`'s own, flagged generated.
+    /// Writes a generated U+200B as its own `GENERATED` text item of `node`.
     ///
-    /// It is a `<wbr>`'s, or the one collapsing keeps. It takes an item of
-    /// its own, as Blink's control item does, so that analysis tells it from
-    /// a U+200B the caller wrote: that one is shaped with its text, and this
-    /// one ends a shaping run. The text after it in `node` takes a new item.
-    /// The caller checked the room for its text. Where the items are full,
-    /// nothing is written, as for any item that does not fit.
+    /// It serves `<wbr>`, a wrap opportunity kept by collapsing, and an
+    /// empty combined unit. Like Blink's control item, its own item lets
+    /// analysis tell it from a source U+200B: a source one shapes with its
+    /// text, a generated one ends a shaping run. Text after it takes a new
+    /// item. The caller has checked the text room; if no item fits, nothing
+    /// is written.
     ///
-    /// It holds none of the caller's text: its offset map unit is empty
-    /// there, at `source`, where the text before it has got to.
+    /// Its offset map unit is empty in the source, at `source`.
     pub(super) fn generated_break(&mut self, node: NodeId, source: u32) {
         if let Some(item) = self.push_item(ItemKind::Text, node, ItemFlags::GENERATED) {
             let at = TextOffset::new(self.content.text.len());
@@ -1030,16 +998,14 @@ impl ContentWriter<'_> {
     }
 }
 
-/// Records the offset map's units for `src`, the caller's text from
-/// `source`, which `transformer` wrote as `written` from `mark`, a base
-/// character and the marks after it at a time.
+/// Records offset map units for source `src` at `source`, transformed into
+/// `written` at `mark`, one base character with its marks at a time.
 ///
-/// It is for a piece whose characters the context mapped otherwise than
-/// each alone, as Greek capitals drop an accent above a letter: `Ϊ́Ρ`
-/// uppercases to `ΪΡ`, and the first letter keeps its own unit, as Chrome
-/// maps a selection of it. Returns false where the clusters mapped alone do
-/// not make `written`, or where the transform capitalizes. The caller then
-/// takes back what was recorded and takes the piece whole.
+/// It serves pieces whose context changed the mapping, as when a Greek
+/// capital drops an accent: `Ϊ́Ρ` uppercases to `ΪΡ`, and the first letter
+/// keeps its own unit, as Chrome maps a selection of it. Returns false if
+/// the clusters mapped alone don't make `written`, or the transform
+/// capitalizes; the caller then undoes the units and maps the piece whole.
 #[cold]
 #[inline(never)]
 fn transformed_clusters(
@@ -1086,26 +1052,20 @@ fn transformed_clusters(
     at == written.len()
 }
 
-/// Returns whether `ch` is CSS's document white space, which
-/// `white-space-trim` trims.
-///
-/// That is a space, tab or segment break, and a carriage return, which CSS
-/// Text 3 makes a space in all respects. A form feed is not: it is drawn,
-/// and forces a break.
+/// Whether `ch` is document white space, which `white-space-trim` trims:
+/// space, tab, segment break, or CR (a space in all respects in CSS Text
+/// 3). A form feed is not; it is drawn and forces a break.
 fn is_document_white_space(ch: char) -> bool {
     matches!(ch, ' ' | '\t' | '\n' | '\r')
 }
 
-/// Returns how many bytes of `text` come before the first character the
-/// writer handles on its own.
+/// Returns the length of the prefix of `text` that can be written as is.
 ///
-/// Those characters are a segment break, a carriage return, a character
-/// that forces a line break (VT, FF, NEL, U+2028, U+2029), and, if `spaces`
-/// (where they collapse or are discarded), a space or a tab. Everything
-/// before is written as it is. Where `lone_spaces`, a space between two
-/// characters written as they are is written as it is too. The result is
-/// always a character boundary: each of these is one character, and no other
-/// character's later bytes match.
+/// The prefix ends at the first special character: LF, CR, VT, FF, NEL,
+/// U+2028, U+2029, and if `spaces` (collapsing or discarded), space and
+/// tab. With `lone_spaces`, a space between two plain characters is plain.
+/// The result is a character boundary, since no other character's
+/// continuation bytes match these.
 fn plain_len(text: &str, spaces: bool, lone_spaces: bool) -> usize {
     const ONES: u64 = u64::from_le_bytes([1; 8]);
     let bytes = text.as_bytes();
@@ -1114,16 +1074,16 @@ fn plain_len(text: &str, spaces: bool, lone_spaces: bool) -> usize {
         work::step();
         let x = match rest.first_chunk::<8>() {
             Some(&eight) => u64::from_le_bytes(eight),
-            // The last bytes below letters, built in a register: through
-            // memory, the load would wait on the bytes' stores.
+            // Pad the tail with `a` in a register; padding through memory
+            // would stall the load on the stores.
             None => rest
                 .iter()
                 .rev()
                 .fold(ONES * u64::from(b'a'), |x, &byte| x << 8 | u64::from(byte)),
         };
-        // Every special character starts with a byte up to a space, or with
-        // C2 or E2, which differ in one bit. Each such byte is flagged, and
-        // bytes above the first may be flagged too.
+        // Every special character starts with a byte <= 0x20, or with C2 or
+        // E2, which differ in one bit. Such bytes are flagged; bytes above
+        // the first flagged one may be flagged falsely, so each is checked.
         let low = x.wrapping_sub(ONES * 0x21) & !x;
         let lead = (x & (ONES * 0xDF)) ^ (ONES * 0xC2);
         let lead = lead.wrapping_sub(ONES) & !lead;
@@ -1149,8 +1109,8 @@ fn plain_len(text: &str, spaces: bool, lone_spaces: bool) -> usize {
     bytes.len()
 }
 
-/// Returns whether `byte`, at `at` in `bytes`, starts a character the writer
-/// handles on its own (see [`plain_len`]).
+/// Whether `byte`, at `at` in `bytes`, starts a special character (see
+/// [`plain_len`]).
 #[inline(always)]
 fn is_special(bytes: &[u8], at: usize, byte: u8, spaces: bool) -> bool {
     if byte > b' ' && byte & 0xDF != 0xC2 {
@@ -1173,7 +1133,7 @@ mod tests {
 
     use super::{is_special, plain_len};
 
-    /// The scan `plain_len` makes, a byte at a time.
+    /// `plain_len`, one byte at a time.
     fn scan(text: &str, spaces: bool, lone_spaces: bool) -> usize {
         let bytes = text.as_bytes();
         let stops = |at: usize, byte: u8| {
@@ -1192,8 +1152,8 @@ mod tests {
 
     #[test]
     fn plain_text_ends_where_a_scan_a_byte_at_a_time_ends_it() {
-        // Every character the writer stops at, characters sharing their
-        // lead bytes, and words long enough to cross eight bytes.
+        // Every special character, characters sharing their lead bytes,
+        // and words that cross eight-byte chunks.
         let pieces = [
             "a",
             " ",

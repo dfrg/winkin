@@ -4,13 +4,14 @@
 //! CSS Fonts 4, section 6.5, says that "if a variant glyph is not available
 //! for all the characters in the run, simulated glyphs should be
 //! synthesized for all characters". So a run never mixes the font's variant
-//! glyphs with synthesized ones. Chrome applies the feature alone and
-//! synthesizes nothing (crbug.com/352218916). This follows Firefox instead.
-//! Firefox builds the set of glyphs the feature's lookups take
-//! (`gfxFontEntry::InputsForOpenTypeFeature`), once per font, script and
-//! feature. It then tests each run's nominal glyphs against that set
-//! (`gfxFont::SupportsSubSuperscript`). Here the run loop asks, and the
-//! answer is kept in [`FeatureCoverages`].
+//! glyphs with synthesized ones. Under `PositionSynthesis::SynthesizeMissing`
+//! this follows Firefox, which builds the set of glyphs the feature's
+//! lookups take (`gfxFontEntry::InputsForOpenTypeFeature`) once per font,
+//! script and feature. Firefox then tests each run's nominal glyphs against
+//! that set (`gfxFont::SupportsSubSuperscript`). Chrome applies the feature
+//! alone and synthesizes nothing (crbug.com/352218916), as `FeaturesOnly`
+//! does. The run loop asks for a coverage the first time a run needs it, and
+//! [`FeatureCoverages`] keeps it.
 //!
 //! **A feature's coverage** is the characters whose nominal glyph the
 //! feature substitutes. For a character harfrust fakes where the font does
@@ -19,20 +20,20 @@
 //!
 //! **Only lookups that substitute a glyph wherever it stands count**: single
 //! (GSUB type 1), multiple (2) and alternate (3), and extension lookups (7)
-//! wrapping them. They are read once each, in the language system
+//! wrapping them. Each is read once, in the language system
 //! `features::script_features` picks. A ligature (4) substitutes only a
 //! sequence, and a contextual lookup (5, 6, 8) only in context, which no set
 //! of characters can answer. A glyph only they reach is not covered, which
 //! errs toward synthesizing. Firefox counts their input glyphs
-//! (`hb_ot_layout_lookup_collect_glyphs`), so it would take a font whose
-//! `sups` is written contextually as covering; this does not. Lookup flags
-//! are not read, as `collect_glyphs` reads none, so a mark a lookup would
-//! skip counts as covered.
+//! (`hb_ot_layout_lookup_collect_glyphs`), so it takes a font whose `sups`
+//! is written contextually as covering; this does not. Lookup flags are not
+//! read, as `collect_glyphs` reads none, so a mark a lookup would skip
+//! counts as covered.
 //!
 //! **Nothing here panics on a font's bytes or takes unbounded time.** An
 //! index past its list is passed over, and a table that cannot be read gives
 //! nothing. A few kilobytes of offsets can all point at one huge coverage
-//! table. So reading stops after [`MAX_WORK`] steps, and what lies past that
+//! table, so reading stops after [`MAX_WORK`] steps, and what lies past that
 //! is not covered.
 
 use alloc::vec::Vec;
@@ -75,11 +76,11 @@ struct FeatureCoverage {
 
 /// The context's feature coverages, and working memory for making them.
 ///
-/// Each is made the first time a run asks. This is a cache, keyed by
-/// content like every other font fact. It survives a change of collection,
-/// since a font's key is its bytes' id. It is trimmed between builds to the
-/// coverages made or asked for last, since no layout holds a
-/// [`FeatureCoverageId`].
+/// It is a cache on the context, keyed by font key, script and feature.
+/// Each coverage is made the first time a run asks. A change of collection
+/// keeps the coverages, since a font's key is its bytes' id. No layout holds
+/// a [`FeatureCoverageId`], so each build's start trims the cache, dropping
+/// the coverages made or remade longest ago.
 pub(super) struct FeatureCoverages {
     table: LruCache<FeatureCoverageId, FeatureCoverage>,
     /// The glyphs the feature being read substitutes, a bit each.
@@ -106,8 +107,8 @@ impl FeatureCoverages {
 
     /// Drops the coverages used longest ago down to the capacity.
     ///
-    /// The walk finds a coverage without counting it as used, so the order
-    /// is the order made or asked for again.
+    /// The walk finds a coverage without counting it as used, so only
+    /// [`make`](Self::make) counts a use.
     pub(super) fn trim(&mut self) {
         self.table.trim(|_, _| {});
     }
@@ -120,8 +121,8 @@ impl FeatureCoverages {
     /// Returns what `feature` of the font `font` names covers under
     /// `script`.
     ///
-    /// Returns `None` where it has not been made. This is a lookup by hash,
-    /// which reads no font and allocates nothing.
+    /// Returns `None` where it has not been made. The lookup is by hash; it
+    /// reads no font and allocates nothing.
     pub(super) fn find(
         &self,
         font: FontKey,
@@ -139,9 +140,9 @@ impl FeatureCoverages {
     /// if not yet made.
     ///
     /// It reads the font's face in `instances`. Where the face cannot be had
-    /// or its `GSUB` read, the coverage is empty. So every font asked about
-    /// has an answer, and the run loop asks once. Where every id is taken,
-    /// it starts again.
+    /// or its `GSUB` read, the coverage is empty, so every font asked about
+    /// has an answer and the run loop asks once. Where every id is taken, it
+    /// drops every coverage first.
     pub(super) fn make(
         &mut self,
         family: &Family,
@@ -181,7 +182,8 @@ impl FeatureCoverages {
         );
     }
 
-    /// How many coverages are made, for tests to see that one is made once.
+    /// Returns how many coverages are made, for tests to see that one is
+    /// made once.
     #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.table.len()
@@ -227,12 +229,12 @@ impl FeatureCoverages {
 }
 
 heap_bytes! {
-    /// Its tables and working memory. fontwich's character sets count at
-    /// their own size alone.
+    /// Counts its tables and working memory. fontwich's character sets
+    /// count at their inline size only.
     FeatureCoverages { table, glyphs, lookups }
 }
 
-/// Returns the key's hash, as the index holds it.
+/// Returns the hash a coverage is found by.
 fn key_hash(font: FontKey, script: [u8; 4], feature: [u8; 4]) -> u64 {
     let mut fx = FxHasher::new();
     Hash::hash(&font, &mut fx);
@@ -244,10 +246,10 @@ fn key_hash(font: FontKey, script: [u8; 4], feature: [u8; 4]) -> u64 {
 /// Returns the characters of `font`, held whole as `held`, whose nominal
 /// glyph is among `glyphs`.
 ///
-/// They include every character its charset maps, and each one harfrust
-/// fakes where the font maps none, with the glyph it fakes it with. The
-/// nominal glyph comes from read-fonts' character map on the face harfrust
-/// maps with, as harfrust maps a character.
+/// The candidates are every character its charset maps, and each one
+/// harfrust fakes where the font maps none, through the glyph it fakes it
+/// with. The nominal glyph comes from read-fonts' character map on the face,
+/// as harfrust maps a character.
 fn covered(font: &Font, held: &HeldFont, glyphs: &Bits) -> Charset {
     if glyphs.is_empty() {
         return Charset::default();
@@ -280,13 +282,13 @@ struct Reader<'a, 'b> {
 }
 
 impl Reader<'_, '_> {
-    /// Spends `steps`, and returns whether the budget still holds.
+    /// Spends `steps` and returns whether the budget still holds.
     fn spend(&mut self, steps: u32) -> bool {
         self.work = self.work.saturating_add(steps);
         self.work <= MAX_WORK
     }
 
-    /// Reads lookup `index`, once, where it is one that counts.
+    /// Reads lookup `index` once, where it is a kind that counts.
     fn lookup(&mut self, index: u16) {
         if self.lookups.contains(u32::from(index)) || !self.spend(1) {
             return;
@@ -381,7 +383,7 @@ impl Bits {
         }
     }
 
-    /// Empties it, making its words the first time.
+    /// Empties the set, allocating its words the first time.
     fn reset(&mut self) {
         self.words.clear();
         self.words.resize(IDS / 64, 0);
@@ -400,7 +402,7 @@ impl Bits {
         }
     }
 
-    /// Whether `id` is set. An id past sixteen bits never is.
+    /// Returns whether `id` is set. An id past sixteen bits never is.
     fn contains(&self, id: u32) -> bool {
         let Ok(id) = usize::try_from(id) else {
             return false;
@@ -410,7 +412,7 @@ impl Bits {
             .is_some_and(|word| word & (1 << (id % 64)) != 0)
     }
 
-    /// Whether no bit is set.
+    /// Returns whether no bit is set.
     fn is_empty(&self) -> bool {
         !self.any
     }
@@ -485,8 +487,8 @@ mod tests {
         pack(&[1, kind, 0, 8], &[], &[inner])
     }
 
-    /// A lookup of GSUB type `kind` whose subtables are `children`, `slots`
-    /// long, each naming the child it points at.
+    /// A lookup of GSUB type `kind` with one subtable per item of `slots`,
+    /// each naming the one of `children` it points at.
     fn lookup(kind: u16, slots: &[usize], children: &[Vec<u8>]) -> Vec<u8> {
         let mut head = vec![kind, 0, slots.len() as u16];
         head.extend(iter::repeat_n(0, slots.len()));
@@ -542,7 +544,7 @@ mod tests {
 
     /// Returns the glyphs `data`'s `sups` substitutes under `DFLT`, as read.
     ///
-    /// Returns none where read-fonts finds no font in it.
+    /// Returns no glyphs where read-fonts finds no font in it.
     fn substituted(data: &[u8]) -> Vec<u32> {
         let mut coverages = FeatureCoverages::new(usize::MAX);
         if let Some(font) = HeldFont::new(Blob::from(data.to_vec()), 0) {
@@ -596,8 +598,8 @@ mod tests {
     /// A `GSUB` that asks for endless work is read within the budget.
     ///
     /// Thousands of lookup entries point at one lookup of thousands of
-    /// subtables. These point at one coverage of thousands of ranges, each
-    /// over every glyph. What the read reached is covered, and the read
+    /// subtables, which all point at one coverage of thousands of ranges,
+    /// each over every glyph. What the read reached is covered, and the read
     /// ends.
     #[test]
     fn a_gsub_asking_for_endless_work_is_read_within_the_budget() {
@@ -631,8 +633,7 @@ mod tests {
         assert!(bits.is_empty() && !bits.contains(7));
     }
 
-    /// Every character harfrust fakes is in the list the coverage adds, and
-    /// nothing else is.
+    /// `FAKED` lists every character harfrust fakes, and nothing else.
     #[test]
     fn the_faked_characters_are_the_ones_faked() {
         let faked: Vec<char> = (0..0x3100)

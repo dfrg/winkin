@@ -1,23 +1,20 @@
-//! The three fixed-point types lengths are kept in, and the roundings that
-//! put a float on their grids.
+//! Fixed-point length types and the float roundings onto their grids.
 //!
-//! Glyph geometry is 16.16 [`TextUnit`]. Layout geometry is 26.6
-//! [`LayoutUnit`]. Running advances are 48.16 [`InlineLayoutUnit`]. These
-//! are the three types Chrome uses, rounded where Chrome rounds.
+//! Glyph geometry is 16.16 [`TextUnit`], layout geometry is 26.6
+//! [`LayoutUnit`], and running advances are 48.16 [`InlineLayoutUnit`].
+//! These are Chrome's three types, rounded where Chrome rounds.
 //!
-//! Values arrive from the caller and from fonts as `f32`, and leave through
-//! accessors as `f32`. Every conversion between a float and an integer is
-//! here and nowhere else. So each rounds as Chrome's does at that edge, and
-//! a change of rounding is one edit. The index casts live in `data`.
+//! Lengths enter and leave as `f32`. Every float-to-integer conversion lives
+//! here, so each rounds as Chrome does at that point. Index casts live in
+//! `data`.
 
 use core::fmt;
 use core::ops::{Add, AddAssign, Neg, Rem, Sub};
 
-/// `x` rounded down to a whole number: saturating at `i32`'s ends, and zero
-/// for NaN, as every `as` from a float is.
+/// Rounds `x` down to a whole number. Saturates at the ends of `i32`; NaN
+/// gives zero.
 ///
-/// Written out because `f32::floor` is std's: without std a float has no
-/// rounding of its own.
+/// `f32::floor` needs std, so this is written out.
 #[inline]
 pub(crate) fn floor(x: f32) -> i32 {
     let truncated = x as i32;
@@ -28,15 +25,15 @@ pub(crate) fn floor(x: f32) -> i32 {
     }
 }
 
-/// `x` rounded up to a whole count, as C's `ceil` rounds a count of lines:
-/// nothing for NaN or below zero, and saturating.
+/// Rounds `x` up to a whole count, as C's `ceil` does. Saturates; NaN and
+/// negative values give zero.
 #[inline]
 pub(crate) fn ceil_count(x: f32) -> u32 {
     u32::try_from(floor(-x).saturating_neg()).unwrap_or(0)
 }
 
-/// `x` rounded to the nearest whole number, halves away from zero, as C's
-/// `lroundf` rounds.
+/// Rounds `x` to the nearest whole number, halves away from zero, as C's
+/// `lroundf` does.
 #[inline]
 fn round(x: f32) -> i32 {
     if x < 0.0 {
@@ -46,39 +43,40 @@ fn round(x: f32) -> i32 {
     }
 }
 
-/// `px` floored to a hundredth of a pixel, as Chrome's
-/// `FontDescription::EffectiveFontSize` keys its fonts by size. A hundredth
-/// of the largest size is well inside an `i32`; past it the count
-/// saturates, and NaN is zero.
+/// Floors `px` to a hundredth of a pixel, as Chrome's
+/// `FontDescription::EffectiveFontSize` does to key fonts by size.
+/// Saturates; NaN gives zero.
 #[inline]
 pub(crate) fn floor_to_hundredth(px: f32) -> f32 {
     floor(px * 100.0) as f32 / 100.0
 }
 
-/// `px` rounded to a whole pixel, halves away from zero, as C's `lroundf`
-/// rounds: how Chrome sizes a synthesized small capital and an emphasis
-/// mark. Saturates, and NaN is zero.
+/// Rounds `px` to a whole pixel, halves away from zero, as C's `lroundf`
+/// does. Chrome sizes synthesized small capitals and emphasis marks this way.
+/// Saturates; NaN gives zero.
 #[inline]
 pub(crate) fn round_to_whole(px: f32) -> f32 {
     round(px) as f32
 }
 
-/// How long the vector `(x, y)` is, worked in `f64` and rounded once to the
-/// nearest `f32`: what a path is measured with (`path`). Infinite where a
-/// part is, and NaN where one is not a number.
+/// Returns the length of the vector `(x, y)`, computed in `f64` and rounded
+/// once to the nearest `f32`.
 ///
-/// Written out, as [`floor`] is, because `f32::sqrt` is std's: Newton's
-/// method from a first guess read off the square's exponent, whose error of
-/// a few per cent four steps take below `f64`'s precision.
+/// Infinite if a component is infinite; NaN if one is NaN. Paths measure
+/// their segments with it.
+///
+/// `f32::sqrt` needs std, so this runs Newton's method. The first guess,
+/// read off the square's exponent, is within a few per cent; four steps
+/// reach `f64` precision.
 #[inline]
 pub(crate) fn hypot(x: f32, y: f32) -> f32 {
     let (x, y) = (f64::from(x), f64::from(y));
     let square = x * x + y * y;
     if square.is_nan() || square.is_infinite() || square <= 0.0 {
-        // NaN, infinite, or nothing at all: the square is its own root.
+        // NaN, infinity and zero are their own roots.
         return square as f32;
     }
-    // Half the exponent, from the bits: the root's first guess.
+    // The first guess halves the exponent bits.
     let mut root = f64::from_bits((square.to_bits() >> 1) + (1023 << 51));
     for _ in 0..4 {
         root = 0.5 * (root + square / root);
@@ -86,18 +84,18 @@ pub(crate) fn hypot(x: f32, y: f32) -> f32 {
     root as f32
 }
 
-/// A whole number worked out in integers, of pixels, of lines or of font
-/// units, as a float to measure with: exact below 2^24, which none here
-/// reaches, and rounded to the nearest float past it.
+/// Converts a whole number of pixels, lines or font units to `f32`.
+///
+/// Exact below 2^24; rounds to the nearest float above it.
 #[inline]
 pub(crate) fn whole_to_f32(whole: impl Into<i64>) -> f32 {
     whole.into() as f32
 }
 
-/// `x` rounded to the nearest whole number, halves away from zero: saturating
-/// at `i64`'s ends, and zero for NaN, as every `as` from a float is.
+/// Rounds `x` to the nearest whole number, halves away from zero. Saturates
+/// at the ends of `i64`; NaN gives zero.
 ///
-/// Written out, as [`round`] is, because `f64::round` is std's.
+/// `f64::round` needs std, so this is written out.
 #[inline]
 fn round_wide(x: f64) -> i64 {
     let truncated = x as i64;
@@ -111,54 +109,53 @@ fn round_wide(x: f64) -> i64 {
     }
 }
 
-/// A length on layout's grid: 26.6 fixed point, in 1/64 px.
+/// A layout length: 26.6 fixed point, in 1/64 px.
 ///
-/// It is named and rounded as Chrome's `LayoutUnit` is. It is not `Fixed`,
+/// Named and rounded as Chrome's `LayoutUnit`. It differs from `Fixed`,
 /// which in OpenType and read-fonts is 16.16.
 ///
-/// Every box, line and fitting width is one. Values come in from the caller
-/// and from fonts as `f32` and are rounded onto the grid once, here.
+/// Box, line and fitting widths use it. Float inputs round onto the grid
+/// once, here.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[repr(transparent)]
 pub(crate) struct LayoutUnit(i32);
 
 impl LayoutUnit {
-    /// Nothing.
+    /// Zero length.
     pub(crate) const ZERO: Self = Self(0);
 
-    /// The most negative length the grid holds, which Chrome's
-    /// `FontHeight::Empty()` fills both sides of an extent with: the
-    /// identity of a union.
+    /// The most negative length. Chrome's `FontHeight::Empty()` fills both
+    /// sides of an extent with it, as the identity for a union.
     pub(crate) const MIN: Self = Self(i32::MIN);
 
-    /// The longest length the grid holds, about 33.5 million pixels, which a
-    /// width past it saturates at, as Chrome's does: the tests that hold a
-    /// width to it read it.
+    /// The longest length, about 33.5 million pixels. Wider widths saturate
+    /// here, as in Chrome.
     #[cfg(test)]
     pub(crate) const MAX: Self = Self(i32::MAX);
 
-    /// The grid's least step, 1/64 px: what Chrome's `AddEpsilon` adds to
-    /// the available width a line is fitted in (`AvailableWidthToFit`), so a
-    /// line that rounds up past its band by no more than that still fits.
+    /// The smallest step, 1/64 px.
+    ///
+    /// Chrome's `AddEpsilon` adds it to the available width
+    /// (`AvailableWidthToFit`), so a line that rounds up past its band by at
+    /// most this much still fits.
     pub(crate) const EPSILON: Self = Self(1);
 
-    /// `px` on the grid, to the nearest 1/64, halves away from zero, as
-    /// `LayoutUnit::FromFloatRound` rounds. Saturates, and NaN is zero.
+    /// Rounds `px` to the nearest 1/64, halves away from zero, as
+    /// `LayoutUnit::FromFloatRound` does. Saturates; NaN gives zero.
     #[inline]
     pub(crate) fn from_px(px: f32) -> Self {
         Self(round(px * 64.0))
     }
 
-    /// `px` on the grid, rounded up to the next 1/64, as
-    /// `LayoutUnit::FromFloatCeil` rounds: never short of `px`. Saturates,
-    /// and NaN is zero.
+    /// Rounds `px` up to the next 1/64, as `LayoutUnit::FromFloatCeil` does.
+    /// Saturates; NaN gives zero.
     #[inline]
     pub(crate) fn from_px_ceil(px: f32) -> Self {
         Self(floor(-(px * 64.0)).saturating_neg())
     }
 
-    /// `px` on the grid, truncated toward zero, as Chrome's plain
-    /// `LayoutUnit(float)` converts.
+    /// Truncates `px` toward zero onto the grid, as Chrome's plain
+    /// `LayoutUnit(float)` does.
     ///
     /// Chrome converts these lengths this way:
     /// - a computed font size, as the length a numeric `line-height`
@@ -169,69 +166,65 @@ impl LayoutUnit {
     ///   and an atomic inline's or a float's size.
     ///
     /// So 10.012px is 10, 10.99px is 10.984375 and −10.012px is −10.
-    /// Saturates, and NaN is zero.
+    /// Saturates; NaN gives zero.
     #[inline]
     pub(crate) fn from_px_truncated(px: f32) -> Self {
         Self((px * 64.0) as i32)
     }
 
-    /// Half the length, truncated toward zero on the grid, as Chrome divides
-    /// a `LayoutUnit` by two.
+    /// Halves the length, truncating toward zero, as Chrome divides a
+    /// `LayoutUnit` by two.
     #[inline]
     pub(crate) fn half(self) -> Self {
         Self(self.0 / 2)
     }
 
-    /// The length over `by`, truncated toward zero on the grid, as Chrome
-    /// divides a `LayoutUnit` by an integer: how a superscript's shift is a
-    /// third of a font size and a subscript's a fifth. Nothing for a divisor
-    /// of zero, or for a quotient past the grid's ends.
+    /// Divides the length by `by`, truncating toward zero, as Chrome divides
+    /// a `LayoutUnit` by an integer.
+    ///
+    /// Superscript and subscript shifts use it. Returns zero when `by` is
+    /// zero or the quotient overflows.
     #[inline]
     pub(crate) fn divided(self, by: i32) -> Self {
         Self(self.0.checked_div(by).unwrap_or(0))
     }
 
-    /// The length rounded down to a whole pixel, as Chrome's
-    /// `LayoutUnit::Floor()`: toward negative infinity, so a negative half
-    /// pixel is a whole one.
+    /// Rounds down to a whole pixel, toward negative infinity, as Chrome's
+    /// `LayoutUnit::Floor()` does. A negative half pixel becomes −1 px.
     #[inline]
     pub(crate) fn floor_px(self) -> Self {
         Self((self.0 >> 6).saturating_mul(64))
     }
 
-    /// The length rounded up to a whole pixel, as Chrome's
-    /// `LayoutUnit::Ceil()`: toward positive infinity, the mirror of
-    /// [`floor_px`](Self::floor_px).
+    /// Rounds up to a whole pixel, toward positive infinity, as Chrome's
+    /// `LayoutUnit::Ceil()` does.
     #[inline]
     pub(crate) fn ceil_px(self) -> Self {
         -((-self).floor_px())
     }
 
-    /// `px` rounded to a whole pixel, halves up, as Skia rounds a font's
-    /// metrics before Chrome sees them (`SkScalarRoundToScalar`, which is
-    /// `floor(x + 0.5)`). Saturates, and NaN is zero.
+    /// Rounds `px` to a whole pixel, halves up, as Skia rounds font metrics
+    /// (`SkScalarRoundToScalar`, `floor(x + 0.5)`). Saturates; NaN gives zero.
     #[inline]
     pub(crate) fn from_px_whole(px: f32) -> Self {
         Self(floor(px + 0.5).saturating_mul(64))
     }
 
-    /// The length `count` times over, as Chrome multiplies a `LayoutUnit` by
-    /// a whole number: exact on the grid, saturating at its ends.
+    /// Multiplies the length by `count`, as Chrome multiplies a `LayoutUnit`
+    /// by an integer. Exact; saturates.
     #[inline]
     pub(crate) fn times_whole(self, count: u32) -> Self {
         let count = i32::try_from(count).unwrap_or(i32::MAX);
         Self(self.0.saturating_mul(count))
     }
 
-    /// The length times `factor`, truncated onto the grid, as Chrome's
-    /// `LayoutUnit(length * factor)` makes one of a `LayoutUnit` times a
-    /// float. Saturates, and NaN is zero.
+    /// Multiplies the length by `factor` and truncates onto the grid, as
+    /// Chrome's `LayoutUnit(length * factor)` does. Saturates; NaN gives zero.
     #[inline]
     pub(crate) fn times_truncated(self, factor: f32) -> Self {
         Self::from_px_truncated(self.to_px() * factor)
     }
 
-    /// The length in pixels.
     #[inline]
     pub(crate) fn to_px(self) -> f32 {
         self.0 as f32 / 64.0
@@ -241,7 +234,7 @@ impl LayoutUnit {
 impl Neg for LayoutUnit {
     type Output = Self;
 
-    /// The length the other way, saturating at the grid's ends.
+    /// Negates the length, saturating.
     #[inline]
     fn neg(self) -> Self {
         Self(self.0.saturating_neg())
@@ -251,9 +244,8 @@ impl Neg for LayoutUnit {
 impl Add for LayoutUnit {
     type Output = Self;
 
-    /// The sum, saturating at the grid's ends, as Chrome's `LayoutUnit`
-    /// adds: a caller's lengths can reach them, and nothing a caller gives
-    /// may panic.
+    /// Adds, saturating as Chrome's `LayoutUnit` does. Input lengths can
+    /// reach the ends, and must not panic.
     #[inline]
     fn add(self, other: Self) -> Self {
         Self(self.0.saturating_add(other.0))
@@ -263,7 +255,7 @@ impl Add for LayoutUnit {
 impl Sub for LayoutUnit {
     type Output = Self;
 
-    /// The difference, saturating at the grid's ends.
+    /// Subtracts, saturating.
     #[inline]
     fn sub(self, other: Self) -> Self {
         Self(self.0.saturating_sub(other.0))
@@ -276,50 +268,49 @@ impl fmt::Debug for LayoutUnit {
     }
 }
 
-/// A length on glyph geometry's grid: 16.16 fixed point, in 1/65536 px.
+/// A glyph-geometry length: 16.16 fixed point, in 1/65536 px.
 ///
-/// Shaping runs at harfrust scale `size × 65536`, as Chrome sets HarfBuzz up,
-/// so a font size is one of these, and so is every glyph advance and offset.
+/// Shaping runs at harfrust scale `size × 65536`, as Chrome sets up
+/// HarfBuzz. Font sizes, glyph advances and glyph offsets use it.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[repr(transparent)]
 pub(crate) struct TextUnit(i32);
 
 impl TextUnit {
-    /// `px` on the grid, truncated toward zero, as Chrome turns a font size
+    /// Truncates `px` toward zero onto the grid, as Chrome turns a font size
     /// into a HarfBuzz scale (`SkiaScalarToHarfBuzzPosition`, a clamped
-    /// `static_cast`). Saturates, and NaN is zero.
+    /// `static_cast`). Saturates; NaN gives zero.
     #[inline]
     pub(crate) fn from_px_truncated(px: f32) -> Self {
         Self((px * 65536.0) as i32)
     }
 
-    /// `px` on the grid, to the nearest 1/65536, halves away from zero, as
-    /// Skia hands a glyph's advance to HarfBuzz (`SkScalarToHarfBuzzPosition`,
-    /// a rounding): how a font's advance read off its tables becomes a glyph
-    /// advance. Saturates, and NaN is zero.
+    /// Rounds `px` to the nearest 1/65536, halves away from zero, as Skia
+    /// passes a glyph advance to HarfBuzz (`SkScalarToHarfBuzzPosition`).
+    /// Table-read advances become glyph advances this way. Saturates; NaN
+    /// gives zero.
     #[inline]
     pub(crate) fn from_px(px: f32) -> Self {
         let units = round_wide(f64::from(px) * 65536.0);
         Self(i32::try_from(units).unwrap_or(if units < 0 { i32::MIN } else { i32::MAX }))
     }
 
-    /// The length in pixels.
     #[inline]
     pub(crate) fn to_px(self) -> f32 {
         self.0 as f32 / 65536.0
     }
 
-    /// The length as harfrust takes a scale and gives a position: a count of
-    /// 1/65536 px.
+    /// Returns the count of 1/65536 px, as harfrust takes scales and gives
+    /// positions.
     ///
-    /// A font size's raw value is the scale that makes the shaper's positions
-    /// come out in these units.
+    /// A font size's raw value is the scale that makes shaper positions come
+    /// out in these units.
     #[inline]
     pub(crate) const fn raw(self) -> i32 {
         self.0
     }
 
-    /// The length the shaper's position `raw` names, in 1/65536 px.
+    /// Wraps a shaper position in 1/65536 px.
     #[inline]
     pub(crate) const fn from_raw(raw: i32) -> Self {
         Self(raw)
@@ -334,111 +325,105 @@ impl fmt::Debug for TextUnit {
 
 /// A running advance: 48.16 fixed point in an `i64`, in 1/65536 px.
 ///
-/// It is Chrome's `InlineLayoutUnit`, for the advance of a run and a line.
-/// Glyph advances are [`TextUnit`]s, so a sum of them in this type is exact.
-/// The paragraph's prefix advances are kept in it. So a line's width is one
-/// subtraction, with nothing lost to rounding or ordering.
+/// Chrome's `InlineLayoutUnit`, for run and line advances. Glyph advances are
+/// [`TextUnit`]s, so sums of them are exact. Paragraph prefix advances use
+/// it, so a line's width is one exact subtraction.
 ///
-/// Its whole part is 48 bits, so no paragraph reaches its range. Sums
-/// saturate rather than wrap all the same: a caller's lengths are in them,
-/// and nothing a caller gives may panic.
+/// No paragraph reaches the 48-bit range, but sums still saturate because
+/// input lengths flow into them and must not panic.
 ///
-/// Fitting reads a position rounded up to layout's 1/64 grid, as Chrome's
-/// cached character positions are (`ToCeil<LayoutUnit>`): see
+/// Line fitting reads positions rounded up to the 1/64 grid, as Chrome's
+/// cached character positions are (`ToCeil<LayoutUnit>`); see
 /// [`ceil_to_grid`](Self::ceil_to_grid).
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[repr(transparent)]
 pub(crate) struct InlineLayoutUnit(i64);
 
 impl InlineLayoutUnit {
-    /// Nothing.
+    /// Zero length.
     pub(crate) const ZERO: Self = Self(0);
 
-    /// The length `raw` counts, in 1/65536 px: a sum of the shaper's
-    /// positions, which is how a cluster's glyphs' advances arrive.
+    /// Wraps a count of 1/65536 px, such as a sum of shaper positions.
     #[inline]
     pub(crate) const fn from_raw(raw: i64) -> Self {
         Self(raw)
     }
 
-    /// The length as a count of 1/65536 px.
+    /// Returns the count of 1/65536 px.
     #[inline]
     pub(crate) const fn raw(self) -> i64 {
         self.0
     }
 
-    /// `length`, exactly: 1/64 px is 1024 of these units.
+    /// Converts `length` exactly; 1/64 px is 1024 units.
     #[inline]
     pub(crate) fn from_layout(length: LayoutUnit) -> Self {
         Self(i64::from(length.0) << 10)
     }
 
-    /// `length`, exactly.
     #[inline]
     pub(crate) fn from_text(length: TextUnit) -> Self {
         Self(i64::from(length.0))
     }
 
-    /// `px`, to the nearest 1/65536, halves away from zero: a length a caller
-    /// gives in pixels, such as a `tab-size` of a length. Saturates, and NaN
-    /// is zero.
+    /// Rounds `px` to the nearest 1/65536, halves away from zero. Used for
+    /// input lengths such as a length `tab-size`. Saturates; NaN gives zero.
     #[inline]
     pub(crate) fn from_px(px: f32) -> Self {
         Self(round_wide(f64::from(px) * 65536.0))
     }
 
-    /// The length `factor` times over, to the nearest 1/65536: a `tab-size`
-    /// of a number of spaces, say. Saturates, and a factor that is not a
-    /// number makes nothing.
+    /// Multiplies by `factor`, rounding to the nearest 1/65536, as for a
+    /// `tab-size` given in spaces. Saturates; a NaN factor gives zero.
     #[inline]
     pub(crate) fn times(self, factor: f32) -> Self {
         Self(round_wide(self.0 as f64 * f64::from(factor)))
     }
 
-    /// Half the length, truncated toward zero.
+    /// Halves the length, truncating toward zero.
     #[inline]
     pub(crate) fn half(self) -> Self {
         Self(self.0 / 2)
     }
 
-    /// The length rounded up to layout's 1/64 grid, as Chrome rounds a
-    /// running sum to the character positions it fits lines with
-    /// (`LayoutUnit::FromFloatCeil`, `ToCeil<LayoutUnit>`). Still in this
-    /// type, so a position past the grid's range keeps its value.
+    /// Rounds up to the 1/64 grid, as Chrome rounds running sums into the
+    /// character positions it fits lines with (`LayoutUnit::FromFloatCeil`,
+    /// `ToCeil<LayoutUnit>`).
+    ///
+    /// The result stays in this type, so positions beyond the `LayoutUnit`
+    /// range keep their value.
     #[inline]
     pub(crate) fn ceil_to_grid(self) -> Self {
         let whole = (self.0 >> 10) + i64::from(self.0 & 1023 != 0);
         Self(whole.saturating_mul(1024))
     }
 
-    /// The length on layout's grid, rounded up to 1/64 and saturating at the
-    /// grid's ends: a width that has been fitted.
+    /// Converts to a [`LayoutUnit`], rounding up to 1/64 and saturating.
     #[inline]
     pub(crate) fn to_layout(self) -> LayoutUnit {
         let whole = (self.0 >> 10) + i64::from(self.0 & 1023 != 0);
         LayoutUnit(i32::try_from(whole).unwrap_or(if whole < 0 { i32::MIN } else { i32::MAX }))
     }
 
-    /// The length rounded up onto layout's grid, as
-    /// [`to_layout`](Self::to_layout) rounds it, and how much the rounding
-    /// added, in 1/65536 px: less than 1/64, so ten bits. Past the grid's
-    /// range the rounding saturates, and the length put back with it.
+    /// Returns [`to_layout`](Self::to_layout) and the amount the rounding
+    /// added, in 1/65536 px.
+    ///
+    /// The amount is below 1/64 px, so it fits in ten bits. Outside the
+    /// `LayoutUnit` range the length saturates and the split is inexact.
     #[inline]
     pub(crate) fn to_layout_and_short(self) -> (LayoutUnit, u16) {
-        // What takes the length up to the next multiple of 1024: its low
-        // bits' complement, none where it is on the grid.
+        // The distance up to the next multiple of 1024; zero on the grid.
         let short = u16::try_from(self.0.wrapping_neg() & 1023).unwrap_or(0);
         (self.to_layout(), short)
     }
 
-    /// `length` less `short` 1/65536 px: a length
-    /// [`to_layout_and_short`](Self::to_layout_and_short) split, exactly.
+    /// Returns `length` less `short` 1/65536 px, inverting
+    /// [`to_layout_and_short`](Self::to_layout_and_short).
     #[inline]
     pub(crate) fn from_layout_less(length: LayoutUnit, short: u16) -> Self {
         Self(Self::from_layout(length).0 - i64::from(short))
     }
 
-    /// The length in pixels.
     #[inline]
     pub(crate) fn to_px(self) -> f32 {
         (self.0 as f64 / 65536.0) as f32
@@ -448,7 +433,7 @@ impl InlineLayoutUnit {
 impl Add for InlineLayoutUnit {
     type Output = Self;
 
-    /// The sum, saturating.
+    /// Adds, saturating.
     #[inline]
     fn add(self, other: Self) -> Self {
         Self(self.0.saturating_add(other.0))
@@ -465,7 +450,7 @@ impl AddAssign for InlineLayoutUnit {
 impl Sub for InlineLayoutUnit {
     type Output = Self;
 
-    /// The difference, saturating.
+    /// Subtracts, saturating.
     #[inline]
     fn sub(self, other: Self) -> Self {
         Self(self.0.saturating_sub(other.0))
@@ -475,7 +460,7 @@ impl Sub for InlineLayoutUnit {
 impl Neg for InlineLayoutUnit {
     type Output = Self;
 
-    /// The length the other way, saturating.
+    /// Negates the length, saturating.
     #[inline]
     fn neg(self) -> Self {
         Self(self.0.saturating_neg())
@@ -485,10 +470,11 @@ impl Neg for InlineLayoutUnit {
 impl Rem for InlineLayoutUnit {
     type Output = Self;
 
-    /// What is left of the length once every whole `other` is taken out,
-    /// truncated toward zero as C's `fmod` is, so its sign is the length's:
-    /// how Chrome finds how far past a tab stop a position is. Nothing where
-    /// `other` is nothing.
+    /// Returns the remainder, truncated toward zero like C's `fmod`, so it
+    /// takes the sign of `self`.
+    ///
+    /// Chrome finds a position's distance past a tab stop this way. Returns
+    /// zero when `other` is zero or the division overflows.
     #[inline]
     fn rem(self, other: Self) -> Self {
         Self(self.0.checked_rem(other.0).unwrap_or(0))
@@ -505,8 +491,8 @@ impl fmt::Debug for InlineLayoutUnit {
 mod tests {
     use super::*;
 
-    /// A float lands on each grid as Chrome's own conversion puts it, and
-    /// nothing a caller or a font hands in -- NaN, an infinity -- panics.
+    /// Floats round onto each grid as Chrome's conversions do; NaN and
+    /// infinities never panic.
     #[test]
     fn lengths_round_onto_their_grids() {
         assert_eq!(LayoutUnit::from_px(1.0).to_px(), 1.0);
@@ -514,8 +500,8 @@ mod tests {
         assert_eq!(LayoutUnit::from_px(0.5 / 64.0), LayoutUnit(1));
         assert_eq!(LayoutUnit::from_px(-0.5 / 64.0), LayoutUnit(-1));
         assert_eq!(LayoutUnit::from_px(1.0 / 256.0), LayoutUnit(0));
-        // Whole pixels, halves up, as Skia rounds a font's metrics: Times at
-        // 30 px is 34.5 px of line, and Chrome steps 35.
+        // Whole pixels, halves up, as Skia rounds font metrics. Times at
+        // 30 px has a 34.5 px line; Chrome steps 35.
         assert_eq!(LayoutUnit::from_px_whole(34.5), LayoutUnit::from_px(35.0));
         assert_eq!(LayoutUnit::from_px_whole(34.49), LayoutUnit::from_px(34.0));
         assert_eq!(LayoutUnit::from_px_whole(-0.5), LayoutUnit::ZERO);
@@ -533,8 +519,8 @@ mod tests {
         assert_eq!(TextUnit::from_px_truncated(f32::NAN), TextUnit(0));
     }
 
-    /// A running advance is exact at 16.16 and past 26.6's range, and
-    /// rounds up onto layout's grid as Chrome's fitting positions do.
+    /// Running advances stay exact at 16.16 beyond the 26.6 range, and round
+    /// up onto the 1/64 grid as Chrome's fitting positions do.
     #[test]
     fn running_advances_round_up_onto_the_grid() {
         let unit = InlineLayoutUnit::from_raw(1);
@@ -547,7 +533,7 @@ mod tests {
         let negative = InlineLayoutUnit::from_raw(-1536);
         assert_eq!(negative.ceil_to_grid().raw(), -1024);
         assert_eq!(negative.to_layout(), LayoutUnit(-1));
-        // Past layout's range the sum is still exact; only the width
+        // Beyond the 26.6 range the sum stays exact; only the width
         // saturates.
         let far = InlineLayoutUnit::from_text(TextUnit(i32::MAX)) + InlineLayoutUnit::from_raw(1);
         assert_eq!(far.raw(), i64::from(i32::MAX) + 1);
@@ -560,9 +546,8 @@ mod tests {
         let _ = (top.ceil_to_grid(), top.to_layout(), top.to_px());
     }
 
-    /// A running advance split into its length on the grid and what rounding
-    /// up added, as a fragment item keeps a leaf's, comes back exactly
-    /// within the grid's range, and nothing at its ends panics.
+    /// Splitting a running advance into a grid length and the rounding
+    /// remainder round-trips within the 26.6 range; the ends never panic.
     #[test]
     fn a_running_advance_splits_and_comes_back() {
         for raw in [0, 1, 1023, 1024, 1025, -1, -1023, -1024, -1536, 123_456_789] {
@@ -578,10 +563,11 @@ mod tests {
         }
     }
 
-    /// A pixel length, a font's advance or a caller's `tab-size`, lands to
-    /// the nearest 1/65536, halves away from zero; a multiple of a running
-    /// advance rounds the same; a remainder is truncated toward zero as
-    /// `fmod`'s is. Nothing at the ends of the range, and no NaN, panics.
+    /// Running advance arithmetic:
+    /// - pixel lengths round to the nearest 1/65536, halves away from zero;
+    /// - multiples round the same way;
+    /// - remainders truncate toward zero, as `fmod` does;
+    /// - range ends and NaN never panic.
     #[test]
     fn running_advances_scale_and_divide_as_chromes_floats_do() {
         assert_eq!(TextUnit::from_px(7.5), TextUnit(491_520));
@@ -612,8 +598,8 @@ mod tests {
         assert_eq!(low % InlineLayoutUnit::from_raw(-1), InlineLayoutUnit::ZERO);
     }
 
-    /// Half-leading on the grid is Chrome's: halved toward zero, then
-    /// floored to a whole pixel.
+    /// Half-leading halves toward zero, then floors to a whole pixel, as in
+    /// Chrome.
     #[test]
     fn a_length_halves_and_floors_as_chromes_does() {
         assert_eq!(LayoutUnit(-3).half(), LayoutUnit(-1));
@@ -625,10 +611,10 @@ mod tests {
         assert_eq!(LayoutUnit::MIN - LayoutUnit(1), LayoutUnit::MIN);
     }
 
-    /// A vector's length is the nearest `f32` to it, across the range: a
-    /// whole triangle's exactly, a diagonal's to the last bit, a vector too
-    /// long or too short for its square in `f32` measured still; nothing
-    /// is nothing, and no NaN or infinity panics.
+    /// Vector lengths round to the nearest `f32` across the range:
+    /// - Pythagorean triples are exact and diagonals match to the last bit;
+    /// - vectors whose square overflows or underflows `f32` still measure;
+    /// - zero is zero, and NaN and infinities never panic.
     #[test]
     fn a_vector_is_measured_to_the_nearest_float() {
         use core::f32::consts::SQRT_2;

@@ -12,7 +12,7 @@
 //!
 //! The path is the alphabetic baseline for horizontal lines and the central
 //! baseline for vertical lines. Vertical upright and combined glyphs stand
-//! across the path, with their top toward its start. Combined text retains
+//! across the path, with their top toward its start. Combined text keeps its
 //! [`TextRun::combine_scale`](crate::TextRun::combine_scale).
 //!
 //! Hyphens, ellipses, ruby, emphasis and atomic inlines follow the path.
@@ -96,7 +96,7 @@ use paint::PathWalk;
 
 /// Returns paint operations positioned along `path` in Chrome paint order.
 ///
-/// Uses [`Line::paints`] and the supplied `decorates` function. Characters
+/// Maps [`Line::paints`], called with `decorates`, onto the path. Characters
 /// rotate at their advance midpoints; glyph offsets remain relative to
 /// the character. The line starts at [`LineMetrics::left`](crate::LineMetrics::left),
 /// including path offset and alignment. Baseline offsets become path offsets.
@@ -199,8 +199,7 @@ impl PathPoint {
         }
     }
 
-    /// Whether every part of it is a number and finite: what a path that
-    /// answers otherwise leaves out.
+    /// Returns whether the point and the tangent are finite.
     fn is_finite(&self) -> bool {
         self.x.is_finite() && self.y.is_finite() && self.dx.is_finite() && self.dy.is_finite()
     }
@@ -243,10 +242,10 @@ pub enum PastEnds {
 }
 
 impl PastEnds {
-    /// Where `path`, `length` long, is `along` it, and the way it runs
-    /// there: `None` where that is past its ends and they hide what is
-    /// there, or where the path answers something that is not a finite
-    /// number.
+    /// Returns the point `along` a path of `length` and its tangent there.
+    ///
+    /// Returns `None` past the ends under [`Hidden`](Self::Hidden), and where
+    /// the path returns a nonfinite point.
     fn frame<P: TextPath + ?Sized>(self, path: &P, length: f32, along: f32) -> Option<PathPoint> {
         let at = if (0.0..=length).contains(&along) {
             path.at(along)
@@ -254,8 +253,8 @@ impl PastEnds {
             match self {
                 Self::Hidden => return None,
                 Self::Straight => {
-                    // From the nearer end, straight on: NaN goes nowhere,
-                    // as the point it makes is no number.
+                    // Extends the nearer end's tangent. A NaN `along` makes
+                    // a NaN point, which the finiteness check drops.
                     let end = if along < 0.0 { 0.0 } else { length.max(0.0) };
                     let at = path.at(end);
                     let past = along - end;

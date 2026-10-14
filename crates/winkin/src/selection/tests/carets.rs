@@ -80,7 +80,8 @@ fn a_position_holds_across_relayouts() {
     assert_eq!(position_caret(&layout, position), (1, 40.0));
 }
 
-/// After a soft hyphen that ends a line, the caret is before the hyphen upstream and at the next line's start downstream.
+/// After a soft hyphen that ends a line, the caret is before the hyphen
+/// upstream and at the next line's start downstream.
 ///
 /// Chrome's generated hyphen keeps that position on the upper line both
 /// ways, so the next line's start is no caret position. That is not matched.
@@ -107,7 +108,8 @@ fn a_soft_hyphen_ends_its_line_before_the_hyphen() {
     assert_eq!(caret(&layout, 6), (0, 80.0));
 }
 
-/// Where the text changes direction, the affinity chooses the side: upstream the text before, downstream the text after.
+/// Where the text changes direction, the affinity chooses the side:
+/// upstream the text before, downstream the text after.
 ///
 /// The split caret's other side is the weak caret. Chrome draws the caret on
 /// the side nearer the paragraph's level whatever the affinity: at 80 for
@@ -148,7 +150,8 @@ fn a_change_of_direction_draws_each_side_by_its_text() {
     assert_eq!((upstream(8), caret(&layout, 8)), ((0, 120.0), (0, 60.0)));
 }
 
-/// An atomic inline has a caret before and after it, beside its box, as tall as the line.
+/// An atomic inline has a caret before and after it, beside its box, as tall
+/// as the line.
 ///
 /// Blink's `ComputeLocalCaretRectByBoxSide` sizes it so.
 #[test]
@@ -197,7 +200,7 @@ fn an_empty_line_has_a_caret() {
 /// A position inside a grapheme split by a style boundary is no stop.
 ///
 /// Where a box's edges part the two halves, the edge is a stop at its own
-/// place (the `splitcaret` and `edgecaret` probes).
+/// place, as in Chrome.
 #[test]
 fn a_divided_grapheme_is_one_stop_but_at_an_edge() {
     let plain = ahem();

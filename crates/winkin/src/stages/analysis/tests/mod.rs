@@ -15,8 +15,8 @@
 //! - `stream`: the line stream, which resumes exactly over UAX #14's test
 //!   strings.
 //!
-//! Every layout here is built through [`build_with`], which checks the analysis's
-//! invariants each time:
+//! Every layout here is built through [`build_with`], which checks the
+//! analysis's invariants:
 //! - the clusters tile the text, and each lies in one item;
 //! - the paragraphs tile the clusters, and the runs tile each paragraph's;
 //! - the stops are the break bits;
@@ -55,7 +55,7 @@ fn line_break(line_break: LineBreak) -> ComputedStyle<'static> {
     styled(|style| style.text.line_break = line_break)
 }
 
-/// A layout of `calls` in a block set in `block`, checked.
+/// Returns a checked layout of `calls` in a block styled `block`.
 fn build_with(
     block: &ComputedBlockStyle<'_>,
     calls: impl FnOnce(&mut LayoutBuilder<'_>),
@@ -69,27 +69,27 @@ fn build_with(
     layout
 }
 
-/// A layout of `calls` under the initial styles.
+/// Returns a layout of `calls` under the initial styles.
 fn build(calls: impl FnOnce(&mut LayoutBuilder<'_>)) -> Layout {
     build_with(&ComputedBlockStyle::new(&ComputedStyle::initial()), calls)
 }
 
-/// A layout of one text in `root`.
+/// Returns a layout of one text in `root`.
 fn root_text(root: &ComputedStyle<'_>, text: &str) -> Layout {
     build_with(&ComputedBlockStyle::new(root), |b| b.text(key(1), text))
 }
 
-/// A layout of one text, as written: white space preserved.
+/// Returns a layout of one text with white space preserved.
 fn pre(text: &str) -> Layout {
     root_text(&white_space(WhiteSpaceCollapse::Preserve), text)
 }
 
-/// A layout of one text under the initial style.
+/// Returns a layout of one text under the initial style.
 fn plain(text: &str) -> Layout {
     root_text(&ComputedStyle::initial(), text)
 }
 
-/// A layout of `pieces` as text nodes of their own, each in its style.
+/// Returns a layout of `pieces`, each its own text node in its own style.
 fn pieces(pieces: &[(&str, &ComputedStyle<'_>)]) -> Layout {
     build(|b| {
         for (at, (text, style)) in (1..).zip(pieces) {
@@ -106,7 +106,7 @@ fn analysis(layout: &Layout) -> &Analysis {
     layout.analysis()
 }
 
-/// The text `range` of clusters covers.
+/// Returns the text the clusters in `range` cover.
 fn cluster_text(layout: &Layout, range: Range<ClusterId>) -> &str {
     let clusters = &analysis(layout).clusters;
     let start = clusters.start(range.start).get();
@@ -145,7 +145,7 @@ fn classes(layout: &Layout) -> Vec<ClusterClass> {
         .collect()
 }
 
-/// The offsets at the ends of the clusters that have `bit`.
+/// Returns the end offsets of the clusters that have `bit`.
 fn ends_with(layout: &Layout, bit: u8) -> Vec<usize> {
     let clusters = &analysis(layout).clusters;
     clusters
@@ -156,12 +156,12 @@ fn ends_with(layout: &Layout, bit: u8) -> Vec<usize> {
         .collect()
 }
 
-/// Where a line may break, as text offsets.
+/// Returns the text offsets where a line may break.
 fn breaks(layout: &Layout) -> Vec<usize> {
     ends_with(layout, ClusterAttrs::BREAK_AFTER)
 }
 
-/// The text of each cluster that hangs.
+/// Returns the text of each cluster that hangs.
 fn hanging(layout: &Layout) -> Vec<&str> {
     let clusters = &analysis(layout).clusters;
     clusters
@@ -171,7 +171,7 @@ fn hanging(layout: &Layout) -> Vec<&str> {
         .collect()
 }
 
-/// Where each continuation starts.
+/// Returns the start offset of each continuation.
 fn continuations(layout: &Layout) -> Vec<usize> {
     let clusters = &analysis(layout).clusters;
     clusters
@@ -227,7 +227,7 @@ fn scripts(layout: &Layout) -> Vec<(&str, String)> {
         .collect()
 }
 
-/// Everything the analysis holds, to compare two of them.
+/// Returns everything the analysis holds, to compare two analyses.
 fn dump(analysis: &Analysis) -> String {
     format!(
         "{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}",
@@ -241,8 +241,7 @@ fn dump(analysis: &Analysis) -> String {
     )
 }
 
-/// Each cluster's level: its run's, which the runs, tiling the clusters,
-/// say once a run.
+/// Returns each cluster's level, which is its run's.
 fn cluster_levels(layout: &Layout) -> Vec<u8> {
     let analysis = analysis(layout);
     let runs = &analysis.runs;
@@ -282,8 +281,7 @@ fn check(layout: &Layout) {
         assert_eq!(bit, breaks, "{id:?}'s stop is not its break");
     }
 
-    // The paragraphs tile the clusters, each ending at its separator, and a
-    // separator ends one.
+    // The paragraphs tile the clusters, and each separator ends one.
     let paragraphs = analysis.paragraphs.paragraphs.as_slice();
     assert!(!paragraphs.is_empty(), "there is always a paragraph");
     let mut next = ClusterId::new(0);
@@ -373,8 +371,8 @@ fn check(layout: &Layout) {
         }
     }
     assert_eq!(starts.next(), None, "a run starts past the text");
-    // Each run is at its paragraph's level, but in a paragraph whose
-    // clusters are at other levels, which has a run at another.
+    // Each run is at its paragraph's level, unless the paragraph has mixed
+    // levels.
     for run in runs {
         let paragraph = analysis
             .paragraphs
@@ -388,8 +386,8 @@ fn check(layout: &Layout) {
             mixed || run.level == level,
             "{run:?} at its paragraph's level"
         );
-        // Horizontal lines set text across; lines set as horizontal ones
-        // turned set it on its side; only vertical ones set it otherwise.
+        // Horizontal lines set text horizontally and sideways modes set it
+        // sideways; only vertical modes vary.
         let expected = match content.block.writing_mode {
             WritingMode::HorizontalTb => Some(RunOrientation::Horizontal),
             WritingMode::SidewaysRl | WritingMode::SidewaysLr => Some(RunOrientation::Sideways),

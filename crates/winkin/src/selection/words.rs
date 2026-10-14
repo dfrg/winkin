@@ -20,9 +20,9 @@
 //! (WB6, WB7, WB11, WB12), past attached marks and format characters (WB4),
 //! so [`CONTEXT`] clusters either side decide as the whole paragraph would.
 //! Regional indicators pair from a cluster start (WB15, WB16), as clusters
-//! pair them (GB12, GB13). So a motion costs the distance it moves and keeps
-//! nothing between calls. Between ASCII letters, digits and spaces, no
-//! segmenter is needed.
+//! pair them (GB12, GB13). A motion therefore costs the distance it moves
+//! and keeps nothing between calls. Between ASCII letters, digits and
+//! spaces, no segmenter runs.
 //!
 //! Runs ICU hands whole to its dictionaries or LSTM (`unicode::is_complex`)
 //! are segmented whole, since a word end inside one depends on all of it.
@@ -30,16 +30,16 @@
 //! segments each run it enters once. These runs are where word motion
 //! allocates, inside ICU.
 //!
-//! A builder break opportunity (a `<wbr>`'s U+200B) is no text to Chrome's
-//! iterator, so `super<wbr>califragilistic` is one word. Where one is near a
+//! Chrome's iterator ignores a builder break opportunity (a `<wbr>`'s
+//! U+200B), so `super<wbr>califragilistic` is one word. Where one is near a
 //! stop, the clusters are copied without it into a stack buffer and
 //! segmented there. A cluster longer than [`CLUSTER_BYTES`] is copied as its
 //! first and last characters, which is all the rules read. Regional
 //! indicators either side of one stay apart. A whole run longer than [`RUN`]
 //! bytes is segmented in the pieces its break opportunities part.
 //!
-//! Without dictionaries, an ideograph or hiragana is copied as a stand-in of
-//! its Word_Break (`unicode::segmenter_char`), so it never reaches ICU's
+//! Without dictionaries, an ideograph or hiragana is copied as a stand-in
+//! with its Word_Break (`unicode::segmenter_char`), so it never reaches ICU's
 //! dictionary, which the build does not carry.
 
 use core::ops::Range;
@@ -55,8 +55,8 @@ use crate::{unicode, work};
 
 /// The clusters either side of a stop that decide a word boundary.
 ///
-/// Format characters standing alone do not count. It is one more than the
-/// two characters UAX #29 reads, for a cluster of marks alone.
+/// Format characters standing alone do not count. One more than the two
+/// characters UAX #29 reads, to cover a cluster of marks alone.
 const CONTEXT: usize = 3;
 
 /// The size of the stack buffer for the clusters around a stop.
@@ -74,11 +74,11 @@ const CLUSTER_BYTES: usize = 16;
 
 /// The size of the stack buffer for a run segmented whole.
 ///
-/// It holds over three hundred Thai characters or ideographs. A Thai
-/// paragraph measured in Chrome runs at most 52 between spaces.
+/// Holds over three hundred Thai characters or ideographs. A Thai paragraph
+/// measured in Chrome runs at most 52 between spaces.
 const RUN: usize = 1024;
 
-/// Which side of a boundary.
+/// A side of a boundary.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 enum Side {
     /// The text before it.
@@ -89,15 +89,16 @@ enum Side {
 
 /// Word boundaries in a layout, asked stop by stop by one motion.
 ///
-/// It keeps the words either side of the last stop inside a run segmented
+/// Keeps the words either side of the last stop inside a run segmented
 /// whole, which answer later stops between them.
 pub(super) struct Words<'l> {
     layout: &'l Layout,
     segmenter: WordSegmenterBorrowed<'static>,
-    /// The words of the run a stop was last asked about inside.
+    /// The words around the last stop asked about inside a run segmented
+    /// whole.
     known: Option<Known>,
-    /// The clusters of the paragraph last asked about, which a motion asks
-    /// again at each stop until it leaves it.
+    /// The clusters of the paragraph last asked about, reused until a motion
+    /// leaves it.
     paragraph: Option<Range<ClusterId>>,
 }
 
@@ -114,7 +115,7 @@ struct Known {
 }
 
 impl<'l> Words<'l> {
-    /// Returns the words of `layout`, with nothing yet segmented.
+    /// Creates the word boundaries of `layout`, with nothing segmented yet.
     pub(super) fn new(layout: &'l Layout) -> Self {
         Self {
             layout,
@@ -139,10 +140,10 @@ impl<'l> Words<'l> {
         self.is_boundary(stop) && self.word_beside(stop, Side::Before)
     }
 
-    /// Returns the clusters of the paragraph holding `cluster`, or `None` in a cleared analysis.
+    /// Returns the clusters of the paragraph holding `cluster`, or `None` in
+    /// a cleared analysis.
     ///
-    /// The paragraph last asked about answers without a search where it
-    /// holds `cluster`.
+    /// Reuses the last paragraph without a search where it holds `cluster`.
     fn paragraph(&mut self, cluster: ClusterId) -> Option<Range<ClusterId>> {
         if let Some(paragraph) = &self.paragraph
             && paragraph.contains(&cluster)
@@ -202,9 +203,9 @@ impl<'l> Words<'l> {
                 _ => {}
             }
         }
-        // Chrome takes a run of punctuation and symbols as one word, as it
-        // takes `a,,,,b` (three words) or a masked password (one): no stop
-        // parts two of them.
+        // Chrome takes a run of punctuation and symbols as one word: `a,,,,b`
+        // is three words and a masked password one. No stop parts two of
+        // them.
         let punctuation = |cluster| {
             clusters
                 .first_char(text.into(), cluster)
@@ -272,10 +273,11 @@ impl<'l> Words<'l> {
             .is_none_or(|window| is_word_boundary(self.segmenter, window, stop_at))
     }
 
-    /// Returns whether the stop between `before` and `after`, inside a run ICU segments whole, is a word boundary.
+    /// Returns whether the stop between `before` and `after`, inside a run
+    /// ICU segments whole, is a word boundary.
     ///
-    /// The kept words answer where they surround the stop. Otherwise the run
-    /// is segmented whole, and the words either side of the stop are kept.
+    /// The kept words answer where they surround the stop. Otherwise segments
+    /// the run whole and keeps the words either side of the stop.
     fn inside_run(
         &mut self,
         paragraph: &Range<ClusterId>,
@@ -346,10 +348,11 @@ impl<'l> Words<'l> {
         boundary
     }
 
-    /// Returns whether the segment on `side` of the word boundary at `stop`'s start holds anything but white space.
+    /// Returns whether the segment on `side` of the word boundary at
+    /// `stop`'s start holds anything but white space.
     ///
-    /// A segment is known to be a word at its first cluster that is not white
-    /// space. White space is read to the next boundary.
+    /// Stops reading at the first cluster that is not white space, or at the
+    /// next boundary.
     fn word_beside(&mut self, stop: ClusterId, side: Side) -> bool {
         let layout = self.layout;
         let clusters = &layout.analysis().clusters;
@@ -390,10 +393,11 @@ impl<'l> Words<'l> {
     }
 }
 
-/// Returns whether UAX #29, with Chrome's full stops, breaks `window` at byte `at`.
+/// Returns whether UAX #29, with Chrome's full stops, breaks `window` at
+/// byte `at`.
 ///
-/// It uses [`word_boundaries`], which adds the breaks
-/// `en_US_POSIX` makes around a full stop.
+/// Uses [`word_boundaries`], which adds the breaks `en_US_POSIX` makes around
+/// a full stop.
 fn is_word_boundary(segmenter: WordSegmenterBorrowed<'static>, window: &str, at: usize) -> bool {
     for boundary in word_boundaries(segmenter, window, 0) {
         work::step();
@@ -404,7 +408,8 @@ fn is_word_boundary(segmenter: WordSegmenterBorrowed<'static>, window: &str, at:
     true
 }
 
-/// Returns the word boundaries of `run` around byte `at`: the last at or before, the first at or after.
+/// Returns the word boundaries of `run` around byte `at`: the last at or
+/// before, the first at or after.
 ///
 /// `run` holds characters ICU segments whole. No full stop joins such
 /// characters, so Chrome's full-stop tailoring does not apply.
@@ -420,12 +425,13 @@ fn words_around(segmenter: WordSegmenterBorrowed<'static>, run: &str, at: usize)
     (before, run.len())
 }
 
-/// Returns the run of characters ICU segments whole around the stop between `before` and `after`.
+/// Returns the run of characters ICU segments whole around the stop between
+/// `before` and `after`.
 ///
 /// The run stays within `paragraph`. Where `through`, it crosses builder
-/// break opportunities, which are no text to words. With the run come the
-/// clusters holding it, from the one holding its start to the one holding
-/// its end, and its byte length without them, or `None` where it holds none.
+/// break opportunities, which words ignore. Also returns the clusters
+/// holding the run, from its start's to its end's, and its byte length
+/// without break opportunities. Returns `None` where there is no such run.
 fn complex_run(
     clusters: &Clusters,
     text: &str,
@@ -502,7 +508,8 @@ fn complex_run(
     (run, holding, copied)
 }
 
-/// Calls `each` with each part of `run`'s text between its builder break opportunities, and its start.
+/// Calls `each` with each part of `run`'s text between its builder break
+/// opportunities, and the part's start.
 ///
 /// `holding` is from the cluster holding the run's start to the one holding
 /// its end.
@@ -530,9 +537,11 @@ fn each_piece(
     }
 }
 
-/// Returns where byte `at` of `run`'s copy without builder break opportunities is in the text.
+/// Maps byte `at` of `run`'s copy without builder break opportunities back
+/// to the text.
 ///
-/// It is after the text before it, before any break opportunity there.
+/// The result is after the text before it, before any break opportunity
+/// there.
 /// `holding` is the clusters holding the run, as [`each_piece`] takes them.
 fn put_back(
     clusters: &Clusters,
@@ -552,10 +561,11 @@ fn put_back(
     found.unwrap_or(run.end)
 }
 
-/// Returns the cluster of text on `side` of the boundary before `at`, within `paragraph`.
+/// Returns the cluster of text on `side` of the boundary before `at`,
+/// within `paragraph`.
 ///
-/// It skips builder break opportunities, which are no text to words. `None`
-/// at the paragraph's end that way.
+/// Skips builder break opportunities, which words ignore. Returns `None` at
+/// the paragraph's end on that side.
 fn text_beside(
     clusters: &Clusters,
     paragraph: &Range<ClusterId>,
@@ -578,9 +588,9 @@ fn text_beside(
 /// Returns how far the clusters around a stop reach on `side`, from `from`.
 ///
 /// The reach covers [`CONTEXT`] counted clusters, to a grapheme boundary,
-/// within `paragraph` and half the buffer. Before, it is the first cluster;
-/// after, the cluster past the last. It also says whether a builder break
-/// opportunity is among them.
+/// within `paragraph` and half the buffer. Before the stop it is the first
+/// cluster; after, the cluster past the last. Also returns whether a
+/// builder break opportunity is among them.
 fn reach(
     clusters: &Clusters,
     text: &str,
@@ -628,7 +638,7 @@ fn reach(
 /// Returns whether `cluster` counts among the clusters around a stop.
 ///
 /// It counts unless it starts with a default-ignorable character, which
-/// UAX #29 attaches to what is before it (WB4).
+/// UAX #29 attaches to the text before it (WB4).
 fn counts(clusters: &Clusters, text: &str, cluster: ClusterId) -> bool {
     clusters
         .first_char(text.into(), cluster)
@@ -642,9 +652,8 @@ fn indicator(clusters: &Clusters, text: &str, cluster: ClusterId) -> bool {
         .is_some_and(|ch| unicode::core_props(ch).is_regional_indicator())
 }
 
-/// Returns whether builder break opportunity `cluster` has regional indicators on both sides.
-///
-/// It keeps them apart.
+/// Returns whether the builder break opportunity `cluster` has regional
+/// indicators on both sides, which it keeps apart.
 fn between_indicators(clusters: &Clusters, text: &str, cluster: ClusterId) -> bool {
     let before = cluster.get().checked_sub(1).map(ClusterId::new);
     let after = ClusterId::new(cluster.get() + 1);
@@ -652,7 +661,7 @@ fn between_indicators(clusters: &Clusters, text: &str, cluster: ClusterId) -> bo
         && indicator(clusters, text, after)
 }
 
-/// Returns the byte `cluster` is, where it is one ASCII character.
+/// Returns `cluster`'s byte where it is one ASCII character.
 fn ascii(clusters: &Clusters, text: &str, cluster: ClusterId) -> Option<u8> {
     let range = clusters.range(cluster);
     match text.as_bytes().get(range.start.get()..range.end.get())? {
@@ -670,7 +679,8 @@ fn short_len(clusters: &Clusters, text: &str, cluster: ClusterId) -> usize {
     shortened(piece).map_or(0, |(first, last)| first.len() + last.len())
 }
 
-/// Returns `piece` as it is copied: whole, or its first and last characters where longer than [`CLUSTER_BYTES`].
+/// Returns `piece` as it is copied: whole, or its first and last characters
+/// where longer than [`CLUSTER_BYTES`].
 fn shortened(piece: &str) -> Option<(&str, &str)> {
     if piece.len() <= CLUSTER_BYTES {
         return Some((piece, ""));
@@ -683,8 +693,8 @@ fn shortened(piece: &str) -> Option<(&str, &str)> {
 /// Copies `piece`, shortened, into `into`, and returns the bytes it took.
 ///
 /// Each character is copied as ICU's word segmenter is given it
-/// (`unicode::segmenter_char`), which is the same length. `None` where it does
-/// not fit.
+/// (`unicode::segmenter_char`), at the same length. Returns `None` where it
+/// does not fit.
 fn copy_short(piece: &str, into: &mut [u8]) -> Option<usize> {
     let (first, last) = shortened(piece)?;
     let mut len = 0;
@@ -701,8 +711,8 @@ fn copy_short(piece: &str, into: &mut [u8]) -> Option<usize> {
 /// together into one word.
 ///
 /// That is anything but a letter, a digit, an ideograph, white space, a
-/// control, a format character, a regional indicator, which pairs into a
-/// flag of its own, or an atomic inline's U+FFFC.
+/// control, a format character, a regional indicator (which pairs into a
+/// flag of its own), or an atomic inline's U+FFFC.
 fn is_punctuation_or_symbol(ch: char) -> bool {
     !(ch.is_alphanumeric()
         || ch.is_whitespace()

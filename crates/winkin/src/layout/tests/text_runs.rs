@@ -70,10 +70,10 @@ fn a_line_is_read_where_line_layout_placed_it() {
     assert_eq!((block.trim_start, block.trim_end), (0.0, 0.0));
 }
 
-/// A run's font is the layout's own: the font's
-/// bytes, shared with the context's instance and never copied, its index,
-/// the size its glyphs are drawn at, and nothing varied or faked. It is
-/// read with the context gone, and an empty collection draws with none.
+/// A run's font is held by the layout: the font's bytes, shared with the
+/// context's instance and never copied, its index, the size its glyphs are
+/// drawn at, and no variations or synthesis. It is read with the context
+/// gone, and an empty collection draws with no font.
 #[test]
 fn a_run_is_drawn_in_a_font_the_layout_holds() {
     let mut cx = context();
@@ -287,11 +287,11 @@ fn clusters_and_glyphs_add_up_to_their_run() {
     assert_eq!(second[0].glyphs().count(), 1);
 }
 
-/// A run's glyphs and clusters are views over the layout, so a clone walks
-/// on from where the walk it was made of stood, and the two give the same:
-/// over a justified paragraph with ligatures, a kerned
-/// pair and a reshaped edge, reading both ways, and a hyphen and an
-/// ellipsis, each walk cloned at every place along it.
+/// A run's glyphs and clusters are views over the layout, so a clone
+/// continues from where its original stood and both yield the same. Pinned
+/// over a justified paragraph with ligatures, a kerned pair and a reshaped
+/// edge, in both directions, and a hyphen and an ellipsis, each walk cloned
+/// at every place along it.
 #[test]
 fn a_cloned_walk_goes_on_where_its_original_stood() {
     use crate::style::{LineClamp, TextAlign};
@@ -353,9 +353,8 @@ fn a_cloned_walk_goes_on_where_its_original_stood() {
     }
 }
 
-/// A run read right to left hands its clusters out in logical order, the
-/// first at the run's right, and its glyphs in drawing order, left to
-/// right.
+/// A right-to-left run yields its clusters in logical order, the first at
+/// the run's right, and its glyphs in drawing order, left to right.
 #[test]
 fn a_right_to_left_run_reads_its_clusters_from_the_right() {
     let mut cx = context();

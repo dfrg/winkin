@@ -1,5 +1,5 @@
 //! A paragraph's bidi input: its units, brackets and splits, the boxes open
-//! across it, and the walk over its items and clusters that builds them.
+//! across it, and the walk that builds them.
 
 use alloc::vec::Vec;
 use core::ops::Range;
@@ -15,53 +15,55 @@ use crate::style::{Direction, FirstLineVariant, UnicodeBidi};
 use crate::unicode::{BidiBracket, BidiClass, cluster_bidi_class};
 use crate::{unicode, work};
 
-/// The units that a box's open or close item adds as controls, or the one
-/// unit of an anchor.
+/// The control units a box's open or close item adds, or an anchor's one
+/// unit.
 #[derive(Copy, Clone, Debug)]
 pub(super) struct ItemControls {
     pub(super) item: ItemId,
-    /// Its first unit in the paragraph's units.
+    /// The index of its first unit in the paragraph's units.
     pub(super) start: u32,
-    /// The unit past its last.
+    /// The index past its last unit.
     pub(super) end: u32,
     /// Whether it is an absolutely positioned box's anchor, whose level is
-    /// kept whatever its neighbours' are.
+    /// always kept.
     pub(super) anchor: bool,
 }
 
 /// The working memory for bidi resolution, kept in the analysis scratch.
 ///
-/// It holds a paragraph's units, brackets and levels, the resolver's
-/// scratch, the open boxes and where levels change. Each buffer is cleared,
-/// never dropped, so a warm rebuild allocates nothing.
+/// Holds a paragraph's units, brackets and levels, the resolver's scratch,
+/// the open boxes, and where levels change. Buffers are cleared, never
+/// dropped, so a warm rebuild allocates nothing.
 pub(crate) struct BidiInput {
     pub(super) units: Vec<BidiUnit>,
     pub(super) brackets: Vec<BidiBracket>,
-    /// Where each bidi paragraph after the first starts, as a unit index:
+    /// The unit index where each bidi paragraph after the first starts:
     /// after U+001C, U+001D or U+001E, which are class B but end no line.
     pub(super) splits: Vec<u32>,
-    /// One level per unit, the resolver's answer.
+    /// The resolved level of each unit.
     pub(super) levels: Vec<u8>,
-    /// Where a cluster's level changes, in text order, with the new level.
+    /// Each cluster where the level changes, with the new level, in text
+    /// order.
     ///
     /// Only paragraphs with clusters off their own level record changes,
-    /// starting at their first cluster. The runs are split at them as they
-    /// are written out ([`scripts::emit`](super::super::scripts::emit)).
+    /// starting at their first cluster.
+    /// [`scripts::emit`](super::super::scripts::emit) splits the runs at
+    /// them.
     pub(crate) changes: Vec<(ClusterId, BidiLevel)>,
-    /// The units of the controls each box's open or close item adds, in
-    /// order, for the paragraph being resolved.
+    /// The control units of each box's open or close item, and each anchor's
+    /// unit, in the paragraph being resolved, in order.
     pub(super) item_controls: Vec<ItemControls>,
-    /// The controls below the clusters on both sides, in item order
-    /// ([`ControlLevel`]).
+    /// The levels of box controls below the clusters on both sides, and of
+    /// every anchor, in item order ([`ControlLevel`]).
     pub(crate) control_levels: Vec<ControlLevel>,
-    /// The boxes and annotations that open controls and are open where the
-    /// writer's walk is, outermost first ([`walk`](Self::walk)).
+    /// The boxes and annotations that open controls and are open at the
+    /// writer's position, outermost first ([`walk`](Self::walk)).
     open: Vec<NodeId>,
-    /// The boxes and annotations that open controls and are open where a
-    /// paragraph's own walk is, outermost first.
+    /// The boxes and annotations that open controls and are open at the
+    /// paragraph walk's position, outermost first.
     ///
-    /// It starts as a copy of `open` and follows the paragraph's items. A
-    /// bidi paragraph ending inside re-opens these after it.
+    /// Starts as a copy of `open` and follows the paragraph's items. A bidi
+    /// paragraph ending inside re-opens these after it.
     inside: Vec<NodeId>,
     pub(super) resolver: BidiScratch,
 }
@@ -83,7 +85,8 @@ impl BidiInput {
         }
     }
 
-    /// Forgets the last analysis's open boxes and level changes.
+    /// Forgets the last analysis's open boxes, level changes and control
+    /// levels.
     pub(crate) fn begin(&mut self) {
         self.open.clear();
         self.changes.clear();
@@ -91,16 +94,17 @@ impl BidiInput {
     }
 
     /// Moves the writer's open boxes over `item`, whose node has box facts
-    /// `facts`, returning whether one opened or closed.
+    /// `facts`, and returns whether a box whose controls may move a level
+    /// opened or closed.
     pub(crate) fn walk(&mut self, content: &Content, item: &Item, facts: &BoxFacts) -> bool {
         track(&mut self.open, content, item, facts)
     }
 
-    /// Starts a paragraph where the writer's walk is, returning whether any box
+    /// Starts a paragraph at the writer's position and returns whether a box
     /// whose controls may move a level is open across its start.
     ///
     /// The paragraph's bidi input re-opens those boxes' controls. The
-    /// initial letter's isolate alone moves no level ([`track`]).
+    /// initial letter's isolate alone moves no level ([`controls`]).
     pub(crate) fn begin_paragraph(&mut self, content: &Content) -> bool {
         self.inside.clear();
         self.inside.extend_from_slice(&self.open);
@@ -109,7 +113,7 @@ impl BidiInput {
             .any(|&open| controls(content, open, box_facts(content, open)) == Some(true))
     }
 
-    /// Adds the next cluster's unit, of `class`; returns its class's mask.
+    /// Adds the next cluster's unit, of `class`, and returns the class mask.
     fn cluster(&mut self, class: BidiClass) -> u32 {
         self.units.push(BidiUnit {
             class,
@@ -118,7 +122,7 @@ impl BidiInput {
         class.mask()
     }
 
-    /// Adds a control a style synthesized, of `class`; returns its class's
+    /// Adds a control a style synthesized, of `class`, and returns the class
     /// mask.
     fn control(&mut self, class: BidiClass) -> u32 {
         self.units.push(BidiUnit {
@@ -165,8 +169,8 @@ impl Default for BidiInput {
 
 #[cfg(test)]
 impl BidiInput {
-    /// Sets a paragraph of one cluster per class in `classes`, so a test can
-    /// compare both ways of finding its levels.
+    /// Sets a paragraph of one cluster per class in `classes`, splitting a
+    /// bidi paragraph after each B.
     pub(crate) fn set_classes(&mut self, classes: &[BidiClass]) {
         self.units.clear();
         self.brackets.clear();
@@ -182,8 +186,8 @@ impl BidiInput {
         }
     }
 
-    /// Returns the paragraph's base level and levels from the resolver, at
-    /// the base level `requested` asks.
+    /// Returns the paragraph's base level and unit levels from the resolver,
+    /// with `requested` as the requested base level.
     pub(crate) fn levels_resolved(&mut self, requested: Option<u8>) -> (u8, Vec<u8>) {
         let mask = self
             .units
@@ -199,14 +203,13 @@ impl BidiInput {
 /// class mask.
 ///
 /// The input is one unit per cluster and per synthesized control, in
-/// logical order, plus the paired brackets. The fast path reads the mask
-/// built from these same units, so it never misses a synthesized control.
+/// logical order, plus the paired brackets. The fast path reads this mask,
+/// so it never misses a synthesized control.
 ///
-/// The walk runs from the item holding the first cluster to the last item
-/// holding one. Boxes open across the start are re-opened from what the
-/// writer found open. The items after the separator belong to the next
-/// paragraph. The writer is still writing clusters, and those written so far
-/// end at this paragraph's end.
+/// The walk runs from `first_item` to the last item with a cluster in
+/// `range`; items after the separator belong to the next paragraph. Boxes
+/// open across the start are re-opened from the writer's open boxes.
+/// `range` ends at the last cluster written so far.
 pub(super) fn bidi_units(
     content: &Content,
     clusters: &Clusters,
@@ -223,15 +226,13 @@ pub(super) fn bidi_units(
     let nodes = &content.nodes;
     let items = &content.items;
     let count = clusters.end_id();
-    // The boxes open across the paragraph's start, outermost first, as the
-    // writer found them (`BidiInput::begin_paragraph`). They are the ancestors
-    // of the first cluster's node, and the node itself if it is a box: a
-    // `<wbr>` the builder made between two nodes is a text item of the box
-    // around it. Only boxes that open controls are kept, so the cost is
-    // linear in the items and controls, however deep the boxes nest.
+    // The boxes open across the start, outermost first, as the writer found
+    // them (`BidiInput::begin_paragraph`). They are the first cluster's
+    // node's ancestors, and the node itself if it is a box: a `<wbr>` the
+    // builder made between two nodes is a text item of the box around it.
+    // Only boxes that open controls are kept, so the cost is linear in the
+    // items and controls however deep the boxes nest.
     let mut mask = reopen(input, content);
-
-    // Its items and clusters.
     for id in (first_item..items.next_id()).ids() {
         work::step();
         let Some(item) = items.get(id) else {
@@ -245,16 +246,16 @@ pub(super) fn bidi_units(
             break;
         }
         if first < next {
-            // Text set upright, and text combined whole, which is set as one
-            // upright character. A run of combined digits resolves at one
-            // level, as digits anywhere do.
+            // Upright text, and text combined whole into one upright
+            // character, is L. Combined digits resolve at one level, as
+            // digits anywhere do.
             let facts = nodes.text_facts(item.node, FirstLineVariant::Standard);
             let upright = content.facts.text(facts).has(TextFlags::UPRIGHT_BIDI);
             for cluster in (first.max(range.start)..next.min(range.end)).ids() {
                 let unit = cluster_unit(input, text, clusters, cluster, upright);
                 mask |= unit;
-                // A bidi paragraph ends here, inside this one: the next
-                // starts with the controls re-opened, as this one did.
+                // A bidi paragraph ends inside this one. The next starts
+                // with the controls re-opened.
                 if unit == BidiClass::PARAGRAPH_SEPARATOR.mask()
                     && cluster.get() + 1 < range.end.get()
                 {
@@ -291,17 +292,13 @@ pub(super) fn bidi_units(
     mask
 }
 
-/// Moves `open` over `item`, returning whether a box, a ruby container or
-/// an annotation opened or closed whose controls may move a level.
+/// Moves `open` over `item` and returns whether a box, ruby container or
+/// annotation whose controls may move a level opened or closed.
 ///
-/// `open` lists the open containers that open controls, outermost first.
-/// The writer tracks them over every item, and each paragraph over its own
-/// items. Only what opens controls is kept, so a `::first-letter` box
-/// ([`controls`]) is never among them unless it is the initial letter.
-/// `facts` are the box facts of the item's node.
-///
-/// Controls that move no level by themselves alone do not have the
-/// paragraph resolved.
+/// `open` lists the open containers that open controls, outermost first; a
+/// `::first-letter` box is among them only as the initial letter
+/// ([`controls`]). `facts` are the box facts of the item's node. The writer
+/// tracks every item, and each paragraph its own items.
 fn track(open: &mut Vec<NodeId>, content: &Content, item: &Item, facts: &BoxFacts) -> bool {
     let node = item.node;
     match item.kind {
@@ -323,10 +320,10 @@ fn track(open: &mut Vec<NodeId>, content: &Content, item: &Item, facts: &BoxFact
 /// Adds the controls a bidi paragraph starts with and returns their class
 /// mask.
 ///
-/// They are the block's own override and the controls of the boxes open
-/// at the start (`input.inside`), outermost first. This runs at a
-/// paragraph's start and after U+001C to U+001E inside one, as CSS Writing
-/// Modes 4, section 2.4.4 re-opens what a bidi paragraph boundary closed.
+/// These are the block's override and the controls of the boxes open at the
+/// start (`input.inside`), outermost first. Runs at a paragraph's start and
+/// after U+001C to U+001E inside one, as CSS Writing Modes 4, section 2.4.4
+/// re-opens what a bidi paragraph boundary closed.
 fn reopen(input: &mut BidiInput, content: &Content) -> u32 {
     let mut mask = 0;
     if let Some(direction) = content.block.overrides {
@@ -342,8 +339,8 @@ fn reopen(input: &mut BidiInput, content: &Content) -> u32 {
     mask
 }
 
-/// Adds the unit of `cluster`, and its bracket if it is one, returning its
-/// class mask.
+/// Adds the unit of `cluster`, and its bracket if it is one, and returns
+/// its class mask.
 fn cluster_unit(
     input: &mut BidiInput,
     text: &str,
@@ -367,9 +364,9 @@ fn cluster_unit(
         props.bidi_class(),
         chars.map(|ch| unicode::core_props(ch).bidi_class()),
     );
-    // A paired bracket, for rule N0: both ends name the pair's closing
-    // character, canonically, which is what N0 matches them by. Every
-    // paired bracket in BidiBrackets.txt is ON.
+    // A paired bracket for rule N0. Both ends name the pair's canonical
+    // closing character, which N0 matches them by. Every paired bracket in
+    // BidiBrackets.txt is ON.
     if class == BidiClass::OTHER_NEUTRAL
         && let Some(bracket) = props.bidi_bracket(input.units.len() as u32)
     {
@@ -378,7 +375,7 @@ fn cluster_unit(
     input.cluster(class)
 }
 
-/// An override in `direction`: LRO or RLO.
+/// Returns the override class for `direction`: LRO or RLO.
 fn override_class(direction: Direction) -> BidiClass {
     match direction {
         Direction::Ltr => BidiClass::LEFT_TO_RIGHT_OVERRIDE,
@@ -386,24 +383,22 @@ fn override_class(direction: Direction) -> BidiClass {
     }
 }
 
-/// Whether `node`, of box facts `facts`, opens controls, and if it does,
-/// whether they may move a level by themselves.
+/// Returns whether `node`, of box facts `facts`, may move a level by its
+/// controls alone, or `None` if it opens no controls.
 ///
-/// It opens controls where it is the block's initial letter, an
-/// annotation, or a box or ruby container whose `unicode-bidi` is not
-/// `normal`. [`enter`] adds those controls. Not another `::first-letter`
-/// box: Blink's cascade drops `unicode-bidi` and `direction` for the pseudo
-/// and injects nothing for it, and the content's writer gives its style
-/// `normal` and its parent's direction to match.
+/// The block's initial letter, an annotation, and a box or ruby container
+/// whose `unicode-bidi` is not `normal` open controls, which [`enter`] adds.
+/// Another `::first-letter` box does not: Blink's cascade drops
+/// `unicode-bidi` and `direction` for the pseudo, and the content's writer
+/// gives its style `normal` and its parent's direction to match.
 ///
-/// Controls move a level where they put a cluster at another level than 0
-/// in a paragraph with nothing right to left, in a block that is not. Only
-/// right-to-left controls do. Left-to-right embeddings, overrides and
-/// isolates, and first-strong isolates with nothing right to left to find,
-/// raise even levels over even ones. Blink then finds the paragraph
-/// unidirectional and leaves every item at level 0
+/// Controls move a level when they put a cluster off level 0 in a
+/// paragraph and block with nothing right to left. Only right-to-left
+/// controls do. Left-to-right controls, and first-strong isolates with
+/// nothing right to left to find, raise only even levels, so Blink finds
+/// the paragraph unidirectional and leaves every item at level 0
 /// (`InlineNode::SegmentBidiRuns`). An annotation's isolate and the initial
-/// letter's are among them.
+/// letter's are of this kind.
 fn controls(content: &Content, node: NodeId, facts: &BoxFacts) -> Option<bool> {
     if content.block.initial_letter == Some(node) {
         return Some(false);
@@ -421,22 +416,22 @@ fn controls(content: &Content, node: NodeId, facts: &BoxFacts) -> Option<bool> {
     }
 }
 
-/// `node`'s box facts, which say what controls it opens.
+/// Returns `node`'s box facts, which say what controls it opens.
 fn box_facts(content: &Content, node: NodeId) -> &BoxFacts {
     let id = content.nodes.box_facts(node, FirstLineVariant::Standard);
     content.facts.box_facts(id)
 }
 
-/// Adds the controls that open `node`, as Blink injects them, returning
+/// Adds the controls that open `node`, as Blink injects them, and returns
 /// their class mask.
 ///
-/// A box or a ruby container adds those of its `unicode-bidi`. An
-/// annotation is a first-strong isolate, inside which its own
-/// `unicode-bidi` adds its controls, so `dir` on it sets its direction.
+/// A box or ruby container adds its `unicode-bidi` controls. An annotation
+/// is a first-strong isolate with its own `unicode-bidi` controls inside,
+/// so `dir` on it sets its direction.
 ///
 /// The block's initial letter is an isolate in its own direction. Blink
-/// sets its box as one U+FFFC, a neutral, and lays its text out apart
-/// (`AppendOpaque` of `kInitialLetterBox`). So the box stands at the line's
+/// sets its box as one neutral U+FFFC and lays its text out apart
+/// (`AppendOpaque` of `kInitialLetterBox`), so the box stands at the line's
 /// start in either direction.
 fn enter(input: &mut BidiInput, content: &Content, node: NodeId) -> u32 {
     if content.block.initial_letter == Some(node) {
@@ -457,8 +452,8 @@ fn enter(input: &mut BidiInput, content: &Content, node: NodeId) -> u32 {
     }
 }
 
-/// Adds the controls that open a container of `facts`'s `unicode-bidi`
-/// and direction, returning their class mask.
+/// Adds the controls that open a container with `facts`'s `unicode-bidi`
+/// and direction, and returns their class mask.
 fn enter_container(input: &mut BidiInput, facts: &BoxFacts) -> u32 {
     let direction = facts.direction();
     let pick = |ltr, rtl| {
@@ -480,8 +475,8 @@ fn enter_container(input: &mut BidiInput, facts: &BoxFacts) -> u32 {
             BidiClass::RIGHT_TO_LEFT_ISOLATE,
         )),
         UnicodeBidi::Plaintext => input.control(BidiClass::FIRST_STRONG_ISOLATE),
-        // An isolate of the first strong direction outside, and an
-        // override inside, as Blink injects it.
+        // A first-strong isolate outside and an override inside, as Blink
+        // injects them.
         UnicodeBidi::IsolateOverride => {
             input.control(BidiClass::FIRST_STRONG_ISOLATE)
                 | input.control(override_class(direction))
@@ -489,8 +484,8 @@ fn enter_container(input: &mut BidiInput, facts: &BoxFacts) -> u32 {
     }
 }
 
-/// Adds the controls that close `node`, matching [`enter`], returning their
-/// class mask.
+/// Adds the controls that close `node`, matching [`enter`], and returns
+/// their class mask.
 fn exit(input: &mut BidiInput, content: &Content, node: NodeId) -> u32 {
     if content.block.initial_letter == Some(node) {
         return exit_container(input, box_facts(content, node))
@@ -506,8 +501,9 @@ fn exit(input: &mut BidiInput, content: &Content, node: NodeId) -> u32 {
     }
 }
 
-/// Adds the controls that close a container of `facts`'s `unicode-bidi`,
-/// matching [`enter_container`], returning their class mask.
+/// Adds the controls that close a container with `facts`'s
+/// `unicode-bidi`, matching [`enter_container`], and returns their class
+/// mask.
 fn exit_container(input: &mut BidiInput, facts: &BoxFacts) -> u32 {
     match facts.bidi {
         UnicodeBidi::Normal => 0,

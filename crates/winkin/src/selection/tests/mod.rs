@@ -1,7 +1,7 @@
 //! Selection tests, against Chrome 153 on the same text in Ahem at 20px.
 //!
-//! This file holds the context, the styles and the shared queries. The
-//! children pin:
+//! This file holds the context, styles and shared queries. The children
+//! pin:
 //! - `box_edges`: the two positions at a box edge with room, which
 //!   deliberately differ from Chrome's one;
 //! - `carets`: carets, strong and weak, at wraps, soft hyphens and direction
@@ -11,7 +11,7 @@
 //!   screen;
 //! - `word_motion`: motion by word, on each platform and in each script;
 //! - `rects`: selection rectangles and copied text;
-//! - `offsets`: conversion to and from the caller's nodes;
+//! - `offsets`: conversion to and from source nodes and offsets;
 //! - `vertical`: vertical lines and combined text;
 //! - `cost`: the cost of each query;
 //! - `ruby`: split ruby annotations;
@@ -42,7 +42,8 @@ use crate::style::{
 use crate::tests::{TestFont, across, ahem_fallback, along, collection};
 use crate::{BuildOptions, ComputedBlockStyle, Context, CrossExtents, Item, LayoutBuilder};
 
-/// Returns a caret's or rectangle's extents along and across its line, as pairs to compare.
+/// Returns a caret's or rectangle's extents along and across its line, as
+/// pairs to compare.
 fn pairs(inline: InlineExtents, block: CrossExtents) -> ((f32, f32), (f32, f32)) {
     ((inline.left, inline.right), (block.over, block.under))
 }
@@ -141,7 +142,7 @@ fn cluster(layout: &Layout, at: usize) -> ClusterId {
     place::ClusteredPosition::new(layout, Position::from(at)).cluster
 }
 
-/// Returns whether a caret can stop at byte `at`: a cluster's start that is a caret stop.
+/// Returns whether byte `at` is a cluster start that is a caret stop.
 fn is_stop(layout: &Layout, at: usize) -> bool {
     let cluster = cluster(layout, at);
     layout.analysis().clusters.start(cluster).get() == at && place::is_stop(layout, cluster)
@@ -163,9 +164,10 @@ fn moved(layout: &Layout, selection: Selection, motion: Motion) -> Selection {
     moved
 }
 
-/// Returns the offsets a caret visits moving `direction` by `granularity` from `from`, until it stops.
+/// Returns the offsets a caret visits moving `direction` by `granularity`
+/// from `from`, until it stops.
 ///
-/// An offset drawn in two places, at a wrap or a change of direction, is
+/// An offset drawn at two places, at a wrap or a direction change, is
 /// visited once for each.
 fn walk(layout: &Layout, from: usize, motion: Motion) -> Vec<usize> {
     walk_positions(layout, Position::from(from), motion)
@@ -174,7 +176,8 @@ fn walk(layout: &Layout, from: usize, motion: Motion) -> Vec<usize> {
         .collect()
 }
 
-/// Returns the positions a caret visits moving by `motion` from `from`, until it stops.
+/// Returns the positions a caret visits moving by `motion` from `from`,
+/// until it stops.
 fn walk_positions(layout: &Layout, from: Position, motion: Motion) -> Vec<Position> {
     let mut at = Selection::from(from);
     let mut visited = vec![from];
@@ -191,7 +194,7 @@ fn walk_positions(layout: &Layout, from: Position, motion: Motion) -> Vec<Positi
 /// Returns the way Chrome's right or left arrow goes from `position`.
 ///
 /// Chrome's arrows go forward or backward by the paragraph's direction, even
-/// in bidi text (probe 16g).
+/// in bidi text.
 fn chromes_arrow(layout: &Layout, position: Position, right: bool) -> MotionDirection {
     let rtl = layout.paragraph_direction(position) == Direction::Rtl;
     if right != rtl {

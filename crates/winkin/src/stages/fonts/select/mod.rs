@@ -2,33 +2,35 @@
 //!
 //! The walk goes in text order, one **span** at a time. A span is the
 //! clusters of one text item within one script run, so it has one style and
-//! one pair of candidate lists. Each cluster is handled by the first rule
-//! that applies:
+//! one pair of candidate lists, for text and for emoji. The first rule that
+//! applies to a cluster decides its font:
 //!
 //! 1. A cluster that draws nothing takes the font of the cluster before it.
 //!    Tabs, separators, an atomic inline's U+FFFC and a lone
 //!    default-ignorable draw nothing.
-//! 2. A grapheme that a style boundary divides follows Chrome. If the parts
+//! 2. A grapheme divided by a style boundary follows Chrome. Where the parts
 //!    shape alike (one [`ShapingFactsId`]), the first part chooses with the
 //!    whole grapheme's text and the later parts take its font. Otherwise each
 //!    part chooses by its own style, and a mark may leave its base.
 //! 3. The cluster takes the first candidate, in CSS order, that the memo does
-//!    not rule out, that accepts the presentation and that covers the grapheme.
-//!    A fallback font's run ends where an earlier font covers again, so a CJK
-//!    fallback takes no digits or spaces from the family the text asked for.
-//! 4. If no matched font covers it, the walk matches the next family. Once
-//!    every family is matched, it walks fontwich's fallback for each missing
-//!    character, once per list and character. A character that no installed
-//!    family maps is noted once per context and never walked again. Then it
-//!    tries a forced presentation's base form, then the candidate that draws
-//!    most of it, and last the primary font, which draws `.notdef` as Chrome
-//!    does.
-//! 5. A grapheme holding a variation sequence first looks over the whole list for
-//!    a font that also has the sequence. Only if none has it does it take
-//!    the first font that covers the base. Blink matches clusters in these
-//!    same two passes.
+//!    not rule out, that accepts the presentation and that covers the
+//!    grapheme. A fallback font's run ends where an earlier font covers
+//!    again, so a CJK fallback takes no digits or spaces from the listed
+//!    family.
+//! 4. Where no matched font covers it, the walk matches the next family.
+//!    Once every family is matched, it walks fontwich's fallback for each
+//!    missing character, once per list and character. A character that no
+//!    installed family maps is noted on the context and never walked again.
+//!    Then it tries a forced presentation's base form, then the candidate
+//!    that draws most of the grapheme, and last the primary font, which
+//!    draws `.notdef` as Chrome does. A private-use character or a
+//!    noncharacter tries only the listed families and the Standard font.
+//! 5. A grapheme with a variation sequence first searches the whole list,
+//!    fallback included, for a font that also has the sequence. If none has
+//!    it, the grapheme takes the first font that covers the base. Blink
+//!    matches clusters in the same two passes.
 //! 6. The chosen font gives a used font: the instance for the style's
-//!    variations and features at its used size. If the font lacks small
+//!    variations and features at its used size. Where the font lacks small
 //!    capitals the style asks for, the text splits where Blink's
 //!    `SmallCapsIterator` splits it, and the uppercased side gets a smaller
 //!    used font. So a font run also ends where the case changes.
@@ -44,15 +46,16 @@
 //! text that only the k-th candidate covers costs one bit test per
 //! character, not k. The memo records coverage of the base characters, so a
 //! candidate that lacks a variation sequence stays in for the second pass.
-//! A face still pending is skipped the same way, until the next cluster
-//! that wants it.
+//! A pending face is skipped the same way, until the next cluster that
+//! wants it.
 //!
-//! The walk reads the context's candidate lists without changing them. When
-//! it needs a change (a family matched, a fallback walked, a font found
-//! unusable, a position feature's coverage read), it stops and returns the
-//! change. The caller applies it and restarts the walk at that cluster with
-//! the memo kept. Each change happens once per context, so a warm build
-//! never stops.
+//! The walk reads the context's candidate lists and never changes them.
+//! Where it needs a change (a family matched, a fallback walked, a font
+//! marked unusable, a position feature's coverage read, the span's emoji
+//! list), it stops and returns the change. [`walk_span`] makes the change
+//! and restarts the walk at that cluster, keeping the memo. Each change to
+//! the context happens once per context, so a warm build stops only where a
+//! span first meets emoji presentation.
 
 mod choice;
 mod generated;
@@ -89,44 +92,45 @@ use choice::{Choice, Choices, PositionPlan, ResolvedRequest, choose, feature_cov
 use kept::{KeptCandidate, shortcuts};
 use pick::{GraphemeNeeds, Pages, SpanText, feature_covers, resolve};
 
-/// How many times one span's walk may stop for a change before the rest
-/// of it is set in its primary font.
+/// The most times one span's walk may stop for a change before the rest of
+/// the span is set in its primary font.
 ///
-/// Each change happens once per context, a few per family, so this is never
-/// reached. It only guarantees that no input makes the loop endless.
+/// Each change happens once per context, a few per family, so the limit is
+/// never reached. It guarantees that no input makes the loop endless.
 const MAX_STOPS: u32 = 1 << 16;
 
 /// The run loop's inputs besides the context.
 ///
-/// It holds the stage's input, the variant being chosen for, and what the
-/// stage resolved before any run.
+/// It holds the stage's input, the variant being chosen for, and the font
+/// requests' resolutions, which are complete before any run.
 pub(super) struct Input<'a> {
     pub(super) stage: &'a FontInput<'a>,
     /// The text's or the first line's. The variant picks the nodes' facts
     /// and the characters drawn, which a first-line transform may change.
     pub(super) variant: FirstLineVariant,
-    /// The language text whose style names none chooses its fonts in.
+    /// The language that chooses fonts for text whose style names none.
     pub(super) default_language: DefaultLanguage,
-    /// What each font request resolves to.
+    /// The resolution of each font request.
     pub(super) resolutions: &'a Table<FontRequestId, FontResolution>,
-    /// The text the clusters are chosen for in the variant, read in order
-    /// across the spans.
+    /// The variant's text, read in order across the spans.
     pub(super) source: &'a TextCursor<'a>,
 }
 
 impl<'a> Input<'a> {
-    /// The text facts `node` has in the variant.
+    /// Returns the text facts of `node` in the variant.
     fn text(&self, node: NodeId) -> TextFactsId {
         self.stage.content.nodes.text_facts(node, self.variant)
     }
 
-    /// The font request text with the text facts `text` is set in.
+    /// Returns the font request of the text facts `text`.
     fn request(&self, text: TextFactsId) -> FontRequestId {
         self.stage.content.facts.text_request(text)
     }
 
-    /// The primary font of `request`, or the first used font for a request
-    /// the content does not have, which none is.
+    /// Returns the primary font of `request`.
+    ///
+    /// Every request is resolved, so the fallback to used font 0 never
+    /// applies.
     fn primary(&self, request: FontRequestId) -> UsedFontId {
         self.resolutions
             .get(request)
@@ -134,10 +138,10 @@ impl<'a> Input<'a> {
     }
 }
 
-/// What selecting fonts changes as it goes: the context's caches, the
-/// stage's scratch, the layout's used fonts and the faces wanted.
+/// The state font selection changes as it goes: the context's caches, the
+/// stage's scratch, the layout's used fonts and the wanted faces.
 ///
-/// Made once per build and passed whole to each step that chooses fonts.
+/// One is made per build and passed to each step that chooses fonts.
 pub(super) struct Selecting<'a> {
     pub(super) cx: &'a mut FontContext,
     pub(super) scratch: &'a mut RunScratch,
@@ -149,17 +153,16 @@ pub(super) struct Selecting<'a> {
 
 /// The run loop's working memory, in the stage's scratch.
 ///
-/// It holds nothing between calls and keeps its capacity.
+/// It holds nothing between builds and keeps its capacity.
 pub(super) struct RunScratch {
-    /// What a span's walk keeps while it tries candidates.
+    /// The state a span's walk keeps while it tries candidates.
     walk: SpanScratch,
-    /// The run of text in a `font-variant-position` whose fonts wait on
-    /// whether the feature covers all of it.
+    /// The open position run.
     position: PositionRun,
 }
 
 impl RunScratch {
-    /// Empty scratch, allocating nothing.
+    /// Returns empty scratch, allocating nothing.
     pub(super) const fn new() -> Self {
         Self {
             walk: SpanScratch::new(),
@@ -167,32 +170,32 @@ impl RunScratch {
         }
     }
 
-    /// Forgets everything, keeping the capacity.
+    /// Clears the scratch, keeping the capacity.
     pub(super) fn clear(&mut self) {
         self.walk.clear();
         self.position.clear();
     }
 }
 
-/// What a span's walk keeps while it tries candidates.
+/// The state a span's walk keeps while it tries candidates.
 struct SpanScratch {
     /// The uncovered memo: per candidate, the next cluster it covers, for
     /// the span's text and emoji lists. Zero means unknown.
     memo: [Table<CandidateId, ClusterId>; 2],
-    /// Whether the span's last asking cluster changes when uppercased.
+    /// Whether the span's last cluster that asked changes when uppercased.
     ///
     /// A cluster that starts with a mark takes this value, as Blink's
     /// `SmallCapsIterator` passes over marks. It survives the walk's stops,
     /// like the memo, so a restart at a mark gives the same answer.
     upper: bool,
     /// The used fonts each candidate gives each request under each script,
-    /// found once per build. Many boxes in a few styles ask for the same
-    /// choice again and again.
+    /// made once per build. Many boxes in a few styles ask for the same
+    /// choice.
     choices: Choices,
 }
 
 impl SpanScratch {
-    /// Empty, allocating nothing.
+    /// Returns empty scratch, allocating nothing.
     const fn new() -> Self {
         Self {
             memo: [Table::new(), Table::new()],
@@ -201,14 +204,13 @@ impl SpanScratch {
         }
     }
 
-    /// Forgets everything, keeping the capacity.
+    /// Clears the scratch, keeping the capacity.
     fn clear(&mut self) {
         self.start_span();
         self.choices.clear();
     }
 
-    /// Forgets what the walk of the span before kept: the memo and the
-    /// side of case.
+    /// Clears the memo and the case side for a new span.
     fn start_span(&mut self) {
         for memo in &mut self.memo {
             memo.clear();
@@ -220,11 +222,13 @@ impl SpanScratch {
 /// The used font a cluster is set in, or the two it waits between.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 enum Placed {
-    /// This one, whatever else the run holds.
+    /// A font that does not depend on the position run.
     Font(UsedFontId),
-    /// `feature`, shaping with the position's feature, where the position
-    /// run's fonts have the feature's glyph for every character of it, and
-    /// `synthesized` otherwise.
+    /// A font that depends on the position run's coverage.
+    ///
+    /// `feature` shapes with the position's feature and is used where the
+    /// run's fonts have the feature's glyph for every character of the run.
+    /// `synthesized` is used otherwise.
     Either {
         feature: UsedFontId,
         synthesized: UsedFontId,
@@ -232,8 +236,7 @@ enum Placed {
 }
 
 impl Placed {
-    /// The used font, where the position run holding it is `covered` or
-    /// not.
+    /// Returns the used font, given whether its position run is `covered`.
     fn font(self, covered: bool) -> UsedFontId {
         match self {
             Self::Font(font) => font,
@@ -246,20 +249,20 @@ impl Placed {
 /// The position run being gathered (see the module documentation).
 ///
 /// Its clusters' fonts wait on whether every character has the feature's
-/// glyph, which only the run's end tells. It lives in the stage's scratch,
-/// so its capacity is kept.
+/// glyph, which is known only at the run's end. It lives in the stage's
+/// scratch, so its capacity is kept.
 struct PositionRun {
-    /// The shaping facts of the text it was opened in, while one is open:
-    /// it goes on while the text shapes alike.
+    /// The shaping facts of the open run's text, or `None` where no run is
+    /// open. The run goes on while the text shapes alike.
     shaping: Option<ShapingFactsId>,
-    /// Every character that draws has the feature's glyph, so far.
+    /// Whether every drawn character so far has the feature's glyph.
     covered: bool,
-    /// Each group of its clusters set alike, from its first cluster.
+    /// The run's clusters, as groups set alike, each from its first cluster.
     pieces: Vec<(ClusterId, Placed)>,
 }
 
 impl PositionRun {
-    /// None open, allocating nothing.
+    /// Returns a closed run, allocating nothing.
     const fn new() -> Self {
         Self {
             shaping: None,
@@ -268,21 +271,21 @@ impl PositionRun {
         }
     }
 
-    /// Forgets the run, keeping the capacity.
+    /// Closes the run without setting its clusters, keeping the capacity.
     fn clear(&mut self) {
         self.shaping = None;
         self.covered = true;
         self.pieces.clear();
     }
 
-    /// Whether a character is still to be asked about: a run is open, and
-    /// nothing in it has been found wanting.
+    /// Returns whether a character still needs testing: a run is open and
+    /// covered so far.
     fn asks(&self) -> bool {
         self.shaping.is_some() && self.covered
     }
 
-    /// A character of the run has no glyph of the feature, or no glyph at
-    /// all: the run is synthesized.
+    /// Marks the run synthesized, for a character with no glyph of the
+    /// feature or no glyph at all.
     fn uncover(&mut self) {
         self.covered = false;
     }
@@ -308,17 +311,18 @@ heap_bytes! {
     PositionRun { pieces; shaping, covered }
 }
 
-/// What the loop writes: the runs, with the position run whose clusters
-/// wait for its end.
+/// The run loop's output: the font runs, and the position run whose
+/// clusters wait for its end.
 struct Output<'a> {
     runs: &'a mut FontRuns,
-    /// The font the last cluster was given.
+    /// The font of the last cluster set.
     last: Option<Placed>,
     position: &'a mut PositionRun,
 }
 
 impl<'a> Output<'a> {
-    /// Writing into `runs`, gathering a position run in `position`.
+    /// Returns an output that writes into `runs` and gathers a position run
+    /// in `position`, which it clears.
     fn new(runs: &'a mut FontRuns, position: &'a mut PositionRun) -> Self {
         position.clear();
         Self {
@@ -328,8 +332,8 @@ impl<'a> Output<'a> {
         }
     }
 
-    /// `cluster` is set as `placed` says: now, or, in a position run, when
-    /// the run ends.
+    /// Sets `cluster` as `placed` says: now, or at the run's end inside a
+    /// position run.
     fn push(&mut self, cluster: ClusterId, placed: Placed) {
         if self.position.shaping.is_some() {
             if self.position.pieces.last().map(|&(_, held)| held) != Some(placed) {
@@ -345,42 +349,46 @@ impl<'a> Output<'a> {
         self.last = Some(placed);
     }
 
-    /// `cluster` draws nothing, and takes the last cluster's font, or
+    /// Sets `cluster`, which draws nothing, in the last cluster's font, or in
     /// `primary` where there is none.
     fn push_nothing(&mut self, cluster: ClusterId, primary: UsedFontId) {
         self.push(cluster, self.last.unwrap_or(Placed::Font(primary)));
     }
 
-    /// `cluster` is set in `primary` for want of any font that draws it,
-    /// which draws `.notdef`: no variant glyph is to be had for it either.
+    /// Sets `cluster` in `primary`, which draws `.notdef`, because no font
+    /// draws it.
+    ///
+    /// The open position run is synthesized, since no variant glyph exists
+    /// for the cluster either.
     fn push_missing(&mut self, cluster: ClusterId, primary: UsedFontId) {
         self.position.uncover();
         self.push(cluster, Placed::Font(primary));
     }
 
-    /// Each cluster of `range` draws nothing, as
-    /// [`push_nothing`](Self::push_nothing) sets one.
+    /// Sets each cluster of `range` as [`push_nothing`](Self::push_nothing)
+    /// sets one.
     ///
-    /// Each would take what the first took, so one push sets them all.
+    /// Each takes what the first takes, so one push sets them all.
     fn push_nothing_range(&mut self, range: Range<ClusterId>, primary: UsedFontId) {
         if !range.is_empty() {
             self.push_nothing(range.start, primary);
         }
     }
 
-    /// Each cluster of `range` is set in `primary`, as
-    /// [`push_missing`](Self::push_missing) sets one.
+    /// Sets each cluster of `range` as [`push_missing`](Self::push_missing)
+    /// sets one.
     ///
-    /// Each would push what the first pushed, so one push sets them all.
+    /// Each pushes what the first pushes, so one push sets them all.
     fn push_missing_range(&mut self, range: Range<ClusterId>, primary: UsedFontId) {
         if !range.is_empty() {
             self.push_missing(range.start, primary);
         }
     }
 
-    /// Text that shapes as `shaping` says, whose `font-variant-position`
-    /// may be synthesized, comes next: it goes on the run open for text
-    /// that shapes alike, or ends that run and opens one.
+    /// Opens a position run for text with the shaping facts `shaping`.
+    ///
+    /// Text that shapes like the open run's continues it. Other text closes
+    /// the open run and opens a new one.
     fn open_position(&mut self, shaping: ShapingFactsId) {
         if self.position.shaping != Some(shaping) {
             self.close_position();
@@ -389,9 +397,10 @@ impl<'a> Output<'a> {
         }
     }
 
-    /// Ends the position run, if one is open: each of its clusters is set
-    /// in the font shaping with the feature where the run is covered, and
-    /// in the synthesized one otherwise.
+    /// Closes the open position run, if any, and sets its clusters.
+    ///
+    /// Each cluster takes the font that shapes with the feature where the
+    /// run is covered, and the synthesized one otherwise.
     fn close_position(&mut self) {
         if self.position.shaping.take().is_none() {
             return;
@@ -408,8 +417,10 @@ impl<'a> Output<'a> {
     }
 }
 
-/// `cluster` and those after it are set in `font`, in `runs`, from now until
-/// another run starts: a run, unless the last is in `font` already.
+/// Sets `cluster` and the clusters after it in `font`, until another run
+/// starts.
+///
+/// Pushes a run unless the last run is already in `font`.
 fn set_from(runs: &mut FontRuns, cluster: ClusterId, font: UsedFontId) {
     if runs.last().map(|run| run.font) != Some(font) {
         let pushed = runs.push(FontRun {
@@ -420,9 +431,12 @@ fn set_from(runs: &mut FontRuns, cluster: ClusterId, font: UsedFontId) {
     }
 }
 
-/// Whether `request`'s `font-variant-position` is synthesized where the
-/// fonts do not cover a run of it: `super` or `sub`, under
-/// [`PositionSynthesis::SynthesizeMissing`], where `font-synthesis-position` allows.
+/// Returns whether `request`'s `font-variant-position` is synthesized where
+/// the fonts do not cover a run of it.
+///
+/// It is for `super` or `sub` under
+/// [`PositionSynthesis::SynthesizeMissing`], where `font-synthesis-position`
+/// allows it.
 fn decides_position(request: &FontRequest, synthesis: PositionSynthesis) -> bool {
     request.font.variant_position != FontVariantPosition::Normal
         && synthesis == PositionSynthesis::SynthesizeMissing
@@ -434,10 +448,9 @@ fn decides_position(request: &FontRequest, synthesis: PositionSynthesis) -> bool
 /// It carries the candidate lists they try and what they ask of a font.
 struct SelectionSpan<'a> {
     end: ClusterId,
-    /// Where its item's graphemes cross the item's edges (see
-    /// [`ItemGraphemes`]).
+    /// Where its item's graphemes cross the item's edges.
     graphemes: ItemGraphemes,
-    /// What its candidate list for text is keyed by, and that list.
+    /// The key of its candidate list for text, and that list.
     key: ListKey,
     text: CandidateListId,
     /// Its candidate list for emoji, found or made where a cluster first
@@ -446,7 +459,7 @@ struct SelectionSpan<'a> {
     resolved: ResolvedRequest<'a>,
 }
 
-/// Selects fonts for `range`'s clusters into `runs`.
+/// Selects fonts for the clusters of `range` into `runs`.
 ///
 /// Each item uses its node's text facts in the input's variant: the node's
 /// own, or its `::first-line` facts for the first line. Pending faces a
@@ -457,8 +470,8 @@ pub(super) fn select_runs(
     sel: &mut Selecting<'_>,
     runs: &mut FontRuns,
 ) {
-    // The position run is the scratch's, taken while the walk borrows the
-    // rest and given back after, so its capacity is kept.
+    // The position run is taken from the scratch while the walk borrows the
+    // rest, and put back after, so its capacity is kept.
     let mut position = mem::replace(&mut sel.scratch.position, PositionRun::new());
     let out = &mut Output::new(runs, &mut position);
     let FontInput {
@@ -469,13 +482,13 @@ pub(super) fn select_runs(
     let script_runs = &analysis.runs;
     let text_end = analysis.clusters.end_id();
     let mut script = script_runs.cursor(ScriptRunId::new(0), text_end);
-    // The node of the item holding the cluster before the item in hand.
+    // The node of the item with the cluster before the current item.
     let mut before: Option<NodeId> = None;
     for (item, entry) in content.items.iter() {
         if !entry.kind.has_text() {
-            // An inline box's edge and a float's or an absolutely positioned
-            // box's anchor leave the text on either side one position run; a
-            // ruby's bounds end it, an annotation being a line of its own.
+            // A position run continues across an inline box's edge and a
+            // float's or an absolutely positioned box's anchor. A ruby's
+            // bounds end it, since an annotation is a line of its own.
             if !matches!(
                 entry.kind,
                 ItemKind::Open | ItemKind::Close | ItemKind::Float | ItemKind::Absolute
@@ -497,8 +510,8 @@ pub(super) fn select_runs(
         let text = input.text(entry.node);
         let request_id = input.request(text);
         let primary = input.primary(request_id);
-        // An atomic's U+FFFC and a `<br>`'s `\n` draw nothing, and end a
-        // position run: the text either side of one is not contiguous.
+        // An atomic's U+FFFC and a `<br>`'s `\n` draw nothing. They end a
+        // position run, since the text on either side is not contiguous.
         if entry.kind != ItemKind::Text {
             out.close_position();
             out.push_nothing_range(start..end, primary);
@@ -560,8 +573,8 @@ pub(super) fn select_runs(
 
 /// Walks `span` from `from`, making each change the walk stops for.
 ///
-/// The span's list for emoji is found or made here. Where the table cannot
-/// take it, the span's clusters from there on are missing.
+/// Finds or makes the span's emoji list here. Where the table has no room
+/// for it, the span's clusters from there on are set as missing.
 fn walk_span(
     input: &Input<'_>,
     span: &mut SelectionSpan<'_>,
@@ -597,21 +610,23 @@ fn walk_span(
 
 /// Where a text item's graphemes cross its edges.
 ///
-/// A grapheme that a style boundary divides has its later parts as
-/// continuation clusters. It is one grapheme where the parts' items shape alike
-/// (one [`ShapingFactsId`]), and the later parts take the first part's font.
-/// Read once per item from its shaping facts and its neighbours', so the
-/// walk never looks up a cluster's item.
+/// The later parts of a grapheme divided by a style boundary are
+/// continuation clusters. Where the parts' items shape alike (one
+/// [`ShapingFactsId`]), the parts form one grapheme and the later parts take
+/// the first part's font. It is read once per item from the shaping facts
+/// of the item and its neighbours, so the walk never looks up a cluster's
+/// item.
 #[derive(Copy, Clone)]
 struct ItemGraphemes {
     /// The item's first cluster, where it joins the part of its grapheme
-    /// before it: a continuation, after an item that shapes alike.
+    /// before it: a continuation after an item that shapes alike.
     joined: Option<ClusterId>,
     /// The item's last cluster.
     last: ClusterId,
-    /// The last cluster of the grapheme `last` starts: `last`, or past the
-    /// item the later parts of its grapheme that join it, each starting an
-    /// item that shapes alike.
+    /// The last cluster of the grapheme that `last` starts.
+    ///
+    /// It is `last`, or a later part past the item that joins it. Each such
+    /// part starts an item that shapes alike.
     tail: ClusterId,
 }
 
@@ -619,8 +634,8 @@ impl ItemGraphemes {
     /// Returns the graphemes at the edges of `item`.
     ///
     /// `text` is the item's text facts in the input's variant, `clusters`
-    /// its non-empty cluster range, and `before` the node of the item holding
-    /// the cluster before it. Later items are read only when the cluster
+    /// its non-empty cluster range, and `before` the node of the item with
+    /// the cluster before it. Later items are read only where the cluster
     /// after the item is a divided grapheme's later part.
     fn new(
         input: &Input<'_>,
@@ -657,7 +672,8 @@ impl ItemGraphemes {
                     break;
                 }
                 tail = held.start;
-                // A later cluster of the item is no grapheme's later part.
+                // An item with a second cluster ends the grapheme, since that
+                // cluster starts a new one.
                 if held.end.get() > tail.get() + 1 {
                     break;
                 }
@@ -666,13 +682,13 @@ impl ItemGraphemes {
         Self { joined, last, tail }
     }
 
-    /// Whether `cluster` is one grapheme with the part of its grapheme before
-    /// it, whose font it takes.
+    /// Returns whether `cluster` joins the part of its grapheme before it and
+    /// takes that part's font.
     fn joins(&self, cluster: ClusterId) -> bool {
         self.joined == Some(cluster)
     }
 
-    /// The last cluster of the grapheme `cluster` starts.
+    /// Returns the last cluster of the grapheme that `cluster` starts.
     fn grapheme_last(&self, cluster: ClusterId) -> ClusterId {
         if cluster == self.last {
             self.tail
@@ -682,20 +698,21 @@ impl ItemGraphemes {
     }
 }
 
-/// What a span's walk carries from one cluster to the next.
+/// The state a span's walk carries from one cluster to the next.
 struct SpanWalk<'l> {
-    /// The charset page each of the text list's and the emoji list's first
-    /// candidates last found.
+    /// The charset page each of the first candidates of the text and emoji
+    /// lists last found.
     text_pages: Pages<'l>,
     emoji_pages: Pages<'l>,
-    /// The last candidate chosen here and the used fonts it sets text in, so
-    /// that a run of clusters in one font costs no lookup a cluster: the
-    /// span is one style, so a candidate is the same one or two used
-    /// fonts throughout.
+    /// The last candidate chosen in the span and its choice.
+    ///
+    /// The span has one style, so a candidate gives the same used fonts
+    /// throughout. A run of clusters in one font costs no lookup per cluster.
     chosen: Option<((CandidateListId, CandidateId), Choice)>,
-    /// What the chosen candidate's position feature covers, where it has one
-    /// a run decides on, and the page of it last found: one bit test a
-    /// character while the run stays in the candidate.
+    /// The charset of the chosen candidate's position feature, where a run
+    /// decides on it, and the page of it last found.
+    ///
+    /// A cluster costs one bit test while the run stays in the candidate.
     feature_chars: Option<&'l Charset>,
     feature_page: Option<CharsetPage<'l>>,
     /// The next cluster to set, and where its text starts.
@@ -704,8 +721,7 @@ struct SpanWalk<'l> {
 }
 
 impl<'l> SpanWalk<'l> {
-    /// Starts a walk at `from`, whose text starts at `start`, having found
-    /// no page and chosen nothing.
+    /// Returns a walk starting at `from`, whose text starts at `start`.
     fn new(from: ClusterId, start: TextOffset) -> Self {
         Self {
             text_pages: Pages::new(),
@@ -718,11 +734,11 @@ impl<'l> SpanWalk<'l> {
         }
     }
 
-    /// Returns the choice `candidate` makes: the one held where it is the
-    /// last candidate chosen, else what `make` makes.
+    /// Returns the choice of `candidate`: the held one where it is the last
+    /// candidate chosen, else the one `make` returns.
     ///
-    /// `make` returns the choice with what its position feature covers,
-    /// `None` where the candidate has no font, or the change to make first.
+    /// `make` returns the choice with its position feature's charset, `None`
+    /// where the candidate has no font, or the change to make first.
     fn choice(
         &mut self,
         candidate: (CandidateListId, CandidateId),
@@ -743,8 +759,10 @@ impl<'l> SpanWalk<'l> {
     }
 }
 
-/// Walks `span` from `from` to its end, or to the first cluster the walk
-/// must stop at, which it returns with the change it stopped for.
+/// Walks `span` from `from` to its end.
+///
+/// Returns `None` at the span's end, or the change the walk stops for with
+/// the cluster to restart at.
 fn walk(
     input: &Input<'_>,
     span: &SelectionSpan<'_>,
@@ -779,14 +797,14 @@ fn walk(
     while state.next < span.end {
         let cluster = state.next;
         state.next = ClusterId::new(cluster.get() + 1);
-        // Each cluster's attributes and end are read once, and its end is
-        // where the next one starts.
+        // Each cluster's attributes and end are read once. Its end is where
+        // the next cluster starts.
         let start = state.start;
         let attrs = clusters.attrs(cluster);
         let end = clusters.end(cluster);
         state.start = end.map_or(start, ClusterEnd::end);
-        // The later part of a grapheme that shapes like the part before it
-        // was chosen for with that part, and takes its font.
+        // A later part of a grapheme that shapes like the part before it
+        // takes that part's font, which was chosen for the whole grapheme.
         if span_text.graphemes.joins(cluster)
             && let Some(last) = out.last
         {
@@ -800,8 +818,8 @@ fn walk(
                 continue;
             }
         };
-        // What the cluster is chosen for with: it, and the later parts of its
-        // grapheme that join it.
+        // The cluster chooses with its own text and that of the later parts
+        // of its grapheme that join it.
         let (chars, selector) = span_text.grapheme(cluster, start, end);
         let variant = resolved.request.font.variant_emoji;
         let needs = GraphemeNeeds::new(class, chars, selector, variant);
@@ -819,7 +837,7 @@ fn walk(
             Ok(found) => found,
             Err(change) => return Some((change, cluster)),
         };
-        // Nothing draws any of it: the primary font's `.notdef`.
+        // No font draws any of it, so it takes the primary font's `.notdef`.
         let Some(at) = found else {
             out.push_missing(cluster, primary);
             continue;
@@ -857,8 +875,9 @@ fn walk(
         );
         out.push(cluster, placed);
         // The clusters after it that the text list would set in the same
-        // font are set so without asking it (see `KeptCandidate`), where the
-        // font sets every cluster alike and nothing waits on a position run.
+        // font take it without asking the list (see `KeptCandidate`). This
+        // applies where the font sets every cluster alike and nothing waits
+        // on a position run.
         if list_id == span.text
             && shortcuts()
             && choice.same == choice.upper
@@ -882,9 +901,9 @@ fn walk(
 
 /// Returns whether `chars` is set on the uppercased side of `choice`.
 ///
-/// Only where the font sets the two sides of a change of case apart is a
-/// cluster's case asked: most text is set alike either way. `upper` keeps
-/// the answer, which a cluster that starts with a mark takes.
+/// The case is tested only where the font sets the two sides of a change
+/// of case apart; most text is set alike either way. `upper` keeps the
+/// answer for a following cluster that starts with a mark.
 #[inline]
 fn on_upper_side(choice: Choice, chars: &str, upper: &mut bool) -> bool {
     choice.same != choice.upper && {
@@ -897,12 +916,12 @@ fn on_upper_side(choice: Choice, chars: &str, upper: &mut bool) -> bool {
     }
 }
 
-/// Returns how a cluster saying `chars` is set under `choice`, on its
-/// uppercased side where `upper_side` says so.
+/// Returns how a cluster of `chars` is set under `choice`, on the
+/// uppercased side where `upper_side` is true.
 ///
 /// Under a position plan, a character that lacks the feature's glyph
-/// uncovers the open `position` run. `feature_chars` is what the feature
-/// covers and `feature_page` the page of it last found.
+/// uncovers the open `position` run. `feature_chars` is the feature's
+/// charset and `feature_page` the page of it last found.
 #[inline]
 fn place<'c>(
     choice: Choice,
@@ -939,8 +958,8 @@ fn place<'c>(
     }
 }
 
-/// Whether `ch` extends the grapheme before it: a mark, which takes the case
-/// of the letter it is on.
+/// Returns whether `ch` is a mark (Grapheme_Cluster_Break=Extend), which
+/// takes the case of the letter before it.
 fn is_mark(ch: char) -> bool {
     unicode::rare_props(ch).grapheme_cluster_break() == GraphemeClusterBreak::Extend
 }

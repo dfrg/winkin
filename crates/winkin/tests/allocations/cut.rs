@@ -35,8 +35,8 @@ enum How {
     Justified,
 }
 
-/// The area a block cut as `how` says is broken in: lines `width`
-/// long, clamped by height 90 px down where it is.
+/// Returns the area a block cut as `how` says is broken in: lines `width`
+/// long, clamped 90 px down where clamped by height.
 fn area(how: How, width: f32) -> Area {
     let block_end = matches!(how, How::ClampedByHeight).then_some(90.0);
     Area {
@@ -45,11 +45,12 @@ fn area(how: How, width: f32) -> Area {
     }
 }
 
-/// Text full of soft hyphens, in spans that set their own hyphen, a
-/// larger size and a hyphen of three characters, the last of which Test
-/// Latin lacks and Ahem draws, a run of its own, with an atomic inline,
-/// `words` long, set as `how` says; a `::first-line` at another size,
-/// so the first line's hyphens and ellipsis are its own.
+/// Builds `words` words full of soft hyphens, set as `how` says.
+///
+/// Spans set their own hyphen, a larger size, and a three-character hyphen
+/// whose last character Test Latin lacks and Ahem draws. An atomic inline
+/// sits among them. A `::first-line` at another size gives the first line
+/// hyphens and an ellipsis of its own.
 fn document(layout: &mut Layout, cx: &mut Context, how: How, words: usize) {
     let families = [FontFamilyName::named("Test Latin")];
     let mut root = ComputedStyle {
@@ -129,8 +130,8 @@ fn document(layout: &mut Layout, cx: &mut Context, how: How, words: usize) {
     assert!(b.finish().is_complete());
 }
 
-/// Every line's items, glyphs and paint, read back as a painter does,
-/// the hidden tail and the generated runs among them.
+/// Reads every line's items, glyphs and paint as a painter does, the hidden
+/// tail and the generated runs included.
 fn read(layout: &Layout) -> f32 {
     let mut sum = 0.0;
     for line in layout.lines() {
@@ -150,11 +151,13 @@ fn read(layout: &Layout) -> f32 {
     sum
 }
 
-/// Text hyphenated at its soft hyphens, clamped, by a count or by a
-/// height, cut for ellipses and justified, both ways round and under either rule for a space before
-/// an ellipsis, rebuilds, breaks again and reads back allocating
-/// nothing once warm: the generated texts and their glyphs keep their
-/// capacity, and so do a cut line's pieces.
+/// Text hyphenated at soft hyphens, clamped by a count or a height, cut
+/// for ellipses and justified rebuilds, breaks again and reads back
+/// allocating nothing once warm.
+///
+/// Covers both directions and both rules for a space before an ellipsis.
+/// The generated texts, their glyphs and a cut line's pieces keep their
+/// capacity.
 #[test]
 fn hyphens_ellipses_and_clamps_allocate_nothing_warm() {
     let widths = [37.0, 90.5, 160.0, 300.0, 11.0, 800.0];

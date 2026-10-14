@@ -7,18 +7,18 @@
 //! - The copy leaves out what the builder inserted: an atomic inline's U+FFFC
 //!   and a break opportunity's U+200B. Chrome's text iterator emits nothing
 //!   for an image or a `<wbr>` either.
-//! - A U+200B or soft hyphen the caller wrote stays. So does text an ellipsis
+//! - A U+200B or soft hyphen in the content stays, as does text an ellipsis
 //!   or clamp hides, and ruby annotation text, in source order.
-//! - The first line's transform is not in the layout's text, and Chrome's
+//! - The first line's transform is not in the layout's text; Chrome's
 //!   `toString` leaves it out too.
 //! - For the clipboard, a no-break space becomes a space, as Chrome's plain
 //!   text flavour does (`ReplaceNBSPWithSpace`).
 //!
-//! Chrome's clipboard also takes a node's text before `text-transform`
-//! (`IgnoresCssTextTransforms`). The layout does not keep that text. A host
-//! that wants it copies its own, found by
-//! [`Layout::node_position`](crate::Layout::node_position). The clipboard's
-//! line ends are the host's.
+//! Chrome's clipboard also copies a node's text before `text-transform`
+//! (`IgnoresCssTextTransforms`). The layout does not keep that text; a host
+//! that wants it copies its own, located by
+//! [`Layout::node_position`](crate::Layout::node_position). The host chooses
+//! the clipboard's line ends.
 //!
 //! Nothing is allocated: the pieces are slices of the layout's text.
 
@@ -31,10 +31,10 @@ use crate::layout::Layout;
 use crate::stages::analysis::{ClusterClass, ClusterId, Clusters};
 use crate::work;
 
-/// The copy mode, controlling no-break space conversion.
+/// How a copy treats no-break spaces.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub enum CopyKind {
-    /// The text as `Selection.toString()` gives it: a no-break space kept.
+    /// The text as `Selection.toString()` gives it, with no-break spaces kept.
     #[default]
     Text,
     /// Text for the clipboard.
@@ -46,25 +46,27 @@ pub enum CopyKind {
 /// The text a selection copies, in pieces, for
 /// [`Layout::selected_text`](crate::Layout::selected_text).
 ///
-/// Its pieces joined, or its `Display`, are the text.
+/// The pieces joined, or the `Display` output, form the text.
 #[derive(Clone)]
 pub(crate) struct SelectedText<'a> {
     text: &'a str,
     clusters: &'a Clusters,
-    /// The next cluster to read, and where the selection ends.
+    /// The next cluster to read.
     next: ClusterId,
+    /// The selection's end.
     end: TextOffset,
     kind: CopyKind,
 }
 
 impl<'a> SelectedText<'a> {
-    /// Starts the text a selection from byte `start` to `end` copies, as `kind` says.
+    /// Creates the text a selection from byte `start` to `end` copies under
+    /// `kind`.
     pub(crate) fn new(layout: &'a Layout, start: usize, end: usize, kind: CopyKind) -> Self {
         let clusters = &layout.analysis().clusters;
         let start = Position::new(start, Affinity::Downstream);
         let start = place::snap(layout, ClusteredPosition::new(layout, start));
-        // The end walks from the start, which it is no nearer to than the
-        // selection is long.
+        // The end's cluster is walked to from the start's, costing the
+        // selection's length.
         let end = Position::new(end.max(start.offset()), Affinity::Upstream);
         let end = place::snap(
             layout,
@@ -79,10 +81,11 @@ impl<'a> SelectedText<'a> {
         }
     }
 
-    /// Returns what `cluster` copies as, or `None` where it copies as its own text.
+    /// Returns what `cluster` copies as, or `None` where it copies as its own
+    /// text.
     ///
-    /// What the builder inserted copies as nothing. A no-break space copies as
-    /// a space for the clipboard.
+    /// Text the builder inserted copies as nothing. A no-break space copies
+    /// as a space for the clipboard.
     fn replaced(&self, cluster: ClusterId) -> Option<&'static str> {
         let class = self.clusters.class(cluster)?;
         match class {

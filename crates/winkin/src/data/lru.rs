@@ -1,27 +1,24 @@
-//! A bounded context cache that keeps its most recently used values.
+//! A bounded cache that keeps its most recently used values.
 //!
-//! Every cache the context keeps has this shape.
+//! The context's font and shaping caches and the shared fonts use it.
 
 use super::{HashIndex, HeapBytes, Id, IdRange, Table};
 
-/// How many of the values last found or added a [`LruCache`] tries before
-/// hashing: the scripts a paragraph of Japanese takes turns in, and one
-/// over.
+/// How many recently found or added values a [`LruCache`] tries before
+/// hashing: the scripts a paragraph of Japanese alternates between, plus one.
 const RECENT: usize = 4;
 
-/// A context cache whose values are found by the hash of their content,
-/// bounded by a capacity it trims to.
+/// A cache whose values are found by the hash of their content, trimmed to a
+/// capacity.
 ///
-/// The owner hashes a value's content and says which value matches it. The
-/// cache keeps the hash index, the values last found or added, and the
-/// order the values were last used in, as a list linked through their
-/// entries.
+/// The owner hashes a value's content and says which value matches. The
+/// cache keeps a hash index, the few values last used, and a list of
+/// entries in order of use.
 ///
-/// Adding never evicts, so an id handed out stays good until the owner
-/// calls [`trim`](Self::trim). The owner trims between calls, when no id is
-/// held, and the cache then drops its least recently used values down to
-/// its capacity. A dropped value's entry is reused by the next value added,
-/// so a cache churning at its capacity allocates nothing for its entries.
+/// Adding never evicts, so an id stays valid until [`trim`](Self::trim). The
+/// owner trims between calls, when no id is held, dropping the least
+/// recently used values down to the capacity. Dropped entries are reused, so
+/// a cache churning at capacity allocates nothing for its entries.
 pub(crate) struct LruCache<I, T> {
     entries: Table<I, Entry<I, T>>,
     /// Each live value's id under the hash of its content.
@@ -32,22 +29,21 @@ pub(crate) struct LruCache<I, T> {
     oldest: Option<I>,
     /// The first vacant entry, which links the next through `older`.
     vacant: Option<I>,
-    /// How many entries hold a value.
+    /// The number of entries holding a value.
     len: usize,
-    /// How many values a trim keeps.
+    /// The number of values a trim keeps.
     capacity: usize,
     /// The values last found or added, which
-    /// [`find_recent`](Self::find_recent) tries before hashing anything: a
-    /// call mostly asks for what one of the few before it asked for, the
-    /// runs of a paragraph being set in a font or two and their scripts
-    /// taking turns.
+    /// [`find_recent`](Self::find_recent) tries before hashing. A paragraph's
+    /// runs use a font or two and alternate scripts, so a lookup usually
+    /// repeats one of the last few.
     recent: [Option<I>; RECENT],
     /// Where in `recent` the next value found or added goes.
     next_recent: usize,
 }
 
-/// One entry of a [`LruCache`]: a value and its place in the order of use,
-/// or a vacant entry and the next vacant one.
+/// An entry of a [`LruCache`]: a value and its place in the order of use, or
+/// a vacant entry linking the next vacant one.
 struct Entry<I, T> {
     /// The hash the value is indexed under.
     hash: u64,
@@ -88,13 +84,13 @@ impl<I: Id, T> LruCache<I, T> {
         self.next_recent = 0;
     }
 
-    /// Returns how many values there are, for tests to count.
+    /// Returns the number of values. Tests only.
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.len
     }
 
-    /// Whether every id is taken, so that [`insert`](Self::insert) refuses.
+    /// Whether every id is taken, so [`insert`](Self::insert) refuses.
     pub(crate) fn is_full(&self) -> bool {
         self.vacant.is_none() && self.entries.remaining() == 0
     }
@@ -104,15 +100,14 @@ impl<I: Id, T> LruCache<I, T> {
         self.capacity = capacity;
     }
 
-    /// Returns the value `id` names, or `None` for one the cache does not
-    /// have.
+    /// Returns the value `id` names, or `None` if the cache does not hold it.
     #[inline]
     pub(crate) fn get(&self, id: I) -> Option<&T> {
         self.entries.get(id)?.value.as_ref()
     }
 
-    /// Returns the value `id` names, for its owner to complete, or `None`
-    /// for one the cache does not have.
+    /// Returns the value `id` names mutably, or `None` if the cache does not
+    /// hold it.
     pub(crate) fn get_mut(&mut self, id: I) -> Option<&mut T> {
         self.entries.get_mut(id)?.value.as_mut()
     }
@@ -142,19 +137,17 @@ impl<I: Id, T> LruCache<I, T> {
         Some(found)
     }
 
-    /// Finds the value `matches` accepts, trying the recent values first,
-    /// and counts it as used.
+    /// Finds the value `matches` accepts, trying recent values before
+    /// hashing, and counts it as used.
     ///
-    /// A recent value is found without hashing. Otherwise `hash` is called
-    /// and the value under that hash is returned. Where there is none, the
-    /// hash comes back as the error, for the caller to insert the value
-    /// under.
+    /// Calls `hash` only on a miss among recent values. If no value matches,
+    /// returns the hash as the error, to insert the value under.
     pub(crate) fn find_recent(
         &mut self,
         hash: impl FnOnce() -> u64,
         matches: impl Fn(&T) -> bool,
     ) -> Result<I, u64> {
-        // The newest first.
+        // Newest first.
         let newest = (1..=RECENT).map(|back| (self.next_recent + RECENT - back) % RECENT);
         let held = |&id: &I| self.get(id).is_some_and(&matches);
         if let Some(id) = newest
@@ -171,8 +164,8 @@ impl<I: Id, T> LruCache<I, T> {
     /// Adds `value`, which hashes to `hash`, as the newest, and returns its
     /// id.
     ///
-    /// It never evicts: a vacant entry is reused, or an entry added. Returns
-    /// `None`, keeping nothing, where every id is taken.
+    /// Never evicts; reuses a vacant entry if there is one. Returns `None`
+    /// and keeps nothing if every id is taken.
     pub(crate) fn insert(&mut self, hash: u64, value: T) -> Option<I> {
         let entry = Entry {
             hash,
@@ -196,8 +189,8 @@ impl<I: Id, T> LruCache<I, T> {
         Some(id)
     }
 
-    /// Drops the value `id` names and returns it, or `None` for one the
-    /// cache does not have.
+    /// Removes and returns the value `id` names, or `None` if the cache does
+    /// not hold it.
     pub(crate) fn remove(&mut self, id: I) -> Option<T> {
         let entry = self.entries.get_mut(id)?;
         let value = entry.value.take()?;
@@ -218,10 +211,10 @@ impl<I: Id, T> LruCache<I, T> {
         Some(value)
     }
 
-    /// Drops the least recently used values down to the capacity, handing
+    /// Drops the least recently used values down to the capacity, passing
     /// each to `evicted` with its id.
     ///
-    /// The owner calls it between calls, when nothing holds an id.
+    /// Call only when no id is held.
     #[inline]
     pub(crate) fn trim(&mut self, mut evicted: impl FnMut(I, T)) {
         while self.len > self.capacity {
@@ -231,7 +224,7 @@ impl<I: Id, T> LruCache<I, T> {
         }
     }
 
-    /// Drops every value `keep` refuses, handing each to `dropped` with its
+    /// Drops every value `keep` refuses, passing each to `dropped` with its
     /// id.
     pub(crate) fn retain(
         &mut self,
@@ -285,8 +278,7 @@ impl<I: Id, T> LruCache<I, T> {
         self.newest = Some(id);
     }
 
-    /// Notes `id` among the values last found or added, in place of the
-    /// oldest.
+    /// Records `id` as recent, replacing the oldest recent value.
     fn remember(&mut self, id: I) {
         if let Some(recent) = self.recent.get_mut(self.next_recent) {
             *recent = Some(id);
@@ -296,8 +288,8 @@ impl<I: Id, T> LruCache<I, T> {
 }
 
 impl<I, T> HeapBytes for LruCache<I, T> {
-    /// Its entries and its index; what a value keeps on the heap is its
-    /// owner's to count.
+    /// The entries and the index. The owner counts heap memory its values
+    /// own.
     fn heap_bytes(&self) -> usize {
         let Self {
             entries,

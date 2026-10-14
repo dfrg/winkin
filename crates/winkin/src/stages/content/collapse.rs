@@ -1,42 +1,38 @@
-//! White space collapsing: one state machine with one transition function.
+//! White space collapsing as one state machine.
 //!
-//! The writer classifies each character by its node's
-//! `white-space-collapse` and hands the collapser an [`Event`].
-//! [`Collapser::step`] moves the state and says what, if anything, the
-//! writer must write. The collapser holds no text and touches none. It is a
-//! pure function of the events, so it can be tested apart from the writer.
+//! The writer classifies each character by `white-space-collapse` and passes
+//! an [`Event`] to [`Collapser::step`], which returns the [`Effect`] the
+//! writer applies. The collapser holds no text, so it is tested on events
+//! alone.
 //!
 //! The rules follow Chrome's reading of CSS Text 3, section 4.1.1:
 //!
-//! - A run of collapsible white space becomes one space, **where the run
+//! - A run of collapsible white space becomes one space **where the run
 //!   began**, even across box edges and ruby marks. The space is written
-//!   once something follows the run, so a run that ends the block, or meets
-//!   a forced break, writes nothing.
-//! - **Atomic inlines end a run; floats, box edges, ruby marks and `<wbr>`
-//!   do not.** They are opaque to collapsing (Blink's `kOpaqueToCollapsing`),
-//!   so the writer does not tell the collapser about them at all.
-//! - **A wrap opportunity survives collapsing.** When white space from a node
-//!   that wraps joins a run that began in one that does not, a break
-//!   opportunity is generated where it joined (Blink's
-//!   `AppendGeneratedBreakOpportunity`).
-//! - **A forced break removes the collapsible white space on both sides.**
-//!   Forced breaks are a `<br>`, a kept segment break, and a character that
-//!   forces a line break in every mode (VT, FF, NEL, U+2028, U+2029; CSS
-//!   Text 3, section 5.1).
-//! - **Segment breaks** become a space, unless the run's neighbour on either
-//!   side is U+200B (Blink's `ShouldRemoveNewline`). Chrome compiles out the
-//!   East Asian Width rule of CSS Text 3, section 4.1.2, so this crate does
-//!   too.
-//! - **Nothing collapsible is written at the block's start**, nor after a
-//!   forced break.
-//! - **`white-space-trim`** acts on the pending run at box edges, beyond
-//!   Chrome. The writer handles the block's own `discard-inner`, since it
-//!   trims kept white space too.
-//! - **A combined unit** (`text-combine-upright: all`) collapses its white
-//!   space on its own, as Chrome's `LayoutTextCombine` is an inline block
-//!   with its own text. Nothing collapsible is written at its start or end,
-//!   and a unit left with nothing keeps a generated U+200B, as Blink's box
-//!   stays one em wide. Outside, it is content, as an atomic inline is.
+//!   only when content follows, so a run before the block end or a forced
+//!   break writes nothing.
+//! - **Atomic inlines end a run; box edges, floats, ruby marks and `<wbr>`
+//!   do not** (Blink's `kOpaqueToCollapsing`). Box edges reach the
+//!   collapser only for `white-space-trim`; the rest are never reported.
+//! - **A wrap opportunity survives collapsing.** White space from a wrapping
+//!   node joining a run from a non-wrapping one generates a break
+//!   opportunity (Blink's `AppendGeneratedBreakOpportunity`).
+//! - **A forced break removes collapsible white space on both sides.** Forced
+//!   breaks are `<br>`, a kept segment break, and VT, FF, NEL, U+2028 and
+//!   U+2029 (CSS Text 3, section 5.1).
+//! - **A segment break** becomes a space unless U+200B is next to the run
+//!   (Blink's `ShouldRemoveNewline`). Chrome compiles out the East Asian
+//!   Width rule of CSS Text 3, section 4.1.2, and so does this crate.
+//! - **Nothing collapsible is written at the block start** or after a forced
+//!   break.
+//! - **`white-space-trim`** acts on the pending run at box edges, which
+//!   Chrome does not support. The writer handles the block's own
+//!   `discard-inner`, since it also trims kept white space.
+//! - **A combined unit** (`text-combine-upright: all`) collapses on its own,
+//!   as Chrome's `LayoutTextCombine` is an inline block with its own text.
+//!   Nothing collapsible is written at its start or end; the writer gives an
+//!   empty unit a U+200B, as Blink's box stays one em wide. Outside, the unit
+//!   is content.
 
 use super::ItemId;
 use crate::data::TextOffset;
@@ -45,13 +41,13 @@ use crate::style::WhiteSpaceTrim;
 /// U+200B ZERO WIDTH SPACE.
 pub(super) const ZWSP: char = '\u{200B}';
 
-/// Where a run would begin, as the writer sees it when white space arrives.
+/// Where a run would begin if this white space starts one.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub(super) struct Anchor {
-    /// Where the text ends, which is where the one space goes.
+    /// The end of the text so far, where the space goes.
     pub(super) at: TextOffset,
-    /// The text item the space would join: the current node's open item, or
-    /// the one the writer pushes for it if the run begins.
+    /// The text item that takes the space: the node's open item, or the one
+    /// the writer pushes if the run begins.
     pub(super) item: ItemId,
     /// The character before `at`, for the segment break rule.
     pub(super) before: Option<char>,
@@ -60,9 +56,9 @@ pub(super) struct Anchor {
 /// A run of collapsible white space that owes one space where it began.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub(super) struct Run {
-    /// Where the space goes, which is where the run began.
+    /// Where the space goes: the run's start.
     pub(super) at: TextOffset,
-    /// The text item that takes the space, of the node where the run began.
+    /// The text item that takes the space, from the node the run began in.
     pub(super) item: ItemId,
     /// The character before the run.
     before: Option<char>,
@@ -74,63 +70,59 @@ pub(super) struct Run {
     generated: bool,
 }
 
-/// What the collapser is told, in order.
+/// An input to the collapser.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub(super) enum Event {
-    /// A collapsible space, tab or lone carriage return, or a segment break
-    /// where one collapses (`segment_break`), from a node that does or does
-    /// not wrap. `anchor` is `None` where the writer has no room for the
-    /// run's item, and a run cannot begin.
+    /// A collapsible space, tab, lone carriage return, or collapsible
+    /// segment break (`segment_break`). `wraps` is the node's wrapping.
+    /// `anchor` is `None` when the writer has no room for the run's item,
+    /// so no run can begin.
     Space {
         segment_break: bool,
         wraps: bool,
         anchor: Option<Anchor>,
     },
-    /// Something that is not collapsible white space, with its first
-    /// character `first`: text, kept white space, or an atomic inline's
-    /// U+FFFC.
+    /// Anything else written, starting with `first`: text, kept white space,
+    /// or an atomic inline's U+FFFC.
     Content { first: char },
-    /// A forced break: a kept segment break, `<br>`, or a character that
-    /// forces a line break whatever the white space (VT, FF, NEL, U+2028,
-    /// U+2029).
+    /// A forced break: a kept segment break, `<br>`, or VT, FF, NEL, U+2028
+    /// or U+2029.
     ForcedBreak,
-    /// An inline box, ruby container or annotation opens, with its
-    /// `white-space-trim`.
+    /// An inline box, ruby container or annotation opens.
     Open { trim: WhiteSpaceTrim },
-    /// One closes, with its `white-space-trim` and its opening item.
+    /// A box closes; `opened` is its opening item.
     Close {
         trim: WhiteSpaceTrim,
         opened: ItemId,
     },
-    /// What text follows: combined (`text-combine-upright: all`) or not.
-    ///
-    /// The writer says it at each text node's text, and before an atomic
-    /// inline, which is not combined.
+    /// Whether the text that follows is combined
+    /// (`text-combine-upright: all`). Sent at each text node and before an
+    /// atomic inline (with `false`).
     Combined(bool),
     /// The block ends.
     End,
 }
 
-/// What the writer must do.
+/// What the writer must do after an event.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub(super) enum Effect {
     /// Nothing.
     None,
-    /// A run began: push the anchor's item first if it is new.
+    /// A run began: push the anchor's item if it is new.
     Began,
-    /// Write the space `run` owes before what arrived.
+    /// Write the space `run` owes before the content that arrived.
     WriteSpace(Run),
-    /// Write a generated break opportunity, U+200B, where the white space is.
+    /// Write a generated break opportunity (U+200B) at the white space.
     GenerateBreak,
 }
 
 /// The collapser's state.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 enum State {
-    /// Collapsible white space here is dropped: at the block's start, after a
+    /// Collapsible white space is dropped: at the block start, after a
     /// forced break, and where `white-space-trim` discards it.
     Dropping,
-    /// After content: white space begins a run owing one space.
+    /// After content: white space begins a run.
     AfterContent,
     /// Inside a run that owes one space.
     Pending(Run),
@@ -145,7 +137,7 @@ pub(super) struct Collapser {
 }
 
 impl Collapser {
-    /// Starts at the block's start, where nothing collapsible is written.
+    /// Creates a collapser at the block start, which drops white space.
     pub(super) const fn new() -> Self {
         Self {
             state: State::Dropping,
@@ -164,11 +156,11 @@ impl Collapser {
         self.combining && self.state == State::Dropping
     }
 
-    /// Moves on `event`, and returns what the writer must write.
+    /// Applies `event` and returns what the writer must do.
     #[inline(always)]
     pub(super) fn step(&mut self, event: Event) -> Effect {
-        // A combined unit ends at anything but its own text. What it ends
-        // with is dropped, and it is content to what follows.
+        // A combined unit ends at anything but its own text. Its trailing
+        // run is dropped, and the unit is content to what follows.
         if self.combining && !matches!(event, Event::Space { .. } | Event::Content { .. }) {
             if event == Event::Combined(true) {
                 return Effect::None;
@@ -177,8 +169,8 @@ impl Collapser {
             self.state = State::AfterContent;
         }
         match (self.state, event) {
-            // A combined unit starts: content to the run before it, and the
-            // start of its own text, where nothing collapsible is written.
+            // A combined unit starts. It is content to the run before it,
+            // and its own text starts dropping white space.
             (state, Event::Combined(true)) => {
                 self.combining = true;
                 self.state = State::Dropping;
@@ -229,8 +221,8 @@ impl Collapser {
                 }
             }
 
-            // Content ends a run, and the run's space is written unless it
-            // holds a segment break beside a zero width space.
+            // Content ends a run. Its space is written unless the run holds
+            // a segment break next to U+200B.
             (State::Pending(run), Event::Content { first }) => {
                 self.state = State::AfterContent;
                 let removed = run.segment_break && (run.before == Some(ZWSP) || first == ZWSP);
@@ -251,9 +243,9 @@ impl Collapser {
                 Effect::None
             }
 
-            // `white-space-trim` at an opening edge: `discard-before` drops
-            // the run before it, and `discard-inner` what the content starts
-            // with. Otherwise an edge is opaque.
+            // At an opening edge, `discard-before` drops the run before it
+            // and `discard-inner` the white space after it. Otherwise an edge
+            // is opaque.
             (State::Pending(_), Event::Open { trim }) if trim.discard_before => {
                 self.state = if trim.discard_inner {
                     State::Dropping
@@ -268,8 +260,8 @@ impl Collapser {
             }
             (_, Event::Open { .. }) => Effect::None,
 
-            // At a closing edge: `discard-inner` drops a run that began
-            // inside, and `discard-after` what follows.
+            // At a closing edge, `discard-inner` drops a run that began
+            // inside and `discard-after` the white space after it.
             (State::Pending(run), Event::Close { trim, opened })
                 if trim.discard_inner && run.item > opened =>
             {
@@ -286,7 +278,7 @@ impl Collapser {
             }
             (_, Event::Close { .. }) => Effect::None,
 
-            // Nothing collapsible is written at the block's end.
+            // Nothing collapsible is written at the block end.
             (_, Event::End) => {
                 self.state = State::Dropping;
                 Effect::None
@@ -364,7 +356,7 @@ mod tests {
         let mut c = Collapser::new();
         c.step(Event::Content { first: 'a' });
         assert_eq!(c.step(space(anchor(1, 0))), Effect::Began);
-        // The run before the unit owes its space, as before an atomic.
+        // The run before the unit owes its space, as before an atomic inline.
         let Effect::WriteSpace(run) = c.step(Event::Combined(true)) else {
             panic!("the space before the unit is owed");
         };

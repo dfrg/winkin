@@ -1,45 +1,42 @@
-//! Caret and selection motion, as Chrome's `SelectionModifier` moves, measured in Chrome 153.
+//! Caret and selection motion in text order, as Chrome's `SelectionModifier`
+//! moves, measured in Chrome 153.
 //!
-//! Everything here moves in text order. Left and right by character, by word
-//! and to a line's ends go on the screen, in `visual`. Line, paragraph and
-//! document motion have no screen side. There left and right go by the
-//! focus paragraph's direction, as Chrome's `ModifyMovingRight` is
-//! `ModifyMovingForward` in a left-to-right paragraph.
+//! Left and right by character, word and line end move on the screen, in
+//! `visual`. Line, paragraph and document motion have no screen side: left
+//! and right follow the focus paragraph's direction, as Chrome's
+//! `ModifyMovingRight` is `ModifyMovingForward` in a left-to-right paragraph.
 //!
-//! - By character: a stop at each grapheme cluster boundary. A grapheme split
-//!   by a style boundary is one, unless a box's edge parts it. A builder
-//!   break opportunity's two sides are one stop, as Chrome skips a `<wbr>`.
-//! - An offset drawn at two places is a stop at each, where Chrome stops
-//!   once. At a wrap they are the line's end, upstream, and the next line's
-//!   start, downstream, with any builder break opportunity there between
-//!   them. Where the text changes direction they are the edges of the text
-//!   on each side. Forward reaches the upstream place first and backward the
-//!   downstream one. A box edge with room is one stop each way.
-//! - A stop keeps the side it is reached from. Going forward the caret lands
-//!   upstream, with the text it passed; going backward, downstream. A line's
-//!   start after a forced break is downstream either way. So at a box edge
-//!   with room the caret is drawn on the side it came from, and at any node
-//!   boundary typed text goes into the node it came from. Chrome lands
-//!   downstream everywhere.
-//! - By word: forward to the next word's start past the spaces (Windows) or
-//!   to its end (macOS and Linux), backward to a word's start everywhere, as
-//!   Blink's `NextWordPositionForPlatform`. Words are UAX #29's over each
-//!   whole paragraph. The motion steps character stops until one starts or
-//!   ends a word, asking `words` in place, so it costs the distance it moves.
-//!   A forced break is a stop of its own. A word starting a line after a
-//!   wrap stops at that line's start, downstream.
-//! - By line: to the position the next line hits at the starting column,
-//!   which the selection keeps across short lines, as Blink's
+//! - Character: a stop at each grapheme boundary. A grapheme split by a style
+//!   boundary is one stop unless a box edge parts it. A builder break
+//!   opportunity's two sides are one stop, as Chrome skips a `<wbr>`.
+//! - An offset drawn at two places is a stop at each; Chrome stops once. At a
+//!   wrap the places are the line's end, upstream, and the next line's start,
+//!   downstream. Where the text changes direction they are the edges of the
+//!   text on each side. Forward reaches the upstream place first, backward
+//!   the downstream one. A box edge with room is one stop each way.
+//! - A stop keeps the side it is reached from: forward lands upstream,
+//!   backward downstream. A line start after a forced break is downstream
+//!   either way. So at a box edge with room the caret is drawn on the side it
+//!   came from, and at a node boundary typed text goes into the node it came
+//!   from. Chrome lands downstream everywhere.
+//! - Word: forward to the next word's start past the spaces (Windows) or to
+//!   the word's end (macOS and Linux); backward to a word start everywhere,
+//!   as Blink's `NextWordPositionForPlatform`. Words are UAX #29 words over
+//!   whole paragraphs. The motion steps over character stops, asking `words`
+//!   at each, so it costs the distance moved. A forced break is a stop of its
+//!   own. A word starting a line after a wrap stops at that line's start,
+//!   downstream.
+//! - Line: to the position the adjacent line hits at the goal column, which
+//!   the selection keeps across short lines, as Blink's
 //!   `x_pos_for_vertical_arrow_navigation`. Past the last line it goes to the
 //!   text's end; before the first, to its start.
-//! - To a line's ends, logically, as Chrome's Home and End go. Home goes to
-//!   the line's first offset. At a wrap after white space, removed or
-//!   hanging, End goes past all of it to the wrap, upstream, so text typed
-//!   there follows the space. Chrome's End stops before removed white space
-//!   and after the first preserved space hanging, as Blink's
-//!   `AdjustForSoftLineWrap` puts it. Elsewhere End goes to the end of what
-//!   the line placed, after the first preserved space hanging past it, as
-//!   Chrome's does. End reaches into text an ellipsis hides, as in Chrome.
+//! - Line boundary, logical, as Chrome's Home and End: Home goes to the
+//!   line's first offset. At a wrap after white space, removed or hanging,
+//!   End goes past all of it, upstream, so typed text follows the space.
+//!   Chrome's End stops before removed white space and after the first
+//!   hanging preserved space (Blink's `AdjustForSoftLineWrap`). Elsewhere End
+//!   goes to the end of the line's content, after the first hanging preserved
+//!   space, as Chrome's does, and reaches into text an ellipsis hides.
 
 use super::place::ClusteredPosition;
 use super::words::Words;
@@ -94,8 +91,8 @@ pub(super) fn modify(layout: &Layout, selection: Selection, motion: Motion) -> S
     }
     let mut goal = None;
     let clusters = &layout.analysis().clusters;
-    // Character and word motion land on caret stops, which snapping keeps
-    // where they are. What the other motions find is snapped.
+    // Character and word motion land on caret stops already; the others
+    // snap what they find.
     let to = match (motion.granularity, screen) {
         (Granularity::Character, Some(right)) => visual::by_character(layout, focus, right, rtl),
         (Granularity::Character, None) => by_character(layout, focus, forward),
@@ -146,13 +143,13 @@ pub(super) fn paragraph_level(layout: &Layout, located: ClusteredPosition) -> Bi
         .map_or(BidiLevel::LTR, |paragraph| paragraph.level)
 }
 
-/// Returns the next caret stop from `from`, a snapped position, forward or backward, on the side it is reached from.
+/// Returns the next caret stop from the snapped position `from`, with the
+/// affinity it arrives with ([`arrived`]).
 ///
 /// Where `from`'s offset has a second place the motion reaches next
-/// ([`other_place`]), that is the stop. Elsewhere it skips past a builder
-/// break opportunity that `from` starts the near side of, and where there is
-/// no stop, it returns the text's end. The affinity is the side the motion
-/// comes from ([`arrived`]).
+/// ([`other_place`]), that place is the stop. Otherwise the motion skips
+/// builder break opportunities, and stops at the text's end or start where
+/// no stop remains.
 pub(super) fn by_character(
     layout: &Layout,
     from: ClusteredPosition,
@@ -164,15 +161,15 @@ pub(super) fn by_character(
     arrived(layout, next_stop(layout, from.cluster, forward), forward)
 }
 
-/// Returns the other place of `from`'s offset, where a motion forward or backward reaches it after `from`.
+/// Returns the second place of `from`'s offset, where a motion forward or
+/// backward reaches it next.
 ///
-/// A wrap's offset is at the end of one line, upstream, and the start of the
-/// next, downstream; a builder break opportunity there joins the two. One
-/// where the text changes direction is drawn by the text on each side. A
-/// motion forward reaches the upstream place first, and one backward the
-/// downstream one. A box edge with room is one stop each way, so its other
-/// side is no place of this kind. `None` where there is none, or where
-/// `from` is drawn there already.
+/// A wrap's offset is drawn at one line's end, upstream, and the next line's
+/// start, downstream; builder break opportunities between them are skipped.
+/// Where the text changes direction, the text on each side draws one place.
+/// Forward reaches the upstream place first, backward the downstream one.
+/// Returns `None` where the offset has one place or `from` is already the
+/// second. A box edge with room is one stop each way, not two places.
 fn other_place(
     layout: &Layout,
     from: ClusteredPosition,
@@ -237,9 +234,11 @@ fn other_place(
     (here.line != there.line || here.inline != there.inline).then_some(other)
 }
 
-/// Returns the cluster starting at the next caret stop from the start of `from`, forward or backward.
+/// Returns the cluster starting the next caret stop from the start of
+/// `from`.
 ///
-/// It is [`by_character`]'s stop without its affinity.
+/// This is [`by_character`]'s stop without its affinity. Returns the text's
+/// end or start where no stop remains.
 pub(super) fn next_stop(layout: &Layout, from: ClusterId, forward: bool) -> ClusterId {
     let clusters = &layout.analysis().clusters;
     let end = clusters.end_id();
@@ -270,12 +269,12 @@ pub(super) fn next_stop(layout: &Layout, from: ClusterId, forward: bool) -> Clus
     to
 }
 
-/// Returns the position at `stop`'s start as a character motion forward or backward arrives at it.
+/// Returns the position at `stop`'s start as a character motion arrives at
+/// it.
 ///
-/// Forward it is upstream, with the text before it, so a step forward onto a
-/// wrap lands at the upper line's end. Backward it is downstream, with the
-/// text after it. A line's start after a forced break has one place, and is
-/// downstream either way.
+/// Forward it is upstream, so a step forward onto a wrap lands at the upper
+/// line's end. Backward it is downstream. A line start after a forced break
+/// has one place and is downstream either way.
 pub(super) fn arrived(layout: &Layout, stop: ClusterId, forward: bool) -> ClusteredPosition {
     let affinity = if forward && !place::follows_break(layout, stop) {
         Affinity::Upstream
@@ -285,10 +284,10 @@ pub(super) fn arrived(layout: &Layout, stop: ClusterId, forward: bool) -> Cluste
     ClusteredPosition::from_cluster(&layout.analysis().clusters, stop, affinity)
 }
 
-/// Returns the position at `stop`'s start as a word motion forward or backward arrives at it.
+/// Returns the position at `stop`'s start as a word motion arrives at it.
 ///
-/// It is where a character motion arrives, except that a word starting a
-/// line, after a wrap, is that line's start, downstream.
+/// This is [`arrived`]'s position, except that a word starting a line after a
+/// wrap is that line's start, downstream.
 fn word_arrived(layout: &Layout, stop: ClusterId, forward: bool) -> ClusteredPosition {
     let arrived = arrived(layout, stop, forward);
     if arrived.position.affinity == Affinity::Upstream && place::starts_line(layout, stop) {
@@ -301,12 +300,12 @@ fn word_arrived(layout: &Layout, stop: ClusterId, forward: bool) -> ClusteredPos
     arrived
 }
 
-/// Returns the next word stop from `from`, forward or backward, as `rule` says.
+/// Returns the next word stop from `from` under `rule`.
 ///
-/// It is the first character stop where a word starts, or, forward under
-/// [`WordMotion::StopAtWordEnd`], ends. Where there is none, it is the
-/// text's end. At a builder break opportunity it stops on the side it reaches
-/// first, as a character motion does.
+/// The stop is the first character stop where a word starts or, forward
+/// under [`WordMotion::StopAtWordEnd`], ends. Without one it is the text's
+/// end or start. At a builder break opportunity it stops on the side it
+/// reaches first, as a character motion does.
 pub(super) fn by_word(
     layout: &Layout,
     from: ClusteredPosition,
@@ -325,10 +324,10 @@ pub(super) fn by_word(
     }
 }
 
-/// Returns whether a word motion stops at the caret stop at `stop`'s start, as `rule` says.
+/// Returns whether a word motion under `rule` stops at `stop`'s start.
 ///
-/// Going forward it stops where a word starts, or under `StopAtWordEnd` where
-/// one ends. Going backward it stops where a word starts, on every platform.
+/// Forward stops where a word starts, or under `StopAtWordEnd` where one
+/// ends. Backward stops where a word starts, on every platform.
 pub(super) fn is_word_stop(
     words: &mut Words<'_>,
     stop: ClusterId,
@@ -341,11 +340,12 @@ pub(super) fn is_word_stop(
     }
 }
 
-/// Returns the position the next line down or up hits at the column, and the column.
+/// Returns the position the adjacent line hits at the column, and the
+/// column.
 ///
-/// The column is `goal`, or `focus`'s caret where there is none, in the
-/// area's coordinates. Past the last line it is the text's end, and before
-/// the first its start.
+/// The column is `goal`, or else `focus`'s caret, in the area's coordinates.
+/// Past the last line the position is the text's end; before the first, its
+/// start.
 fn by_line(
     layout: &Layout,
     focus: ClusteredPosition,
@@ -381,7 +381,8 @@ fn by_line(
     }
 }
 
-/// Returns the logical start of `focus`'s line, or its end where `forward`: Home and End.
+/// Returns the logical start of `focus`'s line, or its end where `forward`:
+/// Home and End.
 fn line_boundary(layout: &Layout, focus: ClusteredPosition, forward: bool) -> ClusteredPosition {
     match place::caret_line(layout, focus, None) {
         Some(line) => line_edge(layout, &line, forward),
@@ -396,8 +397,8 @@ pub(super) fn line_edge(layout: &Layout, line: &Line<'_>, forward: bool) -> Clus
         let start = Position::new(line.text_range().start, Affinity::Downstream);
         return ClusteredPosition::from_walk(layout, clusters.start, start);
     }
-    // The end of the line's content that does not hang. Where preserved
-    // white space hangs past it, the end is after the first hanging character.
+    // The end of the content that does not hang. Where preserved white space
+    // hangs past it, the end is after the first hanging character.
     let mut content = None;
     let mut hanging = None;
     for leaf in place::leaves(*line) {
@@ -439,7 +440,8 @@ pub(super) fn line_edge(layout: &Layout, line: &Line<'_>, forward: bool) -> Clus
     ClusteredPosition::from_walk(layout, clusters.end, Position::new(end, Affinity::Upstream))
 }
 
-/// Returns the start of the paragraph holding `focus`, or where `forward` its end.
+/// Returns the start of the paragraph holding `focus`, or its end where
+/// `forward`.
 ///
 /// The end is before the paragraph's separator.
 fn paragraph_boundary(
@@ -457,7 +459,7 @@ fn paragraph_boundary(
     if !forward {
         return ClusteredPosition::from_cluster(clusters, range.start, Affinity::Downstream);
     }
-    // Before the separator the paragraph ends with, where it has one.
+    // Before the paragraph's separator, where it has one.
     let last = range
         .end
         .get()

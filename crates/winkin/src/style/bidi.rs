@@ -15,11 +15,10 @@ pub enum Direction {
 }
 
 impl Direction {
-    /// Returns an element's `start` and `end` values in line order, line-left first.
+    /// Returns `start` and `end` in line order, line-left first.
     ///
-    /// Left to right keeps them as they are, and right to left swaps them.
-    /// The same swap turns line-left and line-right values back into start
-    /// and end.
+    /// Right to left swaps them. The same swap turns line-left and
+    /// line-right values back into start and end.
     #[inline]
     pub(crate) fn line_order<T>(self, start: T, end: T) -> (T, T) {
         match self {
@@ -31,7 +30,8 @@ impl Direction {
 
 /// `unicode-bidi`. Not inherited.
 ///
-/// Controls are added to bidi input at box boundaries, not to layout text.
+/// Bidi controls go into the bidi input at box edges, not into the layout
+/// text.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub enum UnicodeBidi {
     /// No effect on bidi. The initial value.

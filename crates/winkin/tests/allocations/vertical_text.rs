@@ -25,10 +25,10 @@ fn collection() -> Collection {
     test_fonts::collection(&[vertical], ahem_fallback())
 }
 
-/// Paragraphs of mixed vertical text, `repeat` times over, in `mode`:
-/// ideographs upright in a font with vertical metrics and in one
-/// without, Latin on its side, spans set upright and sideways, text
-/// combined whole and digits combined, spaced, justified and marked.
+/// Builds paragraphs of mixed vertical text `repeat` times in `mode`:
+/// upright ideographs in fonts with and without vertical metrics, Latin on
+/// its side, spans set upright and sideways, combined text and digits, all
+/// spaced, justified and marked.
 fn document(layout: &mut Layout, cx: &mut Context, mode: WritingMode, repeat: usize) {
     let families = [
         FontFamilyName::named("Test Vertical"),
@@ -126,10 +126,11 @@ fn read(layout: &Layout) -> f32 {
 }
 
 /// A warm rebuild of vertical text allocates nothing, in either vertical
-/// mode and on its side, nor does breaking it again at any width broken
-/// at before, nor reading it back: the orientation runs, the vertical
-/// metrics read at each shaping call, the combined units' fits and the
-/// pieces told apart by how they stand keep no allocation of their own.
+/// mode and sideways.
+///
+/// Nor does breaking it again at any width used before, or reading it
+/// back. The orientation runs, vertical metrics, combined units' fits and
+/// orientation pieces keep no allocation of their own.
 #[test]
 fn vertical_text_allocates_nothing_warm() {
     let widths = [60.0, 133.5, 400.0, 2000.0, 5.0];

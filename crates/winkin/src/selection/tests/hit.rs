@@ -57,7 +57,8 @@ fn a_point_hits_the_nearer_edge() {
     }
 }
 
-/// Returns the Latin test font, whose `fi` is one glyph over two em-wide characters.
+/// Returns the Latin test font, whose `fi` is one glyph over two em-wide
+/// characters.
 fn latin() -> ComputedStyle<'static> {
     const LATIN: [FontFamilyName<'static>; 1] =
         [FontFamilyName::Named(Cow::Borrowed("Test Latin"))];
@@ -79,7 +80,8 @@ fn a_ligature_is_divided_evenly() {
     assert_eq!(hit(&layout, middle - 1.0, 0), Position::from(1));
 }
 
-/// At the edge of text in the other direction, a point hits the position whose caret is drawn there.
+/// At the edge of text in the other direction, a point hits the position
+/// whose caret is drawn there.
 ///
 /// Blink's `BidiAdjustment::AdjustForHitTest` finds it so.
 #[test]
@@ -92,7 +94,8 @@ fn a_point_at_a_change_of_direction_hits_the_caret_drawn_there() {
     assert_eq!(hit(&layout, 135.0, 0), Position::from(10));
 }
 
-/// Past the lines, Windows keeps the point's column, and macOS and Linux go to the line's end.
+/// Past the lines, Windows keeps the point's column, and macOS and Linux go
+/// to the line's end.
 ///
 /// That is Blink's `ShouldMoveCaretToHorizontalBoundaryWhenPastTopOrBottom`.
 /// A point in a line's box hits that line, and its bottom edge the next
@@ -138,7 +141,8 @@ fn a_point_past_the_lines_hits_the_nearest() {
     assert_eq!(Layout::new().caret(Position::from(0)), None);
 }
 
-/// Text an ellipsis hides keeps its carets and hits, under and past the ellipsis, and is copied.
+/// Text an ellipsis hides keeps its carets and hits, under and past the
+/// ellipsis, and is copied.
 ///
 /// The ellipsis passes hits through and paints no selection.
 #[test]

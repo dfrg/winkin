@@ -1,20 +1,20 @@
 //! The rectangles a selection paints, as Blink's `LayoutSelection` paints them.
 //!
-//! - One rectangle per item, over what it selects. A run's spans from its
-//!   first selected cluster's edge to its last's, sharing a ligature evenly,
-//!   as `InlineCursor::CurrentLocalSelectionRectForText` does.
+//! - One rectangle per item, over what it selects. A run's rectangle spans
+//!   its selected clusters, which share a ligature evenly, as
+//!   `InlineCursor::CurrentLocalSelectionRectForText` does.
 //! - An atomic inline is selected whole or not at all. A line's hyphen is
 //!   selected with the soft hyphen before it.
-//! - An ellipsis and the text it hides paint nothing, as in Chrome. Neither
-//!   does a box's padding. Text in each direction is its own run, so its own
+//! - An ellipsis and the text it hides paint nothing, as in Chrome, nor does
+//!   a box's padding. Text in each direction is its own run, so its own
 //!   rectangle.
-//! - A rectangle is as tall as the line box, or the text's own box where that
-//!   is taller, as `ExpandSelectionRectToLineHeight` unites them.
-//! - Where the selection starts before a line's placed end and goes on past
-//!   it, a mark one space of the last run's font wide follows the line, as
-//!   `ExpandedSelectionRectForSoftLineBreakIfNeeded` adds. There is no mark
-//!   in a block that cuts lines for an ellipsis or clamp, or where the last
-//!   run reads against the paragraph.
+//! - A rectangle spans the line box, or the text's own box where that is
+//!   taller, as `ExpandSelectionRectToLineHeight` unites them.
+//! - Where the selection starts before a line's placed end and continues
+//!   past it, a mark one space wide, in the last run's font, follows the
+//!   line, as `ExpandedSelectionRectForSoftLineBreakIfNeeded` adds. No mark
+//!   is added in a block that cuts lines for an ellipsis or clamp, or where
+//!   the last run reads against the paragraph.
 //!
 //! The rectangles are line-relative. A host unites or paints them as it
 //! likes, typically tinting an atomic inline's, as Chrome tints a replaced
@@ -56,36 +56,40 @@ pub enum SelectionRectKind {
     Text,
     /// The mark at the end of a line, where the selection continues past it.
     ///
-    /// One space wide in the last font of the line.
+    /// One space wide, in the font of the line's logically last run.
     LineEnd,
-    /// An atomic inline, whole.
+    /// An atomic inline, selected whole.
     ///
-    /// Chrome tints the box of a replaced element. Chrome does not tint
-    /// inline-blocks; their text is selected instead.
+    /// Chrome tints a replaced element's box but not an inline-block, whose
+    /// text is selected instead.
     Atomic,
 }
 
-/// The rectangles a selection paints, for [`Layout::selection_rects`](crate::Layout::selection_rects).
+/// The rectangles a selection paints, for
+/// [`Layout::selection_rects`](crate::Layout::selection_rects).
 ///
-/// They come line by line, in visual order on each, with the line-end mark
-/// last.
+/// They come line by line: each line's items in visual order, then its
+/// annotation runs, then its line-end mark.
 pub(crate) struct SelectionRects<'a> {
     layout: &'a Layout,
-    /// Where the selection starts and ends, as caret stops.
+    /// The selection's start, snapped to a caret stop.
     start: usize,
+    /// The selection's end, snapped to a caret stop.
     end: usize,
-    /// The next line to read, and the last.
+    /// The next line to read.
     next: LineId,
+    /// The last line to read, or `None` for an empty selection.
     last: Option<LineId>,
-    /// The line being read, and its items still to read.
+    /// The line being read, with its items still to read.
     current: Option<Reading<'a>>,
+    /// The annotation runs of the line being read, once its items are done.
     annotation: Option<AnnotationRuns<'a>>,
 }
 
 /// A line the rectangles are being read from.
 struct Reading<'a> {
     line: Line<'a>,
-    /// The line box's height, which each rectangle is at least as tall as.
+    /// The line box's height, the least height of each rectangle.
     height: f32,
     /// Its items still to read.
     items: LineItems<'a>,
@@ -94,8 +98,8 @@ struct Reading<'a> {
 impl<'a> SelectionRects<'a> {
     /// Starts the rectangles of a selection from byte `start` to `end`.
     ///
-    /// It snaps both, and covers the first line the selection touches to the
-    /// last, including the lines of selected ruby pieces.
+    /// Snaps both ends and covers every line from the first the selection
+    /// touches to the last, including the lines of selected ruby pieces.
     pub(crate) fn new(layout: &'a Layout, start: usize, end: usize) -> Self {
         let clusters = &layout.analysis().clusters;
         let first = place::snap(
@@ -103,8 +107,8 @@ impl<'a> SelectionRects<'a> {
             ClusteredPosition::new(layout, Position::from(start)),
         );
         let start = first.offset();
-        // The end walks from the start, as the rectangles walk the lines
-        // between them.
+        // The end's cluster is walked to from the start's; the rectangles
+        // walk that span anyway.
         let end = Position::from(end.max(start));
         let ending = place::snap(
             layout,
@@ -167,7 +171,8 @@ impl<'a> SelectionRects<'a> {
         }
     }
 
-    /// Returns the rectangle `item` of `line`, a line box `height` tall, paints, where it paints one.
+    /// Returns the rectangle `item` paints on `line`, a line box `height`
+    /// tall, or `None` where it paints none.
     fn item_rect(&self, line: &Line<'a>, height: f32, item: Item<'a>) -> Option<SelectionRect> {
         let (start, end) = (self.start, self.end);
         let line_box = CrossExtents::from_line_height(height);
@@ -190,8 +195,7 @@ impl<'a> SelectionRects<'a> {
                     from <= range.start.get() && range.end.get() <= to
                 };
                 // Combined text spans the unit's em along the line and the
-                // selected characters across it, not the line box. Chrome
-                // paints a unit's horizontal text so.
+                // selected characters across it, as Chrome paints it.
                 if let Some(places) = run.across_places() {
                     let (over, under) = union(
                         places
@@ -235,7 +239,8 @@ impl<'a> SelectionRects<'a> {
         }
     }
 
-    /// Returns the mark at `line`'s end, where the selection starts before it and goes on past.
+    /// Returns the mark at `line`'s end, where the selection starts before it
+    /// and continues past.
     fn line_end(&self, line: &Line<'a>) -> Option<SelectionRect> {
         if self.layout.content().block.may_cut_lines() {
             return None;
@@ -296,9 +301,8 @@ impl<'a> SelectionRects<'a> {
 }
 
 impl SelectionRects<'_> {
-    /// Returns the forced break `line` ends in, as byte offsets into the layout's text.
-    ///
-    /// It is the line's last cluster, where that is a forced break.
+    /// Returns the byte range of the forced break `line` ends in, or `None`
+    /// where its last cluster is not one.
     fn forced_break(&self, line: &Line<'_>) -> Option<Range<TextOffset>> {
         let clusters = &self.layout.analysis().clusters;
         let end = line.record().clusters().end;
@@ -310,7 +314,7 @@ impl SelectionRects<'_> {
 
 /// Returns the union of `extents`, from the least start to the greatest end.
 ///
-/// `None` where the union is empty.
+/// Returns `None` where the union is empty.
 fn union<T: Copy + PartialOrd>(extents: impl Iterator<Item = (T, T)>) -> Option<(T, T)> {
     let (low, high) = extents.reduce(|(low, high), (start, end)| {
         (
@@ -321,7 +325,8 @@ fn union<T: Copy + PartialOrd>(extents: impl Iterator<Item = (T, T)>) -> Option<
     (low < high).then_some((low, high))
 }
 
-/// Returns the width of a space in `leaf`'s font, or the block's for an atomic inline.
+/// Returns the width of a space in `leaf`'s font, or in the block's font for
+/// an atomic inline.
 fn space_width(layout: &Layout, leaf: &Leaf<'_>) -> f32 {
     match leaf.run() {
         Some(run) => run.space_width().to_px(),

@@ -58,7 +58,7 @@ impl Sides<LengthPercentage> {
             && self.left.is_zero())
     }
 
-    /// Whether any side has a percentage, so that its length depends on
+    /// Returns whether any side has a percentage, so its length depends on
     /// the basis.
     pub(crate) fn has_percentage(self) -> bool {
         [self.top, self.right, self.bottom, self.left]
@@ -93,8 +93,8 @@ impl From<Sides<f32>> for Sides<LengthPercentage> {
 impl<T: Copy> Sides<T> {
     /// Returns the values on the sides a line runs between, as `(line-left, line-right)`.
     ///
-    /// Horizontal lines run from left to right, and vertical ones from top to
-    /// bottom. `sideways-lr` lines run upward, from bottom to top.
+    /// Horizontal lines run left to right, vertical ones top to bottom, and
+    /// `sideways-lr` lines bottom to top.
     pub(crate) fn along_line(self, writing_mode: WritingMode) -> (T, T) {
         match writing_mode {
             WritingMode::HorizontalTb => (self.left, self.right),
@@ -107,8 +107,8 @@ impl<T: Copy> Sides<T> {
 
     /// Returns the values on the sides across a line, as `(over, under)`.
     ///
-    /// Horizontal lines are over at the top, and vertical ones on the right.
-    /// `sideways-lr` lines are over on the left.
+    /// Horizontal lines have their over side at the top, vertical ones on
+    /// the right, and `sideways-lr` lines on the left.
     pub(crate) fn across_line(self, writing_mode: WritingMode) -> (T, T) {
         match writing_mode {
             WritingMode::HorizontalTb => (self.top, self.bottom),
@@ -121,9 +121,8 @@ impl<T: Copy> Sides<T> {
 }
 
 impl Sides<f32> {
-    /// Returns [`along_line`](Self::along_line)'s lengths truncated onto layout's grid.
-    ///
-    /// Chrome holds a box's margin, border and padding so.
+    /// Returns [`along_line`](Self::along_line)'s lengths truncated onto the
+    /// layout grid, as Chrome holds a box's margin, border and padding.
     pub(crate) fn along_line_on_grid(self, writing_mode: WritingMode) -> (LayoutUnit, LayoutUnit) {
         let (start, end) = self.along_line(writing_mode);
         (
@@ -132,9 +131,8 @@ impl Sides<f32> {
         )
     }
 
-    /// Returns [`across_line`](Self::across_line)'s lengths truncated onto layout's grid.
-    ///
-    /// Chrome holds a box's margin, border and padding so.
+    /// Returns [`across_line`](Self::across_line)'s lengths truncated onto the
+    /// layout grid, as Chrome holds a box's margin, border and padding.
     pub(crate) fn across_line_on_grid(self, writing_mode: WritingMode) -> (LayoutUnit, LayoutUnit) {
         let (over, under) = self.across_line(writing_mode);
         (

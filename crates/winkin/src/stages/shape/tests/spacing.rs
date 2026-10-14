@@ -1,4 +1,4 @@
-//! Tests of `text-spacing-trim` in shaping:
+//! `text-spacing-trim` in shaping tests:
 //! - a mark gives its blank back through the font's `halt`, or is halved
 //!   where the font has none and the config says so;
 //! - a pair is found across runs, and across fallback fonts;
@@ -10,7 +10,7 @@
 use super::*;
 use crate::style::FirstLineVariant;
 
-/// A fixture over a Japanese font with `halt` and one without.
+/// Returns a fixture over a Japanese font with `halt` and one without.
 fn punct() -> Fixture {
     fixture_with(&[
         TestFont::cjk("Test Punct", true),
@@ -20,10 +20,15 @@ fn punct() -> Fixture {
 
 /// Where two full-width marks meet, the one that gives its blank back is
 /// set in the font's own `halt`, one character at a time, as Chrome's
-/// `HanKerning` sets it: the second of two opening marks, whose blank is
-/// before its ink, drawn half an em back; the first of two closing marks;
-/// the opening mark after a closing one. Breaking inside the pair is unsafe,
-/// so a line starting there is shaped as a start.
+/// `HanKerning` sets it:
+/// - the second of two opening marks, whose blank is before its ink, drawn
+///   half an em back;
+/// - the first of two closing marks;
+/// - the opening mark after a closing one.
+///
+/// Breaking inside the pair is unsafe, so a line starting there is shaped
+/// as a start. Chrome 153 in Yu Gothic sets `漢」「漢` broken between the
+/// marks with the `「` whole at the next line's start.
 #[test]
 fn a_mark_gives_its_blank_back_in_the_fonts_halt() {
     let mut fixture = punct();
@@ -66,10 +71,12 @@ fn a_mark_gives_its_blank_back_in_the_fonts_halt() {
     assert_eq!(fixture.advances(), vec![px16(20); 5]);
 }
 
-/// Nothing is trimmed under `space-all`; nor, as in Chrome, in a font
-/// without `halt`, unless `Config::punctuation_trim` says `Always`, beyond
-/// Chrome, which halves the mark's own advance instead and moves an opening
-/// mark's glyph back into the half it keeps.
+/// Nothing is trimmed under `space-all`, nor in a font without `halt`, as
+/// in Chrome: Chrome 153 sets `漢「「漢` at 40px in MS Gothic 160px wide.
+///
+/// `PunctuationTrim::Always` trims there too, which Chrome does not. It
+/// halves the mark's own advance and moves an opening mark's glyph back
+/// into the half it keeps.
 #[test]
 fn a_font_without_halt_trims_nothing_but_where_the_config_says() {
     let mut fixture = punct();
@@ -115,11 +122,14 @@ fn a_font_without_halt_trims_nothing_but_where_the_config_says() {
     assert_eq!(fixture.advances(), [px16(20), px16(10), px16(10), px16(20)]);
 }
 
-/// A pair is found across a style boundary that stops shaping, the text
-/// either side read: the first of two closing marks gives its blank back
-/// though the second is in another run, as in Chrome, and a run's first
-/// cluster kerned against the run before is unsafe to break before but a
-/// reshape may still start there.
+/// A pair is found across a style boundary that stops shaping, from the text
+/// either side.
+///
+/// The first of two closing marks gives its blank back though the second
+/// is in another run. Chrome 153 in Yu Gothic at 40px sets
+/// `漢」<span>」</span>漢` 140px wide, as `漢」」漢`, even with the second
+/// mark in another font. A run's first cluster kerned against the run
+/// before is unsafe to break before.
 #[test]
 fn a_pair_is_found_across_runs() {
     let mut fixture = punct();
@@ -130,10 +140,9 @@ fn a_pair_is_found_across_runs() {
     assert_eq!(fixture.advances(), [px16(20), px16(10), px16(10), px16(10)]);
     fixture.spans(&mut layout, &style, &[(&style, "漢」"), (&small, "「漢")]);
     assert_eq!(fixture.advances(), [px16(20), px16(20), px16(5), px16(10)]);
-    // The pair makes the second run's first cluster unsafe to break
-    // before, though the runs are shaped apart: a line starting there is
-    // reshaped, and a line end's window, which stops at its run's start,
-    // does not reach past it.
+    // The pair makes the second run's first cluster unsafe to break before,
+    // though the runs are shaped apart. A line starting there is reshaped;
+    // a line end's window stops at its run's start.
     let word = layout
         .shaped()
         .text(FirstLineVariant::Standard)
@@ -142,9 +151,9 @@ fn a_pair_is_found_across_runs() {
     assert!(word.is_unsafe_to_break());
 }
 
-/// Under `trim-start` a paragraph's opening mark gives its blank back at
-/// its start, as Chrome's `ShapeText` trims every paragraph's first text
-/// item; not under `normal` or `space-first`, which keep it there.
+/// Under `trim-start` a paragraph's opening mark gives its blank back, as
+/// Chrome's `ShapeText` trims every paragraph's first text item. Under
+/// `normal` and `space-first` it keeps its blank.
 #[test]
 fn trim_start_trims_a_paragraphs_opening_mark() {
     let mut fixture = punct();
@@ -161,9 +170,9 @@ fn trim_start_trims_a_paragraphs_opening_mark() {
     }
 }
 
-/// Where the font has `chws`, it collapses the pairs inside a run itself,
-/// which every style but `space-all` turns on, and the rule finds none
-/// there: a mark gives its blank back once.
+/// A font with `chws`, which every style but `space-all` turns on, collapses
+/// the pairs inside a run itself. The rule finds none there, so a mark
+/// gives its blank back once.
 #[test]
 fn a_font_with_chws_collapses_its_own_pairs() {
     let mut font = TestFont::cjk("Test Punct Contextual", true);
@@ -176,11 +185,13 @@ fn a_font_with_chws_collapses_its_own_pairs() {
     assert_eq!(fixture.advances(), [px16(20), px16(10), px16(20), px16(20)]);
 }
 
-/// A pair in two fallback fonts is trimmed as in one font: a neighbour is
-/// classed in the font it is shaped in, as Chrome's `HanKerning` caches its
-/// class. Each subset font has `halt` and one mark, so it cannot class the
-/// other's mark itself: a dot before a colon gives its blank back, and so
-/// does an opening bracket after a dot, whichever font comes first.
+/// A pair in two fallback fonts is trimmed as in one font, since a neighbour
+/// is classed in the font it is shaped in, as Chrome's `HanKerning` caches
+/// its class.
+///
+/// Each subset font has `halt` and one mark, so it cannot class the other's
+/// mark itself. A dot before a colon gives its blank back, and so does an
+/// opening bracket after a dot, whichever font comes first.
 #[test]
 fn a_pair_in_two_fallback_fonts_is_trimmed() {
     let subset = |family: &str, ch: char| {
@@ -224,7 +235,8 @@ fn a_pair_in_two_fallback_fonts_is_trimmed() {
     }
 }
 
-/// A probe drawn with its ink from `left` to `right` in an advance of 1000.
+/// Returns a probe drawn with its ink from `left` to `right` in an advance
+/// of 1000.
 fn probe(left: f32, right: f32) -> super::trim::TrimProbe {
     super::trim::TrimProbe {
         drawn: true,
@@ -235,11 +247,13 @@ fn probe(left: f32, right: f32) -> super::trim::TrimProbe {
 }
 
 /// A font's classes are read off its glyphs as Blink's `FontData` reads
-/// them: ink in the left half is a closing mark's, in the right half an
-/// opening one's, within the middle half a middle one's; a group whose
-/// glyphs differ in advance or class is none; a glyph the font lacks is
-/// passed over; and a font whose probes could not be shaped one glyph each
-/// cannot be read, and its `halt` goes unused.
+/// them:
+/// - ink in the left half is a closing mark's, in the right half an opening
+///   one's, within the middle half a middle one's;
+/// - a group whose glyphs differ in advance or class is none;
+/// - a glyph the font lacks is passed over;
+/// - a font whose probes could not be shaped one glyph each cannot be read,
+///   and its `halt` goes unused.
 #[test]
 fn a_fonts_punctuation_classes_are_read_off_its_glyphs() {
     use super::trim::{TrimClass, TrimFont, TrimProbe};
@@ -310,11 +324,14 @@ fn a_fonts_punctuation_classes_are_read_off_its_glyphs() {
     assert!(!TrimFont::from_probes(true, false, None).has_halt());
 }
 
-/// The marks of a range, as Blink's `HanKerning::AppendFontFeatures`
-/// finds them: pairs inside it, where the font has no `chws`; its first
-/// character against the one before it, unless it starts a line; its last
-/// against the one after; and at a line's edges the marks the edges ask to
-/// be trimmed whatever is beside them.
+/// The marks of a range are found as Blink's
+/// `HanKerning::AppendFontFeatures` finds them:
+/// - pairs inside it, where the font has no `chws`;
+/// - its first character against the one before it, unless it starts a
+///   line;
+/// - its last against the one after;
+/// - at a line's edges, the marks the edges ask to trim whatever is beside
+///   them.
 #[test]
 fn the_marks_are_found_as_blink_finds_them() {
     use super::trim::{TrimFont, TrimMarks, TrimProbe, class_beside};

@@ -1,4 +1,5 @@
-//! Tests of offsets drawn at two places, and of a line's edges on the screen. They pin:
+//! Tests of offsets drawn at two places, and of a line's edges on the
+//! screen. They pin:
 //! - a soft wrap as two stops each way: after white space the wrap removed,
 //!   inside a word, at a `<wbr>` and inside a box with room, in
 //!   left-to-right, right-to-left and vertical lines;
@@ -26,7 +27,8 @@ fn stop(layout: &Layout, position: Position) -> Stop {
     (position.offset, position.affinity, line, x)
 }
 
-/// Returns the stops a caret visits moving by `motion` from `from`, `from` first, until it stops.
+/// Returns the stops a caret visits moving by `motion` from `from`, `from`
+/// first, until it stops.
 fn steps(layout: &Layout, from: Position, motion: Motion) -> Vec<Stop> {
     walk_positions(layout, from, motion)
         .into_iter()
@@ -49,7 +51,8 @@ fn line_edge(layout: &Layout, from: usize, direction: MotionDirection) -> Stop {
     stop(layout, to.focus())
 }
 
-/// Returns `text` in Ahem in a block in `direction` and `mode`, broken at `width`.
+/// Returns `text` in Ahem in a block in `direction` and `mode`, broken at
+/// `width`.
 fn laid_in(direction: BaseDirection, mode: WritingMode, width: f32, text: &str) -> Layout {
     let style = ahem();
     let block = ComputedBlockStyle {
@@ -60,18 +63,21 @@ fn laid_in(direction: BaseDirection, mode: WritingMode, width: f32, text: &str) 
     laid_with(&block, width, |b| b.text(NodeKey(1), text))
 }
 
-/// Four Latin words of four letters, which a 100px line wraps after each space.
+/// Four Latin words of four letters, which a 100px line wraps after each
+/// space.
 const LATIN: &str = "abcd efgh ijkl";
 
-/// Three Hebrew words of four letters, two bytes each, which a 100px line wraps after each space.
+/// Three Hebrew words of four letters, two bytes each, which a 100px line
+/// wraps after each space.
 const HEBREW: &str =
     "\u{5D0}\u{5D1}\u{5D2}\u{5D3} \u{5D4}\u{5D5}\u{5D6}\u{5D7} \u{5D8}\u{5D9}\u{5DB}\u{5DC}";
 
-/// At a wrap after a space the wrap removed, a motion stops at the upper line's end past the space, then the next line's start.
+/// At a wrap after a removed space, a motion stops at the upper line's end
+/// past the space, then at the next line's start.
 ///
-/// Backward and left go the other way round. That holds in vertical lines,
-/// along the line. In a right-to-left line the upper line's end is at its
-/// left, past the space, and left stops there.
+/// Backward and left go in reverse. That holds along vertical lines too. In
+/// a right-to-left line the upper line's end is at its left, past the space,
+/// and left stops there.
 #[test]
 fn a_wrap_after_a_space_is_two_stops_each_way() {
     for mode in [WritingMode::HorizontalTb, WritingMode::VerticalRl] {
@@ -137,7 +143,8 @@ fn a_wrap_after_a_space_is_two_stops_each_way() {
     assert_eq!(stops, forward[..3]);
 }
 
-/// A wrap inside a word, at a `<wbr>` and inside a box with room is two stops each way too.
+/// A wrap inside a word, at a `<wbr>` and inside a box with room is two
+/// stops each way too.
 #[test]
 fn every_wrap_is_two_stops_each_way() {
     // Inside a word: the upper line's end, then the next line's start.
@@ -230,7 +237,8 @@ fn every_wrap_is_two_stops_each_way() {
     assert_eq!((end.key, end.offset), (NodeKey(3), 3));
 }
 
-/// End at a wrap goes past the white space the wrap removed or hung, so typed text follows the space.
+/// End at a wrap goes past the white space the wrap removed or hung, so
+/// typed text follows the space.
 ///
 /// Chrome's End stops before removed white space, at 4 here, and after the
 /// first space hanging. A line that ends the paragraph keeps Chrome's End.
@@ -271,7 +279,8 @@ fn end_goes_past_white_space_at_a_wrap() {
     );
 }
 
-/// Where the text changes direction, a motion stops at the edge of the text on each side, the offset upstream and downstream.
+/// Where the text changes direction, a motion stops at the edge of the text
+/// on each side: the offset upstream and downstream.
 ///
 /// Left and right reach every place on the screen once, both ends of the
 /// line included. Chrome's arrows stop once at each offset, on the
@@ -383,7 +392,8 @@ fn a_change_of_direction_is_two_stops() {
     );
 }
 
-/// Left and right by line boundary go to the line's left and right edges on the screen, whatever its direction.
+/// Left and right by line boundary go to the line's left and right edges on
+/// the screen, whatever its direction.
 ///
 /// The line's logical start is downstream and its end upstream. On a line
 /// that wraps after white space it removed, the space stands at the line's

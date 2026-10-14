@@ -1,12 +1,11 @@
 //! Seek tests. They pin:
-//! - how many searches preparing and breaking make: none to prepare plain
-//!   prose or lay it out, one a line for hyphenated prose's line-edge
-//!   costs, and one a hyphen for its generated text;
+//! - none to prepare plain prose or lay it out;
+//! - for hyphenated prose, one a line for its line-edge costs and one a
+//!   hyphen for its generated text;
 //! - the cursor over the line-edge costs, which finds what a search finds;
-//! - none to prepare ruby, and a constant number a column or a line to lay
-//!   it out again, its columns split across lines or not;
-//! - a few searches to prepare a first line in capitals, however long its
-//!   paragraph.
+//! - at most one to prepare ruby, and a constant number a column or a line
+//!   to lay it out again, whether its columns split across lines or not;
+//! - a few to prepare a first line in capitals, however long its paragraph.
 //!
 //! Seeks are counted only in debug builds.
 
@@ -14,8 +13,8 @@ use super::*;
 #[cfg(debug_assertions)]
 use crate::work;
 
-/// Words of prose, `words` of them, with soft hyphens in each long one
-/// where `hyphenated`.
+/// Returns `words` words of prose, with soft hyphens in each long word where
+/// `hyphenated`.
 fn prose(words: usize, hyphenated: bool) -> String {
     let long = if hyphenated {
         [
@@ -42,8 +41,8 @@ fn prose(words: usize, hyphenated: bool) -> String {
     text
 }
 
-/// Seeks made building `text`, laying it out at 180 px, and laying it out
-/// again at 150 px, with the steps and lines that relayout made.
+/// The seeks made to build a text, lay it out, and lay it out again, with
+/// the steps and lines of the second layout.
 #[cfg(debug_assertions)]
 struct Seeks {
     build: u64,
@@ -53,7 +52,8 @@ struct Seeks {
     lines: u64,
 }
 
-/// Counts the seeks building and laying out `text` make (see [`Seeks`]).
+/// Counts the seeks made to build `text`, lay it out at 180 px, and lay it
+/// out again at 150 px.
 #[cfg(debug_assertions)]
 fn seeks(fixture: &mut Fixture, text: &str) -> Seeks {
     let style = sized(&LATIN, 16.0);
@@ -77,8 +77,8 @@ fn seeks(fixture: &mut Fixture, text: &str) -> Seeks {
 
 /// Plain prose is prepared and laid out without a search.
 ///
-/// Every walk over it carries its runs, and no line's edge costs anything,
-/// so the breaker looks nothing up.
+/// Every walk over it carries its runs, and no line edge has a cost, so the
+/// breaker looks nothing up.
 #[cfg(debug_assertions)]
 #[test]
 fn plain_prose_is_laid_out_without_a_search() {
@@ -92,10 +92,8 @@ fn plain_prose_is_laid_out_without_a_search() {
 
 /// Hyphenated prose seeks its line-edge costs once a line.
 ///
-/// The fit seeks the cost at a line's start, and its candidates move the
-/// cursor from there, back as the fit steps back. The paragraph's end has
-/// its cost found once, so no candidate moves the cursor past the line.
-/// Preparing finds each soft hyphen's generated hyphen once.
+/// The fit seeks the cost at a line's start, and its candidates move a
+/// cursor from there. Preparing finds each generated hyphen once.
 #[cfg(debug_assertions)]
 #[test]
 fn hyphenated_prose_seeks_its_edge_costs_once_a_line() {
@@ -105,7 +103,7 @@ fn hyphenated_prose_seeks_its_edge_costs_once_a_line() {
     let seeks = seeks(&mut fixture, &text);
     assert!(seeks.lines > 20, "{} lines", seeks.lines);
     assert_eq!(seeks.build, hyphens, "seeks to prepare");
-    // One a line, and the cost at the paragraph's end.
+    // One a line, plus the cost at the paragraph's end.
     assert_eq!(seeks.relayout, seeks.lines + 1, "seeks to lay out again");
     // A paragraph four times as long takes as many steps a line.
     let long = self::seeks(&mut fixture, &prose(1600, true));
@@ -122,9 +120,8 @@ fn hyphenated_prose_seeks_its_edge_costs_once_a_line() {
 /// The line-edge cost cursor finds what a search finds, across a
 /// hyphenated paragraph's candidates.
 ///
-/// Each line's cursor is sought at its start. It is asked every boundary of
-/// the line from its end back, as the fit asks its candidates, then every
-/// boundary on to the paragraph's end, as the scorer does.
+/// Each line's cursor is asked the line's boundaries backwards, as the fit
+/// does, then every boundary to the paragraph's end, as the scorer does.
 #[test]
 fn the_edge_cost_cursor_finds_what_a_search_finds() {
     let mut fixture = fixture();
@@ -207,8 +204,8 @@ fn breaking_ruby(fixture: &mut Fixture, layout: &mut Layout, count: u64) {
     });
 }
 
-/// Counts the seeks `build` makes, then those of laying its content out
-/// at `width` and again at `width` (see [`Seeks`]).
+/// Counts the seeks `build` makes, then those of laying its content out at
+/// `width` twice.
 #[cfg(debug_assertions)]
 fn ruby_seeks(
     fixture: &mut Fixture,
@@ -235,11 +232,8 @@ fn ruby_seeks(
 /// Ruby is prepared without a search, and laid out again with a constant
 /// number of searches a column.
 ///
-/// The measure walks each column's items from its opening item, its font
-/// runs from where the last column's ended, and its nested columns from
-/// itself. The breaker walks the line's columns from the last line's.
-/// What placement seeks for each column's boxes, and the line-edge costs,
-/// are the rest.
+/// The seeks are placement's, for each column's boxes, and the line-edge
+/// costs.
 #[cfg(debug_assertions)]
 #[test]
 fn ruby_seeks_a_constant_number_a_column() {
@@ -249,7 +243,7 @@ fn ruby_seeks_a_constant_number_a_column() {
         let columns = 3 * sentences;
         assert!(seeks.lines > sentences / 4, "{} lines", seeks.lines);
         assert_eq!(seeks.build, 0, "seeks to prepare");
-        // Five a column, one a line, and the cost at the paragraph's end.
+        // Five a column, one a line, plus the cost at the paragraph's end.
         assert!(
             seeks.relayout <= 5 * columns + seeks.lines + 1,
             "{} seeks to lay {columns} columns out again on {} lines",
@@ -262,10 +256,8 @@ fn ruby_seeks_a_constant_number_a_column() {
 /// Ruby columns split across lines are laid out again with a constant
 /// number of searches a line.
 ///
-/// The breaker reads the pieces of the line it fits, and of the line
-/// before, from the end of their table, and a rewind truncates it to its
-/// mark. Placement seeks each line's pieces once. Preparing seeks the font
-/// runs once, past the last column.
+/// Placement seeks each line's pieces once. Preparing seeks the font runs
+/// at most once.
 #[cfg(debug_assertions)]
 #[test]
 fn breaking_ruby_seeks_a_constant_number_a_line() {
@@ -295,8 +287,9 @@ fn breaking_ruby_seeks_a_constant_number_a_line() {
         "{short:.1} seeks a line of 10 columns, {long:.1} of 40"
     );
 }
-/// Seeks made building `text` with a first line in capitals, and laying it
-/// out at 180 px.
+
+/// Counts the seeks made to build `text` with a first line in capitals, and
+/// to lay it out at 180 px.
 #[cfg(debug_assertions)]
 fn first_line_seeks(fixture: &mut Fixture, text: &str) -> (u64, u64) {
     use crate::style::TextCase;
@@ -324,10 +317,8 @@ fn first_line_seeks(fixture: &mut Fixture, text: &str) -> (u64, u64) {
 /// A first line in capitals is prepared with a few searches, however long
 /// its paragraph.
 ///
-/// Each `ß` is two capitals on the first line, so its text differs in
-/// length from the content's and its map has an entry for each. Font
-/// selection and shaping read it through cursors that step through the map
-/// in order.
+/// Each `ß` becomes two capitals, so the first line's text needs an offset
+/// map. Font selection and shaping step through it with cursors.
 #[cfg(debug_assertions)]
 #[test]
 fn a_transformed_first_line_is_prepared_with_few_searches() {
@@ -342,10 +333,8 @@ fn a_transformed_first_line_is_prepared_with_few_searches() {
 
 /// Line layout finds a hyphenated line's hyphen once.
 ///
-/// Laid out at 70 px, a third of the lines end at a soft hyphen. The
-/// relayout seeks each line's edge costs once, the paragraph end's cost,
-/// and each hyphen's generated text once: its piece keeps it for its count
-/// and its items.
+/// The relayout seeks each line's edge costs, the paragraph end's cost, and
+/// each hyphen's generated text once each.
 #[cfg(debug_assertions)]
 #[test]
 fn a_hyphenated_line_finds_its_hyphen_once() {

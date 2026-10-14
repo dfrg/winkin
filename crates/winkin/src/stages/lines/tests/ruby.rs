@@ -1,7 +1,7 @@
 //! Tests of the room a line makes for ruby annotations and emphasis marks:
 //! - what reaches past a line box moves the line down, less what the line
 //!   before left under its text;
-//! - the block's first line uses the room above the block the host names;
+//! - the block's first line uses the room above the block the host gives;
 //! - what reaches under moves the next line down;
 //! - the room a block lends below, none past a trimmed end;
 //! - under `Config::emphasis_room = Uniform` every marked line grows alike.
@@ -41,10 +41,10 @@ fn boxes(layout: &Layout) -> Vec<(f32, f32)> {
         .collect()
 }
 
-/// Builds `A<ruby>BB<rt>CC</rt></ruby>D ` `count` times into `layout` and
-/// breaks it 200 wide, a column a line.
+/// Builds `A<ruby>BB<rt>CC</rt></ruby>D ` once for each of `positions` into
+/// `layout`, and lays it out 200 px wide, one column a line.
 ///
-/// Each ruby's annotation goes on the side `position` gives it in turn.
+/// The nth ruby's annotation goes on the side `positions[n]` gives.
 fn columns(
     fixture: &mut Fixture,
     layout: &mut Layout,
@@ -78,10 +78,8 @@ fn columns(
     fixture.lay_out(layout, 200.0);
 }
 
-/// At `line-height: 1` each line of a column takes the annotation's 20 over
-/// its 40, as in Chrome.
-///
-/// Three lines come to 180. The annotation stands on the base's em box.
+/// At `line-height: 1` each line grows by the annotation's 20, as in
+/// Chrome, and the annotation sits on the base's em box.
 #[test]
 fn a_line_with_an_annotation_grows_by_what_reaches_past_it() {
     let mut fixture = fixture();
@@ -105,8 +103,7 @@ fn a_line_with_an_annotation_grows_by_what_reaches_past_it() {
 /// An annotation under one line and one over the next take their room
 /// apart, as in Chrome.
 ///
-/// The two lines come to 120, since neither leaves room on the side the
-/// other reaches into.
+/// Neither line leaves room on the side the other reaches into.
 #[test]
 fn an_annotation_under_moves_the_next_line_down() {
     let mut fixture = fixture();
@@ -126,12 +123,11 @@ fn an_annotation_under_moves_the_next_line_down() {
     assert_eq!(annotation.baseline(), 56.0);
 }
 
-/// Padding over the block is room its first line's annotation may take, as
-/// in Chrome.
+/// The room above the block, such as its padding, is room its first line's
+/// annotation may take, as in Chrome.
 ///
-/// The padding gives 12 of the 20 here, so the line grows by 8 and is 60
-/// tall with the 12. The host names the room as `Area::room_above`, since
-/// what the block before lends changes with the width.
+/// With 12 of the 20 above, the line grows by 8. The host passes the room
+/// as `Area::room_above`, since it changes with the width.
 #[test]
 fn the_first_line_takes_the_room_above_the_block() {
     let mut fixture = fixture();
@@ -144,7 +140,7 @@ fn the_first_line_takes_the_room_above_the_block() {
     };
     fixture.lay_out_with(&mut layout, area, &mut NoExclusions);
     assert_eq!(boxes(&layout), [(0.0, 48.0)]);
-    // A negative room, or one that is not a number, counts as none.
+    // A negative or NaN room counts as none.
     for room_above in [-5.0, f32::NAN] {
         let area = Area {
             room_above,
@@ -158,13 +154,9 @@ fn the_first_line_takes_the_room_above_the_block() {
 /// A block reports what its last line leaves under its text as
 /// `Layout::room_below`, and the host lends it to the next block.
 ///
-/// Blocks of 20px Ahem on 30px lines carry a string mark
-/// (`text-emphasis: 'X'`, 10 tall), measured in Chrome 153:
-/// - The first block's marks reach 5 past its line box, so its line moves
-///   down and it is 35 tall.
-/// - The next block takes those 5 from the 5 the first left under its
-///   text, and is 30.
-/// - A plain block lends its room too: a marked block after it is 30.
+/// Measured in Chrome 153 with 10 px emphasis marks on 20px Ahem in 30px
+/// lines: the first block is 35 tall, and the next, taking the 5 the first
+/// leaves, is 30. A plain block lends its half leading.
 #[test]
 fn a_block_lends_the_next_the_room_under_its_last_line() {
     let mut fixture = fixture();
@@ -182,7 +174,7 @@ fn a_block_lends_the_next_the_room_under_its_last_line() {
     };
     fixture.lay_out_with(&mut layout, lent, &mut NoExclusions);
     assert_eq!(boxes(&layout), [(0.0, 30.0)]);
-    // A plain block: its half leading under its text.
+    // A plain block lends the half leading under its text.
     fixture.text(&mut layout, &plain, "XX XX");
     fixture.lay_out(&mut layout, 50.0);
     assert_eq!(boxes(&layout), [(0.0, 30.0), (30.0, 30.0)]);
@@ -196,12 +188,9 @@ fn a_block_lends_the_next_the_room_under_its_last_line() {
 /// An annotation under a block's last line reports a negative room below,
 /// as in Chrome.
 ///
-/// The annotation reaches 20 past the line box, which takes it, so the
-/// block is 60 tall. The block reports a room below of −20, for its host to
-/// let into the end padding, as Chrome's "Collapse annotation overflow and
-/// padding" does. Where `text-box-trim` trims the block's end, the
-/// annotation is trimmed with the line and the block lends nothing, as in
-/// Chrome.
+/// The block is 60 tall and reports −20, which the host may overlap with
+/// the end padding, as Chrome's "Collapse annotation overflow and padding"
+/// does. A trimmed end trims the annotation and lends nothing.
 #[test]
 fn a_block_reports_what_its_last_annotation_reaches_past_it() {
     let mut fixture = fixture();
@@ -232,9 +221,10 @@ fn a_block_reports_what_its_last_annotation_reaches_past_it() {
     assert_eq!(layout.room_below(), 0.0);
 }
 
-/// A block in a context with no fonts trims its end by the metrics its
-/// text falls back to, and then lends no room below, as a block with fonts
-/// does. Untrimmed, it lends the half leading under its last line.
+/// A block in a context with no fonts trims its end by its fallback
+/// metrics, and then lends no room below, as a block with fonts does.
+///
+/// Untrimmed, it lends the half leading under its last line.
 #[test]
 fn a_block_with_no_fonts_lends_no_room_below_a_trimmed_end() {
     let mut fixture = fixture();
@@ -259,13 +249,12 @@ fn a_block_with_no_fonts_lends_no_room_below_a_trimmed_end() {
 /// Marked lines take their room from what the line before leaves, as in
 /// Chrome.
 ///
-/// - Four marked lines of 40px text at `line-height: 1.5` come to 250. The
-///   marks reach 10 past the first line box, and each later line takes its
-///   10 from the room the line before left.
-/// - At `line-height: 1` there is no such room, so each line takes 20.
-/// - At 1.25 the first line takes 15 and the rest 10.
-/// - Under `Config::emphasis_room = Uniform` (beyond Chrome), every marked
-///   line grows alike, 10 at 1.25, so the lines stay evenly spaced.
+/// - At `line-height: 1.5`, four lines of 40px text come to 250: only the
+///   first grows, by 10.
+/// - At 1, each line grows by 20; at 1.25, the first by 15 and the rest by
+///   10.
+/// - `Config::emphasis_room = Uniform`, which Chrome lacks, grows every
+///   marked line by 10 at 1.25.
 #[test]
 fn marked_lines_share_the_room_between_them_as_chrome_does() {
     let mut fixture = fixture();
@@ -286,7 +275,7 @@ fn marked_lines_share_the_room_between_them_as_chrome_does() {
     fixture.text(&mut layout, &between, "XX XX XX");
     fixture.lay_out(&mut layout, 120.0);
     assert_eq!(boxes(&layout), [(0.0, 65.0), (65.0, 60.0), (125.0, 60.0)]);
-    // The uniform rule, beyond Chrome.
+    // The uniform rule, which Chrome lacks.
     fixture.cx.set_config(Config {
         emphasis_room: EmphasisRoom::Uniform,
         ..*fixture.cx.config()

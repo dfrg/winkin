@@ -1,19 +1,16 @@
-//! Holds what a layout and a context say they keep on the heap to what the
-//! allocator says they took.
+//! Heap accounting tests: what a layout and a context report against what
+//! the allocator counted.
 //!
-//! A global allocator that keeps, per thread, the bytes live: every
-//! allocation adds its size, every free takes it away. Built into a new
-//! layout in a warm context, a document leaves live exactly what the new
-//! layout keeps, since a warm context takes nothing more, as
-//! `tests/allocations/` holds. So a layout's
-//! [`heap_bytes`](Layout::heap_bytes) must come to that, stage by stage
-//! summed, or some table went uncounted. The documents reach every stage: a
-//! first line restyled in its own variant, boxes with edges, bidi, soft
-//! hyphens, ruby with annotation lines and emphasis marks.
+//! A global allocator tracks the live bytes per thread. A warm context
+//! allocates nothing more (see `tests/allocations/`), so building a
+//! document into a new layout leaves live exactly what that layout keeps.
+//! [`heap_bytes`](Layout::heap_bytes), summed over the stages, must equal
+//! it. The documents reach every stage: a restyled first line, boxes with
+//! edges, bidi, soft hyphens, ruby with annotations and emphasis marks.
 //!
 //! A context's count leaves out what harfrust and fontwich keep inside the
-//! values its caches hold, so it is held under what the allocator says the
-//! context took, not to it.
+//! values its caches hold, so it is checked to be at most what the
+//! allocator counted.
 
 extern crate alloc;
 
@@ -35,8 +32,8 @@ use winkin::{
 struct Counting;
 
 thread_local! {
-    // `const` and a type with no destructor, so reading it never allocates
-    // and never registers anything itself.
+    // `const`, with no destructor, so reading it never allocates or
+    // registers anything.
     static LIVE: Cell<isize> = const { Cell::new(0) };
 }
 
@@ -45,7 +42,7 @@ fn note(bytes: isize) {
     let _ = LIVE.try_with(|live| live.set(live.get() + bytes));
 }
 
-/// A size as the tally keeps it: no allocation is past `isize::MAX`.
+/// Returns `size` as the tally keeps it; no allocation exceeds `isize::MAX`.
 fn signed(size: usize) -> isize {
     isize::try_from(size).unwrap_or(isize::MAX)
 }
@@ -84,7 +81,7 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static GLOBAL: Counting = Counting;
 
-/// The bytes live on this thread.
+/// Returns the bytes live on this thread.
 fn live() -> isize {
     LIVE.with(Cell::get)
 }
@@ -114,8 +111,8 @@ const FAMILIES: [FontFamilyName<'static>; 2] = [
     FontFamilyName::Named(Cow::Borrowed("Test Arabic")),
 ];
 
-/// What a document is: prose, prose whose first line is restyled, ruby, or
-/// prose recorded with its offset map, its first line in capitals.
+/// A kind of document: prose, prose with a restyled first line, ruby, or
+/// prose with an offset map and its first line in capitals.
 #[derive(Copy, Clone, Debug)]
 enum Document {
     Prose,
@@ -126,11 +123,11 @@ enum Document {
 
 /// Builds `paragraphs` paragraphs of `document` into `layout`.
 ///
-/// Prose is Latin with ligatures, kerned pairs and soft hyphens, Hebrew and
-/// Arabic, a box with edges in every paragraph, justified; its first line
-/// restyled, larger and spaced, where asked. Ruby is columns with two
-/// annotations and emphasis marks over a base, in the same prose. Mapped
-/// prose keeps its offset map, and its first line's text in capitals.
+/// Prose is justified Latin with ligatures, kerned pairs and soft hyphens,
+/// Hebrew and Arabic, with a box with edges in every paragraph. A restyled
+/// first line is larger and spaced. Ruby adds columns with two annotations
+/// and emphasis marks to the prose. Mapped prose keeps its offset map and
+/// sets its first line in capitals.
 fn build(layout: &mut Layout, cx: &mut Context, document: Document, paragraphs: u64) {
     let root = ComputedStyle {
         font: FontGroup {
@@ -223,39 +220,37 @@ const DOCUMENTS: [Document; 4] = [
 ];
 const WIDTHS: [f32; 3] = [240.0, 97.5, 600.0];
 
-/// A layout's record, what it takes beside what it keeps on the heap, is
-/// 960 bytes at most on a 64-bit target.
+/// A layout's record, its size apart from its heap, is at most 960 bytes on
+/// a 64-bit target.
 ///
 /// - The stages' first-line variants are boxed, made only where a layout
 ///   has one.
-/// - The tables a plain label, article or sample never fills are boxed too,
-///   one box a type, made only where a layout has any: the content's offset
+/// - The tables a plain label, article or sample never fills are boxed, one
+///   box per type, made only where a layout has any: the content's offset
 ///   map, side text, atomic inlines, floats and absolutely positioned boxes;
-///   the measured text's edge costs, shifts, em boxes, ruby, kept boxes
-///   and letter; the lines' reshaped edges; line layout's justified lines
-///   and static positions; the content's languages and the wanted faces
-///   still downloading. So a small layout, whose record is most of it,
-///   holds their pointers alone.
+///   the measured text's edge costs, shifts, em boxes, ruby, kept boxes and
+///   letter; the lines' reshaped edges; line layout's justified lines and
+///   static positions; the content's languages and the wanted faces. A small
+///   layout holds only their pointers.
 /// - The used fonts are one table, each sharing its instance's record.
-/// - The analysis keeps no table of levels, which its runs hold. The levels
-///   of the bidi controls that split a line's runs take 8, boxed.
+/// - The analysis keeps no table of levels; its runs hold them. The levels
+///   of the bidi controls that split a line's runs take 8 bytes, boxed.
 /// - The content's facts take 120 bytes: the four tables the builder lowers
-///   the styles into, the boxed table of percentage edges, and the block's
-///   own facts. The measure stage's text
-///   metrics take 24, their table's.
-/// - The layout keeps no style table, no family names and no lookup
-///   state. The builder's memo, lookup and stack, the build's feature,
-///   variation and hyphen lists, and the generated texts' fonts live in the
-///   context. The content keeps its languages, boxed, which shaping reads
-///   at break time.
-/// - The shaped text keeps each cluster's advance, 24 bytes, so that new
-///   box sizes are measured without shaping again. Its fits of combined
-///   upright text are boxed.
+///   styles into, the boxed table of percentage edges, and the block's
+///   facts. The measured text metrics take 24, for their table.
+/// - The layout keeps no style table, family names or lookup state. The
+///   builder's memo, lookup and stack, the build's feature, variation and
+///   hyphen lists, and the generated texts' fonts live in the context. The
+///   content keeps its languages, boxed, for shaping at break time.
+/// - The shaped text has a 24-byte table of each cluster's advance, filled
+///   only where new box sizes can change the measure: content with atomic
+///   inlines, floats or percentage edges. Its fits of combined upright text
+///   are boxed.
 /// - The lines' floats, `text-fit` scales, settled shifts and the carries
 ///   of annotations and an initial letter are boxed together, made only
 ///   where a layout has one.
 ///
-/// The whole of a layout is this and its heap.
+/// A layout's whole size is this record plus its heap.
 #[test]
 #[cfg(target_pointer_width = "64")]
 fn a_layout_record_is_960_bytes_at_most() {
@@ -273,9 +268,9 @@ fn a_new_layout_keeps_nothing() {
     assert_eq!(layout.heap_bytes().total(), 0);
 }
 
-/// Built into a new layout in a warm context, and broken at several widths,
-/// each document leaves live exactly what the layout says it keeps: every
-/// table is counted, and nothing is counted twice.
+/// Built into a new layout in a warm context and broken at several widths,
+/// each document leaves live exactly what the layout reports: every table
+/// is counted, and none twice.
 #[test]
 fn a_layout_keeps_what_it_says_it_keeps() {
     for document in DOCUMENTS {
@@ -305,13 +300,13 @@ fn a_layout_keeps_what_it_says_it_keeps() {
         ] {
             assert!(bytes > 0, "{document:?}: {stage} keeps nothing");
         }
-        // And the two layouts of one document keep the same.
+        // The two layouts of one document keep the same.
         assert_eq!(heap, warm.heap_bytes(), "{document:?}");
     }
 }
 
-/// A warm rebuild of the same content, and a relayout at widths broken at
-/// before, keep every stage's capacity where it was, and the context's too.
+/// A warm rebuild of the same content, and a relayout at widths used before,
+/// keep every stage's capacity and the context's.
 #[test]
 fn a_warm_rebuild_keeps_the_same_capacity() {
     for document in DOCUMENTS {
@@ -327,19 +322,19 @@ fn a_warm_rebuild_keeps_the_same_capacity() {
             assert_eq!(layout.heap_bytes(), heap, "{document:?}: broken again");
             assert_eq!(cx.heap_bytes(), context, "{document:?}: the context");
         }
-        // Less content in the same layout keeps the capacity the more took.
+        // Less content in the same layout keeps the larger capacity.
         build(&mut layout, &mut cx, document, 3);
         break_each(&mut layout, &mut cx, &WIDTHS);
         assert_eq!(layout.heap_bytes(), heap, "{document:?}: less content");
     }
 }
 
-/// Nine times the content keeps more in every stage that grows with it, by
-/// about as much: between four and a half and eighteen times, as tables
-/// that grow by doubling land. The stages whose tables are made room for to
-/// their length before they are filled -- the clusters, the glyph words,
-/// the prefix, the runs, an entry an item -- keep nine times within a few
-/// percent, where doubling would have landed them on eight.
+/// Nine times the content keeps between 4.5 and 18 times as much in every
+/// stage that grows with it, as tables that grow by doubling land.
+///
+/// Tables reserved to their length before they are filled (the clusters,
+/// the glyph words, the prefix sums, the runs, one entry per item) keep nine
+/// times within a few percent.
 #[test]
 fn the_heap_grows_with_the_content() {
     let mut cx = Context::new(collection());
@@ -362,9 +357,9 @@ fn the_heap_grows_with_the_content() {
             "{stage}: {less} to {more} bytes"
         );
     }
-    // The measure stage's within ten: its rare tables' box, which the soft
-    // hyphens' line-edge costs make, is the same in both, and those costs,
-    // one a hyphen, grow by doubling.
+    // Measurement within ten percent: its rare tables' box, made for the soft
+    // hyphens' line-edge costs, is the same in both, and the costs, one per
+    // hyphen, grow by doubling.
     for (stage, less, more, within) in [
         ("analysis", small.analysis, large.analysis, 5),
         ("shaped", small.shaped, large.shaped, 5),
@@ -375,15 +370,15 @@ fn the_heap_grows_with_the_content() {
             "{stage}: {less} to {more} bytes, not nine times"
         );
     }
-    // The used fonts and the runs' do not grow with the paragraphs.
+    // The used fonts do not grow with the paragraphs.
     assert!(large.fonts < 8 * small.fonts, "{small:?} {large:?}");
     assert_eq!(small.first_line, 0);
     assert_eq!(large.first_line, 0);
 }
 
-/// The first line's variant is counted on its own, and only where the
-/// first line is set otherwise: it covers the first paragraph, so it keeps
-/// less than the text's own stages of a document of several.
+/// The first-line variant is counted apart, and only where the first line
+/// is restyled. It covers the first paragraph, so it keeps less than the
+/// text's stages for a document of several.
 #[test]
 fn the_first_line_variant_is_counted_apart() {
     let mut cx = Context::new(collection());
@@ -395,14 +390,14 @@ fn the_first_line_variant_is_counted_apart() {
     assert_eq!(plain.first_line, 0);
     assert!(restyled.first_line > 0);
     assert!(restyled.first_line < restyled.shaped + restyled.measured);
-    // Its own stages, the first line aside, keep what the plain one's do.
+    // Apart from the first line, its stages keep what the plain layout's do.
     assert_eq!(restyled.analysis, plain.analysis);
     assert_eq!(restyled.shaped, plain.shaped);
 }
 
-/// A context keeps its caches and every stage's scratch, and no more than
-/// the allocator says it took: what harfrust and fontwich keep inside the
-/// values it holds is theirs, uncounted.
+/// A context reports its caches and every stage's scratch, and no more than
+/// the allocator counted. What harfrust and fontwich keep inside its values
+/// is not counted.
 #[test]
 fn a_context_keeps_no_more_than_it_took() {
     let fonts = collection();

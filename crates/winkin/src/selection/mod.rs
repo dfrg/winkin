@@ -9,28 +9,27 @@
 //! follows logical order. Choose [`WordMotion`] to match platform word stops.
 //! Caret and selection geometry is relative to each line box.
 //!
-//! A position keeps the side it was reached from, in its [`Affinity`]. A
-//! motion forward lands upstream, with the text it passed, and a motion
-//! backward downstream; left and right land on the side they came from. A
-//! click takes the side of the glyph half it hits. At a boundary between
-//! nodes, [`Layout::node_position`] follows the side, so text typed there
-//! goes into the node the caret came from. This is a deliberate choice:
-//! Chrome lands downstream after every motion.
+//! A position keeps the side it was reached from in its [`Affinity`]. Motion
+//! forward lands upstream, with the text it passed; motion backward lands
+//! downstream; left and right land on the side they came from. A click lands
+//! upstream at the logical end of the text it hits and downstream elsewhere.
+//! At a boundary between nodes, [`Layout::node_position`] follows the side,
+//! so typed text goes into the node the caret came from. Chrome instead
+//! lands downstream after every motion.
 //!
-//! An offset drawn at two places has a character stop at each, where Chrome
-//! stops once. At a wrap the two are the end of the line before, upstream,
-//! and the start of the next, downstream. After white space the wrap
-//! removes, that line's end is past the space, and so is the line's end
-//! that [`Granularity::LineBoundary`] reaches; text typed there follows the
-//! space. Where the text changes direction, they are the edges of the text
-//! on each side: upstream the text before, downstream the text after.
+//! An offset drawn at two places has a character stop at each; Chrome stops
+//! once. At a wrap the places are the end of the line before, upstream, and
+//! the start of the next, downstream. After white space the wrap removes,
+//! the line's end, and the end [`Granularity::LineBoundary`] reaches, are
+//! past the space, so typed text follows it. Where the text changes
+//! direction, the places are the edges of the text on each side: upstream
+//! the text before, downstream the text after.
 //!
 //! An inline box edge with margin, border or padding between two pieces of
-//! text on one line draws the two sides apart, each by its own text. A click
+//! text on one line draws its two sides apart, each by its own text. A click
 //! in the room selects the nearer side. Character motion stops once at such
 //! an edge in each direction, and the next step crosses the room and the
-//! following character together. Elsewhere both sides are drawn at one
-//! place.
+//! following character together. Elsewhere both sides draw at one place.
 //!
 //! ```
 //! use winkin::config::PastLines;
@@ -168,9 +167,9 @@ pub enum Affinity {
 pub struct Selection {
     anchor: Position,
     focus: Position,
-    /// The x, from the area's line-left, that line motion aims for.
+    /// The column line motion aims for, from the area's line-left.
     ///
-    /// Set by the last line motion; `None` after any other motion.
+    /// Set by line motion; `None` after any other motion.
     goal: Option<f32>,
 }
 
@@ -194,7 +193,7 @@ impl Selection {
         self.focus
     }
 
-    /// Returns `true` if the selection is a caret.
+    /// Returns `true` if the anchor and focus offsets are equal.
     pub fn is_collapsed(&self) -> bool {
         self.anchor.offset == self.focus.offset
     }
@@ -209,8 +208,8 @@ impl Selection {
 
     /// Moves or extends the selection according to `motion`.
     ///
-    /// Motion specifies direction, granularity and word-stop behavior.
-    /// Word motion costs the distance traversed and retains no state between calls.
+    /// Motion specifies direction, granularity and word-stop behavior. Word
+    /// motion costs the distance traversed and keeps no state between calls.
     ///
     /// Character motion collapses a nonempty selection toward the requested
     /// end. Other motion moves the focus and also the anchor unless extending.
@@ -219,12 +218,12 @@ impl Selection {
         *self = motion::modify(layout, *self, motion);
     }
 
-    /// Returns whether its focus is before its anchor.
+    /// Returns whether the focus is before the anchor.
     fn is_backward(&self) -> bool {
         self.focus.offset < self.anchor.offset
     }
 
-    /// Returns its start in text order.
+    /// Returns the endpoint first in text order.
     fn start(&self) -> Position {
         if self.is_backward() {
             self.focus
@@ -233,7 +232,7 @@ impl Selection {
         }
     }
 
-    /// Returns its end in text order.
+    /// Returns the endpoint last in text order.
     fn end(&self) -> Position {
         if self.is_backward() {
             self.anchor
@@ -465,12 +464,14 @@ pub struct NodePosition {
     pub offset: usize,
 }
 
-/// Returns both places a caret at `position` can be drawn: [`Layout::carets`].
+/// Returns the strong and weak carets at `position`: [`Layout::carets`].
 pub(crate) fn carets(layout: &Layout, position: Position) -> Option<Carets> {
     place::carets(layout, snapped(layout, position), None)
 }
 
-/// Returns `position` snapped to a caret stop, with its cluster: the one search a public call makes.
+/// Returns `position` snapped to a caret stop, with its cluster.
+///
+/// This is the one cluster search a public call makes.
 fn snapped(layout: &Layout, position: Position) -> place::ClusteredPosition {
     place::snap(layout, place::ClusteredPosition::new(layout, position))
 }
@@ -485,7 +486,7 @@ pub(crate) fn paragraph_direction(layout: &Layout, position: Position) -> Direct
     }
 }
 
-/// Returns where `position` is in the text the caller gave a node:
+/// Returns the node and source offset of `position`:
 /// [`Layout::node_position`].
 pub(crate) fn node_position(layout: &Layout, position: Position) -> Option<NodePosition> {
     let position = snapped(layout, position).position;
@@ -498,8 +499,8 @@ pub(crate) fn node_position(layout: &Layout, position: Position) -> Option<NodeP
     })
 }
 
-/// Returns the position at `offset` in the text the caller gave the node
-/// `key`: [`Layout::position`].
+/// Returns the position at source offset `offset` in node `key`:
+/// [`Layout::position`].
 pub(crate) fn position(
     layout: &Layout,
     key: NodeKey,
@@ -509,7 +510,7 @@ pub(crate) fn position(
     let map = layout.content().offset_map()?;
     let at = map.content_offset(key, index_to_u32(offset), affinity.into())?;
     let found = snapped(layout, Position::new(at.get(), affinity));
-    // Where the two sides are in two nodes, the side is the one in `key`.
+    // Where the two sides are in different nodes, takes the side in `key`.
     let side = |affinity: Affinity| {
         let side = map.source_position(TextOffset::new(found.offset()), affinity.into());
         side.is_some_and(|(side, _)| side == key)
@@ -527,7 +528,8 @@ pub(crate) fn position(
 }
 
 impl From<Affinity> for MapSide {
-    /// Returns the offset map side an affinity reads: upstream the first place, downstream the last.
+    /// Returns the offset map side an affinity reads: upstream the first
+    /// place, downstream the last.
     fn from(affinity: Affinity) -> Self {
         match affinity {
             Affinity::Upstream => Self::Before,

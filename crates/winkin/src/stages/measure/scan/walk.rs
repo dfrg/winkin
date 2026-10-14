@@ -1,8 +1,5 @@
-//! The scan's walk over the text, segment by segment.
-//!
-//! It crosses the items at each boundary into the segment after them. It
-//! answers what those items take along the line, what each cluster adds,
-//! and the room of an autospace seam after a cluster.
+//! The scan's walk over the text, segment by segment: the items at each
+//! boundary, what each cluster adds, and autospace seams.
 
 use super::overhang::TextBeside;
 use super::{BoundaryRoom, EdgeAmounts, Scan, ScanPrefix, ScanWalk};
@@ -23,10 +20,7 @@ use crate::unit::{InlineLayoutUnit, TextUnit};
 use crate::work;
 
 impl<'a> ScanWalk<'a> {
-    /// Returns the walk over `scan`'s text from its start.
-    ///
-    /// No boundary is crossed yet, so it holds no segment, and the block's
-    /// text facts are in hand.
+    /// Returns the walk over `scan`'s text from its start, in no segment yet.
     pub(super) fn new(scan: &Scan<'a>) -> Self {
         let content = scan.input.content;
         let mut segments = Segments::from_text(scan.input.analysis, scan.shaped);
@@ -61,42 +55,34 @@ impl<'a> ScanWalk<'a> {
         Some((self.segment?.item, self.item?))
     }
 
-    /// Returns whether the current item is annotation text.
-    ///
-    /// Annotation clusters add nothing to the base's line.
+    /// Returns whether the current item is annotation text, which adds nothing
+    /// to the base's line.
     #[inline]
     pub(super) fn annotation(&self) -> bool {
         self.item
             .is_some_and(|item| item.flags.contains(ItemFlags::ANNOTATION))
     }
 
-    /// Returns whether the current clusters pay only their advances.
-    ///
-    /// They do when they are not annotation text, not spaced, and inside no
-    /// cloned box. The plain fast path may then run over them.
+    /// Returns whether the current clusters pay only their advances: not
+    /// annotation text, not spaced, in no cloned box.
     pub(super) fn is_plain(&self) -> bool {
         !self.annotation() && self.spacing.is_none() && self.cloned.is_empty()
     }
 
-    /// Returns whether the clusters of the script run `run` are combined
-    /// text.
+    /// Returns whether the clusters of `run` are combined text.
     ///
-    /// Combined text is set as one character. It takes no letter- or
-    /// word-spacing, inside or after it. Blink's `LayoutTextCombine` sets its
-    /// own `letter-spacing` to zero, and is an atomic inline in its line,
-    /// which takes none. No autospace seam is beside it either, as none is
-    /// beside an atomic inline.
+    /// Combined text takes no letter- or word-spacing and has no autospace seam
+    /// beside it, as Blink sets `LayoutTextCombine` as an atomic inline with
+    /// zero `letter-spacing`.
     fn combined(scan: &Scan<'a>, run: &ScriptRun) -> bool {
         scan.has_combined && run.orientation == RunOrientation::Combined
     }
 
-    /// Returns the text a ruby column starting at boundary `at` may
-    /// overhang.
+    /// Returns the text a ruby column starting at boundary `at` may overhang:
+    /// the last text passed, with only tags after it.
     ///
-    /// It is the last text passed, with only tags after it. Its width on a
-    /// max-content line runs from its first cluster to `sum`, the running
-    /// sum after the boundary's leading closes. `prefix` holds the scan's
-    /// sums before the boundary.
+    /// Its width runs from its first cluster to `sum`, the running sum after
+    /// the boundary's leading closes. `prefix` holds the sums before `at`.
     pub(super) fn leaf_before(
         &self,
         scan: &Scan<'a>,
@@ -117,11 +103,9 @@ impl<'a> ScanWalk<'a> {
         })
     }
 
-    /// Returns what the cluster `at` of class `class` adds to the base line.
-    ///
-    /// It adds its shaped `advance`, or an atomic inline's margin box for its
-    /// U+FFFC, plus the spacing after it. Annotation text adds nothing, since
-    /// its clusters take no room on the base line.
+    /// Returns what cluster `at` adds to the base line: its `advance`, or an
+    /// atomic inline's margin box, plus the spacing after it. Annotation text
+    /// adds nothing.
     #[inline]
     pub(super) fn step(
         &self,
@@ -140,12 +124,8 @@ impl<'a> ScanWalk<'a> {
         own + self.spacing(scan, class, at)
     }
 
-    /// Returns the spacing after the cluster `at` of class `class`, on
-    /// whichever line its text is set.
-    ///
-    /// [`LetterWordSpacing::after`] finds it, with the glyphs saying whether
-    /// the cluster continues a ligature. It answers for an annotation's text
-    /// on its own line too, though the prefix gives that text none.
+    /// Returns the spacing after cluster `at`, on whichever line its text is
+    /// set. The prefix gives annotation text none, but its own line does.
     #[inline]
     pub(super) fn spacing(
         &self,
@@ -164,13 +144,12 @@ impl<'a> ScanWalk<'a> {
         InlineLayoutUnit::from_text(spacing.after(class, text, continuation, first))
     }
 
-    /// Returns the room an autospace seam after cluster `at` takes, and
-    /// moves `seams` past the cluster.
+    /// Returns the room of an autospace seam after cluster `at`, and moves
+    /// `seams` past the cluster.
     ///
-    /// The cluster after `at` is read one ahead. It is in the same segment,
-    /// or past its end in the segment the walk yields next. In that case the
-    /// items between are checked for one that ends the seam. Each side is
-    /// read at its script run's level.
+    /// Where the next cluster is past the segment's end, it is read from the
+    /// segment the walk yields next, and the items between may end the seam.
+    /// Each side is read at its script run's level.
     pub(super) fn seam_after(&self, scan: &Scan<'a>, seams: &mut Seams, at: ClusterId) -> TextUnit {
         let content = scan.input.content;
         let none = TextUnit::from_raw(0);
@@ -179,9 +158,8 @@ impl<'a> ScanWalk<'a> {
         };
         let after = ClusterId::new(at.get() + 1);
         let text_end = scan.input.analysis.clusters.end_id();
-        // Find the item and script run holding the cluster after, and
-        // whether an item with no text at the boundary ends the seam. Where
-        // the segment goes on past the cluster, there is nothing to look at.
+        // The item and script run of the next cluster, and whether an item at the
+        // boundary ends the seam.
         let mut next = self.seam;
         let mut next_combined = self.combined;
         let mut ended = false;
@@ -225,17 +203,14 @@ impl<'a> ScanWalk<'a> {
         seams.after(content, scan.input.fonts, here, there, ended)
     }
 
-    /// Crosses boundary `at`: takes the items the walk yields there, and the
-    /// segment after them.
+    /// Crosses boundary `at`: the items there, and the segment after them.
     ///
-    /// It pushes each item's extent to `extents` where given; a look-ahead
-    /// passes none. Returns what the items at the boundary take along the
-    /// line, and the edges of the cloned boxes open across a break there.
-    /// Also returns whether it entered a segment starting at `at`.
+    /// Pushes each item's extent to `extents` where given; a look-ahead passes
+    /// none. Returns the room the items take, and whether it entered a segment
+    /// starting at `at`.
     ///
-    /// Most boundaries in prose fall inside a segment and have no item. One
-    /// comparison passes them. Walking items at every boundary costs 7% of
-    /// preparing an article.
+    /// Most boundaries fall inside a segment and pass with one comparison.
+    /// Walking items at every boundary costs 7% of preparing an article.
     #[inline]
     pub(super) fn cross(
         &mut self,
@@ -259,9 +234,8 @@ impl<'a> ScanWalk<'a> {
         self.cross_items(scan, at, extents)
     }
 
-    /// Crosses the items at boundary `at`, where the current segment ends,
-    /// and takes the segment after them, as [`cross`](Self::cross) says.
-    // Out of line, so that the boundaries with no item keep a tight loop.
+    /// Crosses the items at boundary `at`, where the current segment ends.
+    // Out of line, so the boundaries with no item keep a tight loop.
     #[inline(never)]
     fn cross_items(
         &mut self,
@@ -281,14 +255,12 @@ impl<'a> ScanWalk<'a> {
                 continue;
             };
             if let Some(extents) = extents.as_deref_mut() {
-                // The text item before this one is passed, so its extent is
-                // final.
+                // The text item before this one is passed; its extent is final.
                 self.flush(extents);
                 let (extent, _) = self.extent(scan, item, false, None);
                 extents.push(extent);
-                // A box's strut is its opening item's extent. Count the box
-                // open where its strut reaches past the block's, and closed
-                // again where the box ends.
+                // A box's strut is its opening item's extent. Count the box while its
+                // strut reaches past the block's.
                 let past = |extent: Extent| extents.strut.unite(extent) != extents.strut;
                 match item.kind {
                     ItemKind::Open if past(extent) => self.past_strut += 1,
@@ -326,8 +298,7 @@ impl<'a> ScanWalk<'a> {
                 room.floats.widest = room.floats.widest.max(width);
             }
             if scan.has_clones {
-                // The cloned boxes open where a break here falls are across
-                // it.
+                // The cloned boxes open where a break here falls are across it.
                 if !room.split.splits() {
                     across = None;
                 } else if across.is_none() {
@@ -341,9 +312,8 @@ impl<'a> ScanWalk<'a> {
                 self.enter(scan, segment, extents);
                 true
             }
-            // Nothing holds the cluster after: this is the text's end, or a
-            // missing row ended the walk, which is a bug in an earlier
-            // stage.
+            // Nothing holds the next cluster: the text's end, or a missing row,
+            // which is a bug in an earlier stage.
             _ => {
                 self.segment = None;
                 self.item = None;
@@ -359,15 +329,11 @@ impl<'a> ScanWalk<'a> {
         (room, entered)
     }
 
-    /// Takes `segment` from the walk. It starts at the boundary the scan
-    /// crosses.
+    /// Enters `segment`, which starts at the boundary being crossed.
     ///
-    /// It reads the segment's paragraph, and whether the scan looks for
-    /// seams there. Where the segment starts a new item, it enters the item:
-    /// its extent, its text's facts, its spacing and, for an atomic inline,
-    /// the width of its U+FFFC. Where the segment continues the current
-    /// item, because a shaping run or a paragraph ended inside it, it widens
-    /// the item's extent by the segment's font.
+    /// A new item sets the extent, text facts, spacing and atomic width. A
+    /// segment continuing the current item, after a shaping run or paragraph
+    /// ends inside it, widens the item's extent by its font.
     fn enter(&mut self, scan: &Scan<'a>, segment: Segment, extents: Option<&mut ItemExtents>) {
         self.ahead = self.segments.next();
         self.until = segment.end;
@@ -440,8 +406,7 @@ impl<'a> ScanWalk<'a> {
             }
         }
         if scan.has_ruby {
-            // The item holding the cluster at the boundary counts as passed
-            // only once the scan is past that cluster.
+            // The item counts as passed only once the scan is past its first cluster.
             let leaf = if item.kind == ItemKind::Text && !item.flags.contains(ItemFlags::ANNOTATION)
             {
                 OverhangNeighbour::Text(id)
@@ -453,10 +418,8 @@ impl<'a> ScanWalk<'a> {
     }
 
     /// Enters the next segment where it continues the current item and
-    /// paragraph, and returns whether it did.
-    ///
-    /// That happens where a shaping run ends inside the item. No item sits
-    /// at the boundary between, so the plain fast path goes on past it.
+    /// paragraph, and returns whether it did. No item sits between, so the
+    /// plain fast path goes on.
     pub(super) fn continues(&mut self, scan: &Scan<'a>, extents: &mut ItemExtents) -> bool {
         let next = match (&self.segment, &self.ahead) {
             (Some(segment), Some(Step::Segment(next)))
@@ -470,18 +433,15 @@ impl<'a> ScanWalk<'a> {
         true
     }
 
-    /// Pushes the pending extent of the text item the scan has left to
-    /// `extents`.
+    /// Pushes the pending extent of the text item just left to `extents`.
     pub(super) fn flush(&mut self, extents: &mut ItemExtents) {
         if let Some((extent, _)) = self.pending.take() {
             extents.push(extent);
         }
     }
 
-    /// Updates the edges of the cloned boxes open, past `item`.
-    ///
-    /// A box that clones adds both its edges where it opens, and removes
-    /// them where it closes.
+    /// Updates the cloned edges past `item`: a cloning box adds both edges
+    /// where it opens, and removes them where it closes.
     fn clone_edges(&mut self, scan: &Scan<'a>, item: &Item) {
         let nodes = &scan.input.content.nodes;
         if item.flags.contains(ItemFlags::ANNOTATION)
@@ -515,8 +475,7 @@ impl<'a> ScanWalk<'a> {
         }
     }
 
-    /// Returns the atomic inline whose item is `id`, moving the cursor to
-    /// it.
+    /// Returns the atomic inline of item `id`, moving the cursor to it.
     fn atomic_row(&mut self, scan: &Scan<'a>, id: ItemId) -> Option<Atomic> {
         let atomics = scan.input.content.atomics();
         while atomics
@@ -531,11 +490,8 @@ impl<'a> ScanWalk<'a> {
             .copied()
     }
 
-    /// Returns the width along the line of the float whose anchor is `id`:
-    /// its margin box. Moves the cursor to it.
-    ///
-    /// Returns zero for an anchor with no float, which is a bug in an
-    /// earlier stage.
+    /// Returns the margin-box width of the float anchored at item `id`, moving
+    /// the cursor to it. Zero where no float is found, a bug in an earlier stage.
     fn float_width(&mut self, scan: &Scan<'a>, id: ItemId) -> InlineLayoutUnit {
         let floats = scan.input.content.floats();
         while floats.get(self.floats).is_some_and(|float| float.item < id) {
@@ -549,19 +505,17 @@ impl<'a> ScanWalk<'a> {
             })
     }
 
-    /// Returns how far `item` reaches either side of its baseline, and
-    /// whether the fonts of its clusters widen it.
+    /// Returns how far `item` reaches either side of its baseline, and whether
+    /// its fonts widen it.
     ///
-    /// `holds` says the item holds clusters. `atomic` is its row where it is
-    /// an atomic inline. Fonts widen text under `line-height: normal`, as
-    /// Blink accumulates used fonts; the scan widens it segment by segment.
+    /// `holds` says the item holds clusters; `atomic` is its atomic row.
     ///
-    /// - Text takes its text's strut, from the text metrics.
-    /// - A `<br>` and a box's opening edge take their text's strut: every box
-    ///   has a strut, as in Blink's standards mode.
+    /// - Text takes its strut, widened by its fonts under `line-height:
+    ///   normal`, as Blink accumulates used fonts.
+    /// - A `<br>` and a box's opening edge take their text's strut, as in
+    ///   Blink's standards mode.
     /// - An atomic inline takes its margin box against its baseline.
-    /// - What holds none of the line's text, and every closing edge, takes
-    ///   nothing.
+    /// - Anything else takes nothing.
     fn extent(
         &self,
         scan: &Scan<'a>,
@@ -573,8 +527,7 @@ impl<'a> ScanWalk<'a> {
         if item.flags.contains(ItemFlags::ANNOTATION) {
             return none;
         }
-        // An initial letter stands on no line: what it holds takes no room
-        // in the line it opens (CSS Inline 3, "initial-letter").
+        // An initial letter stands on no line (CSS Inline 3, "initial-letter").
         if let Some(letter) = &scan.letter
             && scan.input.content.nodes.contains(letter.node, item.node)
         {
@@ -601,10 +554,8 @@ impl<'a> ScanWalk<'a> {
 }
 
 impl<'a> Scan<'a> {
-    /// Returns the `normal` leaded extent of the used font `font`.
-    ///
-    /// It widens the extent of text under `line-height: normal`. It is
-    /// [`Extent::NONE`] where `font` names no used font.
+    /// Returns the `normal` leaded extent of used font `font`, or
+    /// [`Extent::NONE`] where there is no such font.
     fn normal(&self, font: UsedFontId) -> Extent {
         self.input
             .fonts
@@ -616,17 +567,16 @@ impl<'a> Scan<'a> {
 
 /// What the scan last passed that a ruby column may overhang.
 ///
-/// Chrome's `CanApplyStartOverhang` and `CommitPendingEndOverhang` look for
-/// text past the tags of boxes and ruby containers, which hold positions,
-/// not widths. The scan tracks it only where the content has ruby.
+/// Tags of boxes and ruby containers are skipped, as in Chrome's
+/// `CanApplyStartOverhang` and `CommitPendingEndOverhang`. Tracked only with
+/// ruby.
 #[derive(Copy, Clone, Debug, Default)]
 pub(super) enum OverhangNeighbour {
     /// Nothing yet.
     #[default]
     None,
-    /// Text of the content's own, not an annotation's: its item.
+    /// Base text, by item.
     Text(ItemId),
-    /// Anything else that holds a place: an atomic inline, a float, a forced
-    /// break, an annotation, a ruby column.
+    /// An atomic inline, a float, a forced break, an annotation or a column.
     Other,
 }

@@ -2,8 +2,9 @@
 //! - the steps and seeks a relayout takes a line, the same for a column 1,
 //!   2, 4 and 8 times as long;
 //! - that bound with annotations longer and shorter than their base, under
-//!   both `RubyBreakWithin` settings, and with ruby nested in the base;
-//! - annotations of many boxes, one a word.
+//!   both `RubyBreakWithin` settings, and with ruby nested in the base.
+//!
+//! Each annotation word is in a box of its own.
 //!
 //! Steps and seeks are counted only in debug builds.
 
@@ -14,19 +15,21 @@ use crate::work;
 /// The words a column's base and annotations repeat.
 const WORDS: &str = "alpha bravo charlie delta echo foxtrot golf hotel india juliet ";
 
-/// What a long column's annotation holds against its base.
+/// The length of a long column's annotation against its base.
 #[derive(Copy, Clone, Debug)]
 enum Note {
     /// Three times the base's words, at half its size: wider than the base.
     Longer,
-    /// A quarter of the base's words, at half its size: narrower.
+    /// A quarter of the base's words, at half its size: narrower than the
+    /// base.
     Shorter,
 }
 
-/// Builds one paragraph holding a ruby column of `40 * scale` words.
+/// Builds one paragraph holding a ruby column whose base is `40 * scale`
+/// words.
 ///
 /// Where `nested`, each word of the base is a column of its own, with a
-/// short annotation, inside the long column's base.
+/// one-letter annotation, inside the long column's base.
 fn long_column(fixture: &mut Fixture, layout: &mut Layout, scale: usize, note: Note, nested: bool) {
     let root = sized(&LATIN, 20.0);
     let small = sized(&LATIN, 10.0);
@@ -54,8 +57,8 @@ fn long_column(fixture: &mut Fixture, layout: &mut Layout, scale: usize, note: N
             b.text(NodeKey(3), &base);
         }
         b.open_annotation(NodeKey(4), &small, None);
-        // Each word in a box of its own, so that the annotation's items
-        // are many.
+        // Each word is in a box of its own, so the annotation has many
+        // items.
         for (key, word) in (1_000_000..).zip(annotation.split_inclusive(' ')) {
             b.open_box(NodeKey(key), &small, None);
             b.text(NodeKey(key + 500_000), word);
@@ -67,7 +70,8 @@ fn long_column(fixture: &mut Fixture, layout: &mut Layout, scale: usize, note: N
     });
 }
 
-/// The steps and seeks a relayout of a long column takes, and its lines.
+/// Returns the steps and the seeks a relayout of a long column takes, each
+/// per line, at 200 px.
 fn relayout_work(
     fixture: &mut Fixture,
     scale: usize,
@@ -122,7 +126,8 @@ fn splitting_a_column_under_a_shorter_annotation_costs_linear_steps() {
     assert_linear(Note::Shorter, false, RubyBreakWithin::BaseOpportunities);
 }
 
-/// A column breaks only where every level left has an opportunity too.
+/// Under `AllLevels`, a column breaks only where every nonempty annotation
+/// has an opportunity too.
 #[test]
 fn splitting_a_column_on_all_levels_costs_linear_steps() {
     assert_linear(Note::Longer, false, RubyBreakWithin::AllLevels);
@@ -130,7 +135,7 @@ fn splitting_a_column_on_all_levels_costs_linear_steps() {
 }
 
 /// Each word of the base is a column of its own, which the long column's
-/// cuts step over and its lines pass.
+/// breaks step over.
 #[test]
 fn splitting_a_column_with_nested_ruby_costs_linear_steps() {
     for within in [

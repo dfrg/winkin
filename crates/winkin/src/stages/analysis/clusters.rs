@@ -1,4 +1,4 @@
-//! Stored clusters from text analysis.
+//! The cluster table: each cluster's end, class and break decisions.
 
 use core::ops::Range;
 
@@ -9,12 +9,12 @@ use crate::work;
 
 use super::{ClusterId, ParagraphFlags};
 
-/// Where a cluster ends, whether it continues the one before, and whether it
-/// holds a variation selector: 4 bytes.
+/// A cluster's end byte, and whether it continues the cluster before and
+/// holds a variation selector, in 4 bytes.
 ///
-/// The end byte shifted up two, with the continuation in bit 1 and the
-/// selector in bit 0. The text holds under 2^30 bytes, so the end fits. A
-/// cluster's start is the previous one's end.
+/// Bits 2 and up hold the end, bit 1 the continuation and bit 0 the
+/// selector. A text is under 2^30 bytes, so the end fits. A cluster starts
+/// where the previous one ends.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub(crate) struct ClusterEnd(u32);
 
@@ -30,38 +30,35 @@ impl ClusterEnd {
         Self(shifted | continuation | selector)
     }
 
-    /// The byte the cluster ends at.
+    /// Returns the byte the cluster ends at.
     pub(crate) fn end(self) -> TextOffset {
-        // A `u32` shifted down two is always a position the text can hold.
+        // A `u32` shifted down two always fits a `TextOffset`.
         TextOffset::new(usize::try_from(self.0 >> 2).unwrap_or(TextOffset::MAX))
     }
 
-    /// Whether the cluster is the later part of a grapheme that an item
-    /// boundary divided: [`Clusters::is_continuation`] asks it.
+    /// Returns whether the cluster is the later part of a grapheme split by
+    /// an item boundary.
     pub(super) fn is_continuation(self) -> bool {
         self.0 & Self::CONTINUATION != 0
     }
 
-    /// Whether a character of the cluster after its first is a variation
+    /// Returns whether a character after the cluster's first is a variation
     /// selector, VS1 to VS256.
     ///
-    /// Font selection reads a presentation from it, or asks a font for the
-    /// pair. A run of text in one font cannot continue across one. The bit
-    /// is gathered with the cluster, so a cluster without one costs
-    /// selection nothing.
+    /// Font selection reads a presentation from it or asks a font for the
+    /// pair, and a run in one font does not continue across it. Clusters
+    /// without one cost selection nothing.
     pub(crate) fn is_variation_selector(self) -> bool {
         self.0 & Self::SELECTOR != 0
     }
 }
 
-/// What a cluster is, from its first character and the item it is in.
+/// A cluster's kind, from its first character and its item.
 ///
-/// The classes the later stages branch on: font selection on the emoji
-/// classes, shaping on the classes it does not shape, measuring and breaking
-/// on the spaces, and every stage on separators and objects.
-///
-/// Numbered as a cluster's attributes hold it, in their low four bits
-/// ([`ClusterAttrs::CLASSES`]).
+/// Font selection branches on the emoji classes, shaping on the unshaped
+/// classes, measurement and breaking on the spaces, and every stage on
+/// separators and objects. The discriminant is the low four bits of
+/// [`ClusterAttrs`].
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 #[repr(u8)]
 pub(crate) enum ClusterClass {
@@ -82,42 +79,42 @@ pub(crate) enum ClusterClass {
     /// U+205F, U+3000.
     OtherSpace = 6,
     /// A paragraph separator that draws nothing: LF, CRLF, U+2028, U+2029,
-    /// and the `\n` of a `<br>`. A must-break is this class or
-    /// [`DrawnSeparator`](Self::DrawnSeparator), and nothing else
-    /// ([`is_forced_break`](Self::is_forced_break)).
+    /// and the `\n` of a `<br>`.
+    ///
+    /// Only this class and [`DrawnSeparator`](Self::DrawnSeparator) force a
+    /// break ([`is_forced_break`](Self::is_forced_break)).
     Separator = 7,
     /// A paragraph separator drawn as a glyph: VT, FF or NEL.
     ///
     /// These are the control characters (Cc) among UAX #14's mandatory
     /// breaks. CSS Text 3 renders them visibly and has them force a line
-    /// break. Each is shaped in the font that covers it, as any symbol is. It
-    /// takes room on its line rather than hanging, since it is drawn.
+    /// break. Each is shaped in a font that covers it, like any symbol, and
+    /// takes room on its line instead of hanging.
     DrawnSeparator = 13,
-    /// An atomic inline's U+FFFC. A U+FFFC the caller wrote in its text is
-    /// text.
+    /// An atomic inline's U+FFFC. A U+FFFC in the input text is
+    /// [`Text`](Self::Text).
     Object = 8,
     /// U+00AD SOFT HYPHEN.
     SoftHyphen = 9,
-    /// U+200B the caller wrote. It is shaped with the text around it, which
-    /// hides it, as Chrome keeps it in its text item.
+    /// A U+200B in the input text. It is shaped with the text around it,
+    /// which hides it, as Chrome keeps it in its text item.
     ZeroWidthSpace = 10,
     /// Another default-ignorable character standing alone: a bidi control,
-    /// a word joiner, a lone joiner or variation selector. Shaped with the
-    /// text around it, as [`ZeroWidthSpace`](Self::ZeroWidthSpace) is.
+    /// a word joiner, a lone joiner or variation selector. It is shaped with
+    /// the text around it, like [`ZeroWidthSpace`](Self::ZeroWidthSpace).
     Control = 11,
-    /// U+200B the builder generated: a `<wbr>`'s, or the wrap opportunity
-    /// collapsing kept.
+    /// A U+200B the builder generated: a `<wbr>`, or a wrap opportunity that
+    /// white-space collapsing keeps.
     ///
-    /// Each is an item of its own flagged
-    /// [`GENERATED`](crate::stages::content::ItemFlags::GENERATED). It is a break
-    /// opportunity and nothing else. It ends any shaping run it sits in, as
-    /// Blink's control item for it does. Its map unit is `Generated`.
+    /// Each is its own item, flagged
+    /// [`GENERATED`](crate::stages::content::ItemFlags::GENERATED), and is
+    /// only a break opportunity. It ends any shaping run it sits in, as
+    /// Blink's control item does. Its map unit is `Generated`.
     BreakOpportunity = 12,
 }
 
 impl ClusterClass {
-    /// The flag a cluster of the class raises in its paragraph's: a tab or a
-    /// soft hyphen, and an internal shaping stop; none for the rest.
+    /// Returns the flags a cluster of this class sets on its paragraph.
     pub(super) fn paragraph_flags(self) -> ParagraphFlags {
         match self {
             Self::Tab => ParagraphFlags::HAS_TABS.union(ParagraphFlags::HAS_SHAPING_STOPS),
@@ -127,28 +124,26 @@ impl ClusterClass {
         }
     }
 
-    /// Whether a cluster of the class forces a line break after it and ends
-    /// its paragraph: a separator, drawn or not.
+    /// Returns whether the class forces a line break after it and ends its
+    /// paragraph: a separator, drawn or not.
     #[inline]
     pub(crate) fn is_forced_break(self) -> bool {
         matches!(self, Self::Separator | Self::DrawnSeparator)
     }
 
-    /// Whether a cluster of the class is shaped.
+    /// Returns whether the class is shaped.
     ///
-    /// Four classes have no glyphs: a tab, whose advance is the line's; a
-    /// separator that draws nothing; an atomic inline's U+FFFC, whose advance
-    /// is its box's; and a U+200B the builder generated. Each ends any
-    /// shaping run it sits in, as Blink ends a shaping run at its control
-    /// items, which these are. A separator that is a control character is
-    /// drawn, as CSS has it, and shaped as the last cluster of its paragraph.
+    /// Four classes have no glyphs: a tab, sized by the line; a separator
+    /// that draws nothing; an atomic inline's U+FFFC, sized by its box; and
+    /// a generated U+200B. Each ends any shaping run it sits in, as Blink's
+    /// control items do. A drawn separator is shaped as its paragraph's last
+    /// cluster.
     ///
-    /// A default-ignorable the caller wrote -- a soft hyphen, a U+200B, a
-    /// word joiner, a bidi control -- is shaped with the text around it. Blink
-    /// keeps it in its text item too, and the shaper hides it. So a ligature
-    /// or a kern across one survives on an unbroken line (measured in Chrome
-    /// 153: `AV` in Arial kerns across each). A line that breaks there
-    /// reshapes its end where the font shaped across it. It draws a soft
+    /// A default-ignorable in the input text (a soft hyphen, U+200B, a word
+    /// joiner, a bidi control) is shaped with the text around it, which hides
+    /// it, as Blink keeps it in its text item. A ligature or kern across one
+    /// survives on an unbroken line (Chrome 153: `AV` in Arial kerns across
+    /// each). A line that breaks there reshapes its end, and draws a soft
     /// hyphen's hyphen from generated text.
     pub(crate) fn is_shaped(self) -> bool {
         !matches!(
@@ -157,21 +152,20 @@ impl ClusterClass {
         )
     }
 
-    /// Whether a cluster of the class is a space or a tab.
+    /// Returns whether the class is a space or a tab.
     ///
-    /// A line justified at its spaces puts room after these. Chrome does not
-    /// reshape a line's end at a break that follows one.
+    /// Justification adds room after these.
     #[inline]
     pub(crate) fn is_space_or_tab(self) -> bool {
         matches!(self, Self::Space | Self::Tab)
     }
 
-    /// Whether a cluster of the class is a space that breaks.
+    /// Returns whether the class is a breaking space: a space, a tab or
+    /// another space separator, never a no-break space.
     ///
-    /// These are a space, a tab or another space separator, never a no-break
-    /// space. Such a cluster hangs at a line's end unless `break-spaces`
-    /// makes it content, and `break-spaces` breaks after it. Bidi sets the
-    /// white space a line ends with at its paragraph's level.
+    /// Such a cluster hangs at a line's end unless `break-spaces` makes it
+    /// content and breaks after it. Bidi sets trailing white space at the
+    /// paragraph's level.
     #[inline]
     pub(crate) fn is_breaking_space(self) -> bool {
         matches!(self, Self::Space | Self::Tab | Self::OtherSpace)
@@ -188,16 +182,16 @@ impl ClusterClass {
 /// | 6 | [`HANGS`](Self::HANGS) |
 /// | 7 | [`SHAPE_BREAK_AFTER`](Self::SHAPE_BREAK_AFTER) |
 ///
-/// It holds decisions, never measurements: nothing a `::first-line` style can
-/// change is here.
+/// It holds decisions, never measurements, so no `::first-line` style changes
+/// it.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct ClusterAttrs(u8);
 
 impl ClusterAttrs {
     const CLASS: u8 = 0x0F;
 
-    /// Each class by its number, the four bits the attributes hold it in,
-    /// and text where a number names none.
+    /// Each class by its number, with [`ClusterClass::Text`] for unused
+    /// numbers.
     const CLASSES: [ClusterClass; 16] = {
         use ClusterClass::*;
         [
@@ -222,18 +216,17 @@ impl ClusterAttrs {
 
     /// A soft wrap opportunity at the cluster's end, after every filter.
     ///
-    /// It is never set on a paragraph's last cluster, whose end is the
-    /// paragraph's. Nor before a separator, which ends the line there anyway,
-    /// nor before a continuation, inside a grapheme. Ruby parts share these
-    /// facts; whole-column readers skip their interiors.
+    /// Never set on a paragraph's last cluster, before a separator (which
+    /// ends the line anyway), or before a continuation. Ruby parts carry it
+    /// too; readers of whole columns skip their interiors.
     pub(crate) const BREAK_AFTER: u8 = 1 << 4;
-    /// An `overflow-wrap` break at the cluster's end, for when nothing else
+    /// An `overflow-wrap` break at the cluster's end, used when nothing else
     /// fits. The same three exceptions hold.
     pub(crate) const EMERGENCY_AFTER: u8 = 1 << 5;
     /// The cluster hangs when it ends a line.
     pub(crate) const HANGS: u8 = 1 << 6;
-    /// A shaping break at the cluster's end, for a reason neither the runs
-    /// nor the styles nor the classes record.
+    /// A shaping break at the cluster's end that the runs, styles and
+    /// classes do not already imply.
     pub(crate) const SHAPE_BREAK_AFTER: u8 = 1 << 7;
 
     pub(super) fn new(class: ClusterClass) -> Self {
@@ -244,7 +237,7 @@ impl ClusterAttrs {
         if on { Self(self.0 | bit) } else { self }
     }
 
-    /// The cluster's class.
+    /// Returns the cluster's class.
     pub(crate) fn class(self) -> ClusterClass {
         Self::CLASSES
             .get(usize::from(self.0 & Self::CLASS))
@@ -252,25 +245,24 @@ impl ClusterAttrs {
             .unwrap_or(ClusterClass::Text)
     }
 
-    /// A copy with these facts masked for a narrower query context.
+    /// Returns these attributes with `bits` cleared.
     pub(crate) fn without(self, bits: u8) -> Self {
         Self(self.0 & !bits)
     }
 
-    /// Whether every bit of `bits` is set.
+    /// Returns whether every bit of `bits` is set.
     pub(crate) fn has(self, bits: u8) -> bool {
         self.0 & bits == bits
     }
 }
 
-/// The clusters: 5 bytes and a bit each.
+/// The clusters, at 5 bytes and a bit each.
 pub(crate) struct Clusters {
     pub(super) ends: Table<ClusterId, ClusterEnd>,
     pub(super) attrs: Table<ClusterId, ClusterAttrs>,
-    /// One bit per cluster, set where the cluster has
-    /// [`BREAK_AFTER`](ClusterAttrs::BREAK_AFTER). It is an index over
-    /// `attrs`, written with it and never on its own. The breaker scans it
-    /// back to the last opportunity 64 clusters a word.
+    /// One bit per cluster, set where it has
+    /// [`BREAK_AFTER`](ClusterAttrs::BREAK_AFTER). It indexes `attrs` and is
+    /// written with it. The breaker scans it 64 clusters per word.
     pub(super) stops: BitTable<ClusterId>,
 }
 
@@ -289,8 +281,7 @@ impl Clusters {
         self.stops.clear();
     }
 
-    /// Makes room for `count` clusters, the most the text can make: every
-    /// cluster holds a character at least.
+    /// Makes room for `count` clusters.
     pub(super) fn reserve(&mut self, count: usize) {
         self.ends.reserve(count);
         self.attrs.reserve(count);
@@ -299,8 +290,8 @@ impl Clusters {
 
     /// Appends a cluster ending at `end`.
     ///
-    /// `None` only past what a `ClusterId` names, which a text capped at
-    /// [`TextOffset::MAX`] bytes cannot reach.
+    /// Returns `None` past the last `ClusterId`, which a text of at most
+    /// [`TextOffset::MAX`] bytes never reaches.
     #[inline]
     pub(super) fn push(
         &mut self,
@@ -318,40 +309,40 @@ impl Clusters {
         Some(id)
     }
 
-    /// How many clusters there are.
+    /// Returns the number of clusters.
     pub(crate) fn len(&self) -> usize {
         self.ends.len()
     }
 
-    /// Whether there are none.
+    /// Returns whether there are no clusters.
     pub(crate) fn is_empty(&self) -> bool {
         self.ends.is_empty()
     }
 
-    /// The position at the text's end: the id one past the last cluster,
-    /// where every range of clusters reaching the end stops.
+    /// Returns the boundary at the text's end, one past the last cluster.
     pub(crate) fn end_id(&self) -> ClusterId {
         self.ends.next_id()
     }
 
-    /// Every cluster's id, in text order, for tests to walk.
+    /// Returns every cluster's id, in text order.
     #[cfg(test)]
     pub(super) fn ids(&self) -> impl DoubleEndedIterator<Item = ClusterId> + ExactSizeIterator {
         self.ends.ids()
     }
 
-    /// Where `cluster` ends and what else its end says, or `None` past the
-    /// last: for a walk that reads each cluster's end once, and takes the
-    /// next one's start from it.
+    /// Returns `cluster`'s end, or `None` past the last.
+    ///
+    /// A forward walk reads each end once and takes the next cluster's start
+    /// from it.
     pub(crate) fn end(&self, cluster: ClusterId) -> Option<ClusterEnd> {
         self.ends.get(cluster).copied()
     }
 
-    /// Whether `cluster` is the later part of a grapheme that an item
-    /// boundary divided; not past the last.
+    /// Returns whether `cluster` is the later part of a grapheme split by an
+    /// item boundary; false past the last.
     ///
-    /// Caret motion treats it and the cluster before as one stop. Font
-    /// selection tries the earlier part's font first. A line never breaks
+    /// Caret motion treats it and the cluster before as one stop, font
+    /// selection tries the earlier part's font first, and no line breaks
     /// before it.
     #[inline]
     pub(crate) fn is_continuation(&self, cluster: ClusterId) -> bool {
@@ -360,13 +351,12 @@ impl Clusters {
             .is_some_and(|end| end.is_continuation())
     }
 
-    /// Whether `cluster` goes on with the grapheme the cluster before it
-    /// started, `text` being the layout's.
+    /// Returns whether `cluster` continues the grapheme of the cluster
+    /// before, in the layout's `text`.
     ///
-    /// It does where it continues a grapheme an item boundary divided
-    /// ([`is_continuation`](Self::is_continuation)), and where it is the
-    /// marks after a space, which a line may break before. Carets and word
-    /// bounds keep to the grapheme in both.
+    /// True for a [continuation](Self::is_continuation) and for marks after a
+    /// space, which a line may break before. Carets and word bounds treat
+    /// both as one grapheme.
     pub(crate) fn continues_grapheme(&self, text: &str, cluster: ClusterId) -> bool {
         if self.is_continuation(cluster) {
             return true;
@@ -387,7 +377,7 @@ impl Clusters {
                 })
     }
 
-    /// Where `cluster` starts: where the one before it ends.
+    /// Returns where `cluster` starts, the end of the cluster before.
     pub(crate) fn start(&self, cluster: ClusterId) -> TextOffset {
         match cluster.get().checked_sub(1) {
             Some(before) => self
@@ -398,28 +388,29 @@ impl Clusters {
         }
     }
 
-    /// The cluster holding byte `at` of the text, by halving: the first that
-    /// ends past it, which is the one starting at it where `at` is a
-    /// boundary; the position at the text's end for `at` there or past it.
+    /// Returns the cluster holding byte `pos`, by binary search.
+    ///
+    /// At a boundary that is the cluster starting there. At or past the
+    /// text's end it is [`end_id`](Self::end_id).
     pub(crate) fn at(&self, pos: TextOffset) -> ClusterId {
         work::seek();
         ClusterId::new(self.ends.as_slice().partition_point(|end| end.end() <= pos))
     }
 
-    /// Returns the cluster holding byte `at`, as [`at`](Self::at) finds it,
-    /// walked to from `near` a cluster at a time.
+    /// Returns the cluster holding byte `at`, as [`at`](Self::at) does, by
+    /// stepping from `near`.
     ///
-    /// It costs a step per cluster between `near` and the byte, and no
-    /// search, so `near` is a cluster the caller holds close by.
+    /// Costs one step per cluster between and no search, so `near` should
+    /// be close.
     pub(crate) fn walk_to(&self, near: ClusterId, at: TextOffset) -> ClusterId {
         let end = self.end_id();
         let mut cluster = near.min(end);
-        // Back to the cluster starting at or before `at`.
+        // Steps back to the cluster starting at or before `at`.
         while cluster.get() > 0 && self.start(cluster) > at {
             work::step();
             cluster = ClusterId::new(cluster.get() - 1);
         }
-        // On to the first ending past it.
+        // Steps on to the first cluster ending past it.
         while cluster < end && self.range(cluster).end <= at {
             work::step();
             cluster = ClusterId::new(cluster.get() + 1);
@@ -427,56 +418,55 @@ impl Clusters {
         cluster
     }
 
-    /// The text `cluster` covers, or an empty range past the last.
+    /// Returns the bytes `cluster` covers, or an empty range past the last.
     pub(crate) fn range(&self, cluster: ClusterId) -> Range<TextOffset> {
         let start = self.start(cluster);
         start..self.end(cluster).map_or(start, ClusterEnd::end)
     }
 
-    /// `cluster`'s text in `source`, the content's or the first line's as
-    /// a variant reads it: nothing past the text.
+    /// Returns `cluster`'s text in `source`, the content's or the first
+    /// line's; empty past the text.
     #[inline]
     pub(crate) fn text<'t>(&self, source: VariantText<'t>, cluster: ClusterId) -> &'t str {
         source.slice(self.range(cluster))
     }
 
-    /// The first character of `cluster`'s text in `source`, what a question
-    /// of the character a cluster starts with reads (a mark trimmed or
-    /// hanging, kana beside ruby, an emphasis mark skipped), or `None` past
-    /// the text.
+    /// Returns the first character of `cluster`'s text in `source`, or
+    /// `None` past the text.
     #[inline]
     pub(crate) fn first_char(&self, source: VariantText<'_>, cluster: ClusterId) -> Option<char> {
         self.text(source, cluster).chars().next()
     }
 
-    /// The last character of `cluster`'s text in `source`, or `None` past
-    /// the text.
+    /// Returns the last character of `cluster`'s text in `source`, or `None`
+    /// past the text.
     #[inline]
     pub(crate) fn last_char(&self, source: VariantText<'_>, cluster: ClusterId) -> Option<char> {
         self.text(source, cluster).chars().next_back()
     }
 
-    /// Whether `cluster` is a tab: the one cluster whose width is not a fact
-    /// of the text. The breaker, line layout and the intrinsic sizes size it
-    /// where it lands.
+    /// Returns whether `cluster` is a tab.
+    ///
+    /// A tab's width depends on where it lands, so the breaker, line layout
+    /// and the intrinsic sizes compute it there.
     #[inline]
     pub(crate) fn is_tab(&self, cluster: ClusterId) -> bool {
         self.class(cluster) == Some(ClusterClass::Tab)
     }
 
-    /// `cluster`'s class and decisions, or `None` past the last.
+    /// Returns `cluster`'s attributes, or `None` past the last.
     pub(crate) fn attrs(&self, cluster: ClusterId) -> Option<ClusterAttrs> {
         self.attrs.get(cluster).copied()
     }
 
-    /// `cluster`'s class, or `None` past the last.
+    /// Returns `cluster`'s class, or `None` past the last.
     #[inline]
     pub(crate) fn class(&self, cluster: ClusterId) -> Option<ClusterClass> {
         self.attrs(cluster).map(ClusterAttrs::class)
     }
 
-    /// Returns the end of `clusters` less the forced breaks and break
-    /// opportunities ending them, which draw nothing.
+    /// Returns the end of `clusters` without the trailing undrawn separators
+    /// and generated break opportunities.
     pub(crate) fn drawn_end(&self, clusters: Range<ClusterId>) -> ClusterId {
         let mut end = clusters.end;
         while end > clusters.start {
@@ -489,7 +479,7 @@ impl Clusters {
         end
     }
 
-    /// Whether boundary `boundary` follows a forced break.
+    /// Returns whether `boundary` follows a forced break.
     pub(crate) fn follows_forced_break(&self, boundary: ClusterId) -> bool {
         boundary.get() > 0
             && self
@@ -497,32 +487,32 @@ impl Clusters {
                 .is_some_and(ClusterClass::is_forced_break)
     }
 
-    // The questions of one cluster below are inline, as `is_tab` is: the
-    // breaker asks them of every line, and out of line they cost the
-    // relayout of a short paragraph a few percent (parley's japanese-20, 4%).
+    // The per-cluster queries below are inline, like `is_tab`: the breaker
+    // calls them on every line, and out of line they slow a short
+    // paragraph's relayout by a few percent (parley's japanese-20, 4%).
 
-    /// Whether `cluster` hangs when it ends a line
-    /// ([`HANGS`](ClusterAttrs::HANGS)); not past the last.
+    /// Returns whether `cluster` hangs when it ends a line
+    /// ([`HANGS`](ClusterAttrs::HANGS)); false past the last.
     #[inline]
     pub(crate) fn hangs(&self, cluster: ClusterId) -> bool {
         self.attrs(cluster)
             .is_some_and(|attrs| attrs.has(ClusterAttrs::HANGS))
     }
 
-    /// Whether `cluster` is white space that breaks
-    /// ([`ClusterClass::is_breaking_space`]): a space, a tab or an other
-    /// space separator, and not the separator or a generated opportunity
-    /// that hang with it.
+    /// Returns whether `cluster` is a breaking space
+    /// ([`ClusterClass::is_breaking_space`]). Separators and generated
+    /// opportunities, which hang with spaces, are not.
     #[inline]
     pub(crate) fn is_breaking_space(&self, cluster: ClusterId) -> bool {
         self.class(cluster)
             .is_some_and(ClusterClass::is_breaking_space)
     }
 
-    /// Whether the cluster before the boundary `end` is a space or a tab.
+    /// Returns whether the cluster before boundary `end` is a space or a
+    /// tab; false at the text's start.
     ///
-    /// Chrome does not reshape a line's end at a break after one. It is false
-    /// at the text's start.
+    /// Chrome reshapes a line's end at a break after one only in a few
+    /// cases, which line layout tests apart.
     #[inline]
     pub(crate) fn space_or_tab_before(&self, end: ClusterId) -> bool {
         end.get()
@@ -531,9 +521,9 @@ impl Clusters {
             .is_some_and(ClusterClass::is_space_or_tab)
     }
 
-    /// Whether every one of `clusters` is white space that breaks, or the
-    /// separator: spaces that end the line before them rather than make one
-    /// of their own.
+    /// Returns whether every one of `clusters` is a breaking space or an
+    /// undrawn separator, which end the line before them instead of making
+    /// one of their own.
     pub(crate) fn only_spaces(&self, clusters: Range<ClusterId>) -> bool {
         clusters.ids().all(|cluster| {
             self.class(cluster)
@@ -541,9 +531,8 @@ impl Clusters {
         })
     }
 
-    /// How many of `clusters` are spaces or tabs
-    /// ([`ClusterClass::is_space_or_tab`]), in one walk over their attrs;
-    /// none where the range is not the text's.
+    /// Returns how many of `clusters` are spaces or tabs
+    /// ([`ClusterClass::is_space_or_tab`]); 0 for a range outside the text.
     pub(crate) fn spaces_or_tabs(&self, clusters: Range<ClusterId>) -> usize {
         self.attrs
             .get_slice(clusters)
@@ -553,26 +542,26 @@ impl Clusters {
             .count()
     }
 
-    /// The boundary after the last of `clusters` with a soft wrap
-    /// opportunity after it ([`BREAK_AFTER`](ClusterAttrs::BREAK_AFTER)),
-    /// where a line may end: found 64 clusters at a time.
+    /// Returns the boundary after the last of `clusters` with a soft wrap
+    /// opportunity ([`BREAK_AFTER`](ClusterAttrs::BREAK_AFTER)), scanning 64
+    /// clusters at a time.
     pub(crate) fn last_opportunity(&self, clusters: Range<ClusterId>) -> Option<ClusterId> {
         self.stops
             .last(clusters)
             .map(|cluster| ClusterId::new(cluster.get() + 1))
     }
 
-    /// The boundary after the first of `clusters` with a soft wrap
-    /// opportunity after it, found 64 clusters at a time.
+    /// Returns the boundary after the first of `clusters` with a soft wrap
+    /// opportunity, scanning 64 clusters at a time.
     pub(crate) fn first_opportunity(&self, clusters: Range<ClusterId>) -> Option<ClusterId> {
         self.stops
             .first(clusters)
             .map(|cluster| ClusterId::new(cluster.get() + 1))
     }
 
-    /// The boundary after the last of `clusters` with an `overflow-wrap`
-    /// break after it ([`EMERGENCY_AFTER`](ClusterAttrs::EMERGENCY_AFTER)),
-    /// walking back from their end.
+    /// Returns the boundary after the last of `clusters` with an
+    /// `overflow-wrap` break
+    /// ([`EMERGENCY_AFTER`](ClusterAttrs::EMERGENCY_AFTER)).
     pub(crate) fn last_emergency(&self, clusters: Range<ClusterId>) -> Option<ClusterId> {
         let mut at = clusters.end;
         while at > clusters.start {
@@ -587,8 +576,8 @@ impl Clusters {
         None
     }
 
-    /// The boundary after the first of `clusters` with an `overflow-wrap`
-    /// break after it, walking on from their start.
+    /// Returns the boundary after the first of `clusters` with an
+    /// `overflow-wrap` break.
     pub(crate) fn first_emergency(&self, clusters: Range<ClusterId>) -> Option<ClusterId> {
         clusters
             .ids()
@@ -599,8 +588,7 @@ impl Clusters {
             .map(|cluster| ClusterId::new(cluster.get() + 1))
     }
 
-    /// The bytes the opportunities' index takes, which the tests count
-    /// against the design's budget.
+    /// Returns the bytes the opportunity bits take, excluding spare capacity.
     #[cfg(test)]
     pub(crate) fn stop_bytes(&self) -> usize {
         self.stops.bytes()

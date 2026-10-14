@@ -1,9 +1,9 @@
 //! Seek tests, in `crate::work` seeks counted in debug builds. They pin:
 //! - the searches each public call makes on prose, bidi text and ruby, none
-//!   of them more for a longer text;
-//! - at most the searches each call makes now.
+//!   growing with the text;
+//! - a ceiling on each call's searches.
 //!
-//! The layouts keep no offset map, whose searches the caller opts into.
+//! The layouts keep no offset map, whose searches are opt-in.
 
 use super::*;
 use crate::work;
@@ -121,7 +121,8 @@ fn ruby(copies: u64) -> (Layout, usize) {
     (layout, base + 2)
 }
 
-/// Each public selection call makes as many searches in a text four times as long.
+/// Each public selection call makes as many searches in a text four times as
+/// long.
 ///
 /// A call seeks where it enters and walks from there, so its searches do not
 /// grow with the text. Seeks are counted in debug builds only.
@@ -141,7 +142,7 @@ fn a_selection_call_searches_as_often_however_long_the_text() {
     }
 }
 
-/// Each public selection call makes at most the searches it makes now.
+/// Each public selection call stays within its count of searches.
 ///
 /// - A caret seeks its cluster and its line, then a text run's font.
 /// - A hit test finds the cluster in the run it hits.

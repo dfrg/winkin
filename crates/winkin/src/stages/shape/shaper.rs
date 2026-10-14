@@ -1,42 +1,39 @@
-//! The one shaping function, and the only code that calls harfrust.
+//! The shaping call for a range of clusters, and how harfrust's output
+//! becomes cluster words.
 //!
 //! The shaping pass calls [`shape_range`] once per shaping run, with a
 //! [`GlyphSink`] over the shaped text's tables. The breaker calls it per
-//! unsafe line edge, with a sink over the line's own. Because there is one
-//! function, a reshaped edge differs from the paragraph's shaping only at
-//! the break itself. The key, the context either side, the glyph-to-cluster
-//! mapping and the encoding are all the same.
+//! unsafe line edge, with a sink over the line's tables. Both share the key,
+//! the context either side, the glyph-to-cluster mapping and the encoding,
+//! so a reshaped edge differs from the paragraph's shaping only at the break.
 //!
 //! **Glyphs to clusters.** harfrust returns glyphs in visual order, each
-//! labelled with the byte its cluster starts at. Walked in the text's order
-//! (backwards for right-to-left), the labels never decrease. So one forward
-//! cursor finds each glyph's cluster, and each cluster's glyphs are one
-//! contiguous slice of the output, in visual order. A cluster no glyph lands
-//! on lies inside something the shaper merged, such as a ligature. If it
-//! follows glyphs, it is a continuation. Where a merge ends inside a later
-//! cluster, the clusters up to that one's end are merged whole, as Chrome's
-//! grapheme cluster level merges them. Letter-spacing then goes once after
-//! them, as in Chrome's `ShapeResult::ApplySpacing`.
+//! labelled with the byte its cluster starts at. In the text's order
+//! (backwards for right-to-left), the labels never decrease, so one forward
+//! cursor finds each glyph's cluster. Each cluster's glyphs are one
+//! contiguous slice of the output, in visual order.
+//! - A cluster no glyph is labelled in lies inside something the shaper
+//!   merged, such as a ligature. After a drawn cluster it is a continuation.
+//! - Where a merge ends inside a later cluster, the clusters up to that
+//!   one's end merge whole, as HarfBuzz's grapheme cluster level, which
+//!   Chrome shapes with, merges them. Letter-spacing goes once after them,
+//!   as in Chrome's `ShapeResult::ApplySpacing`.
 //!
-//! **Unsafe bits.** harfrust flags whether a break at a glyph's cluster
-//! start changes the shaping. A cluster takes the flag of the glyph labelled
-//! at its start. A cluster with no such glyph lies inside a merged one, and
-//! is unsafe. The first cluster shaped is a start, so it keeps no bit.
-//! Instead, harfrust's flag for it is returned, for the breaker's reshape
+//! **Unsafe bits.** A cluster takes harfrust's unsafe-to-break flag from the
+//! glyph labelled at its start. A cluster with no such glyph is unsafe. The
+//! range's first cluster is shaped as a start, so it keeps no harfrust bit;
+//! [`shape_range`] returns that flag instead, for the breaker's reshape
 //! window.
 //!
-//! **Punctuation trim** (`text-spacing-trim`). For each call, the rule in
-//! `trim` finds the marks that give their blanks back, from the characters
-//! either side. The font's `halt` applies over each mark's own bytes, as in
-//! Chrome's `HanKerning`. Where a mark is kerned against what precedes it,
-//! breaking before it is unsafe, as Chrome marks it, so a line starting
-//! there is reshaped as a start.
-//!
-//! This holds for a shaping run's first cluster too, which is kerned against
-//! the run before. Its word says a break is unsafe, not that a reshape
-//! cannot start there, since the runs are shaped apart. Where the font has
-//! no `halt` and the config asks for it, the mark's advance is halved
-//! instead, which Chrome does not do.
+//! **Punctuation trim** (`text-spacing-trim`). `trim` finds the marks that
+//! give their blanks back, from the characters either side. The font's
+//! `halt` applies over each mark's bytes, as in Chrome's `HanKerning`.
+//! - Breaking before a mark kerned against what precedes it is unsafe, as
+//!   Chrome marks it, so a line starting there is reshaped as a start.
+//! - A run's first cluster kerned against the run before keeps that unsafe
+//!   bit too. Runs are shaped apart, so a reshape may still start there.
+//! - Where the font has no `halt` and the config asks for it, a full-width
+//!   mark's advance is halved instead, which Chrome does not do.
 
 use super::sink::{AdvanceStore, Flags, GlyphSink, Halved, along, sidecar_glyph};
 #[cfg(test)]
@@ -60,21 +57,21 @@ use crate::style::{FirstLineVariant, TextSpacingTrim};
 use crate::unit::{InlineLayoutUnit, TextUnit};
 use crate::work;
 
-/// The text shaping reads, and its clusters.
+/// The text a shaping call reads, and its clusters.
 ///
 /// The text is the content's, or the first line's where `::first-line`
-/// transforms some of it. Either way, clusters are found by their content
-/// offsets.
+/// transforms some of it. Clusters are found by their content offsets.
 ///
 /// Each character is fed labelled with its byte in the shaped text, so a
 /// cluster starts at its content offset mapped into that text
-/// ([`start`](Self::start)). A first line's `ß` in capitals is two
-/// characters of one cluster. A cluster inside a character the first line's
-/// text holds whole starts where that character ends. It draws nothing, like
-/// a ligature's continuation.
+/// ([`start`](Self::start)).
+/// - A first line's `ß` in capitals is two characters of one cluster.
+/// - A cluster inside a character the first line's text holds whole starts
+///   where that character ends, and draws nothing, like a ligature's
+///   continuation.
 ///
-/// Clusters are read through a cursor. A walk that shapes its runs in order
-/// with one source steps through the first line's map and searches nothing.
+/// Offsets are mapped through a cursor. A walk that shapes its runs in order
+/// with one source steps through the first line's map without searching.
 pub(crate) struct ShapingSource<'a> {
     text: VariantText<'a>,
     cursor: TextCursor<'a>,
@@ -82,8 +79,8 @@ pub(crate) struct ShapingSource<'a> {
 }
 
 impl<'a> ShapingSource<'a> {
-    /// Returns the text `variant` reads of `content`, with `analysis`'s
-    /// clusters.
+    /// Returns the source for the `variant` text of `content`, with the
+    /// clusters of `analysis`.
     pub(crate) fn new(
         content: &'a Content,
         analysis: &'a Analysis,
@@ -97,26 +94,27 @@ impl<'a> ShapingSource<'a> {
         }
     }
 
-    /// The text shaped, read by content offsets.
+    /// Returns the text shaped, read by content offsets.
     pub(super) fn text(&self) -> VariantText<'a> {
         self.text
     }
 
-    /// Where `cluster` starts in the text shaped; the end, past the last.
+    /// Returns where `cluster` starts in the text shaped, moving the cursor
+    /// there. The end id gives the end of the last cluster.
     fn start(&self, cluster: ClusterId) -> TextOffset {
         self.cursor.offset(self.clusters.start(cluster))
     }
 
-    /// Where `cluster` starts in the text shaped, stepped to from the
-    /// cursor's place without moving it.
+    /// Returns where `cluster` starts in the text shaped, without moving the
+    /// cursor.
     ///
-    /// A range's end is found this way, so the cursor stays at its start
-    /// for the walk over its clusters.
+    /// A range's end is found this way, so the cursor stays at the range's
+    /// start for the walk over its clusters.
     fn start_ahead(&self, cluster: ClusterId) -> TextOffset {
         self.cursor.clone().offset(self.clusters.start(cluster))
     }
 
-    /// Where the content's `range` is in the text shaped, found without
+    /// Returns where the content's `range` is in the text shaped, without
     /// moving the cursor.
     fn range(&self, range: Range<TextOffset>) -> Range<TextOffset> {
         self.text.offset(range.start)..self.text.offset(range.end)
@@ -127,32 +125,31 @@ impl<'a> ShapingSource<'a> {
 /// differently.
 ///
 /// It is resolved from a [`ShapedRun`] and the prepared data, and borrows
-/// from them. The font is the layout's own used-font record, which holds the
-/// whole font. The context's caches are keyed by that font and its
-/// coordinates. So a key names nothing of the context's, and the breaker
-/// reshapes with what the layout holds, whatever the context has dropped
-/// since.
+/// from them. The font is the layout's used-font record, which holds the
+/// whole font, and the context's caches are keyed by that font and its
+/// coordinates. A key names nothing of the context's, so the breaker
+/// reshapes with what the layout holds, whatever the context has dropped.
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct ShapingKey<'a> {
-    /// The record of the run's used font's instance, or `None` where there
-    /// is no font to set in, and nothing is drawn.
+    /// The instance of the run's used font, or `None` where there is no font
+    /// and nothing is drawn.
     font: Option<&'a UsedInstance>,
-    /// The size the glyphs are set at: the used size, or a synthesized
-    /// form's glyph size.
+    /// The size the glyphs are set at, 16.16: the used size, or a
+    /// synthesized form's glyph size.
     size: TextUnit,
     /// The point size the shaper is told, in CSS pixels, which only a `trak`
     /// table reads.
     ///
     /// It is the style's computed `font-size`, as Blink hands HarfBuzz
-    /// `FontDescription::SpecifiedSize`. That is before `font-size-adjust`,
-    /// a face's `size-adjust` and flooring to a hundredth. Synthesized small
-    /// capitals and positions use the element's own size. Where the style
-    /// gives none, it is the glyph size.
+    /// `FontDescription::SpecifiedSize`: before `font-size-adjust`, a face's
+    /// `size-adjust` and flooring to a hundredth. Synthesized small capitals
+    /// and positions use the element's size. Where the computed size is
+    /// zero, it is the glyph size.
     point_size: f32,
     /// How the text is fed: as written, or in another case, for synthesized
     /// small capitals and unicase.
     case: CaseMap,
-    /// The language the run's fonts were chosen in is Turkish or
+    /// Whether the language the run's fonts were chosen in is Turkish or
     /// Azerbaijani, whose `i` and `ı` case as their own capitals, as ICU
     /// maps them for Blink's `CaseMap`.
     turkic: bool,
@@ -165,14 +162,14 @@ pub(crate) struct ShapingKey<'a> {
     /// The run's `text-spacing-trim`. A run ends where it changes, since
     /// Blink's `FontDescription` holds it.
     trim: TextSpacingTrim,
-    /// A mark in a font with no `halt` is trimmed by halving its advance,
-    /// as the build's config says (`Config::punctuation_trim`).
+    /// Whether a mark in a font with no `halt` is trimmed by halving its
+    /// advance, as the build's `Config::punctuation_trim` says.
     halving: bool,
     /// What the font's vertical metrics fall back to, from its line
-    /// metrics. An upright run reads them with this (see `vertical`).
+    /// metrics. Only an upright run reads it (see `vertical`).
     vertical: VerticalFallback,
-    /// The narrower form combined text is fitted with, if any. The text is
-    /// shaped with that form's feature.
+    /// The narrower form combined text is shaped in, with that form's
+    /// feature, or `None` for its own widths.
     narrow: Option<CombineWidth>,
 }
 
@@ -190,8 +187,8 @@ impl<'a> ShapingKey<'a> {
     ///   from its shaping facts (`ShapedRun::shaping`), shared by every text
     ///   item in the run.
     ///
-    /// `halving` says whether the build halves the advance of punctuation in
-    /// a font with no `halt`, as [`ShapedFlags`](super::ShapedFlags) records.
+    /// `halving` is whether the build halves the advance of punctuation in a
+    /// font with no `halt`, as [`ShapedFlags`](super::ShapedFlags) records.
     pub(crate) fn new(
         run: &ShapedRun,
         content: &Content,
@@ -215,11 +212,11 @@ impl<'a> ShapingKey<'a> {
     }
 
     /// Returns the key a generated text is shaped with, in the used font
-    /// `font`, with the text facts `text`, right to left where `rtl`, standing
-    /// as `orientation` says.
+    /// `font`, with the text facts `text`, right to left where `rtl`, in
+    /// `orientation`.
     ///
     /// It takes the font's size and synthesis, and the request's computed
-    /// size and language. This matches how Blink's `HyphenResult::Shape` and
+    /// size and language, as Blink's `HyphenResult::Shape` and
     /// `LineTruncator::SetupEllipsis` shape with the style's font. A hyphen
     /// or an ellipsis is Common text, and nothing in it is trimmed.
     pub(crate) fn from_generated(
@@ -246,9 +243,10 @@ impl<'a> ShapingKey<'a> {
     /// properties `font_group` and `language` decide.
     ///
     /// It reads left to right across the line, in the unknown script, with
-    /// nothing trimmed. The caller then sets its run's own direction, script
-    /// and trim.
-    /// - Font and size are the used font's.
+    /// nothing trimmed. [`new`](Self::new) and
+    /// [`from_generated`](Self::from_generated) then set the direction,
+    /// script and trim.
+    /// - Font and glyph size are the used font's.
     /// - Point size is the font group's computed size, as Blink's
     ///   `SpecifiedSize`, sanitized when taken. Where that is zero, it is the
     ///   glyph size, as Blink's `HarfBuzzFace::GetScaledFont` falls back to
@@ -316,12 +314,12 @@ impl<'a> ShapingKey<'a> {
         }
     }
 
-    /// The run's `text-spacing-trim`.
+    /// Returns the run's `text-spacing-trim`.
     pub(super) fn trim(&self) -> TextSpacingTrim {
         self.trim
     }
 
-    /// The direction the shaper sets the run in.
+    /// Returns the direction the shaper sets the run in.
     ///
     /// - Upright glyphs in a vertical line go down, or up where they read
     ///   right to left, as Blink reverses `HB_DIRECTION_TTB` for
@@ -342,12 +340,12 @@ impl<'a> ShapingKey<'a> {
         }
     }
 
-    /// Whether the run is combined text.
+    /// Returns whether the run is combined text.
     pub(super) fn is_combined(&self) -> bool {
         self.orientation == RunOrientation::Combined
     }
 
-    /// Whether the run is shaped down the line.
+    /// Returns whether the run is shaped down the line.
     fn is_vertical(&self) -> bool {
         self.orientation == RunOrientation::Upright
     }
@@ -355,8 +353,9 @@ impl<'a> ShapingKey<'a> {
 
 /// The fonts the characters either side of a shaped range are shaped in.
 ///
-/// `None` on a side where the character is in the range's own font, where
-/// there is none, or where the caller does not trim.
+/// Each side is `None` where the range does not meet another run there, or
+/// where it is shaped without its neighbours' fonts, as a combined unit is.
+/// A neighbour in the range's own font is classed in that font.
 #[derive(Copy, Clone, Debug, Default)]
 pub(crate) struct NeighbourFonts<'a> {
     before: Option<&'a UsedInstance>,
@@ -387,29 +386,31 @@ impl<'a> NeighbourFonts<'a> {
 /// Shapes the clusters `range` of `source` with `key` into `out`, with
 /// `paragraph` around them for context.
 ///
-/// It writes a word and an advance for each cluster, in cluster order, and
-/// the glyphs of each expanded one. It returns whether harfrust says
-/// breaking before the range's start changes the shaping. The words leave
-/// this out, since a shaped range starts safe. If true, the shaped glyphs
-/// must not be joined there to the glyphs before them.
+/// Writes a word and an advance for each cluster, in cluster order, and the
+/// glyphs of each expanded one. Returns whether harfrust says breaking before
+/// the range's start changes the shaping. The words leave this out, since a
+/// shaped range starts safe. If true, the shaped glyphs must not be joined
+/// there to the glyphs before them.
 ///
 /// The range must lie in one shaping run, so that `key` is how it shapes,
 /// and in `paragraph`. Where the run has no font, or its font cannot be
 /// read, its clusters are written with no glyphs. `neighbours` names the
 /// fonts the characters either side are shaped in, for `text-spacing-trim`.
+/// `edges` says which ends start or end a line and where a bidi control cuts
+/// the context off.
 ///
-/// harfrust's data is looked up in `cx` by the key's font, and built where
-/// `cx` lacks it. So the result does not depend on what `cx` has kept; a
-/// warm cache only saves the building.
+/// Plans and trim facts are looked up in `cx` by the key's font and built
+/// on a miss, as is the pass's prepared font. The result never depends on
+/// what `cx` has kept; a warm cache only saves the building.
 ///
 /// The breaker calls this for a line edge at an unsafe break `e`:
 /// - the line's end is `[the nearest earlier safe cluster, e)`;
-/// - the next line's start is `[e, the next safe cluster)`.
+/// - the next line's start is `[e, the next safe cluster)`, within the run.
 ///
-/// Each goes into the line's own tables. Where the returned start is unsafe,
-/// the breaker widens the window and shapes again. The context either side
-/// is the paragraph's, as Chrome gives HarfBuzz the whole text around the
-/// range, so a word broken across lines keeps its joining forms.
+/// Each goes into the line's own tables. Where the returned start of a
+/// line's end is unsafe, the breaker widens it and shapes again. The context
+/// either side is the paragraph's, as Chrome gives HarfBuzz the whole text
+/// around the range, so a word broken across lines keeps its joining forms.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn shape_range<'f, I: Id, S: AdvanceStore>(
     cx: &mut ShapeSession<'_, 'f>,
@@ -448,8 +449,8 @@ pub(crate) fn shape_range<'f, I: Id, S: AdvanceStore>(
     };
     let settings = key.settings();
     let direction = settings.direction;
-    // Find the marks that give their blanks back into the context's
-    // scratch, which is taken for the call and given back.
+    // The marks found go in the context's scratch, taken for the call and
+    // given back.
     let mut found = cx.take_trim_marks();
     let mut halving = None;
     // Combined text is set as one character: nothing in it is trimmed, and
@@ -461,9 +462,8 @@ pub(crate) fn shape_range<'f, I: Id, S: AdvanceStore>(
         && !has_exclusive_feature(&font.features)
     {
         let horizontal = !matches!(direction, Direction::TopToBottom | Direction::BottomToTop);
-        // Down the line as across it, with `vhal` and the glyphs' heights
-        // where the run is upright, as Blink's `HanKerning` trims
-        // `!is_horizontal`.
+        // An upright run trims down the line, with `vhal` and the glyphs'
+        // heights, as Blink's `HanKerning` trims where `!is_horizontal`.
         let trim_font = cx.trim_font(font, key.language, horizontal);
         if trim_font.has_halt() || key.halving {
             // A neighbour in another font is classed in that font, read in
@@ -521,7 +521,7 @@ pub(crate) fn shape_range<'f, I: Id, S: AdvanceStore>(
 ///
 /// Each glyph carries its advance and offsets. A generated text is shaped
 /// once, however many lines draw it. Returns the glyphs' exact total advance
-/// along the line.
+/// along the line, in 48.16 [`InlineLayoutUnit`]s.
 ///
 /// The text is shaped alone, with no context either side, as Blink's
 /// `HarfBuzzShaper` shapes a `HyphenResult` and an ellipsis. Where the key
@@ -539,8 +539,8 @@ pub(crate) fn shape_generated<'f>(
     if text.is_empty() {
         return InlineLayoutUnit::ZERO;
     }
-    // Across the line, or down it where it stands upright, as its key has
-    // it. Offsets are kept in the line's terms, as a run's are.
+    // Down the line where the key stands upright, else across it. Offsets
+    // are kept in the line's terms, as a run's are.
     let vertical = key.is_vertical();
     let call = CallText {
         chars: text,
@@ -581,8 +581,7 @@ pub(crate) fn shape_generated<'f>(
 /// A cursor over the clusters of a range that finds the cluster each glyph's
 /// label falls in.
 ///
-/// It only moves forward, which labels that never decrease in the text's
-/// order allow.
+/// It only moves forward: labels never decrease in the text's order.
 struct ClusterCursor<'a> {
     source: &'a ShapingSource<'a>,
     at: ClusterId,
@@ -606,7 +605,7 @@ impl<'a> ClusterCursor<'a> {
         cursor
     }
 
-    /// Where the cluster the cursor is at starts.
+    /// Returns where the cluster the cursor is at starts.
     fn start(&self) -> TextOffset {
         self.start
     }
@@ -616,11 +615,11 @@ impl<'a> ClusterCursor<'a> {
         (next < self.end).then(|| self.source.start(next))
     }
 
-    /// Whether a glyph labelled `label` belongs to the current cluster, that
-    /// is, is not past it.
+    /// Returns whether a glyph labelled `label` is not past the current
+    /// cluster.
     ///
     /// A label before the cluster, which ordered output never has, stays
-    /// with it rather than being lost.
+    /// with it.
     fn holds(&self, label: TextOffset) -> bool {
         self.next.is_none_or(|next| label < next)
     }
@@ -628,8 +627,8 @@ impl<'a> ClusterCursor<'a> {
     /// Moves forward to the cluster a glyph labelled `label` is in, and
     /// returns it.
     fn locate(&mut self, label: TextOffset) -> ClusterId {
-        // Past the current cluster, so there is one after it, which starts
-        // at `next`.
+        // `label` is past the current cluster, so the next one exists and
+        // starts at `next`.
         while let Some(next) = self.next.filter(|&next| label >= next) {
             self.at = ClusterId::new(self.at.get() + 1);
             self.start = next;
@@ -639,8 +638,8 @@ impl<'a> ClusterCursor<'a> {
     }
 }
 
-/// Whether breaking before a cluster starting at `start`, with `glyphs`, is
-/// unsafe.
+/// Returns whether breaking before a cluster starting at `start`, drawn by
+/// `glyphs`, is unsafe.
 ///
 /// The glyph labelled at `start` decides. Where there is none, the cluster
 /// starts inside a merged glyph, and breaking is unsafe.
@@ -652,8 +651,8 @@ fn is_unsafe_start(glyphs: &[GlyphInfo], start: TextOffset) -> bool {
         .is_none_or(GlyphInfo::unsafe_to_break)
 }
 
-/// Whether `features` turns on one that changes glyph widths, which a mark's
-/// `halt` would fight.
+/// Returns whether `features` turns on a feature that changes glyph widths,
+/// which a mark's `halt` would fight.
 ///
 /// Blink's `HanKerning` leaves the text alone under any of them
 /// (`IsExclusiveFeature`).
@@ -671,9 +670,10 @@ fn has_exclusive_feature(features: &[parlance::FontFeature]) -> bool {
 
 /// The marks of a call, as [`sink_output`] reads them.
 ///
-/// `unsafe_before` lists where breaking is unsafe because a pair meets.
-/// `halving`, where marks are halved, lists them with the least advance a
-/// mark needs to be halved.
+/// - `unsafe_before` lists the bytes before which breaking is unsafe
+///   because a pair meets.
+/// - `halving`, where marks are halved, lists them with the least advance a
+///   mark needs to be halved; `None` where no mark is halved.
 struct CallMarks<'a> {
     unsafe_before: &'a [u32],
     halving: Option<(&'a [TrimMark], i32)>,
@@ -682,10 +682,9 @@ struct CallMarks<'a> {
 /// Writes harfrust's output for `range` into `out`, one cluster at a time,
 /// and returns harfrust's unsafe flag for the range's start.
 ///
-/// `marks` adds unsafe bits and halving. Most text has no kerned or halved
-/// mark and comes back in the text's order along a horizontal line. That
-/// text takes the plain path, [`sink_clusters`] with `MARKED` unset, which
-/// skips the per-cluster mark checks.
+/// `marks` adds unsafe bits and halving. Left-to-right text with no kerned
+/// or halved mark takes the plain path, [`sink_clusters`] with `MARKED`
+/// unset, which skips the per-cluster mark checks. Most text is such text.
 fn sink_output<I: Id, S: AdvanceStore>(
     output: &Buffer,
     source: &ShapingSource<'_>,
@@ -714,16 +713,16 @@ fn sink_output<I: Id, S: AdvanceStore>(
 /// `direction`, into `out` as [`sink_output`] says.
 ///
 /// Each cluster's glyphs are one slice of the output. The walk goes in the
-/// text's order, and one cursor finds each cluster, its start found once.
-/// A [`ClusterWriter`] writes each cluster found, and the empty ones before
-/// it.
+/// text's order, with one cursor finding each cluster. A [`ClusterWriter`]
+/// writes each cluster found, and the empty ones before it.
 ///
 /// One body gives two paths:
-/// - `MARKED` reads glyphs backwards for right-to-left text, down the line
-///   for vertical text, and checks every cluster against `marks`.
-/// - The plain path is for horizontal glyphs in the text's order with empty
-///   `marks`. It skips those checks, and writes a one-glyph cluster compact
-///   where it can without further checks.
+/// - `MARKED` reads glyphs backwards for right-to-left and bottom-to-top
+///   text, advances down the line for vertical text, and checks every
+///   cluster against `marks`.
+/// - The plain path is for left-to-right glyphs with empty `marks`. It skips
+///   those checks, first writes the leading one-glyph clusters in bulk, and
+///   writes any one-glyph cluster compact.
 fn sink_clusters<const MARKED: bool, I: Id, S: AdvanceStore>(
     infos: &[GlyphInfo],
     positions: &[GlyphPosition],
@@ -736,7 +735,7 @@ fn sink_clusters<const MARKED: bool, I: Id, S: AdvanceStore>(
     let count = infos.len();
     let backward = MARKED && matches!(direction, Direction::RightToLeft | Direction::BottomToTop);
     let vertical = MARKED && matches!(direction, Direction::TopToBottom | Direction::BottomToTop);
-    // The glyph `k`th in the text's order.
+    // The label of the `k`th glyph in the text's order.
     let label = |k: usize| {
         let at = if backward { count - 1 - k } else { k };
         TextOffset::from_u32(infos.get(at).map_or(0, |info| info.cluster))
@@ -755,12 +754,12 @@ fn sink_clusters<const MARKED: bool, I: Id, S: AdvanceStore>(
         while e < count && cursor.holds(label(e)) {
             e += 1;
         }
-        // Where the next glyph is labelled inside a later cluster, the
-        // shaper merged characters across the clusters between, such as a
-        // Bengali ya-phala joined to the syllable before it. The clusters
-        // up to the end of the one holding that label are then one, as
-        // HarfBuzz's grapheme cluster level, which Chrome shapes with,
-        // makes them. The later ones are continuations.
+        // A next glyph labelled inside a later cluster means the shaper
+        // merged characters across the clusters between, such as a Bengali
+        // ya-phala joined to the syllable before it. The clusters up to the
+        // end of the one holding that label become one, as HarfBuzz's
+        // grapheme cluster level, which Chrome shapes with, makes them. The
+        // later ones are continuations.
         while e < count {
             let at = label(e);
             cursor.locate(at);
@@ -771,8 +770,7 @@ fn sink_clusters<const MARKED: bool, I: Id, S: AdvanceStore>(
                 e += 1;
             }
         }
-        // Where the cluster's glyphs lie in the output, which is visual
-        // order.
+        // The cluster's glyphs in the output, which is in visual order.
         let (lo, hi) = if backward {
             (count - e, count - k)
         } else {
@@ -787,24 +785,25 @@ fn sink_clusters<const MARKED: bool, I: Id, S: AdvanceStore>(
     writer.first
 }
 
-/// What [`sink_clusters`] carries from one cluster it writes to the next.
+/// The state [`sink_clusters`] carries from one cluster it writes to the
+/// next.
 ///
-/// It writes each cluster in the text's order, and reads the call's marks
-/// once each as it passes them.
+/// It writes clusters in the text's order and reads each of the call's marks
+/// once as it passes them.
 struct ClusterWriter<'a, const MARKED: bool> {
     source: &'a ShapingSource<'a>,
     /// The next cluster to write.
     next: ClusterId,
     /// The range's first cluster, which keeps no unsafe bit of its own.
     range_start: ClusterId,
-    /// Whether a cluster of the range has had glyphs: an empty one after is
-    /// a continuation.
+    /// Whether a cluster of the range has had glyphs, which makes an empty
+    /// one after it a continuation.
     drawn: bool,
     /// Whether harfrust says breaking before the range's start is unsafe.
     first: bool,
-    /// The glyphs were shaped down the line.
+    /// Whether the glyphs were shaped down the line.
     vertical: bool,
-    /// Where a pair makes breaking unsafe, not yet passed.
+    /// The bytes before which a pair makes breaking unsafe, not yet passed.
     kerned: Peekable<slice::Iter<'a, u32>>,
     /// The marks halved, not yet passed.
     halved: Peekable<slice::Iter<'a, TrimMark>>,
@@ -862,10 +861,10 @@ impl<'a, const MARKED: bool> ClusterWriter<'a, MARKED> {
     /// glyph, and returns how many it wrote.
     ///
     /// It goes on while each glyph is labelled at the start of the next
-    /// cluster, and each cluster starts before the one after it. Only the
-    /// plain path takes it, which reads glyphs in the text's order. A
-    /// cluster is written once the next glyph shows it ends, so the cluster
-    /// before a glyph that breaks the pattern is left to the general walk.
+    /// cluster and each cluster is non-empty. Only the plain path calls it,
+    /// since it reads glyphs in the text's order. A cluster is written once
+    /// the next glyph shows it ends, so the cluster before a glyph that
+    /// breaks the pattern is left to the general walk.
     #[inline]
     fn write_one_to_one<I: Id, S: AdvanceStore>(
         &mut self,
@@ -901,8 +900,8 @@ impl<'a, const MARKED: bool> ClusterWriter<'a, MARKED> {
         self.next.get() - first
     }
 
-    /// Writes the next cluster, drawn by `glyph` alone, labelled at its
-    /// start, at `placed`.
+    /// Writes the next cluster, drawn by `glyph` alone at `placed`, with the
+    /// glyph labelled at the cluster's start.
     #[inline]
     fn write_single<I: Id, S: AdvanceStore>(
         &mut self,
@@ -925,9 +924,10 @@ impl<'a, const MARKED: bool> ClusterWriter<'a, MARKED> {
         self.next = ClusterId::new(self.next.get() + 1);
     }
 
-    /// Writes the clusters from the next one up to `end` with no glyphs:
-    /// unsafe, since they lie inside something merged, and continuations
-    /// once a cluster of the range has drawn.
+    /// Writes the clusters from the next one up to `end` with no glyphs.
+    ///
+    /// They are unsafe, since they lie inside something merged, and
+    /// continuations once a cluster of the range has drawn.
     fn fill_empty<I: Id, S: AdvanceStore>(
         &mut self,
         end: ClusterId,
@@ -960,8 +960,8 @@ impl<'a, const MARKED: bool> ClusterWriter<'a, MARKED> {
         let kerned = self.is_kerned(start);
         if cluster == self.range_start {
             self.first = raw;
-            // Kept only where a pair meets there, since the start of the
-            // shaped range is shaped as a start.
+            // The range is shaped as a start, so only a pair meeting there
+            // makes breaking unsafe.
             return Flags {
                 unsafe_to_break: kerned,
                 continuation,
@@ -973,8 +973,8 @@ impl<'a, const MARKED: bool> ClusterWriter<'a, MARKED> {
         }
     }
 
-    /// Whether a pair makes breaking before a cluster starting at `start`
-    /// unsafe: never on the plain path.
+    /// Returns whether a pair makes breaking before a cluster starting at
+    /// `start` unsafe. Always false on the plain path.
     fn is_kerned(&mut self, start: TextOffset) -> bool {
         if !MARKED {
             return false;
@@ -994,8 +994,9 @@ impl<'a, const MARKED: bool> ClusterWriter<'a, MARKED> {
     /// Returns how a cluster starting at `start`, whose glyphs are `placed`,
     /// moves.
     ///
-    /// It is halved where it is a found mark at least nine tenths of an em
-    /// wide (Chrome's `HanKerning::ApplyKerning`), and never on the plain
+    /// A found mark at least nine tenths of an em wide is halved, as in
+    /// Chrome's `HanKerning::ApplyKerning`: an opening mark loses its leading
+    /// half, a closing mark its trailing half. Nothing moves on the plain
     /// path.
     fn halve(&mut self, start: TextOffset, placed: &[GlyphPosition]) -> Halved {
         let Some(least) = self.least.filter(|_| MARKED) else {
@@ -1031,9 +1032,9 @@ impl<'a, const MARKED: bool> ClusterWriter<'a, MARKED> {
     }
 }
 
-/// Whether [`sink_output`] takes its plain path where it can.
+/// Returns whether [`sink_output`] takes its plain path where it can.
 ///
-/// It always does, except in tests that force the marked path.
+/// Always true, except in tests that force the marked path.
 fn plain_paths() -> bool {
     #[cfg(test)]
     {
@@ -1047,8 +1048,7 @@ fn plain_paths() -> bool {
 
 #[cfg(test)]
 std::thread_local! {
-    /// When set, [`sink_output`] on this thread takes the marked path
-    /// even where there are no marks, so tests can compare it with the plain
-    /// path.
+    /// Whether [`sink_output`] on this thread takes the marked path even
+    /// where there are no marks, so tests can compare it with the plain path.
     pub(super) static MARKED_ONLY: Cell<bool> = const { Cell::new(false) };
 }

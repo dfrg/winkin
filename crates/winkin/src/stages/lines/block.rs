@@ -1,39 +1,33 @@
 //! The block result: its end, its first and last baselines, and its
 //! `text-box-trim`.
 //!
-//! The result is worked out once when breaking finishes, before line layout
-//! writes an item, so nothing is placed and then moved. Every line moves up
-//! by the start trim, so the lines keep their spacing. The block's end moves
-//! up by both trims. `TextBoxTrims` in `trim` works out the amounts.
+//! Breaking works the result out before line layout writes an item, so
+//! nothing is placed and then moved. Every line moves up by the start trim;
+//! the block's end moves up by both trims.
 
 use super::{LinePlacements, Lines, TextBoxTrims};
 use crate::unit::LayoutUnit;
 
-/// The block result, which the block's host reads.
+/// The block's end, baselines and trims, as its host reads them.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct BlockResult {
-    /// How far `text-box-trim` moves every line up.
-    ///
-    /// It is the first line's excess over its trim edge, negative where the
-    /// line box falls short of the edge.
+    /// How far `text-box-trim` moves every line up: the first line's excess
+    /// over its trim edge, negative where it falls short, zero with no lines.
     pub(crate) trim_start: LayoutUnit,
     /// How far `text-box-trim` pulls the block's end up: the last line's
     /// excess.
     pub(crate) trim_end: LayoutUnit,
-    /// Where the block's content ends, after the trim.
-    ///
-    /// It is the last line box's bottom, or the area's start with no lines.
-    /// The host adds floats.
+    /// Where the block's content ends after the trims, in the host's
+    /// positions: the last line box's bottom, or the area's start with no
+    /// lines, at least past a clearing break. Floats are not counted.
     pub(crate) block_end: LayoutUnit,
     /// The first line's baseline after the trim, for an inline-block's or a
-    /// flex item's host.
+    /// flex item's host; `None` with no lines.
     pub(crate) first_baseline: Option<LayoutUnit>,
-    /// The last line's baseline after the trim.
+    /// The last line's baseline after the trim; `None` with no lines.
     pub(crate) last_baseline: Option<LayoutUnit>,
-    /// `text-box-trim` trims the block's end, which then lends no room
-    /// below it.
-    ///
-    /// It is false where the block has no font to trim by.
+    /// Whether `text-box-trim` trims the block's end, which then lends no
+    /// room below it; false where the block has no font to trim by.
     pub(crate) trims_end: bool,
 }
 
@@ -48,11 +42,12 @@ impl BlockResult {
         trims_end: false,
     };
 
-    /// Finishes the block once breaking has chosen its final lines.
+    /// Returns the result of a block whose lines are final.
     ///
-    /// `trim_start` is the amount already used to stack and fit the lines.
-    /// `cleared` is where a clearing break after the last line moved the
-    /// block's end, in the host's positions. Chrome adds that clearance
+    /// `end` is where the next line box would start, in the records'
+    /// positions. `trim_start` is the trim the lines were stacked and fitted
+    /// with. `cleared` is where a clearing break after the last line moved
+    /// the block's end, in the host's positions. Chrome adds that clearance
     /// after the trim, so the trim never pulls the end above it.
     pub(super) fn new(
         lines: &Lines,
@@ -93,7 +88,7 @@ impl BlockResult {
         block
     }
 
-    /// Returns a line's final top from the breaker's untrimmed position.
+    /// Returns a line's final top, given its untrimmed `block_start`.
     pub(crate) fn top(&self, block_start: LayoutUnit) -> LayoutUnit {
         block_start - self.trim_start
     }

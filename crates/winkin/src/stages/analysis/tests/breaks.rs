@@ -378,7 +378,8 @@ fn thai_breaks_where_chrome_wraps_it() {
     }
 }
 
-/// Breaks with `text` cut into text nodes at `cuts`, each in its style.
+/// Returns the breaks of `text` cut into text nodes at `cuts`, each in its
+/// style.
 fn breaks_cut(text: &str, cuts: &[(usize, &ComputedStyle<'_>)]) -> Vec<usize> {
     let mut parts = Vec::new();
     let mut last = 0;
@@ -723,8 +724,8 @@ fn hyphens_none_declines_a_soft_hyphen() {
 /// An atomic inline has an opportunity on either side, even beside a
 /// character that would suppress one. It has none beside GL other than
 /// U+00A0, WJ or ZWJ (CSS Text 3, section 5.1). UAX #14 alone, running through
-/// the U+FFFC, would say no break before `)` or after `(`. Chrome is not yet
-/// probed here.
+/// the U+FFFC, would say no break before `)` or after `(`. Chrome's answer is
+/// unmeasured.
 #[test]
 fn an_atomic_inline_has_an_opportunity_on_either_side_but_beside_glue() {
     let around = |before: &str, after: &str| {
@@ -775,7 +776,7 @@ fn word_break_and_line_break_choose_the_segmenter() {
 
 /// Under `line-break: normal` a small kana may start a line, as in Chrome,
 /// whose line breaker is ICU's. `strict` keeps it with what precedes it.
-/// CSS now holds it back under `normal` too, and Chrome does not;
+/// CSS holds it back under `normal` too, and Chrome does not;
 /// `Config::small_kana` chooses.
 #[test]
 fn a_small_kana_may_start_a_line_under_normal_as_in_chrome() {
@@ -787,7 +788,7 @@ fn a_small_kana_may_start_a_line_under_normal_as_in_chrome() {
     );
 }
 
-/// A layout of one text in `root`, analyzed with small kana `small_kana`.
+/// Returns a layout of one text in `root`, analyzed under `small_kana`.
 fn text_with_kana(small_kana: SmallKana, root: &ComputedStyle<'_>, text: &str) -> Layout {
     let mut cx = no_fonts();
     let mut config = *cx.config();
@@ -807,7 +808,7 @@ fn text_with_kana(small_kana: SmallKana, root: &ComputedStyle<'_>, text: &str) -
 }
 
 /// `SmallKana::Held` keeps a small kana and the prolonged sound mark with
-/// what precedes them under `normal`, as CSS Text 3 now says
+/// what precedes them under `normal`, as CSS Text 3 says
 /// (csswg-drafts#10363). `loose` still lets one start a line. A space before
 /// one still breaks, as UAX #14 breaks before NS after a space (LB18).
 /// Chrome's `MayStartLine` is the default.
@@ -936,7 +937,7 @@ fn emergencies_follow_overflow_wrap() {
 ///
 /// A `<wbr>`'s U+200B and the one collapsing keeps hang and take no room. The
 /// white space before them hangs through them at a line's end, as Blink
-/// passes over them. A U+200B the caller writes is text.
+/// passes over them. A U+200B in the input text is text.
 #[test]
 fn spaces_and_separators_hang_and_a_no_break_space_does_not() {
     let layout = plain("a b\u{A0}c\u{3000}d\u{2003}e");

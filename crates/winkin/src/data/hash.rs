@@ -1,18 +1,16 @@
-//! A fixed hash, for the tables styles and their lists are interned through.
+//! The crate's one hash, for interning tables and context caches.
 //!
-//! hashbrown's own default seeds itself from a process-wide static, and
-//! nothing in a layout keeps state outside what it is given. The keys are a
-//! caller's styles, which nobody gains by making collide: a collision costs a
-//! comparison, never a wrong answer. So a fixed hash is safe and a fast one is
-//! enough: the Fx hash, as fontwich has it, a rotate, an xor and a multiply
-//! per word.
+//! hashbrown's default seeds itself from a process-wide static, and the crate
+//! keeps no such state. A collision costs a comparison, never a wrong answer,
+//! so a fixed, fast hash is enough: the Fx hash, as in fontwich, a rotate, an
+//! xor and a multiply per word.
 
 use core::hash::{Hash, Hasher};
 
-/// The Fx hash: a word at a time, rotated in and multiplied through.
+/// The Fx hasher, which hashes a word at a time.
 pub(crate) struct FxHasher(u64);
 
-/// The multiplier: odd, and with its bits spread, as Fx has it.
+/// The Fx multiplier: odd, with its bits spread.
 const K: u64 = 0xf135_7aea_2e62_a9c5;
 
 impl FxHasher {
@@ -37,7 +35,7 @@ impl Hasher for FxHasher {
             if let Some(tail) = last.get_mut(..rest.len()) {
                 tail.copy_from_slice(rest);
             }
-            // The length too, so that a shorter tail of zeros differs.
+            // Mixes in the length so tails differing only in zeros differ.
             let len = u64::try_from(rest.len()).unwrap_or(0);
             self.add(u64::from_le_bytes(last) ^ (len << 56));
         }
@@ -63,9 +61,9 @@ impl Hasher for FxHasher {
         self.add(u64::try_from(n).unwrap_or(u64::MAX));
     }
 
-    /// The hash, with its high bits mixed down: hashbrown reads its control
-    /// bytes from the top seven, which the multiply alone leaves weak for
-    /// short keys.
+    /// The hash, rotated so well-mixed bits reach the top seven, which
+    /// hashbrown reads as control bytes. The multiply alone leaves them weak
+    /// for short keys.
     fn finish(&self) -> u64 {
         self.0.rotate_left(26)
     }

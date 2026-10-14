@@ -1,19 +1,19 @@
 //! Allocation tests: every stage allocates nothing once warm.
 //!
-//! A global allocator counts allocations per thread, so tests running
-//! alongside cannot disturb each other's numbers. A buffer that grows on only
+//! A global allocator counts allocations per thread, so tests running side
+//! by side do not disturb each other's counts. A buffer that grows on only
 //! one path shows up here.
 //!
-//! This file holds the shared hosts. Each child covers one stage or
+//! This file holds the shared helpers. Each child covers one stage or
 //! feature: the builder, analysis, font selection, shaping, measurement,
-//! line breaking, line layout and reading back, then mixed directions, fonts
-//! in full, shifts, CJK typography, ruby, the first line, cut lines,
+//! line breaking, line layout and reading back, mixed directions, fonts in
+//! full, shifts, CJK typography, ruby, the first line, cut lines,
 //! `text-wrap-style`, vertical text and text on paths.
 //!
 //! The one exception is ICU, which allocates for Thai and the other scripts
-//! whose line breaks and words need its dictionaries or its LSTM, and, with
-//! the `dictionaries` feature, for Chinese and Japanese words. The tests pin
-//! it, so a change in it is seen.
+//! whose line breaks and words need its dictionaries or LSTM, and, with the
+//! `dictionaries` feature, for Chinese and Japanese words. The tests pin
+//! this, so a change in ICU shows.
 
 extern crate alloc;
 
@@ -26,16 +26,15 @@ use testing::allocator::{Counting, count_allocations};
 #[global_allocator]
 static GLOBAL: Counting = Counting;
 
-// What the stages' modules below share: their text, a relayout, a font and
-// a host of floats.
+// Helpers the modules below share: text, a relayout, a font and a float host.
 
-/// `line` as `lines` paragraphs.
+/// Returns `line` repeated as `lines` paragraphs.
 fn text(line: &str, lines: usize) -> String {
     vec![line; lines].join("\n")
 }
 
-/// Breaks `layout` into lines at each of `widths` in turn, and reads every
-/// line back as a host would. Returns how many bytes the lines held.
+/// Breaks `layout` at each of `widths` in turn and reads every line back as
+/// a host would. Returns how many bytes the lines held.
 fn relayout(layout: &mut winkin::Layout, cx: &mut winkin::Context, widths: &[f32]) -> usize {
     let mut read = 0;
     for &width in widths {
@@ -57,10 +56,11 @@ fn arabic() -> TestFont {
     font
 }
 
-/// A host that places floats in a list it keeps its room for. Each float as high as asked, at its side's edge of
-/// the band, and where the host `lowers` floats, never above one before it
-/// and lower where it does not fit; each band what the floats leave of the
-/// area.
+/// A float host that keeps its placed floats in a list with reserved room.
+///
+/// Each float is as tall as asked, at its side's edge of the band. Where
+/// `lowers` is set, a float is never above an earlier one and moves down
+/// where it does not fit. Each band is what the floats leave of the area.
 struct Floats {
     width: f32,
     placed: Vec<(winkin::FloatSide, f32, f32, f32, f32)>,

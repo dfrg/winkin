@@ -1,5 +1,5 @@
-//! Caller offset tests. They pin positions as places in the caller's
-//! nodes and text, both ways.
+//! Source offset tests. They pin conversion between positions and nodes
+//! with offsets in their source text, both ways.
 
 use super::*;
 

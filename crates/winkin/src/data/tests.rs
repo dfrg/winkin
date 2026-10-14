@@ -1,4 +1,5 @@
-//! The data primitives' tests.
+//! Data primitive tests: table ids, growth and limits, ranked bits, the hash,
+//! the sort, sorted tables, runs and cursors, the LRU cache, and flags.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -44,9 +45,8 @@ fn clearing_keeps_the_allocation() {
     assert_eq!(table.heap_bytes(), bytes);
 }
 
-/// A table that has never held any makes room for exactly what it is
-/// told; one that has keeps what it has where that is room enough, and
-/// grows by doubling where it is not.
+/// An unused table reserves exactly; a used one keeps enough room and
+/// doubles otherwise.
 #[test]
 fn a_table_makes_room_exactly_where_it_never_held_any() {
     let mut table = Table::<WideId, u32>::new();
@@ -57,7 +57,7 @@ fn a_table_makes_room_exactly_where_it_never_held_any() {
     assert_eq!(table.heap_bytes(), 21 * 4, "less keeps the capacity");
     table.reserve(22);
     assert_eq!(table.heap_bytes(), 42 * 4, "more doubles");
-    // Past what the ids name, only what they do.
+    // Capped at what the ids name.
     let mut tiny = Table::<TinyId, u8>::new();
     tiny.reserve(1000);
     assert_eq!(tiny.heap_bytes(), 255);
@@ -66,9 +66,9 @@ fn a_table_makes_room_exactly_where_it_never_held_any() {
     assert_eq!(bits.heap_bytes(), 2 * 8);
 }
 
-/// A table of records wider than [`NARROW_RECORD`] makes room for one at
-/// its first push, and doubles from there, never past what its ids name.
-/// A narrower one grows as a vector does.
+/// A table of records wider than [`NARROW_RECORD`] starts with room for one
+/// and doubles, capped at what its ids name. A narrower one grows as a
+/// vector does.
 #[test]
 fn a_table_starts_with_room_for_one_and_doubles() {
     let mut table = Table::<WideId, [u8; 8]>::new();
@@ -103,7 +103,7 @@ fn a_full_table_refuses_another_without_panicking() {
         assert_eq!(table.push(n as u8).map(TinyId::get), Some(n));
     }
     assert_eq!(table.remaining(), 0);
-    // The 256th is refused and kept nowhere; the length stays an id.
+    // The 256th is refused; the length stays an id.
     assert_eq!(table.push(0), None);
     assert_eq!(table.len(), 255);
     assert_eq!(table.next_id().get(), 255);
@@ -117,7 +117,7 @@ fn a_table_extends_whole_or_not_at_all() {
     let first = table.extend((0..200).map(|n| n as u8));
     assert_eq!(first, Some(TinyId::new(0)..TinyId::new(200)));
     assert_eq!(table.last_id(), Some(TinyId::new(199)));
-    // Fifty-five more fit, fifty-six do not, and none of those is kept.
+    // 55 more fit; 56 do not, and none of them is kept.
     assert_eq!(table.extend(0..56u8), None);
     assert_eq!(table.len(), 200);
     assert_eq!(
@@ -154,9 +154,8 @@ fn ids_walk_a_range_both_ways() {
     );
 }
 
-/// A ranked table counts the bits set at or before an id as counting
-/// them one by one does, across words and words left empty, and past
-/// its last word counts them all.
+/// A ranked table's count matches a naive count, across empty words and past
+/// the last word.
 #[test]
 fn a_ranked_table_counts_what_is_set_through_an_id() {
     let set = [0, 1, 63, 64, 65, 200, 400, 401, 511];
@@ -187,9 +186,8 @@ fn tails_of_different_lengths_hash_apart() {
 
 #[test]
 fn sorts_as_core_does() {
-    // Runs of every length up to 200, rising, falling, shuffled and
-    // shuffled with many keys the same, come out as `core`'s sort puts
-    // them.
+    // Every length below 200: rising, falling, random with many equal keys,
+    // and random.
     let mut state = 0x2545_f491_u32;
     let mut next = || {
         state ^= state << 13;
@@ -223,9 +221,8 @@ fn sorts_by_the_key_alone() {
     assert_eq!(pairs, [(0, 'z'), (1, 'a'), (2, 'b'), (3, 'c')]);
 }
 
-/// A sorted table finds each key it holds by halving, and nothing for a
-/// key between them or past them; the one search does the same over a
-/// slice.
+/// A sorted table finds each key it holds and none between or past them;
+/// [`find_sorted`] does the same over a slice.
 #[test]
 fn a_sorted_table_finds_its_keys_and_no_others() {
     let mut table = SortedTable::<(WideId, char)>::new();
@@ -250,7 +247,7 @@ fn a_sorted_table_finds_its_keys_and_no_others() {
     assert!(table.is_empty());
 }
 
-/// A run of positions, as the tables of runs tiling the clusters hold them.
+/// A run known by its start.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 struct Wide(WideId);
 
@@ -262,10 +259,10 @@ impl Run for Wide {
     }
 }
 
-/// Runs tiling the positions up to 10 from 0, 3 and 7, one of them empty
-/// where two start at once: each position is held by the last run starting
-/// at or before it, a cursor walking forward stands where a search would,
-/// and each run's positions run to the next's start or the end.
+/// Runs starting at 0, 3, 3 and 7 and ending at 10, one empty:
+/// - each position belongs to the last run starting at or before it;
+/// - a forward cursor agrees with the search;
+/// - each span ends at the next start or the end.
 #[test]
 fn runs_find_the_run_holding_a_position_as_a_cursor_does() {
     let mut runs = Runs::<TinyId, Wide>::new();
@@ -293,11 +290,10 @@ fn runs_find_the_run_holding_a_position_as_a_cursor_does() {
     assert_eq!(runs.rest(TinyId::new(2)).len(), 2);
 }
 
-/// A run cursor over the same runs holds where its run ends: stepped, it
-/// stands on each run in turn, the empty one too, and past the last at the
-/// end, where it stays; moved to a position, it passes every run ending at
-/// or before it, but never the last; and sought, it is the cursor at the run
-/// holding it, as a search finds it.
+/// A run cursor over the same runs:
+/// - stepping visits each run, the empty one too, then stays past the last;
+/// - `step_to` passes runs ending at or before the position, never the last;
+/// - `cursor_containing` gives the same cursor.
 #[test]
 fn a_run_cursor_holds_where_its_run_ends() {
     let mut runs = Runs::<TinyId, Wide>::new();
@@ -326,9 +322,8 @@ fn a_run_cursor_holds_where_its_run_ends() {
     assert_eq!(cursor.id(), TinyId::new(3), "never past the last");
 }
 
-/// A cache finds an entry by its hash, and first among the four it last
-/// found or added without hashing; where none matches, it hands back the
-/// hash to add the entry under.
+/// A cache finds its four most recent entries without hashing and older ones
+/// by hash; on a miss it returns the hash.
 #[test]
 fn a_cache_finds_the_entries_it_last_found_without_hashing() {
     let mut cache = LruCache::<WideId, u32>::new(usize::MAX);
@@ -337,12 +332,12 @@ fn a_cache_finds_the_entries_it_last_found_without_hashing() {
         assert_eq!(cache.insert(hash(n), n), Some(WideId::new(n as usize)));
     }
     assert_eq!(cache.len(), 6);
-    // The last four added are found with no hash made.
+    // The last four added need no hash.
     for n in 2..6 {
         let found = cache.find_recent(|| panic!("{n} is recent"), |&held| held == n);
         assert_eq!(found, Ok(WideId::new(n as usize)));
     }
-    // An older one by its hash, which then counts as recent.
+    // An older one is found by hash and becomes recent.
     let older = cache.find_recent(|| hash(0), |&held| held == 0);
     assert_eq!(older, Ok(WideId::new(0)));
     let again = cache.find_recent(|| panic!("0 is recent now"), |&held| held == 0);
@@ -353,9 +348,8 @@ fn a_cache_finds_the_entries_it_last_found_without_hashing() {
     assert_eq!(cache.find(hash(1), |&held| held == 1), None, "cleared");
 }
 
-/// A cache trims to its capacity the entries used longest ago, a find
-/// counting as a use and a peek not, and reuses their entries for the values
-/// added next.
+/// A cache trims the least recently used entries to its capacity and reuses
+/// them. A find counts as a use; a peek does not.
 #[test]
 fn a_cache_trims_the_entries_used_longest_ago() {
     let mut cache = LruCache::<WideId, u32>::new(3);
@@ -364,7 +358,7 @@ fn a_cache_trims_the_entries_used_longest_ago() {
         assert!(cache.insert(hash(n), n).is_some());
     }
     assert_eq!(cache.len(), 5, "adding never evicts");
-    // 0 is used again, and 1 peeked at only.
+    // 0 is used; 1 is only peeked at.
     assert!(cache.find(hash(0), |&held| held == 0).is_some());
     assert!(cache.peek(hash(1), |&held| held == 1).is_some());
     let mut evicted = Vec::new();
@@ -380,7 +374,7 @@ fn a_cache_trims_the_entries_used_longest_ago() {
     for n in [1, 2] {
         assert_eq!(cache.find(hash(n), |&held| held == n), None, "{n} is gone");
     }
-    // The freed entries are reused, so the table of entries does not grow.
+    // Freed entries are reused, so the entries do not grow.
     let entries = cache.heap_bytes();
     for n in 5..7 {
         let id = cache.insert(hash(n), n).expect("an entry");
@@ -396,7 +390,7 @@ fn a_cache_trims_the_entries_used_longest_ago() {
     assert!(cache.iter().next().is_none());
 }
 
-/// A cache drops the entries a retain refuses, and finds the rest.
+/// A cache drops the entries `retain` refuses and keeps finding the rest.
 #[test]
 fn a_cache_retains_what_it_is_told_to() {
     let mut cache = LruCache::<WideId, u32>::new(usize::MAX);
@@ -423,8 +417,7 @@ define_flags! {
     }
 }
 
-/// A set of flags holds what is inserted, and contains a set where it
-/// holds every flag of it.
+/// A set of flags contains another set only if it holds every flag in it.
 #[test]
 fn flags_contain_every_flag_of_a_set_they_hold() {
     let mut flags = TestFlags::NONE;

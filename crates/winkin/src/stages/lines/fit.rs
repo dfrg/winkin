@@ -1,24 +1,13 @@
-//! The breaker: fits one line at a time by searching the prefix, and measures
-//! each exactly, reshaped edges included.
+//! The breaker's line loop: lays out a block's paragraphs line by line and
+//! keeps each line.
 //!
-//! Its siblings each add to [`Breaker`]'s `impl`:
-//! - `search` chooses a line's end in its band.
-//! - `candidate` measures one candidate end.
-//! - `reshape` shapes a line's unsafe edges again.
-//! - `floats` places the floats a line reaches.
-//! - `wrap` balances and scores a paragraph's lines.
-//! - `ruby` splits a ruby column across lines.
-//! - `height` measures a fitted line's height.
+//! Sibling files add to [`Breaker`]'s `impl`: `search` chooses a line's end,
+//! `candidate` measures one, `reshape` reshapes unsafe edges, `floats`
+//! places floats, `text_fit` scales text, `height` measures a line's height,
+//! `wrap` balances and scores, and `ruby` splits ruby columns.
 //!
-//! The breaker and the records its files share are defined in the stage's
-//! root. This module builds the breaker, and lays out and keeps the lines.
-//! [`Breaker::paragraph_lines`] lays out a paragraph at a time. Each line is
-//! held to nothing, to a narrowed room, or to a chosen end. A block without
-//! `balance` or `pretty` pays one test a paragraph and one hold a line.
-//!
-//! [`Breaker::line`] lays out one line: it fits the line in the band the
-//! host leaves, measures its height, and fits it again where the floats or
-//! its own height change its band.
+//! [`Breaker::line`] fits a line in the band the host leaves, measures its
+//! height, and fits it again where floats or its height change the band.
 
 use super::{
     Breaker, BreakerParagraph, Cursor, Fitted, LineHead, ReshapedPiece, ReshapedPieces, StartWindow,
@@ -49,23 +38,21 @@ use crate::style::{FirstLineVariant, TextOverflow};
 use crate::unit::{InlineLayoutUnit, LayoutUnit};
 use crate::work;
 
-/// The most times a line is fitted again in a narrower band, when it turns
-/// out taller than the strut it was first fitted at.
+/// The most times a line is fitted again because its height meets a
+/// narrower band.
 pub(super) const SETTLES: usize = 2;
 
-/// The most times one line moves down past the floats beside it, before it
-/// stays and overflows.
+/// The most times one line moves down past floats before it stays and
+/// overflows.
 ///
-/// A host could report each band change a hair lower, forever. Each move
-/// is one fit, so this bounds a line's work. A real line moves once per
-/// float bottom it has no room beside, a handful on a page.
+/// It bounds a line's work against a host that reports each band change a
+/// hair lower. A real line moves a handful of times.
 pub(super) const MAX_MOVES_DOWN: usize = 256;
 
 /// Returns where a line at `top` moves when the floats leave it no room.
 ///
-/// That is where the host says the bands next change, rounded up onto the
-/// grid. Returns `None` where the host's answer is missing, not finite, or
-/// not below `top`.
+/// That is the host's next band change, rounded up onto the 1/64 grid.
+/// `None` where the answer is missing, not finite, or not below `top`.
 pub(super) fn moves_to(exclusions: &dyn Exclusions, top: LayoutUnit) -> Option<LayoutUnit> {
     let px = exclusions.below(top.to_px())?;
     if !px.is_finite() {
@@ -75,24 +62,23 @@ pub(super) fn moves_to(exclusions: &dyn Exclusions, top: LayoutUnit) -> Option<L
     (next > top).then_some(next)
 }
 
-/// A paragraph being laid out: its breaker record, and the area its lines
-/// are in.
+/// A paragraph being laid out, and the area its lines are in.
 pub(super) struct ParagraphLines<'p> {
     pub(super) para: &'p BreakerParagraph,
     pub(super) area: LineBand,
 }
 
-/// How a layout of a paragraph chooses its lines.
+/// The rule a layout of a paragraph chooses its lines by.
 #[derive(Copy, Clone, Debug)]
 pub(super) enum ParagraphPlan {
     /// The greedy fit.
     Greedy,
-    /// Each line's room narrowed by `by`, as balancing tries it.
+    /// Every line's room narrowed by `by`, as balancing tries it.
     ///
-    /// A trial lays out at most `most` lines, and stops after the first that
-    /// overflows. With `most` as `None`, the chosen room lays out them all.
+    /// A trial lays out at most `most` lines and stops at the first that
+    /// overflows. `None` lays out every line.
     Narrowed { by: LayoutUnit, most: Option<usize> },
-    /// Each line ends where the scorer's plan says, while it fits.
+    /// The scorer's ends, each kept while its line fits.
     Planned(PlannedEnds),
 }
 
@@ -109,8 +95,7 @@ impl ParagraphPlan {
         }
     }
 
-    /// Returns whether it is a trial of a narrower room, which an
-    /// overflowing line ends.
+    /// Returns whether it is a trial of a narrower room.
     fn is_narrowing_trial(&self) -> bool {
         matches!(self, Self::Narrowed { most: Some(_), .. })
     }
@@ -121,9 +106,9 @@ impl ParagraphPlan {
 pub(super) enum Hold {
     /// Nothing: the greedy fit.
     Free,
-    /// Its room narrowed by this much.
+    /// A room narrowed by this much.
     Narrowed(LayoutUnit),
-    /// Ending here, where the line fits.
+    /// An end at this cluster boundary, where the line fits.
     End(ClusterId),
 }
 
@@ -137,8 +122,8 @@ impl Hold {
     }
 }
 
-/// Where a layout of a paragraph starts: a line's start, and which line of
-/// the paragraph it is.
+/// The start of a layout of a paragraph: a line's first cluster, and which
+/// line of the paragraph it is.
 #[derive(Copy, Clone, Debug)]
 pub(super) struct Resume {
     start: ClusterId,
@@ -146,16 +131,13 @@ pub(super) struct Resume {
 }
 
 impl Resume {
-    /// Returns the paragraph's `line`, starting at `start`.
     pub(super) fn new(start: ClusterId, line: WrapLineId) -> Self {
         Self { start, line }
     }
 }
 
-/// What a layout of a paragraph laid out: how many lines, where the last
-/// ends, and whether one overflows.
-///
-/// The count includes the lines before where the layout started.
+/// The count of a paragraph's lines laid out, counting from its first line,
+/// where the last ends, and whether one overflows.
 #[derive(Copy, Clone, Debug)]
 pub(super) struct Tally {
     lines: usize,
@@ -164,7 +146,6 @@ pub(super) struct Tally {
 }
 
 impl Tally {
-    /// Returns an empty tally from `from`.
     fn new(from: Resume) -> Self {
         Self {
             lines: from.line.get(),
@@ -173,58 +154,55 @@ impl Tally {
         }
     }
 
-    /// Returns which of the paragraph's lines the next is.
     fn next_line(&self) -> WrapLineId {
         WrapLineId::new(self.lines)
     }
 
-    /// Counts `line`, the next one laid out.
     fn take(&mut self, line: &LineRecord) {
         self.lines += 1;
         self.end = line.end;
         self.overflowed |= line.flags.overflowed();
     }
 
-    /// Returns whether the paragraph fits as balancing asks: in `lines`
-    /// lines at most, reaching `end`, none overflowing and none ending at an
-    /// emergency break, as Chrome's bisection declines both.
+    /// Returns whether the paragraph fits as balancing asks: in at most
+    /// `lines` lines, reaching `end`, none overflowing or ending at an
+    /// emergency break, as Chrome's bisection asks.
     pub(super) fn holds(&self, lines: usize, end: ClusterId) -> bool {
         !self.overflowed && self.lines <= lines && self.end >= end
     }
 }
 
-/// A line start's window in the edge tables, shaped once and reused by every
-/// candidate.
+/// A line start's reshaped piece, shaped once and reused by every candidate.
 #[derive(Copy, Clone, Debug)]
 pub(super) struct ReshapedStart {
     /// The piece, where one could be shaped.
     pub(super) piece: Option<ReshapedPiece>,
-    /// Where the tables stand after it, which a candidate's own pieces rewind
+    /// The edge tables' mark after the piece, which each candidate rewinds
     /// to.
     pub(super) after: EdgeMark,
 }
 
-/// A line ending at `end`, measured with its pieces.
-///
-/// The pieces stay in the edge tables until the next candidate is measured.
+/// A line ending at `end`, measured with its reshaped pieces, which stay in
+/// the edge tables until the next candidate.
 #[derive(Copy, Clone, Debug)]
 pub(super) struct Candidate {
+    /// The boundary the line ends at, what hangs included.
     pub(super) end: ClusterId,
+    /// The boundary its content ends at, before what hangs.
     pub(super) content_end: ClusterId,
     /// Its content's width, without what hangs or the costs.
     pub(super) content: LayoutUnit,
     /// Its whole reach, what hangs included.
     pub(super) full: LayoutUnit,
-    /// Where it ends its paragraph with white space that hangs only where it
-    /// overflows, how far what hangs before that white space reaches.
+    /// How far what hangs before its paragraph-ending white space reaches,
+    /// where that white space hangs only on overflow.
     pub(super) conditional: Option<InlineLayoutUnit>,
     /// What it pays or gains at its end.
     pub(super) cost: LineEdgeCost,
     pub(super) pieces: ReshapedPieces,
 }
 
-/// A line fitted at one position, before it is kept: its band, its fit and
-/// its height.
+/// A line fitted at one position, before it is kept.
 #[derive(Copy, Clone, Debug)]
 pub(super) struct Trial {
     pub(super) band: LineBand,
@@ -232,26 +210,26 @@ pub(super) struct Trial {
     pub(super) height: Height,
 }
 
-/// A line being tried beside floats: its paragraph and start, its start's
-/// reshape window, its top, the height its band is asked at, the area, and
-/// whether it is the first line.
+/// A line being fitted at one top.
 #[derive(Copy, Clone)]
 pub(super) struct LineTrial<'p> {
     pub(super) para: &'p BreakerParagraph,
     pub(super) start: ClusterId,
-    /// The first item at `start`, where the breaker's item cursor stands.
+    /// The first item at `start`.
     pub(super) first_item: ItemId,
-    /// The reshape window of an unsafe start, shaped once for the line.
+    /// The reshape window of an unsafe start.
     pub(super) window: Option<StartWindow>,
     pub(super) top: LayoutUnit,
+    /// The height the line's band is asked at.
     pub(super) reserve: LayoutUnit,
     pub(super) area: LineBand,
+    /// Whether it is the block's first line.
     pub(super) first: bool,
 }
 
 impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
-    /// Returns the ruby columns whose bases start among `clusters`, a
-    /// line's, walked to from the column the last search ended near.
+    /// Returns the ruby columns whose bases start in a line's `clusters`,
+    /// walking from the column the last search ended near.
     pub(super) fn line_columns(&self, clusters: Range<ClusterId>) -> Range<RubyColumnId> {
         let columns = self
             .stages
@@ -263,9 +241,9 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     }
 
     /// Returns the first break opportunity in `range`, or the last where
-    /// `back`: an `overflow-wrap` emergency one where `emergency`.
+    /// `back`; an `overflow-wrap` emergency one where `emergency`.
     ///
-    /// Each ruby column is stepped over whole, as one indivisible unit.
+    /// A ruby column is one unit.
     pub(super) fn opportunity(
         &self,
         range: Range<ClusterId>,
@@ -285,10 +263,10 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         }
     }
 
-    /// Returns the breaker for `input`, around what `exclusions` answers.
+    /// Returns the breaker for `input`.
     ///
     /// `room_above` is the room over the first line for annotations and
-    /// marks. `fitting` says how `text-fit` scales each line's text.
+    /// marks. `fitting` is the block's `text-fit`, where it applies.
     pub(super) fn new(
         input: &BreakInput<'a>,
         shaping: &'c mut ShapeSession<'m, 'a>,
@@ -300,8 +278,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     ) -> Self {
         let stages = input.stages;
         let (content, analysis) = (stages.content, stages.analysis);
-        // The block's text facts are node 0's. Content never built has no
-        // node, and no line to wrap.
+        // Content never built has no block node and no line to wrap.
         let block = NodeId::BLOCK;
         let wraps = content.nodes.kind(block).is_none_or(|_| {
             let text = content.nodes.text_facts(block, FirstLineVariant::Standard);
@@ -359,9 +336,6 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     }
 
     /// Returns the breaker with `choice` in place of `text-wrap-style`'s.
-    ///
-    /// [`break_lines`](super::break_lines) uses it to break greedily while
-    /// `line-clamp: auto` measures the lines.
     pub(super) fn with_choice(mut self, choice: LineChoice) -> Self {
         self.choice = choice;
         self
@@ -369,9 +343,6 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
 
     /// Breaks the block into lines in `input`'s area, and returns where the
     /// lines got to.
-    ///
-    /// Writes the block's end and the room its last line leaves into `out`.
-    /// Floats are placed only where the block has one.
     pub(super) fn lines(&mut self, out: &mut Lines, input: &BreakInput<'_>) -> Cursor {
         let cursor = if self.stages.content.flags.contains(ContentFlags::FLOATS) {
             self.each_line::<true>(out, input.area)
@@ -386,9 +357,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             cursor.cleared,
             self.trims,
         );
-        // With annotations, each line works out its room, and the last
-        // line's carry is the block's. Without, `Lines::room_below` works out
-        // the last line's room when a host asks, so a relayout pays nothing.
+        // Without annotations, `Lines::room_below` works out the last line's
+        // carry when a host asks.
         if self.annotation.is_some() && !out.lines.is_empty() {
             out.rare_mut().annotated_carry = self.carry;
         }
@@ -398,8 +368,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// Returns the band the host leaves the next line, its box from `top`,
     /// `height` tall.
     ///
-    /// Every trial of a line takes back what was pushed since. So the index
-    /// the host sees is where the line will be kept.
+    /// Each trial takes back its lines, so the host sees the index the line
+    /// is kept at.
     pub(super) fn band(&self, out: &Lines, top: LayoutUnit, height: LayoutUnit) -> LineBand {
         let block = BlockExtents {
             start: top.to_px(),
@@ -411,8 +381,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// Returns where the block's content would end, in the host's
     /// positions, if `line` were its last.
     ///
-    /// That is the line box's bottom, less `trimmed` (what `text-box-trim`
-    /// takes off the first line) and what it takes off the last.
+    /// `trimmed` is what `text-box-trim` takes off the first line.
     fn block_end_if_last(&self, line: &super::PendingLine, trimmed: LayoutUnit) -> LayoutUnit {
         let under = self.trims.map_or(LayoutUnit::ZERO, |trims| {
             trims.end(line.extent, line.scale, line.variant())
@@ -422,21 +391,18 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
 
     /// Breaks every paragraph into lines, and returns where the lines got to.
     ///
-    /// Places floats as the lines reach them where `FLOATS`. It is generic so
-    /// the plain-text loop holds nothing for floats.
+    /// `FLOATS` keeps float code out of the plain-text loop.
     ///
-    /// The first line is fitted, measured and placed in the first line's
-    /// measure, whose clusters are the text's. The next line starts where it
-    /// ends, in the standard measure, reshaped there if unsafe. Nothing is
-    /// prepared again, so the first line's end moves with the width.
+    /// The first line is measured in the first line's variant, whose
+    /// clusters are the text's. The next line starts where it ends, in the
+    /// standard variant, reshaped there if unsafe.
     fn each_line<const FLOATS: bool>(&mut self, out: &mut Lines, area: Area) -> Cursor {
         let area_band = LineBand::from(area.inline);
         let mut cursor = Cursor::new(LayoutUnit::from_px(area.block_start));
         for (id, paragraph) in self.stages.analysis.paragraphs.iter() {
             // A text ending in a separator ends in an empty paragraph, which
-            // draws no line: the separator's line is the last, as in Chrome.
-            // An empty text draws none at all. Where a box with an inline
-            // edge stands there, the paragraph is one line of its own.
+            // makes no line, as in Chrome, unless a box there has an inline
+            // margin, border or padding.
             let paragraphs = &self.stages.analysis.paragraphs;
             let empty = paragraphs.clusters(id).is_empty();
             if empty && !paragraphs.has_end_line() {
@@ -447,8 +413,6 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
                 para: &para,
                 area: area_band,
             };
-            // `text-wrap-style` balances or scores a paragraph at a time, as
-            // Chrome does. Otherwise the fit is greedy.
             if self.choice == LineChoice::Greedy || empty {
                 let from = Resume::new(para.start, WrapLineId::new(0));
                 self.paragraph_lines::<FLOATS>(
@@ -466,8 +430,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
                 break;
             }
         }
-        // Floats past the clamp are not placed, since their text is on no
-        // line.
+        // Floats past the clamp anchor text on no line.
         if FLOATS && !cursor.clamped {
             let top = cursor.top - cursor.trimmed;
             self.place_unreached(out, top, &mut cursor.floats);
@@ -475,12 +438,11 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         cursor
     }
 
-    /// Lays out a paragraph's lines from `from`, each chosen as `plan` says,
-    /// and moves `cursor` past them.
+    /// Lays out a paragraph's lines from `from` as `plan` says, and moves
+    /// `cursor` past them.
     ///
     /// Stops at the paragraph's end, a clamp, or where `plan` stops a trial.
-    /// Where given, `recent` records where each of the last lines started, so
-    /// a later layout can go back to one.
+    /// Where given, `recent` records a mark at each line's start.
     pub(super) fn paragraph_lines<const FLOATS: bool>(
         &mut self,
         out: &mut Lines,
@@ -493,11 +455,10 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         let id = lines.para.id;
         let mut start = from.start;
         let mut tally = Tally::new(from);
-        // A paragraph holding no cluster that makes a line makes one.
+        // An empty paragraph that makes a line makes one.
         let mut empty = start == lines.para.end;
         while start < lines.para.end || mem::take(&mut empty) {
             let Some(hold) = plan.hold(tally.next_line()) else {
-                // A trial of the room, past its line count.
                 break;
             };
             if let Some(recent) = recent.as_deref_mut() {
@@ -506,7 +467,6 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
                 recent.record(mark);
             }
             self.hold = hold;
-            // The first line, in its own variant where it has one.
             let first_line = out.lines.is_empty() && self.first_line.is_some();
             let first_para = if first_line {
                 self.trade_views();
@@ -522,8 +482,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
                 self.widen_end_line(&mut line);
             }
             self.hold = Hold::Free;
-            // The initial letter, as the first line's variant measured it.
-            // Its room is reported once the line is kept.
+            // The initial letter goes to the host once its line is kept.
             let content = self.stages.content;
             let letter =
                 if content.flags.contains(ContentFlags::INITIAL_LETTER) && out.lines.is_empty() {
@@ -535,8 +494,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
                 line.flags.insert(LineFlags::FIRST_LINE);
                 self.trade_views();
             }
-            // A line that does not end where its plan says no longer fits
-            // there. The rest of the paragraph is fitted greedily.
+            // A line that misses its planned end does not fit there; the
+            // rest of the paragraph is greedy.
             if let Hold::End(end) = hold {
                 if line.end == end {
                     line.flags.insert(LineFlags::SCORED);
@@ -545,10 +504,9 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
                 }
             }
             tally.take(&line);
-            // A trial of a narrower room ends at a line that overflows it,
-            // as Chrome's bisection stops there.
+            // A narrowing trial stops at an overflowing line, as Chrome's
+            // bisection does.
             let too_narrow = plan.is_narrowing_trial() && tally.overflowed;
-            // Every line holds a cluster at least, so this ends.
             debug_assert!(line.end > start || line.end == lines.para.end);
             start = line.end;
             let kept = self.keep(out, line, carry, letter, cursor);
@@ -561,12 +519,11 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     }
 
     /// Returns the line starting at `start`, and the room it leaves the
-    /// next at its end.
+    /// next.
     ///
     /// The line sits in `area` narrowed by the host's bands, at `cursor` or
-    /// below where the floats leave no room. Moves the cursor's items and
-    /// floats past the line's. Without `FLOATS`, it places no float and asks
-    /// for no checkpoint.
+    /// lower where the floats leave no room. Moves the cursor past the
+    /// line's items and floats.
     pub(super) fn line<const FLOATS: bool>(
         &mut self,
         out: &mut Lines,
@@ -579,12 +536,10 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         if FLOATS {
             self.place_leading(out, start, top, &mut cursor.floats);
         }
-        // An unsafe start is reshaped once, and every fit of the line shares
-        // the piece.
+        // Every fit of the line shares one reshaped start.
         let (window, mut head) = self.line_head(out, para, start);
-        // Fit where it starts, or below the floats where they narrow it
-        // until it overflows, taking back each try's floats. These are
-        // Blink's layout opportunities, one after another.
+        // Fit at `top`, or move down past floats that make the line
+        // overflow: Blink's layout opportunities.
         let mut top = top;
         let mut moves = 0;
         let trial = loop {
@@ -608,9 +563,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             if !movable {
                 break trial;
             }
-            // Ask where the bands change below the line as they stood before
-            // it. Its own floats would only move it past themselves. Blink's
-            // opportunities also use the exclusion space before the line.
+            // Ask where the bands change without the line's own floats, as
+            // Blink's opportunities do.
             let placed = from.is_some_and(|from| from.placed_since(out));
             if placed && let Some(from) = from {
                 from.rewind(self.exclusions, out, &mut cursor.floats);
@@ -620,19 +574,17 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
                     top = next;
                     moves += 1;
                 }
-                // Nowhere lower: the line stays and overflows. Where it placed
-                // floats, it is fitted again to place them again.
+                // Nowhere lower: the line stays and overflows, fitted once
+                // more to place the floats taken back.
                 None if placed => moves = MAX_MOVES_DOWN,
                 None => break trial,
             }
-            // Fit again, taking back what this try reshaped past the head.
             out.rewind_edges(head.after());
         };
-        // The line's first item, where the cursor stood, and the next's.
         let first_item = cursor.items;
         cursor.items = trial.height.next_item;
-        // Floats the line reached but did not place beside it go below it,
-        // now that its height is known (Blink's `PlaceFloatingObjects`).
+        // Floats not placed beside the line go below it, as in Blink's
+        // `PlaceFloatingObjects`.
         if FLOATS {
             let bottom = top + trial.height.extent.box_height();
             self.place_after(out, para, start, &trial.fitted, bottom, &mut cursor.floats);
@@ -646,10 +598,9 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// Fits `line` in the band asked at its reserve height, and returns the
     /// trial.
     ///
-    /// Where `FLOATS`, places the line's floats beside it or leaves them to
-    /// go below. Where the line's own height meets a narrower band, it is
-    /// fitted again there, at most [`SETTLES`] times. Each refit takes back
-    /// its floats, and the edge tables to the line's `head`.
+    /// Places the line's floats where `FLOATS`, and sets its `text-fit`
+    /// scale. A line taller than its reserve that meets a narrower band is
+    /// fitted again, at most [`SETTLES`] times.
     fn trial<const FLOATS: bool>(
         &mut self,
         out: &mut Lines,
@@ -701,12 +652,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
 
     /// Keeps `line` where `cursor` stands, and moves the cursor past it.
     ///
-    /// Applies the first line's trim and a clamp by count or by height.
-    /// Reports the initial letter, `letter`, to the host once its line is
-    /// kept. `carry` is the room the line leaves the next.
-    ///
-    /// Returns whether the lines go on after it, which they don't after a
-    /// clamp.
+    /// Applies the first line's trim and `line-clamp`, and reports `letter`
+    /// to the host. Returns `false` after a clamp.
     #[inline(always)]
     fn keep(
         &mut self,
@@ -717,10 +664,9 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         cursor: &mut Cursor,
     ) -> bool {
         line.facts.block_start = line.facts.block_start + cursor.trimmed;
-        // `line-clamp`: the last kept line is cut for an ellipsis where text
-        // follows it, and nothing after it is broken. A clamp the text does
-        // not reach clamps nothing, as Chrome lays the block out again
-        // without it (`kNeedsLineClampRelayout`).
+        // `line-clamp`: the last kept line takes an ellipsis where text
+        // follows. A clamp the text does not reach clamps nothing, as Chrome
+        // relays the block out without it (`kNeedsLineClampRelayout`).
         if let Clamp::Lines(limit) = self.clamp
             && out.lines.len() + 1 >= usize::try_from(limit).unwrap_or(usize::MAX)
             && line.end < self.clusters.end_id()
@@ -728,7 +674,6 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             line.flags.insert(LineFlags::ELLIPSIS);
             cursor.clamped = true;
         }
-        // A line the floats moved down starts below where the last ended.
         cursor.top = line.facts.block_start + line.extent.box_height();
         cursor.cleared = None;
         if out.lines.is_empty()
@@ -736,8 +681,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         {
             cursor.trimmed = trims.start(line.extent, line.scale, line.variant());
         }
-        // `line-clamp: auto`: a line that would take the block's content
-        // past its end, if it were the last, is not kept.
+        // `line-clamp: auto`: a line that would end the block past its end
+        // is not kept.
         if let Clamp::Height(end) = self.clamp
             && self.block_end_if_last(&line, cursor.trimmed) > end
         {
@@ -762,7 +707,6 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         self.scratch
             .placements
             .push_bounded(facts, "one placement fact per retained line");
-        // The room it leaves the next line at its end.
         self.carry = carry;
         if let Some(letter) = &letter {
             self.sink_initial_letter(out, letter, cursor.trimmed);
@@ -770,8 +714,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         !cursor.clamped
     }
 
-    /// Adds to `line`, a line holding no cluster at the text's end, the room
-    /// of the box edges on it, which no prefix sum holds.
+    /// Adds to `line`, an empty line at the text's end, the room of the box
+    /// edges on it, which no prefix sum holds.
     #[cold]
     #[inline(never)]
     fn widen_end_line(&self, line: &mut super::PendingLine) {
@@ -820,7 +764,9 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             forced: last
                 .and_then(|last| self.clusters.class(last))
                 .is_some_and(ClusterClass::is_forced_break),
-            exact_end: self.text_align.needs_exact_end(paragraph.level),
+            exact_end: self
+                .text_align
+                .needs_exact_end(self.stages.content.block.text_align_last),
             struts: measured.contains(MeasureFlags::BOXES_PAST_STRUT) || !work::fast_paths(),
         }
     }
@@ -828,11 +774,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// Returns the record of a kept line, fitted as `trial` is, its line box
     /// from `top`.
     ///
-    /// Pushes its reshaped pieces to the edge shapes. Its shifts are those
-    /// its last measure settled.
-    ///
-    /// Always inlined: out of line, the record it returns goes through
-    /// memory, which costs a 400-character relayout 1.2% more instructions.
+    /// Always inlined: out of line, the record goes through memory, which
+    /// costs a 400-character relayout 1.2% more instructions.
     #[inline(always)]
     pub(super) fn kept(
         &mut self,
@@ -860,12 +803,12 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         }
         let mut flags = fitted.flags;
         // `text-overflow: ellipsis` cuts a line that overflows its band, as
-        // Chrome's `LineInfo::HasOverflow` does: one with no break that fits.
+        // Chrome's `LineInfo::HasOverflow` does.
         if self.ellipsis && flags.contains(LineFlags::OVERFLOWS) {
             flags.insert(LineFlags::ELLIPSIS);
         }
-        // The shifts its height settled, sorted by node. Every measure writes
-        // them after the kept lines, and the kept line is the last measured.
+        // The kept line was measured last, so its shifts follow the kept
+        // lines'.
         let shifts = out.kept_shifts_end();
         if start == ClusterId::new(0) {
             out.set_letter_shift(height.letter_shift);

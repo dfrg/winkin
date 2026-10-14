@@ -1,5 +1,5 @@
-//! The calls the builder makes on the writer, but text: containers, atomic
-//! inlines, floats, absolutely positioned boxes, breaks and `finish`.
+//! Builder calls other than text: containers, atomic inlines, floats,
+//! absolutely positioned boxes, breaks and `finish`.
 
 use core::mem;
 
@@ -18,8 +18,10 @@ use crate::stages::content::{
 use crate::style::{ComputedStyle, FirstLineVariant, RubyGroup, RubyPosition, WhiteSpaceTrim};
 
 impl ContentWriter<'_> {
-    /// Opens a container, styled `style` and, where the block has
-    /// `::first-line`, `first_line`.
+    /// Opens a container styled `style`, and `first_line` on the first line.
+    ///
+    /// A ruby container inside an annotation or past `MAX_RUBY_DEPTH` is
+    /// flattened to a box.
     pub(crate) fn open(
         &mut self,
         container: ContainerKind,
@@ -43,13 +45,13 @@ impl ContentWriter<'_> {
         });
     }
 
-    /// Opens an anonymous ruby container for the annotation `key`, which
-    /// opens outside every other, set in `style`.
+    /// Opens an anonymous ruby container for annotation `key`, which has no
+    /// ruby around it.
     ///
-    /// Chrome wraps a `ruby-text` box whose parent is no ruby in a ruby
-    /// column whose base is empty. The container takes the text facts and
-    /// direction of the container it is in, and the ruby properties the
-    /// annotation inherits from it, and closes with the annotation.
+    /// Chrome wraps such a `ruby-text` box in a ruby column with an empty
+    /// base. The container takes the enclosing container's text facts and
+    /// direction and the annotation's `ruby` properties, and closes with the
+    /// annotation.
     fn open_anonymous_ruby(&mut self, key: NodeKey, style: &ComputedStyle<'_>) {
         self.open_lowered(
             ContainerKind::Ruby,
@@ -69,8 +71,8 @@ impl ContentWriter<'_> {
         );
     }
 
-    /// Opens a container of kind `container` for `key`, trimming white space
-    /// as `trim` says, its facts lowered by `lower` for its node's kind.
+    /// Opens a container, its facts lowered by `lower`. If it doesn't fit, a
+    /// dropped entry still goes on the stack to take its close.
     ///
     /// An `anonymous` ruby container closes with its annotation.
     fn open_lowered(
@@ -82,8 +84,8 @@ impl ContentWriter<'_> {
         lower: impl FnOnce(&mut Self, NodeKind) -> LoweredNode,
     ) {
         self.end_text();
-        // The first letter is not looked for in ruby, where CSS leaves what
-        // an initial letter does undefined (CSS Inline 3, section 7.3.1).
+        // No first letter in ruby, where CSS leaves an initial letter
+        // undefined (CSS Inline 3, section 7.3.1).
         if container.is_ruby() {
             self.first_letter_ends();
         }
@@ -98,7 +100,7 @@ impl ContentWriter<'_> {
             anonymous,
             annotation_close: None,
         };
-        // A node and its opening item, and room left for its close.
+        // Room for the node, its opening item and its close.
         if !self.has_node_room() || !self.has_item_room(2) {
             self.room.report.drop_node();
             self.push_open(dropped);
@@ -120,8 +122,8 @@ impl ContentWriter<'_> {
         }
     }
 
-    /// Closes the innermost box, if the innermost container is a box. An
-    /// unbalanced close is ignored.
+    /// Closes the innermost container if it is a box; otherwise does
+    /// nothing.
     pub(crate) fn close(&mut self) {
         if self
             .scratch
@@ -133,9 +135,10 @@ impl ContentWriter<'_> {
         }
     }
 
-    /// Closes the innermost ruby container, including one in another's base.
-    /// A normalized container still consumes its end if its annotation
-    /// already closed the box that represented it.
+    /// Closes the innermost ruby container, nested ones included.
+    ///
+    /// A flattened container consumes its `end_ruby` even if an annotation
+    /// already closed its box.
     pub(crate) fn end_ruby(&mut self) {
         if self.ruby.flattened > 0 {
             self.ruby.flattened -= 1;
@@ -145,20 +148,15 @@ impl ContentWriter<'_> {
         self.close_through(ContainerKind::Ruby, None);
     }
 
-    /// Closes containers down to and including the innermost of `kind`, or
-    /// nothing if none is open.
+    /// Closes containers through the innermost of `kind`; does nothing if
+    /// none is open.
     ///
-    /// `stop` is a kind the search does not look past: an annotation is
-    /// ended only within the innermost ruby.
-    ///
-    /// Only a ruby container, an annotation or a nested ruby container is
-    /// closed through, and each links to the next one out. The search
-    /// follows those links, never the boxes between. However deep the
-    /// caller nests boxes in a ruby, a call that closes nothing looks at an
-    /// entry or two.
+    /// The search follows the ruby chain, skipping boxes, and does not look
+    /// past a `stop` kind, so an annotation ends only within the innermost
+    /// ruby. A call that closes nothing looks at an entry or two at any
+    /// box depth.
     fn close_through(&mut self, kind: ContainerKind, stop: Option<ContainerKind>) {
-        // A ruby container written as a box is still the innermost
-        // container to the calls that stop at one.
+        // A flattened ruby still stops a search that stops at ruby.
         let stops = |open: &Open| {
             Some(open.kind) == stop
                 || (stop == Some(ContainerKind::Ruby) && open.kind == ContainerKind::FlattenedRuby)
@@ -167,7 +165,7 @@ impl ContentWriter<'_> {
             .ruby_chain()
             .find(|(_, open)| open.kind == kind || stops(open))
             .filter(|(_, open)| open.kind == kind);
-        // It closes, and everything open inside it first.
+        // Close everything inside it, then it.
         if let Some((id, _)) = found {
             while id < self.scratch.open.next_id() {
                 self.pop();
@@ -175,15 +173,13 @@ impl ContentWriter<'_> {
         }
     }
 
-    /// Opens an annotation of the innermost ruby, closing whatever is open
-    /// inside that ruby first (a box in its base, or the annotation before).
-    /// Outside any ruby, it opens in an anonymous ruby container of its own.
+    /// Opens an annotation in the innermost real ruby container, first
+    /// closing whatever is open inside it (a base box, the previous
+    /// annotation, a flattened ruby). Outside any ruby, it opens in an
+    /// anonymous ruby container.
     ///
-    /// The annotation takes `side`, its annotation container's
-    /// `ruby-position`, where it has one, and otherwise the innermost ruby
-    /// container's, including a nested base container. Only a normalized
-    /// container is closed before its annotation opens in the enclosing real
-    /// container. Its side is copied while its own style is still available.
+    /// Its `ruby-position` is `side` if given, else that of the innermost
+    /// ruby container, flattened or not, read before it closes.
     pub(crate) fn annotation(
         &mut self,
         key: NodeKey,
@@ -212,10 +208,9 @@ impl ContentWriter<'_> {
             })
         };
         let position = container_side(FirstLineVariant::Standard);
-        // On the first line the side is the container's there, which
-        // `::first-line` may change.
+        // `::first-line` may change the container's side.
         let first_position = container_side(FirstLineVariant::FirstLine);
-        // Everything open inside it closes.
+        // Close everything inside the ruby container.
         while self
             .scratch
             .open
@@ -243,13 +238,9 @@ impl ContentWriter<'_> {
         self.open(ContainerKind::Annotation, key, &style, first_line.as_ref());
     }
 
-    /// Returns where on the stack the ruby container an annotation opening
-    /// now opens in is, and the container whose side it takes.
-    ///
-    /// The two are found by the links, not by looking at the boxes in
-    /// between: the innermost ruby container of either kind, whose side the
-    /// annotation takes, and the innermost real ruby container, which is it
-    /// or one further out.
+    /// Returns the stack id of the real ruby container a new annotation
+    /// opens in, and the innermost ruby container, real or flattened, whose
+    /// side it takes. Both are found along the ruby chain.
     fn annotated_ruby(&self) -> Option<(OpenId, Open)> {
         let mut chain = self.ruby_chain();
         chain
@@ -267,8 +258,8 @@ impl ContentWriter<'_> {
             })
     }
 
-    /// Closes the innermost annotation, and whatever is open inside it, in
-    /// the innermost ruby container. An anonymous container closes with it.
+    /// Closes the innermost annotation of the innermost ruby container, with
+    /// everything inside it. An anonymous container closes with it.
     pub(crate) fn end_annotation(&mut self) {
         self.close_through(ContainerKind::Annotation, Some(ContainerKind::Ruby));
         if self.scratch.open.last().is_some_and(|open| open.anonymous) {
@@ -276,7 +267,7 @@ impl ContentWriter<'_> {
         }
     }
 
-    /// Writes an atomic inline: one U+FFFC, in a node of its own.
+    /// Writes an atomic inline: one U+FFFC in its own node.
     pub(crate) fn atomic(
         &mut self,
         key: NodeKey,
@@ -285,14 +276,14 @@ impl ContentWriter<'_> {
         size: BoxSize,
     ) {
         self.end_text();
-        // Its character, and the space a pending run may owe before it.
+        // Room for U+FFFC and a pending run's space.
         if !self.has_node_room() || !self.has_item_room(1) || !self.has_text_room(OBJECT.len() + 1)
         {
             self.room.report.drop_node();
             return;
         }
         let lowered = self.lower_node_styles(style, first_line, NodeKind::Atomic, false);
-        // An atomic inline before the first letter leaves none (CSS
+        // An atomic inline before the first letter rules it out (CSS
         // Pseudo-Elements 4, section 2.2.2).
         self.first_letter_ends();
         self.combined_text_arrives(false);
@@ -303,7 +294,7 @@ impl ContentWriter<'_> {
             lowered,
             key,
             |writer, item| {
-                // Its node's offsets 0 and 1, before and after it.
+                // Source offsets 0 and 1 of its node, before and after it.
                 let at = TextOffset::new(writer.content.text.len());
                 writer.append(item, OBJECT);
                 writer.content.record(|map| map.generated(0..1, at));
@@ -326,11 +317,11 @@ impl ContentWriter<'_> {
         self.content.flags.insert(ContentFlags::ATOMICS);
     }
 
-    /// Notes that atomic inline `atomic` is keyed `key`, and flags the
-    /// content where an atomic inline before it has the same key.
+    /// Records `atomic`'s `key`, and flags the content if an earlier atomic
+    /// inline has the same key.
     ///
-    /// Once two share a key, it notes no more: the flag is all a search by
-    /// key reads.
+    /// After the flag is set it records nothing more; searches by key read
+    /// only the flag.
     fn note_atomic_key(&mut self, key: NodeKey, atomic: AtomicId) {
         if self
             .content
@@ -357,7 +348,7 @@ impl ContentWriter<'_> {
         }
     }
 
-    /// Writes a float's anchor, which takes no text and is opaque to
+    /// Writes a float's anchor, which has no text and is opaque to
     /// collapsing.
     pub(crate) fn float(
         &mut self,
@@ -371,7 +362,7 @@ impl ContentWriter<'_> {
             self.room.report.drop_node();
             return;
         }
-        // `::first-line` styles inline content, which a float is not.
+        // `::first-line` styles only inline content.
         let lowered = self.lower_node_styles(style, None, NodeKind::Float, false);
         let written = self.push_leaf(
             NodeKind::Float,
@@ -399,12 +390,12 @@ impl ContentWriter<'_> {
         self.content.flags.insert(ContentFlags::FLOATS);
     }
 
-    /// Writes an absolutely positioned box's anchor, which takes no text and
-    /// is opaque to collapsing, in a node styled by the box it is in.
+    /// Writes an absolutely positioned box's anchor, in a node with its
+    /// container's facts.
     ///
-    /// Chrome writes it as it writes a float's, as an opaque item with no
-    /// text of its own (`AppendOutOfFlowPositioned`). Capitalize reads past
-    /// it to the character before, as Chrome does.
+    /// Like a float's, it has no text and is opaque to collapsing, as in
+    /// Chrome's `AppendOutOfFlowPositioned`. Unlike a float, capitalize
+    /// reads past it, as in Chrome.
     pub(crate) fn absolute(&mut self, key: NodeKey, display: OriginalDisplay) {
         self.end_text();
         if !self.has_node_room() || !self.has_item_room(1) {
@@ -426,23 +417,21 @@ impl ContentWriter<'_> {
         );
     }
 
-    /// Writes a forced break: one `\n`, in a node of its own styled by the
-    /// box it is in.
+    /// Writes a forced break: one `\n` in its own node, with its
+    /// container's facts.
     ///
-    /// It takes the collapsible white space on both sides. It ends the
-    /// first line, and with it any first letter still to come.
+    /// It removes collapsible white space on both sides, ends the first
+    /// line and rules out a first letter still to come. `clear` is recorded
+    /// for a break that clears floats.
     ///
-    /// Inside a ruby container it is a space, as Blink makes it
-    /// (`kDisableForcedBreakInRubyColumn`). A column is one unit of a line,
-    /// and no paragraph ends inside one. The space ends a run of
-    /// collapsible white space before it and takes the one after it, as
-    /// Blink's space does.
-    ///
-    /// A break outside ruby that clears floats records `clear`.
+    /// Inside ruby it is a space instead, as in Blink
+    /// (`kDisableForcedBreakInRubyColumn`), since no paragraph ends inside a
+    /// column. The space ends the run before it and absorbs the white space
+    /// after it, as Blink's does.
     pub(crate) fn line_break(&mut self, key: NodeKey, clear: Option<Clear>) {
         let in_ruby = self.ruby.innermost.is_some();
         self.end_text();
-        // Its character, and in ruby the space a pending run may owe first.
+        // Room for its character, and in ruby a pending run's space.
         let bytes = if in_ruby { 2 } else { 1 };
         if !self.has_node_room() || !self.has_item_room(1) || !self.has_text_room(bytes) {
             self.room.report.drop_node();
@@ -482,17 +471,16 @@ impl ContentWriter<'_> {
         }
         self.text_node.last_char = '\n';
         if in_ruby {
-            // The white space after it collapses into it, as after a forced
-            // break, which leaves the collapser in the same state.
+            // White space after it collapses away, as after a forced break.
             self.collapser.step(Event::ForcedBreak);
         }
     }
 
-    /// Writes a break opportunity, `<wbr>`, as a generated U+200B.
+    /// Writes a `<wbr>` as a generated U+200B, in the current text node or
+    /// else the enclosing container.
     ///
-    /// It goes in the current text node, or between nodes in the box around
-    /// it. It is opaque to collapsing, and ends the source text node
-    /// `math-auto` measures, as an element between two text nodes does.
+    /// It is opaque to collapsing. It ends the text node `math-auto` is
+    /// measuring, as an element between two text nodes does.
     pub(crate) fn break_opportunity(&mut self) {
         if self.content.flags.contains(ContentFlags::MATH_AUTO) {
             self.end_math_text();
@@ -505,8 +493,7 @@ impl ContentWriter<'_> {
             return;
         }
         self.text_node.last_char = ZWSP;
-        // How far the text node's text has got; between nodes, how far the
-        // last node written got.
+        // The source position: in the text node, or after the last node.
         let (node, source) = match self.text_node.node {
             Some(node) => (node, self.text_node.source),
             None => (self.container(), self.content.extras().map.source_end()),
@@ -514,11 +501,12 @@ impl ContentWriter<'_> {
         self.generated_break(node, source);
     }
 
-    /// Closes everything open, settles the white space at the block's end,
-    /// and returns what was dropped.
+    /// Closes everything open, settles the block's trailing white space,
+    /// returns the working memory to the context, and reports what was
+    /// dropped.
     ///
-    /// The content is frozen from here. The builder calls this once, when
-    /// it finishes or is dropped, and calls nothing after.
+    /// The builder calls this once, when it finishes or is dropped; the
+    /// content is frozen after.
     pub(crate) fn finish(&mut self) -> BuildReport {
         self.end_text();
         self.first_letter_ends();
@@ -533,7 +521,7 @@ impl ContentWriter<'_> {
         if let Some(block) = self.content.nodes.get_mut(NodeId::BLOCK) {
             block.end = end;
         }
-        // The boxes are pushed in node order, and found by key.
+        // Keyed boxes were pushed in node order; sort them for lookup by key.
         if let Some(extras) = self.content.extras.as_deref_mut() {
             extras.keyed_boxes.sort_from(0);
         }
@@ -546,8 +534,8 @@ impl ContentWriter<'_> {
         self.room.report
     }
 
-    /// Returns the content written and the context, for the stages that
-    /// read it once it is finished.
+    /// Returns the finished content and the context, for the stages that
+    /// read it.
     pub(crate) fn parts(&mut self) -> (&Content, &mut Context) {
         (self.content, self.cx)
     }

@@ -168,7 +168,8 @@ fn a_word_motion_costs_the_distance_it_moves() {
     }
 }
 
-/// A step by character on the screen inside a line of Arabic costs the same however long the line.
+/// A step by character on the screen inside a line of Arabic costs the same
+/// however long the line.
 ///
 /// Where the line reads one way, the step is found in text order and
 /// neither caret is placed, so the line is not walked. Sixteen steps right
@@ -198,7 +199,8 @@ fn a_character_step_inside_an_arabic_line_costs_the_same_however_long_the_line()
                 selection.modify(&layout, direction.moving(Granularity::Character));
             }
         }
-        // Left is forward here, so the caret lands upstream, with the text it passed.
+        // Left is forward here, so the caret lands upstream, with the text it
+        // passed.
         assert_eq!(
             selection.focus(),
             Position::new(middle.offset, Affinity::Upstream)

@@ -1,23 +1,18 @@
 //! Measurement: everything about the text that doesn't depend on the line
 //! width.
 //!
-//! In: [`MeasureInput`], the content, analysis, fonts and shaped glyphs and
-//! advances. Out: [`Measured`].
-//! Start at: [`measure_text`], then `Scan::walk` in `scan`.
+//! In: [`MeasureInput`]. Out: [`Measured`], frozen until the next measure.
+//! Start at [`measure_text`], then `Scan::measure` in `scan`.
 //!
-//! - `scan` turns the advances into prefix sums, and finds the intrinsic
-//!   widths, item extents, line-edge costs and ruby columns.
-//! - `metrics` resolves each text's primary-font metrics.
-//! - `boxes` works out the boxes' fixed shifts and extents.
-//! - `edges`, `spacing`, `autospace`, `tabs`, `hang`, `justify` and `ruby`
-//!   hold rules that line breaking and line layout ask too.
-//! - `pen` answers where the pen stands at a cluster, and what a cluster
-//!   adds along the line.
-//! - `extent` holds [`Extent`], the reach over and under a baseline.
-//! - `prefix`, `items`, `ruby_columns` and `generated` own the stored tables.
-//!
-//! [`Measured`] holds the text's measurements and the first line's. It stays
-//! frozen until the next preparation.
+//! - `scan`: the prefix sums, intrinsic widths, item extents, em boxes,
+//!   line-edge costs, ruby columns and initial letter.
+//! - `metrics`: each text's primary-font metrics.
+//! - `boxes`: the boxes' fixed shifts and extents.
+//! - `edges`, `spacing`, `autospace`, `tabs`, `hang`, `justify`, `ruby`:
+//!   rules shared with line breaking and line layout.
+//! - `pen`: the pen position at a cluster, and what a cluster adds.
+//! - `extent`: [`Extent`], the reach over and under a baseline.
+//! - `prefix`, `items`, `ruby_columns`, `generated`: the stored tables.
 
 mod autospace;
 mod boxes;
@@ -76,12 +71,7 @@ use tabs::tab_advance;
 pub(crate) use tabs::tab_advance_reached;
 use tabs::{TabReach, TabStops};
 
-/// What the measure stage reads: the stages before it and some config.
-///
-/// Of the shaping, it reads the glyph table, which says which clusters
-/// continue a ligature and take no spacing, and each cluster's advance,
-/// which the prefix sums add up. The config says which clusters take word-spacing, how far a superscript
-/// or subscript moves, and whether `dominant-baseline` moves a box.
+/// The measure stage's input: the stages before it and some config.
 pub(crate) struct MeasureInput<'a> {
     pub(crate) content: &'a Content,
     pub(crate) analysis: &'a Analysis,
@@ -94,14 +84,12 @@ pub(crate) struct MeasureInput<'a> {
     pub(crate) dominant_baseline: DominantBaselines,
     /// How far a ruby annotation may reach over the text beside it.
     pub(crate) ruby_overhang: RubyOverhangRule,
+    /// Whether a ruby column breaks only where every annotation has an opportunity.
     pub(crate) ruby_break_within: RubyBreakWithin,
 }
 
 impl<'a> MeasureInput<'a> {
-    /// Returns the clusters the scan measures in `variant`.
-    ///
-    /// They are the text's, or the first paragraph's for the first line's
-    /// variant.
+    /// Returns the clusters `variant` measures: all, or the first paragraph's.
     fn reach(&self, variant: FirstLineVariant) -> Range<ClusterId> {
         let all = ClusterId::new(0)..self.analysis.clusters.end_id();
         match variant {
@@ -112,17 +100,14 @@ impl<'a> MeasureInput<'a> {
         }
     }
 
-    /// Returns the line metrics of the primary font of text with the facts
-    /// `text`.
-    ///
-    /// The primary font is its font request's first resolved font, and its
-    /// lines are measured by it. Returns `None` where it has none.
+    /// Returns the line metrics of `text`'s primary font, its request's first
+    /// resolved font, or `None` where it resolved none.
     fn primary(&self, text: TextFactsId) -> Option<&'a FontLineMetrics> {
         let request = self.content.facts.text_request(text);
         self.fonts.primary_font(request).map(|used| &used.metrics)
     }
 
-    /// Returns the computed font size of text with the facts `text`.
+    /// Returns `text`'s computed font size.
     fn size(&self, text: TextFactsId) -> f32 {
         let facts = &self.content.facts;
         facts.request(facts.text_request(text)).font.computed_size()
@@ -132,17 +117,12 @@ impl<'a> MeasureInput<'a> {
 /// Measures the text of `input` into `out`, summing shaping's advances into
 /// prefix sums.
 ///
-/// Where the fonts and text facts are new, as after a build, it first writes
-/// each text's primary-font metrics, once for both variants. Then it shapes
-/// the hyphens and ellipses font selection chose fonts for, which
-/// `new_fonts` holds, with the shaping caches in `cx`, so that a line
-/// ending at a soft hyphen is charged its hyphen's width. Otherwise it keeps both, which depend only on
-/// the fonts and the text facts. Where `::first-line` restyles something, it
-/// measures the first paragraph again in its first-line styles, from the
-/// first line's advances or the text's.
+/// With `new_fonts`, as after a build, it also measures the text metrics and
+/// shapes the hyphens and ellipses with `cx`. Without, it keeps both: they
+/// depend only on the fonts and the text facts. Where `::first-line`
+/// restyles something, it measures the first paragraph again in those styles.
 ///
-/// Clears and fills `out`; nothing else writes it. Each prefix keeps its
-/// buffer from one measure to the next, so a warm measure allocates none.
+/// Only this writes `out`. A warm measure allocates nothing.
 pub(crate) fn measure_text<'f>(
     input: &MeasureInput<'f>,
     cx: &mut ShapeSession<'_, 'f>,
@@ -158,8 +138,7 @@ pub(crate) fn measure_text<'f>(
         if let Some(generated) = &mut out.generated {
             generated.clear();
         }
-        // The generated texts, whichever line they are on, where the font
-        // stage chose fonts for one.
+        // Font selection chose fonts for some generated text.
         if generated_input.fonts.iter().next().is_some() {
             out.generated_mut().fill(input, cx, generated_input);
         }
@@ -184,7 +163,7 @@ pub(crate) fn measure_text<'f>(
     *intrinsic = widths.finish(Some(&first_widths));
 }
 
-/// Preparation's reusable cursors for intrinsic ruby pieces, one per level.
+/// The scan's reusable buffers: per-level cursors that cut ruby columns.
 #[derive(Default)]
 pub(crate) struct MeasureScratch {
     ruby_starts: Vec<ClusterId>,
@@ -192,70 +171,54 @@ pub(crate) struct MeasureScratch {
 heap_bytes! { MeasureScratch { ruby_starts } }
 
 define_id! {
-    /// Names an annotation level of a ruby column in a layout's table of
-    /// [`RubyLevel`]s.
+    /// Names a [`RubyLevel`], one annotation level of a ruby column.
     pub(crate) struct RubyLevelId(u32);
 }
 
 define_id! {
-    /// Names a ruby column in a layout's table of [`RubyColumn`]s, which
-    /// are in text order.
+    /// Names a [`RubyColumn`]. Columns are in text order.
     pub(crate) struct RubyColumnId(u32);
 }
 
 define_id! {
-    /// Names an inline box that keeps a fragment in a layout's table of
-    /// them, [`KeptBoxes`], which is in node order.
+    /// Names an inline box in [`KeptBoxes`], which is in node order.
     pub(crate) struct KeptBoxId(u32);
 }
 
 define_id! {
-    /// Names an em box in a layout's table of the distinct em boxes of its
-    /// text items, [`ItemEmBoxes`]: few, one a font and size.
+    /// Names an em box in [`ItemEmBoxes`]: one per distinct font and size.
     struct EmBoxId(u8);
 }
 
 impl EmBoxId {
-    /// The first, which is none: what an item keeping none names.
+    /// The first box, [`Extent::NONE`], named by an item with no em box.
     const NONE: Self = Self(0);
 }
 
 define_id! {
-    /// Names a generated text in a layout's table of
-    /// [`ShapedGenerated`]s.
+    /// Names a [`ShapedGenerated`], one generated text.
     pub(crate) struct ShapedGeneratedId(u32);
 }
 
 define_flags! {
-    /// What the measure stage found of a paragraph: gates the breaker uses
-    /// to skip work. One byte a paragraph.
+    /// Per-paragraph facts the breaker reads to skip work. One byte a paragraph.
     pub(crate) struct MeasureFlags(u8) {
         /// The prefix decreases from one boundary to the next.
         ///
-        /// A negative advance, spacing or edge makes it decrease. The breaker
-        /// then walks the paragraph instead of searching it. A dip between
-        /// two boundaries that recovers before the next does not count, since
-        /// the breaker reads only boundaries. Tabs, the other reason to walk,
-        /// are analysis's `HAS_TABS`.
+        /// The breaker then walks the paragraph instead of searching it. A dip
+        /// between boundaries doesn't count. Tabs also force a walk (analysis's
+        /// `HAS_TABS`).
         pub(super) const NONMONOTONE = 1 << 0;
-        /// Some line-edge cost falls in the paragraph, so the breaker reads
-        /// the costs. A cloned box's edges count.
+        /// Some line-edge cost falls in the paragraph.
         pub(super) const HAS_EDGE_COSTS = 1 << 1;
-        /// `text-autospace` put room at a seam in the paragraph.
-        ///
-        /// A reshaped line edge spaces the seam as the prefix did, and a line
-        /// ending at the seam gives the room back. The breaker looks for
-        /// seams only where this is set.
+        /// `text-autospace` puts room at a seam in the paragraph. The breaker
+        /// looks for seams only where this is set.
         pub(super) const HAS_AUTOSPACE = 1 << 2;
-        /// An inline box open in the paragraph has a strut reaching past the
-        /// block's, over or under.
-        ///
-        /// Only then can the struts of the boxes open across a line's start
-        /// grow its line box past the block's strut. The breaker unites them
-        /// only where this is set.
+        /// An inline box open in the paragraph has a strut past the block's. The
+        /// breaker unites open boxes' struts only where this is set.
         pub(super) const BOXES_PAST_STRUT = 1 << 3;
-        /// Some root ruby column offers internal cuts. Other paragraphs skip
-        /// continuation fitting.
+        /// Some root ruby column may break inside. The breaker fits ruby
+        /// continuations only where this is set.
         pub(super) const HAS_BREAKABLE_RUBY = 1 << 4;
     }
 }
@@ -263,48 +226,35 @@ define_flags! {
 define_flags! {
     /// What a line-edge cost says beyond its amounts.
     pub(crate) struct LineEdgeFlags(u8) {
-        /// A line ending here hyphenates.
-        ///
-        /// The end amount is the hyphen's width, and line layout draws the
-        /// generated hyphen.
+        /// A line ending here hyphenates: `end` is the hyphen's width.
         pub(super) const HYPHEN = 1 << 0;
-        /// The start amount gives back a mark hanging at the start of the
-        /// block's first line (`hanging-punctuation: first`).
-        ///
-        /// Only that line pays it. The mark is its first cluster.
+        /// The start amount gives back the first cluster's hanging mark, on the
+        /// block's first line only (`hanging-punctuation: first`).
         pub(super) const FIRST_LINE_ONLY = 1 << 1;
-        /// The flex is a mark that hangs whether or not the line needs it
-        /// to (`force-end` or `last`).
-        ///
-        /// The breaker always takes such a flex. Without this flag, it takes
-        /// a flex only where the line would not fit.
+        /// The flex always hangs (`force-end` or `last`). Without this flag, the
+        /// breaker takes the flex only where the line would not fit.
         pub(super) const HANG_FORCED = 1 << 2;
     }
 }
 
-/// Everything a line pays or gains because it starts or ends at one boundary.
+/// What a line pays or gains for starting or ending at one boundary.
 ///
-/// The costs are 20 bytes each, in a sparse table sorted by boundary. Plain
-/// text has none.
-///
-/// A cost comes from the hyphen at a soft hyphen, cloned box edges,
-/// `line-padding`, `hanging-punctuation`, or ruby overhang with no
-/// neighbour. Each depends on the boundary, not on the width, so the breaker
-/// reads a table instead of measuring. It charges `end + start` for a
-/// candidate line. It takes `flex` off where the line would otherwise
-/// overflow, or always where [`LineEdgeFlags::HANG_FORCED`] says. The
-/// default is a boundary that pays nothing and gives nothing back.
+/// Sources: a soft hyphen's hyphen, cloned box edges, `line-padding`,
+/// `hanging-punctuation`, and ruby overhang with no neighbour. None depends
+/// on the width, so the breaker reads them from a sparse table sorted by
+/// boundary, 20 bytes a row. Plain text has none. The default pays nothing.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub(crate) struct LineEdgeCost {
-    /// The boundary, which the costs are sorted by.
+    /// The boundary.
     at: ClusterId,
     /// What a line ending here pays.
     pub(super) end: LayoutUnit,
     /// What a line starting here pays.
     pub(super) start: LayoutUnit,
-    /// Of `end`, what the breaker may take back if the line fits without it.
+    /// The part of `end` the breaker gives back where the line would overflow,
+    /// or always under [`LineEdgeFlags::HANG_FORCED`].
     pub(super) flex: LayoutUnit,
-    /// What else is true of it.
+    /// Whether it hyphenates, applies to the first line only, or hangs always.
     pub(super) flags: LineEdgeFlags,
 }
 
@@ -319,8 +269,7 @@ impl Keyed for LineEdgeCost {
 }
 
 impl LineEdgeCost {
-    /// Returns what a line ending here pays, less the flex a forced hang
-    /// always takes back (`hanging-punctuation: force-end`).
+    /// Returns `end`, less the flex where it always hangs.
     pub(crate) fn charged_end(&self) -> LayoutUnit {
         if self.flags.contains(LineEdgeFlags::HANG_FORCED) {
             self.end - self.flex
@@ -330,14 +279,14 @@ impl LineEdgeCost {
     }
 }
 
-/// How wide the content asks to be, on layout's grid.
+/// The content's min-content and max-content widths, in `LayoutUnit`s.
 ///
 /// [`IntrinsicSizes`] hands these to the host in pixels.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub(crate) struct IntrinsicWidths {
-    /// The widest run of content no line may break inside: min-content.
+    /// Min-content: the widest content no line may break inside.
     min: LayoutUnit,
-    /// The widest paragraph: max-content.
+    /// Max-content: the widest paragraph.
     max: LayoutUnit,
 }
 
@@ -345,14 +294,14 @@ pub(crate) struct IntrinsicWidths {
 #[derive(Copy, Clone, PartialEq, Debug, Default)]
 #[non_exhaustive]
 pub struct IntrinsicSizes {
-    /// The minimum nonoverflowing width in pixels: the widest unbreakable content.
+    /// The min-content width in pixels: the widest unbreakable content.
     pub min_content: f32,
-    /// The width in pixels with only forced breaks: the widest paragraph.
+    /// The max-content width in pixels: the widest paragraph.
     pub max_content: f32,
 }
 
 impl From<IntrinsicWidths> for IntrinsicSizes {
-    /// The sizes the measure stage found, in pixels.
+    /// Converts the widths to pixels.
     fn from(intrinsic: IntrinsicWidths) -> Self {
         Self {
             min_content: intrinsic.min.to_px(),
@@ -361,89 +310,61 @@ impl From<IntrinsicWidths> for IntrinsicSizes {
     }
 }
 
-/// What text with one row of facts measures in its primary font.
+/// The facts of one [`TextFactsId`] that need its primary font.
 ///
-/// These are the facts the builder can't lower, since each needs the font.
-/// The measure stage writes one row for every [`TextFactsId`] of the
-/// content, the first line's included, so one table serves both variants.
-/// Readers use [`Measured::text_metrics`]. A row is 48 bytes, and a document
-/// has a few.
+/// One row per text facts, the first line's included, so one table serves
+/// both variants. 48 bytes a row; a document has a few.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub(crate) struct TextMetrics {
-    /// The strut: the primary font's ascent and descent around the used line
-    /// height.
+    /// The primary font's ascent and descent, leaded to the line height as
+    /// Blink's `CalculateLeadingSpace` does.
     ///
-    /// The leading is split as Blink's `CalculateLeadingSpace` splits it. A
-    /// text item, a `<br>` and a box's opening edge reach this far across
-    /// the line. The block's strut is every line's. [`Extent::NONE`] where
-    /// the text has no primary font.
+    /// Text, a `<br>` and a box's opening edge take this extent; the block's is
+    /// every line's strut. [`Extent::NONE`] where there is no primary font.
     strut: Extent,
-    /// The used line height, as Chrome's `ComputedLineHeightAsFixed` makes
-    /// it.
+    /// The used line height, as Chrome's `ComputedLineHeightAsFixed` makes it.
     ///
-    /// For `normal` it is the primary font's line spacing. For a number it
-    /// is that factor of the computed size. A length is rounded onto the
-    /// grid. A `vertical-align` percentage is of this height. Zero where the
-    /// text has no primary font.
+    /// `normal` is the primary font's line spacing, a number scales the
+    /// computed size, and a length rounds to the grid. A `vertical-align`
+    /// percentage is of this height. Zero where there is no primary font.
     line_height: LayoutUnit,
-    /// Where the tabs stop: `tab-size` in the block container's spaces or as
-    /// a length, and the block's letter-spacing.
+    /// The tab stops: `tab-size` and the block's letter-spacing.
     pub(super) tab: TabStops,
-    /// The em box the emphasis marks are drawn in.
+    /// The em box emphasis marks are drawn in: the primary font's, at half the
+    /// computed size.
     ///
-    /// It is the primary font's em box at half the computed size. The size
-    /// rounds to a whole pixel (`lroundf`), the ascent to the nearest 1/64,
-    /// and the descent is the rest of the em. Blink normalizes the font it
-    /// draws marks in the same way (`SimpleFontData::EmphasisMarkFontData`).
+    /// The size rounds to a whole pixel (`lroundf`), the ascent to 1/64, and the
+    /// descent takes the rest, as in Blink's `SimpleFontData::EmphasisMarkFontData`.
     /// [`Extent::NONE`] where the text sets no marks.
     pub(crate) mark: Extent,
 }
 
-/// Measured text: the text's, or the first paragraph's under `::first-line`
-/// styles.
-///
-/// The first paragraph's has the same tables over fewer clusters. Each table
-/// has its own type and methods: the prefix, the paragraph flags, and the
-/// extents and strut. The tables only some content has live in a box of
-/// their own ([`RareMeasures`]).
+/// Measured text: the whole text's, or the first paragraph's under
+/// `::first-line` styles.
 pub(crate) struct MeasuredText {
     /// The prefix advances.
     pub(crate) prefix: PrefixAdvances,
-    /// What the measure stage found of each paragraph
-    /// ([`paragraph`](Self::paragraph)).
-    ///
-    /// The breaker searches a paragraph whose prefix never goes back. It
-    /// looks for line-edge costs and seams only where a paragraph has them.
+    /// Each paragraph's flags ([`paragraph`](Self::paragraph)).
     paragraphs: Table<ParagraphId, MeasureFlags>,
     /// Each item's extent, and the strut.
     pub(crate) extents: ItemExtents,
-    /// The tables only some content has.
-    ///
-    /// The box is made the first time a build needs it, then cleared with
-    /// the rest and kept, never dropped. Most layouts hold only the empty
-    /// pointer.
+    /// The tables only some content has, boxed on first use and kept after.
+    /// Most layouts hold `None`.
     rare: Option<Box<RareMeasures>>,
 }
 
 /// The tables of a [`MeasuredText`] that only some content fills.
 ///
-/// They are the line-edge costs, the baseline shifts, the text's em boxes
-/// (for ruby or emphasis marks), the ruby columns, the kept boxes and the
-/// block's initial letter. Only the measure stage writes them. A text without them reads
-/// [`RareMeasures::NONE`].
+/// A text without them reads [`RareMeasures::NONE`].
 struct RareMeasures {
-    /// The line-edge costs.
     edge_costs: LineEdgeCosts,
-    /// The baseline shifts: how far each box or atomic inline is raised from
-    /// its parent's baseline, positive up.
+    /// How far each box or atomic inline is raised from its parent's
+    /// baseline, positive up, sorted by node. A node with no entry doesn't move.
     ///
-    /// They hold the shifts that don't depend on the line:
-    /// `vertical-align: super`, `sub`, a length or a percentage, and
-    /// `dominant-baseline` where the config applies it. The table is sorted
-    /// by node and sparse: a node with no entry doesn't move
-    /// ([`MeasuredText::shift`]). The breaker works out the shifts that
-    /// depend on the line (`middle`, `text-top`, `text-bottom`, `top`,
-    /// `bottom`) per line.
+    /// Only line-independent shifts: `vertical-align: super`, `sub`, a length
+    /// or a percentage, and `dominant-baseline` where the config applies it.
+    /// The breaker works out `middle`, `text-top`, `text-bottom`, `top` and
+    /// `bottom` per line.
     shifts: SortedTable<(NodeId, LayoutUnit)>,
     em_boxes: ItemEmBoxes,
     rubies: RubyColumns,
@@ -454,7 +375,7 @@ struct RareMeasures {
 }
 
 impl RareMeasures {
-    /// None of them: what a text reads where its build had none.
+    /// Empty tables.
     const NONE: Self = Self::new();
 
     const fn new() -> Self {
@@ -468,8 +389,8 @@ impl RareMeasures {
         }
     }
 
-    /// Returns an empty set on the heap, out of line, so that each writer
-    /// of a rare table inlines only the test for the box.
+    /// Returns empty tables on the heap. Out of line, so a writer inlines only
+    /// the test for the box.
     #[cold]
     #[inline(never)]
     fn boxed() -> Box<Self> {
@@ -486,7 +407,7 @@ impl RareMeasures {
     }
 }
 
-/// What a text with none of the rare tables reads them as: empty.
+/// The rare tables a text without its box reads.
 static NO_RARE_MEASURES: RareMeasures = RareMeasures::NONE;
 
 impl MeasuredText {
@@ -508,21 +429,18 @@ impl MeasuredText {
         }
     }
 
-    /// Its rare tables: empty where its build had none.
+    /// Returns the rare tables, empty where the build had none.
     #[inline]
     fn rare(&self) -> &RareMeasures {
         self.rare.as_deref().unwrap_or(&NO_RARE_MEASURES)
     }
 
-    /// Returns its rare tables for the scan to write.
-    ///
-    /// The box is made, empty, the first time a build has any, and kept
-    /// after.
+    /// Returns the rare tables for writing, boxing them on first use.
     fn rare_mut(&mut self) -> &mut RareMeasures {
         self.rare.get_or_insert_with(RareMeasures::boxed)
     }
 
-    /// What was found of `paragraph`, or nothing past the last.
+    /// Returns the flags of `paragraph`, or none past the last paragraph.
     #[inline]
     pub(crate) fn paragraph(&self, paragraph: ParagraphId) -> MeasureFlags {
         self.paragraphs
@@ -531,17 +449,14 @@ impl MeasuredText {
             .unwrap_or(MeasureFlags::NONE)
     }
 
-    /// Each text item's em box, where the content has ruby or marks.
+    /// Returns each text item's em box, where the content has ruby or marks.
     #[inline]
     pub(crate) fn em_boxes(&self) -> &ItemEmBoxes {
         &self.rare().em_boxes
     }
 
-    /// Returns how far `node`'s baseline is raised from its parent's by
-    /// what doesn't depend on its line.
-    ///
-    /// A negative shift lowers it. A node with no shift of its own gets
-    /// zero. The lookup halves the sorted table.
+    /// Returns how far `node`'s baseline is raised from its parent's,
+    /// independent of the line. Negative lowers it; zero where none is set.
     #[inline]
     pub(super) fn shift(&self, node: NodeId) -> LayoutUnit {
         self.shifts()
@@ -549,32 +464,32 @@ impl MeasuredText {
             .map_or(LayoutUnit::ZERO, |&(_, shift)| shift)
     }
 
-    /// The baseline shifts, sorted by node: none where no box has one.
+    /// Returns the baseline shifts, sorted by node: none where no box has one.
     #[inline]
     pub(super) fn shifts(&self) -> &SortedTable<(NodeId, LayoutUnit)> {
         &self.rare().shifts
     }
 
-    /// The line-edge costs: none where no line's edge costs anything.
+    /// Returns the line-edge costs: none where no line's edge costs anything.
     #[inline]
     pub(crate) fn edge_costs(&self) -> &LineEdgeCosts {
         &self.rare().edge_costs
     }
 
-    /// The boxes that keep a fragment, with their fragments' extents: none
-    /// where every box is culled.
+    /// Returns the boxes that keep a fragment, with their fragments' extents:
+    /// none where every box is culled.
     #[inline]
     pub(crate) fn kept_boxes(&self) -> &KeptBoxes {
         &self.rare().kept_boxes
     }
 
-    /// The ruby columns and their levels.
+    /// Returns the ruby columns and their levels.
     #[inline]
     pub(crate) fn ruby_columns(&self) -> &RubyColumns {
         &self.rare().rubies
     }
 
-    /// The block's initial letter, as measured: `None` where it has none.
+    /// Returns the block's initial letter, or `None` where it has none.
     #[inline]
     pub(crate) fn initial_letter(&self) -> Option<&InitialLetter> {
         self.rare().initial_letter.as_ref()
@@ -586,7 +501,7 @@ impl FirstLineState for MeasuredText {
         MeasuredText::clear(self);
     }
 
-    /// Whether it holds no prefix: a variant the build had no use for.
+    /// Returns whether it holds no prefix: a variant the build had no use for.
     fn is_empty(&self) -> bool {
         self.prefix.is_empty()
     }
@@ -598,38 +513,28 @@ impl Default for MeasuredText {
     }
 }
 
-/// The block's initial letter as the measure stage sizes it.
+/// The block's initial letter, sized.
 ///
-/// It is the box that sets `initial-letter` at the block's start: its
-/// `::first-letter`, or its first inline box. The box is fitted to the ink
-/// of what it holds, as Chrome's `LayoutInitialLetterBox` is
-/// (`initial_letter_utils`).
+/// It is the box at the block's start that sets `initial-letter`: its
+/// `::first-letter` or first inline box. The box fits the ink of what it
+/// holds, as Chrome's `LayoutInitialLetterBox` does.
 ///
-/// - **Along the line:** the box's content is the ink, in whole pixels as
-///   Skia bounds a glyph. The ink starts at the content's start. So the room
-///   its edges take is its margin, border and padding, less the part of the
-///   letter's advance outside its ink. The prefix then holds the letter's
-///   own advances and the box's margin box exactly.
-/// - **Across the lines:** its baseline sits on the paragraph's `size`-th
-///   line's baseline, counted from the first line's top. The box stands on
-///   no line. It takes no room in the line it opens; that line moves down
-///   for a raised letter instead. The lines below give it room as an
-///   exclusion the host places.
+/// - **Along the line:** its edges take their margin, border and padding,
+///   less the letter's advance outside its ink. The prefix then holds the
+///   letter's advances plus exactly its margin box.
+/// - **Across the lines:** it stands on no line, its baseline on the
+///   `size`-th line's. A raised letter moves the first line down. The lines
+///   below make room for it as an exclusion the host places.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub(crate) struct InitialLetter {
     /// The box.
     pub(crate) node: NodeId,
-    /// What its opening and closing edges take along the line in the prefix
+    /// The room its opening and closing edges take in the prefix
     /// ([`edge_room`](Self::edge_room)).
-    ///
-    /// Each is the margin, border and padding at that end, less the
-    /// letter's advance outside its ink. The start margin is kerned.
     start_room: InlineLayoutUnit,
     end_room: InlineLayoutUnit,
-    /// Its margins at its start and its end.
-    ///
-    /// A negative side bearing kerns the start margin where the box has no
-    /// border or padding (Chrome's "inline kerning").
+    /// Its start and end margins. A negative side bearing kerns the start
+    /// margin of a box with no border or padding (Chrome's "inline kerning").
     pub(super) start_margin: LayoutUnit,
     pub(super) end_margin: LayoutUnit,
     /// Its border box around the letter's baseline.
@@ -637,15 +542,11 @@ pub(crate) struct InitialLetter {
     /// How far the letter's baseline is below the top of the first line's
     /// box, before a raised letter moves the line's text down.
     pub(super) baseline: LayoutUnit,
-    /// How far a raised letter moves the first line's text down: the lines
-    /// it stands above the paragraph by (`size` less `sink`).
+    /// How far a raised letter moves the first line's text down: `size` less
+    /// `sink` lines.
     pub(super) raise: LayoutUnit,
-    /// Its margin box, as the exclusion the lines after the first make room
-    /// for.
-    ///
-    /// The top is measured across the lines from the first line's top. The
-    /// height is how far it reaches, and the width how wide it is along the
-    /// lines.
+    /// Its margin box as an exclusion for the lines after the first: the top
+    /// from the first line's top, the height across the lines, the width along.
     pub(super) exclusion_top: LayoutUnit,
     pub(super) exclusion_height: LayoutUnit,
     pub(super) exclusion_width: LayoutUnit,
@@ -663,40 +564,33 @@ impl InitialLetter {
     }
 }
 
-/// The measurements: the text as measured, its first line's variant, and
-/// what is measured once for both.
+/// The measurements: the text, its first line's variant, and what both
+/// share.
 pub(crate) struct Measured {
     /// The text, and the first line's measure.
     ///
-    /// The first line's measure is the first paragraph under `::first-line`
-    /// styles, where they change a measurement. It covers the same clusters
-    /// and items as the text, up to the paragraph's end. It is absent when
-    /// the first line restyles nothing. Once made it is kept, so a document
-    /// that gains and loses `::first-line` keeps its capacity, as shaping's
-    /// variant does.
+    /// The first line's measure covers the first paragraph under `::first-line`
+    /// styles, and is absent where they change no measurement. Once made, it
+    /// is kept with its capacity.
     text: FirstLine<MeasuredText>,
-    /// What each text's facts measure in its primary font, whichever line
-    /// it is on: one row a [`TextFactsId`], both variants' rows among them.
+    /// Each text's primary-font metrics, one row per [`TextFactsId`] of either
+    /// variant.
     text_metrics: Table<TextFactsId, TextMetrics>,
-    /// The hyphens and ellipses, shaped, whichever line they are on.
-    ///
-    /// The box is made the first time a build has any, and kept, as the
-    /// text's rare tables are.
+    /// The shaped hyphens and ellipses of both variants, boxed on first use
+    /// and kept.
     generated: Option<Box<GeneratedTexts>>,
-    /// How wide the content asks to be.
+    /// The min-content and max-content widths.
     pub(crate) intrinsic: IntrinsicWidths,
-    /// Which clusters took word-spacing in the prefix, as the config said at
-    /// build time.
-    ///
-    /// The breaker spaces a reshaped edge by the same rule.
+    /// Which clusters took word-spacing in the prefix. The breaker spaces a
+    /// reshaped edge by the same rule.
     pub(super) word_spacing_rule: WordSpacingRule,
 }
 
-/// What measurements with no generated text read it as: empty.
+/// The empty generated texts.
 static NO_GENERATED: GeneratedTexts = GeneratedTexts::new();
 
 impl Measured {
-    /// No measurements, allocating nothing.
+    /// Returns empty measurements, allocating nothing.
     pub(crate) const fn new() -> Self {
         Self {
             text: FirstLine::new(MeasuredText::new()),
@@ -710,8 +604,9 @@ impl Measured {
         }
     }
 
-    /// Empties the measurements, keeping every allocation. Also what a layout
-    /// holds when its builder was dropped without finishing.
+    /// Empties the measurements, keeping every allocation.
+    ///
+    /// A layout whose builder is dropped unfinished holds this.
     pub(crate) fn clear(&mut self) {
         self.clear_text();
         self.text_metrics.clear();
@@ -720,32 +615,25 @@ impl Measured {
         }
     }
 
-    /// Empties what depends on the boxes' geometry: the texts' measurements,
-    /// the intrinsic widths and the word-spacing rule.
-    ///
-    /// Keeps the text metrics and the generated texts, which depend only on
-    /// the fonts and the text facts.
+    /// Empties all but the text metrics and the generated texts, which depend
+    /// only on the fonts and the text facts.
     fn clear_text(&mut self) {
         self.text.clear();
         self.intrinsic = IntrinsicWidths::default();
         self.word_spacing_rule = WordSpacingRule::CHROME;
     }
 
-    /// Returns the generated texts for the measure stage to write.
-    ///
-    /// The box is made, empty, the first time a build has any, and kept
-    /// after.
+    /// Returns the generated texts for writing, boxing them on first use.
     fn generated_mut(&mut self) -> &mut GeneratedTexts {
         self.generated
             .get_or_insert_with(|| Box::new(GeneratedTexts::new()))
     }
 
-    /// Measures atomic inline `atomic`'s extent again from its row in
-    /// `content`, as the scan measures it.
+    /// Measures atomic inline `atomic`'s extent again from `content`, in both
+    /// variants.
     ///
-    /// The content holds no ruby and no initial letter, so an atomic
-    /// inline's extent reaches its own item and nothing else, in the text's
-    /// measure and the first line's. What runs along the line is unchanged.
+    /// The content holds no ruby and no initial letter, so the extent reaches
+    /// no other item and nothing along the line changes.
     pub(crate) fn remeasure_atomic(&mut self, content: &Content, atomic: AtomicId) {
         let Some(atomic) = content.atomics().get(atomic) else {
             return;
@@ -758,53 +646,41 @@ impl Measured {
         }
     }
 
-    /// Returns the first line's measure: the first paragraph under
-    /// `::first-line` styles.
-    ///
-    /// Returns `None` where `::first-line` restyles nothing the lines are
-    /// measured by.
+    /// Returns the first line's measure, or `None` where `::first-line`
+    /// restyles nothing measured.
     pub(crate) fn first_line(&self) -> Option<&MeasuredText> {
         self.text.first_line()
     }
 
-    /// Returns the text as `variant` reads it.
-    ///
-    /// The first line reads the first line's measure where there is one.
-    /// Everything else reads the text's.
+    /// Returns the text as `variant` reads it. The first line falls back to the
+    /// text's measure.
     #[inline]
     pub(crate) fn text(&self, variant: FirstLineVariant) -> &MeasuredText {
         self.text.get(variant)
     }
 
-    /// Returns what text with the facts `text` measures in its primary font.
-    ///
-    /// See [`TextMetrics`]. Returns `None` for facts the content doesn't
-    /// have.
+    /// Returns the [`TextMetrics`] of `text`, or `None` for facts the content
+    /// doesn't have.
     #[inline]
     pub(crate) fn text_metrics(&self, text: TextFactsId) -> Option<&TextMetrics> {
         self.text_metrics.get(text)
     }
 
-    /// Returns the shaped hyphens and ellipses the lines may draw.
-    ///
-    /// The text and its first line share them. Each row of text facts has
-    /// its own. They are empty where the build had none.
+    /// Returns the shaped hyphens and ellipses, one per row of text facts,
+    /// shared by both variants.
     pub(crate) fn generated(&self) -> &GeneratedTexts {
         self.generated.as_deref().unwrap_or(&NO_GENERATED)
     }
 
-    /// Returns the bytes the first line's measure takes on the heap.
-    ///
-    /// [`heap_bytes`](crate::data::HeapBytes::heap_bytes) counts them among
-    /// the stage's.
+    /// Returns the heap bytes of the first line's measure, which
+    /// [`heap_bytes`](crate::data::HeapBytes::heap_bytes) includes.
     pub(crate) fn first_line_heap_bytes(&self) -> usize {
         self.text.first_line_heap_bytes()
     }
 }
 
 heap_bytes! {
-    /// Its texts' tables, and the generated texts' box and theirs where a
-    /// build made them.
+    /// Its texts' tables, and the generated texts' box where a build made it.
     Measured { text, text_metrics, generated; intrinsic, word_spacing_rule }
 }
 
@@ -813,8 +689,7 @@ heap_bytes! {
 }
 
 heap_bytes! {
-    /// Its tables, and its rare tables' box and theirs where a build made
-    /// them.
+    /// Its tables, and its rare tables' box where a build made it.
     MeasuredText { prefix, paragraphs, extents, rare }
 }
 

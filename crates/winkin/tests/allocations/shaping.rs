@@ -61,11 +61,12 @@ fn prose(
     assert!(b.finish().is_complete());
 }
 
-/// Shaping again allocates nothing: harfrust's data per font and per
-/// instance, the plans and the buffer are the context's, and the shaping
-/// and the advances keep their capacity. So for Latin with ligatures, kerns
-/// and expanded clusters, for Arabic in a left-to-right paragraph and a
-/// right-to-left one, for Han falling back, and for the three mixed.
+/// Shaping again allocates nothing.
+///
+/// harfrust's per-font and per-instance data, the plans and the buffer are
+/// the context's, and the shaped text and advances keep their capacity.
+/// Covers Latin with ligatures, kerns and expanded clusters, Arabic in
+/// paragraphs of both directions, Han falling back, and the three mixed.
 #[test]
 fn shaping_allocates_nothing_warm() {
     let arabic =

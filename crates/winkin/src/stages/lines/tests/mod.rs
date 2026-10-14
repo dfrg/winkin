@@ -1,8 +1,8 @@
 //! Line breaking tests.
 //!
-//! This file holds the fonts, the fixture, [`check`] and the shared views.
-//! It pins the record sizes, and areas of every degenerate width. The
-//! children pin:
+//! This file holds the test fonts, the fixture and [`check`], which
+//! [`Fixture::lay_out`] runs on every layout. It pins the record sizes and
+//! degenerate areas. The children pin:
 //! - `fitting`: exact fitting on Chrome's 1/64 grid, the search against a
 //!   plain greedy breaker, and a line's cost;
 //! - `overflow`: overflow, `overflow-wrap` and `word-break: break-all`;
@@ -13,11 +13,9 @@
 //! - `heights`: line heights, bands and `vertical-align`;
 //! - `relayout`: relayout equal to a fresh layout, in any context;
 //! - `spacing`: indents, spacing and hanging punctuation;
+//! - `seeks` and `ruby_costs`: search and step counts, in debug builds;
 //! - `floats`, `first_line`, `ruby`, `cjk` and `wrap`: floats, the first
 //!   line, ruby room, CJK line edges, and `balance` and `pretty`.
-//!
-//! Every layout here is broken through [`Fixture::lay_out`], which checks
-//! the lines' invariants each time (see [`check`]).
 
 use alloc::borrow::Cow;
 use alloc::format;
@@ -56,10 +54,8 @@ use crate::{
 
 // Fonts --------------------------------------------------------------------
 
-/// ASCII with `fi`, `fl` and `ffi` ligatures three quarters of an em, and
-/// `AV` kerned by a tenth of an em.
-///
-/// Every other glyph is half an em.
+/// ASCII of half an em, with `fi`, `fl` and `ffi` ligatures of three
+/// quarters, and `AV` kerned by a tenth.
 fn latin() -> TestFont {
     let mut font = TestFont::new("Test Latin", &[(0x20, 0x7E), (0xAD, 0xAD)]);
     font.ligatures = vec![vec!['f', 'f', 'i'], vec!['f', 'i'], vec!['f', 'l']];
@@ -67,10 +63,8 @@ fn latin() -> TestFont {
     font
 }
 
-/// Arabic letters and a space.
-///
-/// The dual-joining letters' initial, medial and final forms are half an em
-/// wide. Their isolated forms are wider, 0.6 of an em.
+/// Arabic letters and a space, with joined forms of half an em and wider
+/// isolated forms of 0.6.
 fn arabic() -> TestFont {
     let mut font = TestFont::new("Test Arabic", &[(0x20, 0x20), (0x621, 0x64A)]);
     font.joining = vec![BEH, TEH, SEEN, MEEM];
@@ -97,10 +91,8 @@ fn han() -> TestFont {
 
 // Fixtures -----------------------------------------------------------------
 
-/// Returns a fixture over Ahem and the fonts above, checking the lines on
-/// every break (see [`check`]).
-///
-/// Fallback puts Ahem at the head of every chain and Test Han among Han's.
+/// Returns a fixture over Ahem and the fonts above that runs [`check`] on
+/// every break; Ahem heads every fallback chain.
 fn fixture() -> Fixture {
     Fixture::new(
         &[latin(), arabic(), narrow(), han()],
@@ -110,16 +102,13 @@ fn fixture() -> Fixture {
 }
 
 /// Checks the lines' invariants:
-/// - lines tile every paragraph with clusters, in order, each holding one
-///   at least;
-/// - reshaped pieces sit inside their lines, in order, a word and an
-///   advance a cluster, pointing into the edge glyphs where expanded;
-/// - line boxes, at the tops line layout placed them at, stack in order,
-///   lower where floats moved them, and the block ends after the last;
-/// - the overflow flag agrees with the widths;
+/// - nonempty lines tile every paragraph that has clusters, in order;
+/// - reshaped pieces sit in order inside their lines and runs;
+/// - line boxes stack, and the block ends at or after the last;
+/// - the overflow and ellipsis flags and the indents agree with the style;
 /// - every float is placed once, in reading order;
-/// - each line's settled shifts follow the last line's, sorted by node, each
-///   of a box or atomic inline whose `vertical-align` only a line settles.
+/// - settled shifts are sorted, nonzero, and only for the line-relative
+///   `vertical-align` values.
 fn check(layout: &Layout) {
     let lines = layout.line_records();
     let analysis = layout.analysis();
@@ -161,7 +150,7 @@ fn check(layout: &Layout) {
         for shape in lines.edges().shapes.slice(line.shapes.clone()) {
             let piece = shape.clusters();
             assert!(before <= piece.start && piece.start < piece.end && piece.end <= range.end);
-            // Shaped with its run's key, a piece stays in its run.
+            // A piece is shaped with its run's key, so it stays in the run.
             let run = runs
                 .containing(piece.start)
                 .map(|run| runs.run_clusters(run));
@@ -179,12 +168,10 @@ fn check(layout: &Layout) {
             }
             before = piece.end;
         }
-        // A line stacks on the last, or below it where floats moved it.
         let block_start = layout.fragments().items[layout.fragments().line_heads[id]].block
             + lines.block.trim_start;
         assert!(block_start >= top, "{id:?} is not above the last");
         top = block_start + line.extent.box_height();
-        // Its floats follow the last line's.
         let start = lines.floats().partition_point(|float| float.line < id);
         assert_eq!(start, floats, "{id:?}'s floats follow");
         floats = start + lines.line_floats(id).len();
@@ -196,8 +183,8 @@ fn check(layout: &Layout) {
             line.width,
             line.band
         );
-        // A clamp ends the block with a line that has text after it, cut for
-        // an ellipsis. `text-overflow: ellipsis` cuts a line that overflows.
+        // A clamped last line, or an overflowing one under
+        // `text-overflow: ellipsis`, has an ellipsis.
         let clamped = end_kind(layout, id) == EndKind::Clamped;
         let cut_on_overflow = layout.content().block.text_overflow == TextOverflow::Ellipsis
             && line.flags.contains(LineFlags::OVERFLOWS);
@@ -229,8 +216,8 @@ fn check(layout: &Layout) {
             ));
             assert_ne!(shift.shift, LayoutUnit::ZERO);
         }
-        // The indent is the block's first line's. Under `each-line` it is
-        // also each line's after a forced break, and `hanging` inverts it.
+        // The first line is indented, plus each line after a forced break
+        // under `each-line`; `hanging` inverts this.
         let indent = layout.content().block.text_indent;
         let first = id.get() == 0;
         let after_break = !first && range.start == paragraphs.clusters(pid).start;
@@ -243,8 +230,7 @@ fn check(layout: &Layout) {
             at = paragraph.map(|(id, _)| paragraphs.clusters(id).start);
         }
     }
-    // A block a clamp ended has no lines past it, and places no float
-    // past it.
+    // A clamp leaves later paragraphs and floats out.
     let clamped = lines
         .lines
         .last_id()
@@ -267,9 +253,7 @@ fn check(layout: &Layout) {
         );
     }
     assert_eq!(lines.shift_end(), shifts, "every shift is a line's");
-    // Every float is placed once, in reading order. Each line's come in the
-    // order its text reaches them, beside before below. Those no line
-    // reached come last, and every float of the content is there.
+    // Every float is placed once, in reading order.
     let placed = lines.floats();
     assert!(placed.windows(2).all(|w| w[0].float < w[1].float));
     if clamped {
@@ -300,33 +284,28 @@ fn records(layout: &Layout) -> &[LineRecord] {
     layout.line_records().lines.as_slice()
 }
 
-/// What ended a line, as [`end_kind`] finds it; the line record does not
-/// keep it.
+/// What ends a line, as [`end_kind`] derives it; [`LineRecord`] does not
+/// store it.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 enum EndKind {
-    /// A soft wrap opportunity, the last at which the line fits.
+    /// The last soft wrap opportunity at which the line fits.
     Soft,
-    /// A forced break: the paragraph's separator, which is on the line.
+    /// A forced break at the paragraph separator, which is on the line.
     Forced,
-    /// An `overflow-wrap` break inside a word that fits nowhere else, at
-    /// `EMERGENCY_AFTER`.
+    /// An `overflow-wrap` break inside a word that fits nowhere else.
     Emergency,
-    /// The first opportunity after nothing fit: the line overflows its band.
+    /// The first opportunity after nothing fits, so the line overflows.
     Overflow,
     /// The text's end.
     TextEnd,
-    /// `line-clamp`: the last line the block keeps, with text left after it.
+    /// The last line `line-clamp` keeps, with text left after it.
     Clamped,
 }
 
-/// Returns what ended `layout`'s line `id`, from its record and the
-/// analysis.
+/// Returns what ends `layout`'s line `id`, from its record and the analysis.
 ///
-/// - The block's last line with text after it was clamped.
-/// - A line ending with its paragraph ended at its separator or the text's
-///   end.
-/// - Any other ended at a soft wrap opportunity, overflowing or not, or at
-///   an `overflow-wrap` break where there is none.
+/// A line ending inside a word with no break after its last cluster ends at
+/// an `overflow-wrap` break.
 fn end_kind(layout: &Layout, id: LineId) -> EndKind {
     let lines = &layout.line_records().lines;
     let clusters = &layout.analysis().clusters;
@@ -359,8 +338,7 @@ fn end_kind(layout: &Layout, id: LineId) -> EndKind {
     }
 }
 
-/// Returns what ended each of `layout`'s lines, in order (see
-/// [`end_kind`]).
+/// Returns what ends each of `layout`'s lines, in order (see [`end_kind`]).
 fn end_kinds(layout: &Layout) -> Vec<EndKind> {
     layout
         .line_records()
@@ -370,9 +348,8 @@ fn end_kinds(layout: &Layout) -> Vec<EndKind> {
         .collect()
 }
 
-/// Returns every cluster's word in `layout`'s shaped text, in cluster order.
-///
-/// Breaking must leave these as it found them.
+/// Returns every cluster's word in `layout`'s shaped text, which breaking
+/// leaves unchanged.
 fn glyph_words(layout: &Layout) -> Vec<GlyphWord> {
     layout
         .shaped()
@@ -392,7 +369,7 @@ fn float_size(inline: f32, block: f32) -> BoxSize {
     }
 }
 
-/// Returns where each line's band starts, and how long it is.
+/// Returns each line's band as its left edge and size, in pixels.
 fn bands(layout: &Layout) -> Vec<(f32, f32)> {
     layout
         .lines()
@@ -415,11 +392,10 @@ fn indented(px: f32, fraction: f32, hanging: bool, each_line: bool) -> ComputedB
     }
 }
 
-/// Returns the width of `layout`'s line `line` with its text shaped whole.
+/// Returns the width of `line` with its text shaped in one call.
 ///
-/// One shaping call covers the line, with the paragraph around it as
-/// context, and each cluster spaced as its style says. The reshaped pieces
-/// must add up to it. The width is on the grid, as fitting reads it.
+/// The paragraph is the shaping context, spacing applies, and the width is
+/// on the 1/64 grid. A line's reshaped pieces add up to it.
 fn shaped_whole(fixture: &mut Fixture, layout: &Layout, line: &LineRecord) -> LayoutUnit {
     let analysis = layout.analysis();
     let paragraph = analysis.paragraphs.clusters(line.paragraph);
@@ -477,8 +453,8 @@ fn shaped_whole(fixture: &mut Fixture, layout: &Layout, line: &LineRecord) -> La
     ((start + sum).ceil_to_grid() - start.ceil_to_grid()).to_layout()
 }
 
-/// A band that a float on one side pushes in by `.0` pixels, down the whole
-/// block.
+/// Exclusions that narrow a 200 px area by `.0` pixels on one side, down the
+/// whole block.
 struct Pushed(f32, FloatSide);
 
 impl Exclusions for Pushed {
@@ -508,8 +484,8 @@ impl Exclusions for Pushed {
 
 // The records --------------------------------------------------------------
 
-/// The records keep their sizes: a line 76 bytes, a reshaped edge 12, what
-/// hangs 16, a band 8.
+/// The records keep their sizes: a line 76 bytes, placement facts 8, a
+/// reshaped edge 12, what hangs 16, a band 8.
 #[test]
 fn records_keep_their_sizes() {
     assert_eq!(size_of::<LineRecord>(), 76);
@@ -523,10 +499,8 @@ fn records_keep_their_sizes() {
 
 /// Any area gives valid lines.
 ///
-/// The widths are zero, negative, not a number, infinite and narrower than
-/// a cluster, from any block start. The text breaks everywhere, reshapes,
-/// may break anywhere, preserves its spaces, or has none at all. A layout
-/// never built makes no lines.
+/// The widths are zero, negative, NaN, infinite or narrower than a cluster,
+/// at any block start, over texts of every breaking kind.
 #[test]
 fn any_area_gives_valid_lines() {
     let mut fixture = fixture();
@@ -567,7 +541,7 @@ fn any_area_gives_valid_lines() {
                 };
                 fixture.lay_out_with(&mut layout, area, &mut NoExclusions);
             }
-            // Ends the wrong way round leave no room.
+            // Inline ends in the wrong order leave no room.
             let area = Area {
                 inline: InlineExtents {
                     left: 50.0,
@@ -581,9 +555,6 @@ fn any_area_gives_valid_lines() {
         }
     }
 }
-
-// Floats, CJK, the first line, heights, ruby and wrapping, in files of
-// their own.
 
 mod cjk;
 mod first_line;

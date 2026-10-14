@@ -21,7 +21,7 @@ use crate::stages::shape::ShapeSession;
 use crate::work;
 use core::hint::black_box;
 
-/// Words of prose, `words` of them.
+/// Returns `words` words of prose.
 fn prose(words: usize) -> String {
     let pick = ["the", "continues", "a", "line", "beautiful", "of", "text"];
     let mut text = String::new();
@@ -117,7 +117,7 @@ fn vertical(cx: &mut Context) -> Layout {
     layout
 }
 
-/// Seeks made reading a layout, and what the reads walked.
+/// The seeks made reading a layout, and what the reads walked.
 #[derive(Debug)]
 struct Seeks {
     /// Every text run's glyphs.
@@ -133,7 +133,7 @@ struct Seeks {
     fragments: u64,
     /// The runs set as combined text.
     combined: u64,
-    /// The emphasis marks the readers handed out.
+    /// The emphasis marks the readers returned.
     marks: u64,
 }
 

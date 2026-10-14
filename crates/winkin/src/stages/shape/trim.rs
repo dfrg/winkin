@@ -1,40 +1,34 @@
 //! `text-spacing-trim` at shaping: which full-width punctuation gives back
 //! its blank half, and how.
 //!
-//! The rule is Chrome's shaper's, `HanKerning` (Blink's `han_kerning.cc`).
-//! It is read in Chrome 153's source and measured there with Yu Gothic,
-//! which has `halt`, and MS Gothic, which does not.
-//! - Under any value but `space-all`, every font shapes with `chws`, which
-//!   font selection turns on. A font with contextual half-width spacing
-//!   collapses adjacent punctuation itself.
-//! - Where the font has `halt`, this module finds the pairs the text spacing
+//! The rule is Chrome's `HanKerning` (Blink's `han_kerning.cc`). The tests
+//! pin it against Chrome with Yu Gothic, which has `halt`, and MS Gothic,
+//! which does not.
+//! - Under any value but `space-all`, font selection turns on `chws`. A font
+//!   with contextual half-width spacing collapses adjacent punctuation
+//!   itself.
+//! - Where the font has `halt`, this module finds the pairs the text-spacing
 //!   classes make. The font's `halt` applies to each mark that gives its
-//!   blank back, one character's range at a time. An opening mark kerns
-//!   after an opening, middle or closing mark, or a narrow opening bracket
+//!   blank back, one character at a time. An opening mark kerns after an
+//!   opening, middle or closing mark, or a narrow opening bracket
 //!   ([`should_kern`]). A closing mark kerns before a closing, middle or
 //!   narrow closing mark ([`should_kern_last`]).
 //! - Where the font also has `chws`, it handles pairs inside a run itself,
 //!   and only the run's edges are found here.
 //! - The characters either side of a run are the text's, across items and
-//!   fonts. In Yu Gothic at 40px, `漢」<span>」</span>漢` is 140px wide, the
-//!   same as `漢」」漢`, even with the second mark in another font. A
-//!   neighbour whose class depends on the font takes it from the font it
-//!   is shaped in ([`class_beside`]), so a dot in one fallback font kerns
-//!   before a colon in another.
+//!   fonts. A neighbour whose class depends on the font takes it from the
+//!   font it is shaped in ([`class_beside`]).
 //! - A kerned mark is unsafe to break before, so a line breaking inside a
 //!   pair reshapes. A line starting at an opening mark is shaped as a start
-//!   and takes nothing from before it: `漢」「漢` broken between the marks
-//!   sets the `「` whole at the next line's start.
-//! - Where the font has no `halt`, nothing is trimmed: MS Gothic sets
-//!   `漢「「漢` at 160px. [`Config::punctuation_trim`] set to
-//!   [`PunctuationTrim::Always`] trims there too, which Chrome does not. It
-//!   halves the mark's own advance, as Chrome's unshipped fallback
-//!   (`ApplyKerning`) does. An opening mark's glyph moves back into the half
-//!   it keeps.
+//!   and takes nothing from before it.
+//! - Where the font has no `halt`, nothing is trimmed.
+//!   [`Config::punctuation_trim`] set to [`PunctuationTrim::Always`] trims
+//!   there too, which Chrome does not, by halving the mark's own advance as
+//!   Chrome's unshipped fallback (`ApplyKerning`) does. An opening mark's
+//!   glyph moves back into the half it keeps.
 //! - Five classes depend on the font: its dots, colon, semicolon and curly
-//!   quotes. They are read once from its glyphs ([`TrimFont`]), by which
-//!   half of the advance each glyph's ink is in, as shaped in the text's
-//!   language.
+//!   quotes. [`TrimFont`] reads them once from its glyphs, shaped in the
+//!   text's language, by which half of the advance each glyph's ink is in.
 //! - At a line's start, a paragraph under `trim-start` trims its opening
 //!   mark ([`ShapingEdges::trim_start`]). So does every wrapped line under
 //!   `space-first` or `trim-start`, which the breaker reshapes.
@@ -67,18 +61,20 @@ pub(super) enum TrimClass {
 /// per font, language and direction.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
 pub(super) struct TrimFont {
-    /// It has `halt` (`vhal` upright in a vertical line): it can trim.
+    /// Whether it has `halt` (`vhal` upright in a vertical line), so it can
+    /// trim.
     halt: bool,
-    /// It has `chws` (`vchw`): it collapses the pairs inside a run itself.
+    /// Whether it has `chws` (`vchw`), so it collapses the pairs inside a
+    /// run itself.
     chws: bool,
-    /// Its curly quotes are full width, as Chinese fonts draw them; a
-    /// Japanese font's are commonly proportional.
+    /// Whether its curly quotes are full width, as Chinese fonts draw them;
+    /// a Japanese font's are commonly proportional.
     quotes_full: bool,
     /// The class of its ideographic and fullwidth comma and full stop.
     dot: TrimClass,
-    /// Of its fullwidth colon.
+    /// The class of its fullwidth colon.
     colon: TrimClass,
-    /// Of its fullwidth semicolon.
+    /// The class of its fullwidth semicolon.
     semicolon: TrimClass,
 }
 
@@ -93,9 +89,9 @@ pub(super) const TRIM_PROBES: [char; 10] = [
 /// A glyph of [`TRIM_PROBES`] as a font shapes it, in font units.
 ///
 /// It records whether the font draws it, its advance along the line, and
-/// its ink's left and right edges from its origin. The context measures
-/// each probe into one, and [`TrimFont::from_probes`] reads the classes
-/// from them. None is kept.
+/// where its ink starts and ends along the line from its origin. The
+/// context measures each probe into one, and [`TrimFont::from_probes`]
+/// reads the classes from them. Only the resulting [`TrimFont`] is cached.
 #[derive(Copy, Clone, Debug, Default)]
 pub(super) struct TrimProbe {
     pub(super) drawn: bool,
@@ -131,19 +127,20 @@ impl TrimFont {
         }
     }
 
-    /// Whether it has `halt`, so it trims even where the config does not
-    /// halve advances.
+    /// Returns whether it has `halt`, so it trims even where the config does
+    /// not halve advances.
     pub(super) fn has_halt(&self) -> bool {
         self.halt
     }
 
-    /// Whether it has `chws`, so it handles pairs inside a run itself and
-    /// the rule finds only the run's edges.
+    /// Returns whether it has `chws`, so it handles pairs inside a run itself
+    /// and the rule finds only the run's edges.
     pub(super) fn has_chws(&self) -> bool {
         self.chws
     }
 
-    /// The class in this font of a character of text-spacing class `class`.
+    /// Returns the class in this font of a character of text-spacing class
+    /// `class`.
     pub(super) fn class(&self, class: TextSpacingClass) -> TrimClass {
         match class {
             TextSpacingClass::Other => TrimClass::Other,
@@ -190,8 +187,8 @@ fn single_class(probe: TrimProbe) -> TrimClass {
 
 /// Returns the class of a group of probes that should be drawn alike.
 ///
-/// It is the first drawn probe's class where every other drawn probe has
-/// the same advance and class. It is `Other` where they differ or none is
+/// That is the first drawn probe's class where every other drawn probe has
+/// the same advance and class, and `Other` where they differ or none is
 /// drawn.
 fn group_class(probes: &[TrimProbe]) -> TrimClass {
     let mut drawn = probes.iter().filter(|probe| probe.drawn);
@@ -208,8 +205,8 @@ fn group_class(probes: &[TrimProbe]) -> TrimClass {
     class
 }
 
-/// Whether an opening mark of class `class` after one of `last` gives back
-/// its blank (Blink's `HanKerning::ShouldKern`).
+/// Returns whether an opening mark of class `class` after one of `last`
+/// gives back its blank (Blink's `HanKerning::ShouldKern`).
 fn should_kern(class: TrimClass, last: TrimClass) -> bool {
     class == TrimClass::Open
         && matches!(
@@ -218,8 +215,8 @@ fn should_kern(class: TrimClass, last: TrimClass) -> bool {
         )
 }
 
-/// Whether a closing mark of class `last` before one of `class` gives back
-/// its blank (Blink's `HanKerning::ShouldKernLast`).
+/// Returns whether a closing mark of class `last` before one of `class`
+/// gives back its blank (Blink's `HanKerning::ShouldKernLast`).
 fn should_kern_last(class: TrimClass, last: TrimClass) -> bool {
     last == TrimClass::Close
         && matches!(
@@ -231,10 +228,10 @@ fn should_kern_last(class: TrimClass, last: TrimClass) -> bool {
 /// Returns the class of `ch`, a character beside a shaped range, for a
 /// range in the font `own`.
 ///
-/// Five classes depend on the font. For those, `theirs` decides, the font
-/// `ch` is shaped in, where it has `halt`. This is the class Chrome's
-/// `HanKerning` caches as it shapes each character, fallback fonts
-/// included. Otherwise `own` decides.
+/// For the five classes that depend on the font, `theirs`, the font `ch` is
+/// shaped in, decides where it has `halt`, as Chrome's `HanKerning` caches
+/// each character's class in its own font, fallback fonts included.
+/// Otherwise `own` decides.
 pub(super) fn class_beside(
     ch: char,
     own: &TrimFont,
@@ -255,7 +252,7 @@ pub(super) fn class_beside(
     }
 }
 
-/// Whether `ch` may be an opening mark in some font.
+/// Returns whether `ch` may be an opening mark in some font.
 ///
 /// It checks the classes Blink's `MaybeHanKerningOpen` checks before it
 /// reshapes a line's start.
@@ -267,7 +264,7 @@ pub(crate) fn maybe_opening_mark(ch: char) -> bool {
         )
 }
 
-/// Whether `ch` may be a closing mark in some font.
+/// Returns whether `ch` may be a closing mark in some font.
 ///
 /// It checks the classes Blink's `MaybeHanKerningClose` checks before it
 /// trims a line's end.
@@ -279,7 +276,8 @@ pub(crate) fn maybe_closing_mark(ch: char) -> bool {
         )
 }
 
-/// Whether `ch` is in the ranges that hold every opening or closing mark.
+/// Returns whether `ch` is in the ranges that hold every opening or closing
+/// mark.
 ///
 /// This is Blink's `MaybeHanKerningOpenOrCloseFast`, a gate before any
 /// table is read.
@@ -287,11 +285,11 @@ fn maybe_open_or_close(ch: char) -> bool {
     matches!(ch, '\u{2018}'..='\u{301F}' | '\u{FF08}'..='\u{FF60}')
 }
 
-/// Whether `text` may hold a mark to trim at all.
+/// Returns whether `text` may hold a mark to trim at all.
 ///
 /// This is Blink's `HanKerning::MayApply`, which declines at once on 8-bit
 /// text. Every character in range is U+2018 or later, whose UTF-8 starts
-/// with a byte of 0xE2 or more. Text with no such byte, such as all of
+/// with a byte of 0xE2 or more, so text with no such byte, such as all of
 /// Latin-1, is scanned byte by byte and never decoded.
 pub(super) fn may_hold_mark(text: &str) -> bool {
     text.bytes().any(|byte| byte >= 0xE2) && text.chars().any(maybe_open_or_close)
@@ -299,25 +297,28 @@ pub(super) fn may_hold_mark(text: &str) -> bool {
 
 /// How a shaped range treats a line's edges.
 ///
-/// Every shaping call is told this about its ends. The shaping pass sets it
-/// for a paragraph's start, and the breaker for the edges it reshapes. The
-/// default, all false, shapes a range inside a line, with its neighbours.
+/// The shaping pass sets it for a paragraph's start and for bidi controls,
+/// and the breaker for the edges it reshapes. The default, all false,
+/// shapes a range inside a line, with its neighbours.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
 pub(crate) struct ShapingEdges {
-    /// The range starts a line, so what precedes it takes no part in a pair.
+    /// Whether the range starts a line, so what precedes it takes no part in
+    /// a pair.
     pub(crate) line_start: bool,
-    /// The first character gives its blank back whatever precedes it.
+    /// Whether the first character gives its blank back whatever precedes
+    /// it.
     ///
-    /// This is an opening mark starting a paragraph under `trim-start`, or
-    /// a wrapped line under `space-first` or `trim-start`.
+    /// It does for an opening mark starting a paragraph under `trim-start`,
+    /// or a wrapped line under `space-first` or `trim-start`.
     pub(crate) trim_start: bool,
-    /// The last character gives its blank back whatever follows it: a
-    /// closing mark ending a line that fits only when trimmed.
+    /// Whether the last character gives its blank back whatever follows it,
+    /// as a closing mark ending a line that fits only when trimmed does.
     pub(crate) trim_end: bool,
-    /// A bidi control stands before the range, so the text before it is no
-    /// context: Blink's text holds the control there, which ends joining.
+    /// Whether a bidi control stands before the range, so the text before it
+    /// is no context. Blink's text holds the control there, which ends
+    /// joining.
     pub(crate) cut_before: bool,
-    /// A bidi control stands after the range.
+    /// Whether a bidi control stands after the range.
     pub(crate) cut_after: bool,
 }
 
@@ -333,19 +334,19 @@ pub(super) struct TrimMark {
 }
 
 impl TrimMark {
-    /// The byte of the text it starts at, as the shaper labels it.
+    /// Returns the byte of the text it starts at, as the shaper labels it.
     pub(super) fn start(&self) -> u32 {
         self.start
     }
 
-    /// The byte of the text after it, where its `halt` range ends for
-    /// harfrust.
+    /// Returns the byte of the text after it, where its `halt` range ends
+    /// for harfrust.
     pub(super) fn end(&self) -> u32 {
         self.end
     }
 
-    /// Its class in the font: an opening mark's blank is before its ink, a
-    /// closing one's after.
+    /// Returns its class in the font: an opening mark's blank is before its
+    /// ink, a closing one's after.
     pub(super) fn class(&self) -> TrimClass {
         self.class
     }
@@ -353,14 +354,14 @@ impl TrimMark {
 
 /// The marks of a shaped range that give their blanks back.
 ///
-/// This is one call's scratch, which the shaping context keeps for its
+/// It is one call's scratch, which the shaping context keeps for its
 /// capacity.
 #[derive(Default, Debug)]
 pub(super) struct TrimMarks {
     /// The marks, in text order, each once.
     marks: Vec<TrimMark>,
-    /// Where breaking is unsafe because a pair meets there: the byte each
-    /// such character starts at, in text order.
+    /// The byte each character starts at where breaking before it is unsafe
+    /// because a pair meets there, in text order.
     unsafe_before: Vec<u32>,
 }
 
@@ -371,13 +372,13 @@ impl TrimMarks {
         self.unsafe_before.clear();
     }
 
-    /// The marks found, in text order, each once.
+    /// Returns the marks found, in text order, each once.
     pub(super) fn marks(&self) -> &[TrimMark] {
         &self.marks
     }
 
-    /// Where breaking is unsafe because a pair meets there: the byte each
-    /// such character starts at, in text order.
+    /// Returns the byte each character starts at where breaking before it is
+    /// unsafe because a pair meets there, in text order.
     pub(super) fn unsafe_before(&self) -> &[u32] {
         &self.unsafe_before
     }
@@ -385,8 +386,9 @@ impl TrimMarks {
     /// Finds the marks of `chars` (Blink's `HanKerning::AppendFontFeatures`).
     ///
     /// `chars` start at byte `base` of the text, between characters of the
-    /// classes `before` and `after` ([`class_beside`]). They are shaped in a
-    /// font described by `font`, with `edges`.
+    /// classes `before` and `after` ([`class_beside`]), `None` where there is
+    /// no character. They are shaped in a font described by `font`, with
+    /// `edges`.
     pub(super) fn find(
         &mut self,
         chars: &str,
@@ -419,7 +421,8 @@ impl TrimMarks {
         {
             self.mark(mark(0, first, first_class), true);
         }
-        // The last character, for the edge after it.
+        // The last character's offset, character and class, for the edge
+        // after it.
         let mut end = (0, first, first_class);
         if font.has_chws() {
             // The font's `chws` handles the pairs inside the run, so only
@@ -450,10 +453,8 @@ impl TrimMarks {
         }
     }
 
-    /// Records `mark` once.
-    ///
-    /// Where it is kerned against what precedes it (`unsafe_before`), it
-    /// also records breaking before it as unsafe.
+    /// Records `mark` once, and breaking before it as unsafe where
+    /// `unsafe_before` says it is kerned against what precedes it.
     fn mark(&mut self, mark: TrimMark, unsafe_before: bool) {
         if self
             .marks
@@ -478,7 +479,7 @@ mod tests {
 
     use super::*;
 
-    /// The byte gate skips no character that may be a mark. For every
+    /// The byte gate skips no character that may be a mark: for every
     /// character after Latin-1 text, it answers as decoding does.
     #[test]
     fn the_byte_gate_keeps_every_mark() {

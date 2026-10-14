@@ -1,15 +1,14 @@
 //! `text-autospace` tests. They pin:
 //! - an eighth of the ideographic advance at each seam;
-//! - the item a seam is sized by, and both sides having to take it;
-//! - seams across box edges and a first letter, and not past controls or
-//!   floats;
+//! - which item sizes a seam, and that both sides must allow it;
+//! - seams across box edges and a first letter, but not controls or floats;
 //! - conditional punctuation, narrow only in Chinese.
 
 use super::*;
 use crate::style::LengthPercentage;
 
-/// A fixture over Ahem, a Japanese font whose `水` is a whole em, and an
-/// ASCII font with no `水`, which Han falls back from to the first.
+/// Returns a fixture with Ahem, a Japanese font whose `水` is an em, and an
+/// ASCII font without `水`, Han falling back to the Japanese font.
 fn cjk() -> Fixture {
     Fixture::new(
         &[
@@ -21,7 +20,8 @@ fn cjk() -> Fixture {
     )
 }
 
-/// `style` with `text-autospace` as said.
+/// Returns `style` with `ideograph-alpha` and `ideograph-numeric` set to
+/// `alpha` and `numeric`.
 fn spaced(style: &ComputedStyle<'static>, alpha: bool, numeric: bool) -> ComputedStyle<'static> {
     let mut style = *style;
     style.text.autospace = TextAutospace {
@@ -31,10 +31,9 @@ fn spaced(style: &ComputedStyle<'static>, alpha: bool, numeric: bool) -> Compute
     style
 }
 
-/// The room `text-autospace` put after each cluster of `spans`, each an
-/// inline box of its style holding its text, in a block of `block` whose
-/// own style is `root`: each cluster's step against the same spans set in
-/// `no-autospace`, in pixels.
+/// Returns the autospace room after each cluster of `spans`, in pixels: each
+/// cluster's step less its step under `no-autospace`. Each span is an inline
+/// box in a block styled `block` and `root`.
 fn gaps(
     fixture: &mut Fixture,
     block: &ComputedBlockStyle,
@@ -74,11 +73,10 @@ fn gaps(
     on.iter().zip(&off).map(|(a, b)| a - b).collect()
 }
 
-/// An eighth of the primary font's ideographic advance, `水`'s, goes after
-/// the cluster before each seam where an ideograph meets a letter or a
-/// digit, either way round, as Chrome's `TextAutoSpace` puts it: `漢字ABC漢字`
-/// at 20px in a font whose `水` is an em has two seams of 2.5px. Where the
-/// primary font has no `水`, an eighth of its size.
+/// Each seam between an ideograph and a letter or digit gets an eighth of
+/// the primary font's `水` advance, as Chrome's `TextAutoSpace`:
+/// `漢字ABC漢字` at 20 px has two 2.5 px seams. Without `水`, an eighth of
+/// the font size.
 #[test]
 fn autospace_puts_an_eighth_of_the_ideographic_advance_at_each_seam() {
     let mut fixture = cjk();
@@ -102,8 +100,8 @@ fn autospace_puts_an_eighth_of_the_ideographic_advance_at_each_seam() {
         ),
         [3.0, 0.0]
     );
-    // Hangul is an ideograph to it, a digit is its own seam, and a full
-    // width letter, `、` and a U+200B are none.
+    // Hangul counts as ideographic and a digit makes a seam; a fullwidth
+    // letter, `、` and U+200B don't.
     for (text, expected) in [
         ("한A", vec![2.5, 0.0]),
         ("漢1", vec![2.5, 0.0]),
@@ -124,10 +122,9 @@ fn autospace_puts_an_eighth_of_the_ideographic_advance_at_each_seam() {
     }
 }
 
-/// A seam across items takes the room of the earlier item's font where it
-/// reads left to right, and the later's where it reads right to left, as
-/// Chrome writes it into the one or the other: `<span 20px>漢</span>A` at
-/// 40px takes 2.5, `A<span 20px>漢</span>` 5.
+/// A seam across items is sized by the earlier item's font, or the later's
+/// where the earlier reads right to left, as Chrome writes it:
+/// `<span 20px>漢</span>A` at 40 px takes 2.5 px, `A<span 20px>漢</span>` 5.
 #[test]
 fn a_seam_across_items_is_sized_by_the_item_it_is_written_into() {
     let mut fixture = cjk();
@@ -152,7 +149,7 @@ fn a_seam_across_items_is_sized_by_the_item_it_is_written_into() {
         ),
         [5.0, 0.0]
     );
-    // A Hebrew letter reads right to left: the room is the later item's.
+    // After right-to-left Hebrew the later item sizes the room.
     assert_eq!(
         gaps(
             &mut fixture,
@@ -164,10 +161,9 @@ fn a_seam_across_items_is_sized_by_the_item_it_is_written_into() {
     );
 }
 
-/// Both sides of a seam must take it: `no-autospace` on either ends it, as
-/// does text set upright in a vertical line; `ideograph-alpha` takes a
-/// letter's seam and `ideograph-numeric` a digit's, as CSS Text 4 has them
-/// (beyond Chrome, which parses neither).
+/// Both sides must allow a seam: `no-autospace` on either, or upright text
+/// in a vertical line, ends it. `ideograph-alpha` allows a letter's seam and
+/// `ideograph-numeric` a digit's (CSS Text 4; Chrome parses neither).
 #[test]
 fn both_sides_of_a_seam_must_take_it() {
     let mut fixture = cjk();
@@ -210,12 +206,8 @@ fn both_sides_of_a_seam_must_take_it() {
     );
 }
 
-/// `text-orientation: upright` ends no seam in a sideways mode, where it has
-/// no effect.
-///
-/// Chrome's `TextAutoSpace` ends a seam at text whose font orientation is
-/// upright. Chrome's `ComputeFontOrientation` makes it horizontal in every
-/// horizontal typographic mode, the sideways modes among them.
+/// `text-orientation: upright` ends no seam in a sideways mode, where
+/// Chrome's `ComputeFontOrientation` makes the orientation horizontal.
 #[test]
 fn upright_text_in_a_sideways_mode_takes_seams() {
     let mut fixture = cjk();
@@ -234,10 +226,9 @@ fn upright_text_in_a_sideways_mode_takes_seams() {
     }
 }
 
-/// A seam reaches across a box's edges, padding and all, as Chrome's runs
-/// over the block's whole text; what Chrome writes into that text as a
-/// character of its own ends it: the bidi controls of a box with
-/// `unicode-bidi`, and a float. Marks are stepped over.
+/// A seam reaches across box edges, padding included, as Chrome's runs over
+/// the block's text. A box's `unicode-bidi` controls and a float end it.
+/// Marks are skipped.
 #[test]
 fn a_seam_reaches_across_box_edges_and_not_past_controls_or_floats() {
     let mut fixture = cjk();
@@ -288,10 +279,9 @@ fn a_seam_reaches_across_box_edges_and_not_past_controls_or_floats() {
     assert_eq!(positions(&layout), [0.0, 20.0, 30.0]);
 }
 
-/// A seam reaches across a `::first-letter` box's edge whatever its
-/// `unicode-bidi`, which Blink's cascade drops for the pseudo, so it writes
-/// no controls: `漢Abc字` whose first letter is `isolate` has its gap after
-/// `漢`, as in Chrome 154 (probe `firstletteredges`, row s1).
+/// A seam crosses a `::first-letter` box's edge whatever its
+/// `unicode-bidi`, which Blink drops for the pseudo: `漢Abc字` with an
+/// `isolate` first letter has its gap after `漢`, as in Chrome 154.
 #[test]
 fn a_seam_reaches_across_a_first_letter_whatever_its_bidi() {
     let mut fixture = cjk();
@@ -311,9 +301,9 @@ fn a_seam_reaches_across_a_first_letter_whatever_its_bidi() {
     assert_eq!(positions(&layout), seams);
 }
 
-/// Conditional punctuation, `!` among it, is narrow in a Chinese block and
-/// neither side of a seam elsewhere (UTR #59, as Chrome resolves it by the
-/// block's language).
+/// Conditional punctuation such as `!` is narrow in a Chinese block and
+/// neither side of a seam elsewhere (UTR #59, by the block's language as in
+/// Chrome).
 #[test]
 fn conditional_punctuation_is_narrow_only_in_chinese() {
     let mut fixture = cjk();
@@ -333,14 +323,10 @@ fn conditional_punctuation_is_narrow_only_in_chinese() {
     );
 }
 
-/// Each seam beside a right-to-left run puts its room on its own side of
-/// the run, as Chrome's `TextAutoSpace` writes it.
-///
-/// Where the earlier side reads left to right, the room goes at the end of
-/// the earlier item. Where it reads right to left, the room goes at the
-/// start of the later item, before its first glyph. So `漢漢אבג漢漢` at 20px
-/// draws `漢漢`, 2.5px, `גבא`, 2.5px, `漢漢`, whether or not a span splits
-/// the Hebrew.
+/// A seam's room goes at the end of the earlier item, or at the start of
+/// the later one where the earlier reads right to left, as Chrome's
+/// `TextAutoSpace` writes it. `漢漢אבג漢漢` at 20 px draws `漢漢`, 2.5 px,
+/// `גבא`, 2.5 px, `漢漢`, whether or not a span splits the Hebrew.
 #[test]
 fn a_seam_beside_a_right_to_left_run_takes_room_on_its_own_side() {
     const FAMILIES: [FontFamilyName<'static>; 2] = [

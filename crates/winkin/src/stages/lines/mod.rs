@@ -1,29 +1,17 @@
 //! Line breaking: chooses the lines for one width and records each line's
 //! extent.
 //!
-//! In: [`BreakInput`], every prepared table and the area. Out: [`Lines`],
+//! In: [`BreakInput`], the prepared tables and the area. Out: [`Lines`],
 //! with the block's [`BlockResult`], and the [`LinePlacements`] that line
-//! layout reads.
-//! Start at: [`break_lines`], then `Breaker::lines` in `fit`.
+//! layout reads. Start at [`break_lines`], then `Breaker::lines` in `fit`.
 //!
-//! - `fit` is the breaker: it fits one line at a time, reshaping unsafe
-//!   edges, and places floats as the lines reach them.
-//! - `score` weighs a paragraph's lines under `text-wrap-style: balance`
-//!   and `pretty`.
-//! - `height` works out each line box's extent and the shifts only the line
-//!   settles.
-//! - `annotate` makes each line's room for ruby and emphasis marks.
-//! - `ruby` splits ruby columns across lines and holds their pieces.
-//! - `exclusions` is what the host answers: the area and the floats.
-//! - `block` and `trim` finish the block: its end, baselines and
-//!   `text-box-trim`.
-//! - `placement` holds the facts handed to line layout.
-//! - `text_fit` works out the scale `text-fit` sets each line's text in.
+//! `fit` is the breaker; `search`, `candidate`, `reshape`, `floats` and
+//! `wrap` add to its `impl`.
 //!
-//! Each line is written once, whole, when it is chosen; line layout decides
-//! nothing about its extent. Breaking reads the prepared tables and never
-//! writes them, so a relayout at another width repeats nothing. An area of
-//! any width gives valid lines.
+//! Each line's record is written whole when the line is kept; line layout
+//! decides nothing about its extent. Breaking never writes the prepared
+//! tables, so a relayout at another width repeats nothing. An area of any
+//! width gives valid lines.
 
 mod annotate;
 mod block;
@@ -61,8 +49,8 @@ use placement::{PendingLine, PlacementFacts};
 use text_fit::TextFitting;
 use trim::TextBoxTrims;
 
-/// Whether `stages`' lines may carry ruby annotations or emphasis marks,
-/// which take room over a line and under it.
+/// Returns whether `stages`' lines may carry ruby annotations or emphasis
+/// marks, which take room over and under a line.
 pub(crate) fn annotated(stages: Stages<'_>) -> bool {
     AnnotationRoom::wanted(stages.content, stages.measured)
 }
@@ -107,28 +95,26 @@ pub(crate) struct BreakInput<'a> {
     pub(crate) emphasis_room: EmphasisRoom,
     /// The rule `text-wrap-style: pretty` follows (`Config::pretty`).
     pub(crate) pretty: Pretty,
+    /// Which opportunities a ruby column splits at
+    /// (`Config::ruby_break_within`).
     pub(crate) ruby_break_within: RubyBreakWithin,
 }
 
 /// Breaking's working memory, and its hand-off to line placement.
 ///
-/// Each height and scoring phase has its own buffer. Placement reads only the
-/// final facts table. The scratch is cleared, never dropped, so a warm
-/// relayout allocates nothing.
+/// The context keeps one, so a warm relayout allocates nothing.
 pub(crate) struct BreakScratch {
-    /// The final lines' facts, handed to line placement.
+    /// The kept lines' facts, handed to line placement.
     pub(crate) placements: LinePlacements,
     /// The box stack a line with a shifted box is walked with.
     boxes: BoxStack,
-    /// The boxes open across a line's start, whose struts an unshifted line
-    /// holds.
+    /// The boxes open across a line's start, whose struts the line holds.
     carried: CarriedBoxes,
-    /// The annotation levels of the line being measured, which the breaker
-    /// fills for each line.
+    /// The annotation levels of the line being measured.
     bands: LevelBands,
     /// What the em boxes and marks of the line being measured reach.
     ems: LineEms,
-    /// The tabs the walk over the line being fitted sized.
+    /// The tabs sized by the walk over the line being fitted.
     tabs: SizedTabs,
     /// What the scorer weighs a paragraph's lines by.
     scoring: Scoring,
@@ -139,7 +125,7 @@ pub(crate) struct BreakScratch {
 }
 
 impl BreakScratch {
-    /// Empty scratch, allocating nothing.
+    /// Returns empty scratch, allocating nothing.
     pub(crate) fn new() -> Self {
         Self {
             placements: LinePlacements::new(),
@@ -168,21 +154,14 @@ impl Default for BreakScratch {
 /// Breaks the text of `input` into lines in its area, into `out`, which
 /// starts empty.
 ///
-/// Reshapes unsafe line edges with the shaping caches in `cx`, and works out
-/// line heights in `scratch`. Only this function fills `out`, so a relayout
-/// at another width repeats nothing prepared.
-///
-/// [`Breaker::line`] fits every line. It places floats and the initial
-/// letter as the lines reach them. Content with neither asks the host for no
-/// checkpoint.
-///
-/// `line-clamp: auto` works as Chrome's `CSSLineClamp`:
+/// Reshapes unsafe line edges with the shaping caches in `cx`.
+/// [`Breaker::line`] fits every line. `line-clamp: auto` works as Chrome's
+/// `CSSLineClamp`:
 /// - The lines are laid out greedily until one would take the block past the
 ///   host's end, `text-box-trim` included.
-/// - Everything is taken back and laid out again, clamped to the lines before
-///   that one.
-/// - Balanced or scored lines are chosen among the lines kept. Where they
-///   reach past the end, the greedy lines are kept instead.
+/// - They are laid out again, clamped to the lines before that one.
+/// - Balanced or scored lines are chosen among those, unless they overrun
+///   the end.
 ///
 /// `text-fit: consistent` lays the lines out twice: once to measure the
 /// scale they share, and again in it.
@@ -204,7 +183,7 @@ pub(crate) fn break_lines<'a>(
 /// Breaks the text of `input` into lines as [`break_lines`] does, scaling
 /// each line's text as `fitting` says.
 ///
-/// Out of line, so that text `text-fit` leaves alone breaks as without it.
+/// It is out of line, so text without `text-fit` pays nothing for it.
 #[inline(never)]
 fn break_fitted<'a>(
     input: &BreakInput<'a>,
@@ -251,7 +230,7 @@ fn break_once<'a>(
     };
     let from = exclusions.checkpoint();
     // CSS Overflow 4 measures the clamp as if `text-wrap-style` were
-    // `stable`. The kept lines are balanced or scored after.
+    // `stable`. The kept lines are balanced or scored afterwards.
     let measuring = Breaker::new(input, cx, scratch, exclusions, clamp, room_above, fitting);
     let chooses = measuring.choice() != LineChoice::Greedy;
     let measured = measuring.with_choice(LineChoice::Greedy).lines(out, input);
@@ -280,10 +259,8 @@ fn break_once<'a>(
         .lines(out, input);
 }
 
-/// Takes back a layout of the block's lines to `from`.
-///
-/// Rewinds the host's floats, clears the lines, and resets the scratch a
-/// break begins with.
+/// Takes back a layout of the block's lines, rewinding the host's floats to
+/// `from`.
 fn restart(
     from: ExclusionsCheckpoint,
     scratch: &mut BreakScratch,
@@ -302,22 +279,19 @@ fn restart(
 enum Clamp {
     /// Nothing: every line is kept.
     None,
-    /// The block keeps this many lines at most: `line-clamp: <n>`, or the
-    /// count `line-clamp: auto` measured.
-    ///
-    /// The last line is cut for an ellipsis where text follows it.
+    /// The most lines the block keeps: `line-clamp: <n>`, or the count
+    /// `line-clamp: auto` measured.
     Lines(u32),
-    /// `line-clamp: auto`, being measured: the lines are laid out until one
-    /// would take the block's content past this end, in the host's
-    /// positions. That line is not kept.
+    /// The block end `line-clamp: auto` measures against, in the host's
+    /// positions. The line that would pass it is not kept.
     Height(LayoutUnit),
 }
 
 impl Clamp {
     /// Returns the clamp `clamp` asks for in `area`.
     ///
-    /// `auto` clamps by the area's block end. It clamps nothing where the
-    /// area has no end, or one that is not a number.
+    /// `auto` clamps by the area's block end, and nothing where the area has
+    /// no end or one that is not a number. A count of zero clamps nothing.
     fn new(clamp: LineClamp, area: Area) -> Self {
         match clamp {
             LineClamp::Lines(lines) if lines > 0 => Self::Lines(lines),
@@ -341,8 +315,7 @@ define_id! {
 }
 
 define_id! {
-    /// Names a cluster of a reshaped line edge: its glyph word and advance
-    /// in the edge tables.
+    /// Names a reshaped cluster's glyph word and advance in the edge tables.
     pub(crate) struct EdgeClusterId(u32);
 }
 
@@ -357,23 +330,18 @@ define_id! {
     pub(crate) struct LineShiftId(u32);
 }
 
-/// The room a line may take, as its line-left and line-right ends on the
-/// 1/64 grid.
-///
-/// It is the area narrowed by the band the host's floats leave.
+/// The room a line may take: the area narrowed by the host's floats.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub(crate) struct LineBand {
-    /// Its line-left end.
+    /// The line-left end.
     pub(crate) left: LayoutUnit,
-    /// Its line-right end.
+    /// The line-right end.
     pub(super) right: LayoutUnit,
 }
 
 impl From<InlineExtents> for LineBand {
-    /// Rounds each end of `extents` to the nearest 1/64.
-    ///
-    /// An end that is not a number goes to zero, and an infinite one to the
-    /// grid's end.
+    /// Rounds each end of `extents` to the nearest 1/64 px, NaN to zero and
+    /// infinities saturating.
     fn from(extents: InlineExtents) -> Self {
         Self {
             left: LayoutUnit::from_px(extents.left),
@@ -391,9 +359,8 @@ impl LineBand {
         }
     }
 
-    /// Returns the band with its ends moved in by `left` and `right`.
-    ///
-    /// `text-group-align` sets a line in such a band.
+    /// Returns the band with its ends moved in by `left` and `right`, as
+    /// `text-group-align` sets a line.
     pub(super) fn inset(self, left: LayoutUnit, right: LayoutUnit) -> Self {
         Self {
             left: self.left + left,
@@ -401,9 +368,7 @@ impl LineBand {
         }
     }
 
-    /// Returns its length, never negative.
-    ///
-    /// A band whose ends cross leaves no room.
+    /// Returns its length, zero where its ends cross.
     pub(super) fn width(self) -> LayoutUnit {
         (self.right - self.left).max(LayoutUnit::ZERO)
     }
@@ -411,9 +376,8 @@ impl LineBand {
     /// Returns how far a line in this band starts from `area`'s edge, on the
     /// start side of a paragraph at `level`.
     ///
-    /// Tab stops count from here. They are multiples of `tab-size` from the
-    /// content edge, so a line a float pushes in keeps the block's stops. The
-    /// breaker and line layout both use this one lookup.
+    /// Tab stops count from here, so a line a float pushes in keeps the
+    /// block's stops.
     pub(super) fn start_from(self, area: Self, level: BidiLevel) -> LayoutUnit {
         if level.is_rtl() {
             area.right - self.right
@@ -432,10 +396,10 @@ impl LineBand {
 }
 
 define_flags! {
-    /// What else is true of a line.
+    /// Facts of a line beyond its ends and extent.
     pub(crate) struct LineFlags(u8) {
         /// The block's first line, fitted, laid out and read in the first
-        /// line's measure.
+        /// line's variant.
         const FIRST_LINE = 1 << 0;
         /// Ends at a soft hyphen that shows a hyphen, whose advance is its end
         /// cost.
@@ -445,74 +409,63 @@ define_flags! {
         /// Line layout cuts it for an ellipsis: clamped, or overflowing
         /// under `text-overflow: ellipsis`.
         pub(crate) const ELLIPSIS = 1 << 3;
-        /// Its trailing white space ends a paragraph or the block, and hangs
-        /// only where it overflows.
-        ///
-        /// These are preserved spaces before a forced break or at the text's
-        /// end. Alignment reads the flag.
+        /// Its trailing white space, preserved before a forced break or at
+        /// the text's end, hangs only where it overflows.
         pub(super) const CONDITIONAL_HANG = 1 << 4;
         /// Ends at an `overflow-wrap` emergency break, which Chrome's breaker
         /// takes only on retrying a line that overflowed.
         const EMERGENCY = 1 << 5;
-        /// Ends where the scorer's plan put its end, as Chrome's `break_at_`
-        /// ends a line under `balance` or `pretty`.
+        /// Ends where the scorer planned, as Chrome's `break_at_` ends a line.
         ///
-        /// Chrome's breaker stops at that offset before an absolutely
-        /// positioned box's anchor there, so the anchor goes to the next
-        /// line.
+        /// Chrome stops there before an absolutely positioned box's anchor,
+        /// so the anchor goes to the next line.
         pub(crate) const SCORED = 1 << 6;
     }
 }
 
 impl LineFlags {
-    /// Whether the line's content overflowed its band: it still does, or it
-    /// ends at an emergency break taken because it did.
+    /// Returns whether the line overflows or ends at an emergency break.
     ///
     /// Balancing and `pretty` decline such a line, as Chrome's breaker
-    /// disables its bisection and scoring on overflowing.
+    /// disables its bisection and scoring on overflow.
     fn overflowed(self) -> bool {
         self.contains(Self::OVERFLOWS) || self.contains(Self::EMERGENCY)
     }
 }
 
 /// What hangs past a line's ends: 16 bytes.
-///
-/// The line's [`CONDITIONAL_HANG`](LineFlags::CONDITIONAL_HANG) says whether
-/// its white space ends with some that hangs only where it overflows.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub(crate) struct LineHang {
-    /// The trailing white space: the line's whole reach less its
-    /// [`width`](LineRecord::width).
+    /// The trailing white space: the line's reach to its end less its reach
+    /// to its content's end, each rounded up to the grid.
     ///
-    /// It sums the clusters' own advances, so a box's edge among them stays
-    /// content.
+    /// A box's edge among the white space stays content.
     pub(crate) space: LayoutUnit,
-    /// The part of `space` before the white space that hangs only where it
-    /// overflows, on a line with some: an ideographic space where white
-    /// space collapses, say.
+    /// The part of `space` before white space that hangs only where it
+    /// overflows ([`CONDITIONAL_HANG`](LineFlags::CONDITIONAL_HANG)), such
+    /// as a collapsible ideographic space.
     ///
-    /// It hangs only where none of that white space fits, as nothing after
-    /// it then takes room (CSS Text 3, section 4.1.3).
+    /// It hangs only where none of that white space fits (CSS Text 3,
+    /// section 4.1.3).
     pub(super) unconditional: LayoutUnit,
     /// Hanging punctuation at the start: the advance of the block's first
     /// cluster, where its start cost gives it back.
     pub(super) start: LayoutUnit,
     /// Hanging punctuation at the end: the end cost's flex, where the line
-    /// takes it.
+    /// takes it back.
     pub(super) end: LayoutUnit,
 }
 
 /// A line edge reshaped at an unsafe break: 12 bytes.
 ///
 /// Its clusters' glyph words and advances sit in [`ReshapedEdges`] from
-/// `first` on, one each. They use the paragraph's glyph encoding, so one
-/// reader decodes both. The edge's glyphs replace the paragraph's for these
-/// clusters on this line only.
+/// `first` on, one each. They replace the paragraph's on this line only.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct EdgeShape {
     /// The first cluster it replaces, and one past its last.
     start: ClusterId,
     end: ClusterId,
+    /// The first cluster's entry in the edge tables.
     first: EdgeClusterId,
 }
 
@@ -554,25 +507,22 @@ impl EdgeShape {
 
 /// The line edges reshaped at unsafe breaks, in shaping's glyph encoding.
 ///
-/// The tables hold each edge's record, a glyph word and advance per cluster,
-/// and the glyphs of expanded clusters. The breaker writes them while it fits
-/// a line, and takes back what a rejected candidate wrote ([`EdgeMark`]).
-/// Line layout and every reader read a line's edges in place of the
-/// paragraph's glyphs, on that line only.
+/// The breaker writes them while it fits a line, and takes back what a
+/// rejected candidate wrote ([`EdgeMark`]).
 pub(crate) struct ReshapedEdges {
     /// Every edge the lines kept, each line's together, in line order.
     pub(super) shapes: Table<EdgeShapeId, EdgeShape>,
     /// A glyph word per reshaped cluster.
     pub(super) words: Table<EdgeClusterId, GlyphWord>,
-    /// The glyphs of reshaped clusters that are expanded, which their words
-    /// point into.
+    /// The glyphs of expanded reshaped clusters, which their words point
+    /// into.
     pub(super) glyphs: Table<SidecarGlyphId, SidecarGlyph>,
-    /// An advance per reshaped cluster, 16.16, indexed as `words` is.
+    /// An advance per reshaped cluster, in `TextUnit`, indexed as `words` is.
     pub(super) advances: Table<EdgeClusterId, TextUnit>,
 }
 
 impl ReshapedEdges {
-    /// Empty tables, allocating nothing.
+    /// Returns empty tables, allocating nothing.
     const fn new() -> Self {
         Self {
             shapes: Table::new(),
@@ -582,8 +532,8 @@ impl ReshapedEdges {
         }
     }
 
-    /// Returns empty tables on the heap, out of line, so that each writer
-    /// inlines only the test for the box.
+    /// Returns empty tables on the heap, out of line so writers inline only
+    /// the test for the box.
     #[cold]
     #[inline(never)]
     fn boxed() -> Box<Self> {
@@ -606,8 +556,8 @@ impl ReshapedEdges {
             .unwrap_or_default()
     }
 
-    /// Returns [`line_edges`](Self::line_edges)'s edges where one holds some of
-    /// `clusters`, and none otherwise.
+    /// Returns all of `line`'s edges where one holds some of `clusters`, and
+    /// none otherwise.
     #[inline]
     pub(super) fn line_edges_touching(
         &self,
@@ -641,8 +591,8 @@ impl ReshapedEdges {
         }
     }
 
-    /// Takes back every cluster written since `mark`, its word, its advance
-    /// and its glyphs.
+    /// Takes back every cluster written since `mark`: its word, advance and
+    /// glyphs.
     fn rewind(&mut self, mark: EdgeMark) {
         self.words.truncate(mark.clusters);
         self.advances.truncate(mark.clusters);
@@ -659,13 +609,12 @@ heap_bytes! {
     ReshapedEdges { shapes, words, glyphs, advances }
 }
 
-/// What lines with no reshaped edge read: empty tables.
+/// The empty tables read where no line reshaped an edge.
 static NO_EDGES: ReshapedEdges = ReshapedEdges::new();
 
-/// A position in the edge tables, which a rejected candidate's edges rewind
-/// to.
+/// A position in the edge tables, which a rejected candidate rewinds to.
 ///
-/// A cluster has a word and an advance, so those two tables share one id.
+/// The word and advance tables share one id.
 #[derive(Copy, Clone, Debug, Default)]
 struct EdgeMark {
     clusters: EdgeClusterId,
@@ -687,14 +636,12 @@ struct LinesMark {
 }
 
 /// A float a line placed, and where the host put its margin box.
-///
-/// Its size is the content's.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct LineFloat {
     /// Which float it is.
     pub(crate) float: FloatId,
-    /// The line whose anchors hold it: the line being fitted as it was
-    /// placed. A float no kept line reaches names one past the last line.
+    /// The line being fitted as it was placed; one past the last line for a
+    /// float no line reaches.
     line: LineId,
     /// Where the host put its margin box's line-left edge.
     pub(crate) left: LayoutUnit,
@@ -733,26 +680,21 @@ impl Keyed for LineShift {
 pub(crate) struct LineRecord {
     /// Its first cluster.
     start: ClusterId,
-    /// One past its last: what hangs, its separator where it has one.
+    /// One past its last cluster, past what hangs and its separator.
     end: ClusterId,
     /// Its paragraph.
     pub(crate) paragraph: ParagraphId,
-    /// Its first item, as the breaker's item cursor stood when it was fitted.
+    /// Its first item, where a walk over it starts with no search.
     ///
     /// It is the first item at the line's start, empty items first, or else
-    /// the one holding its first cluster across the break. Blink's break
-    /// token names an item the same way. A walk over the line starts here
-    /// with no search.
+    /// the one holding its first cluster, as Blink's break token names it.
     pub(crate) first_item: ItemId,
     /// The room it is fitted in.
     pub(crate) band: LineBand,
     /// The `text-indent` it takes.
     pub(super) indent: LayoutUnit,
-    /// Its content's width as fitted, on Chrome's 1/64 grid.
-    ///
-    /// The width runs from its start to its content's end. It measures the
-    /// reshaped edges as shaped, adds the edge costs, and leaves out what
-    /// hangs.
+    /// Its content's width as fitted, with its reshaped edges and edge costs
+    /// and without what hangs.
     pub(crate) width: LayoutUnit,
     /// What hangs past its ends.
     pub(crate) hang: LineHang,
@@ -764,10 +706,8 @@ pub(crate) struct LineRecord {
     /// The baseline shifts it settled, sorted by node: none where nothing
     /// on it is `middle`, `text-top`, `text-bottom`, `top` or `bottom`.
     shifts: Range<LineShiftId>,
-    /// What else is true of it.
-    ///
-    /// The floats it holds and the scale `text-fit` sets it in are in the
-    /// lines' rare tables ([`Lines::line_floats`], [`Lines::scale`]).
+    /// Its flags. Its floats and `text-fit` scale are in the lines' rare
+    /// tables ([`Lines::line_floats`], [`Lines::scale`]).
     pub(crate) flags: LineFlags,
 }
 
@@ -778,9 +718,6 @@ impl LineRecord {
     }
 
     /// Returns its content's end, before what hangs, for test invariants.
-    ///
-    /// Line placement gets the breaker's exact end through the scratch
-    /// instead.
     #[cfg(test)]
     pub(super) fn content_end(&self, clusters: &Clusters) -> ClusterId {
         let mut end = self.end;
@@ -807,9 +744,6 @@ impl LineRecord {
 
     /// Returns how far its line box reaches over its baseline, zero for an
     /// empty line box.
-    ///
-    /// This places the baseline from the line box's top. Every unshifted item
-    /// stands on it.
     #[inline]
     pub(crate) fn ascent(&self) -> LayoutUnit {
         self.extent.zero_if_none().ascent()
@@ -823,10 +757,8 @@ impl LineRecord {
             && paragraphs.clusters(self.paragraph).end == self.end
     }
 
-    /// Returns the variant whose styles it is set in: the first line's, or
-    /// the standard one.
-    ///
-    /// A reader reads every prepared table for the line in this variant.
+    /// Returns the variant every prepared table is read in for it: the first
+    /// line's or the standard one.
     #[inline]
     pub(crate) fn variant(&self) -> FirstLineVariant {
         if self.flags.contains(LineFlags::FIRST_LINE) {
@@ -839,21 +771,18 @@ impl LineRecord {
 
 /// The lines, and the tables their records name.
 ///
-/// Only [`break_lines`] clears and refills the tables, so a relayout keeps
-/// every allocation.
+/// Only [`break_lines`] fills the tables. Clearing them keeps every
+/// allocation, so a relayout reuses them.
 pub(crate) struct Lines {
     /// The lines, in block order.
     pub(crate) lines: Table<LineId, LineRecord>,
-    /// The line edges reshaped at unsafe breaks, which the lines' records
-    /// name, where any line reshaped one.
-    ///
-    /// The box is made at the first reshape, then cleared with the rest and
-    /// kept. Read it through [`edges`](Self::edges).
+    /// The line edges reshaped at unsafe breaks, boxed at the first reshape
+    /// and kept. Read it through [`edges`](Self::edges).
     edges: Option<Box<ReshapedEdges>>,
     /// The pieces of the ruby columns the lines split, where any did.
     pub(crate) ruby: Option<Box<RubyLines>>,
-    /// The floats, the `text-fit` scales and the carries of annotations and
-    /// the initial letter, where the content has any.
+    /// The floats, `text-fit` scales, baseline shifts, last line's carry and
+    /// initial letter's shift, where any line has one.
     rare: Option<Box<RareLines>>,
     /// The block's trim, end and baselines.
     pub(crate) block: BlockResult,
@@ -868,7 +797,7 @@ pub(crate) struct Lines {
 }
 
 impl Lines {
-    /// No lines, allocating nothing.
+    /// Returns no lines, allocating nothing.
     pub(crate) const fn new() -> Self {
         Self {
             lines: Table::new(),
@@ -918,8 +847,7 @@ impl Lines {
         }
     }
 
-    /// Returns where the kept lines' shifts end, which a new line's shifts
-    /// follow.
+    /// Returns where the kept lines' shifts end.
     fn kept_shifts_end(&self) -> LineShiftId {
         self.lines
             .last()
@@ -944,8 +872,7 @@ impl Lines {
         }
     }
 
-    /// Returns the reshaped line edges: empty tables where no line reshaped
-    /// one.
+    /// Returns the reshaped line edges, empty where no line reshaped one.
     #[inline]
     pub(super) fn edges(&self) -> &ReshapedEdges {
         self.edges.as_deref().unwrap_or(&NO_EDGES)
@@ -970,16 +897,14 @@ impl Lines {
         }
     }
 
-    /// Returns the baseline shifts the lines settled, a line's together:
-    /// none where no line settled any.
+    /// Returns the baseline shifts the lines settled, a line's together.
     pub(super) fn shifts(&self) -> &[LineShift] {
         self.rare
             .as_deref()
             .map_or(&[], |rare| rare.shifts.as_slice())
     }
 
-    /// Returns the shifts `line` settled, sorted by node: none where it
-    /// settled none.
+    /// Returns the shifts `line` settled, sorted by node.
     pub(super) fn line_shifts(&self, line: &LineRecord) -> &[LineShift] {
         let shifts = self.shifts();
         shifts
@@ -999,16 +924,14 @@ impl Lines {
         self.rare.get_or_insert_with(Box::default)
     }
 
-    /// Returns every float the lines placed, in placement order: none where
-    /// the content has none.
+    /// Returns every float the lines placed, in placement order.
     pub(crate) fn floats(&self) -> &[LineFloat] {
         self.rare
             .as_deref()
             .map_or(&[], |rare| rare.floats.as_slice())
     }
 
-    /// Returns the floats whose anchors `line` holds, in placement order:
-    /// those it starts beside, those beside it, and those below it.
+    /// Returns the floats whose anchors `line` holds, in placement order.
     pub(crate) fn line_floats(&self, line: LineId) -> &[LineFloat] {
         let floats = self.floats();
         let start = floats.partition_point(|float| float.line < line);
@@ -1023,8 +946,7 @@ impl Lines {
             .map_or(LineFloatId::new(0), |rare| rare.floats.next_id())
     }
 
-    /// Records where the host put `float`, which the line being fitted
-    /// placed.
+    /// Records where the host put `float`, placed by the line being fitted.
     fn push_float(&mut self, float: FloatId, left: LayoutUnit, top: LayoutUnit) {
         let line = self.lines.next_id();
         let record = LineFloat {
@@ -1048,8 +970,7 @@ impl Lines {
         }
     }
 
-    /// Returns the scale `text-fit` sets `line`'s text in: 1 where none
-    /// does.
+    /// Returns the scale `text-fit` sets `line`'s text in, 1 where none does.
     #[inline]
     pub(crate) fn scale(&self, line: LineId) -> f32 {
         match &self.rare {
@@ -1059,7 +980,7 @@ impl Lines {
     }
 
     /// Records how far the first line's annotations move the initial letter
-    /// down, making the rare tables only where it moves.
+    /// down, boxing the rare tables only where it moves.
     fn set_letter_shift(&mut self, shift: LayoutUnit) {
         if shift != LayoutUnit::ZERO || self.rare.is_some() {
             self.rare_mut().letter_shift = shift;
@@ -1067,7 +988,7 @@ impl Lines {
     }
 
     /// Returns how far the first line's annotations move the initial
-    /// letter down: zero where nothing moves it.
+    /// letter down.
     pub(super) fn letter_shift(&self) -> LayoutUnit {
         self.rare
             .as_deref()
@@ -1088,8 +1009,7 @@ impl Lines {
     /// Returns the first line ending past `cluster`, or one past the last
     /// where none does.
     ///
-    /// Where a line ends at `cluster`, this is the line after it: the line a
-    /// downstream position there is on.
+    /// At a line's end this is the downstream line, the next one;
     /// [`first_reaching`](Self::first_reaching) gives the upstream one.
     pub(crate) fn at(&self, cluster: ClusterId) -> LineId {
         work::seek();
@@ -1104,14 +1024,12 @@ impl Lines {
     /// after it, zero where there is no line.
     ///
     /// Negative, it is how far annotations and emphasis marks reach past the
-    /// line box, which `block_end` counts. `stages` are the ones the lines
-    /// were broken from.
+    /// line box. `stages` are the ones the lines were broken from.
     ///
-    /// Content with annotations or marks has each line's room worked out as
-    /// it breaks, so this returns the stored carry. Otherwise it works out
-    /// the last line's em boxes against its line box here, as Chrome does in
-    /// `InlineLayoutAlgorithm::CreateLine` under `ContainsAnnotations()` and
-    /// `IsLastLine()`. Working it out on demand saves a sixth of a one-line
+    /// Content with annotations or marks returns the carry stored at
+    /// breaking. Otherwise this measures the last line's em boxes against
+    /// its line box, as Chrome's `InlineLayoutAlgorithm::CreateLine` does
+    /// for the last line. Measuring on demand saves a sixth of a one-line
     /// label's relayout.
     pub(crate) fn room_below(&self, stages: Stages<'_>) -> LayoutUnit {
         if AnnotationRoom::wanted(stages.content, stages.measured) {
@@ -1130,8 +1048,6 @@ impl Lines {
 
     /// Returns how far `line` raises `node`'s baseline for its
     /// `vertical-align`, zero where it settled nothing for it.
-    ///
-    /// A line that settled nothing, as most do, is not searched.
     pub(super) fn shift(&self, line: &LineRecord, node: NodeId) -> LayoutUnit {
         if line.shifts.is_empty() {
             return LayoutUnit::ZERO;
@@ -1148,33 +1064,24 @@ heap_bytes! {
     }
 }
 
-/// What the lines keep only for floats, `text-fit`, annotations and the
-/// initial letter, made the first time a line needs one.
+/// What the lines keep only for floats, `text-fit`, baseline shifts,
+/// annotations and the initial letter, made the first time a line needs one.
 #[derive(Default)]
 struct RareLines {
-    /// Every float the lines placed, once each, in placement order.
-    ///
-    /// A line's floats are together, in line order. Floats no line reaches
-    /// come last, placed where the text ends.
+    /// Every float the lines placed, once each, in line order. Floats no
+    /// line reaches come last.
     floats: Table<LineFloatId, LineFloat>,
-    /// The scale `text-fit` sets each line's text in, at its line's id.
-    ///
-    /// Every line has one where `text-fit` applies, and none otherwise. Each
-    /// is a finite positive number.
+    /// The finite, positive scale `text-fit` sets each line's text in, at
+    /// its line's id; empty where `text-fit` does not apply.
     scales: Table<LineId, f32>,
     /// The last line's carry, where the content has annotations or marks.
-    ///
-    /// It is the room the last line leaves under its content, or, negative,
-    /// how far its annotations and marks reach past its line box. Read it
-    /// through [`Lines::room_below`].
+    /// Read it through [`Lines::room_below`].
     annotated_carry: LayoutUnit,
-    /// How far the first line's annotations move the initial letter down:
-    /// what they move the line beyond a raised letter's raise.
-    ///
-    /// The kept first line writes it where its annotations move the letter.
+    /// How far the first line's annotations move the initial letter down,
+    /// beyond a raised letter's raise. Each measure of the first line
+    /// writes it.
     letter_shift: LayoutUnit,
-    /// The baseline shifts the lines settled, a line's together, where the
-    /// content has boxes whose line settles a shift or `text-fit` scales.
+    /// The baseline shifts the lines settled, a line's together.
     shifts: Table<LineShiftId, LineShift>,
 }
 
@@ -1199,9 +1106,7 @@ impl Default for Lines {
     }
 }
 
-// The breaker's state and the records its files share: `fit` builds and
-// drives them, and `search`, `candidate`, `reshape`, `floats`, `wrap`,
-// `ruby` and `height` each add to `Breaker`'s `impl`.
+// The breaker's state and the records its files share.
 
 /// Where the lines have got to: what the next line starts from.
 ///
@@ -1211,33 +1116,29 @@ struct Cursor {
     /// Where the next line box starts across the block, in the records'
     /// positions.
     top: LayoutUnit,
-    /// How far the host's block positions stand above the records'.
+    /// How far the host's block positions stand above the records': the
+    /// `text-box-trim` of the kept first line.
     ///
-    /// It is what `text-box-trim` moves the first line up by, once kept. Every
-    /// later line moves with it. The block result trims the records by the
-    /// same amount. The host is asked where the lines will stand, as Chrome
-    /// lays each later line below the trimmed first.
+    /// The host is asked about trimmed positions, as Chrome lays each later
+    /// line below the trimmed first.
     trimmed: LayoutUnit,
     /// The first item that may be on the next line.
     items: ItemId,
-    /// The first float not yet placed. The text reaches floats in reading
-    /// order, and each is placed once.
+    /// The first float not yet placed.
     floats: FloatId,
     /// The first forced break that clears floats not yet passed.
     clearances: BreakClearanceId,
     /// Where the last line's clearing break moved the block's end, in the
-    /// host's positions, where it moved it.
+    /// host's positions; `None` where it moved nothing.
     cleared: Option<LayoutUnit>,
-    /// `line-clamp` ended the block: nothing after its last line is broken,
-    /// and no later float is placed.
+    /// `line-clamp` ended the block after its last line.
     clamped: bool,
-    /// `line-clamp: auto` ended the block: the next line would take the
-    /// block's content past its end, and is not kept.
+    /// `line-clamp: auto` ended the block: the next line would overrun it.
     overran: bool,
 }
 
 impl Cursor {
-    /// Returns the block's start, its first line box at `top`.
+    /// Returns the cursor at the block's start, its first line box at `top`.
     fn new(top: LayoutUnit) -> Self {
         Self {
             top,
@@ -1255,25 +1156,23 @@ impl Cursor {
 /// A part of a line reshaped on its own, in the edge tables.
 #[derive(Copy, Clone, Debug)]
 struct ReshapedPiece {
-    /// Its clusters and their edge-table entries: the line's edge record,
-    /// if the line is kept.
+    /// Its clusters and edge-table entries, the line's record once kept.
     shape: EdgeShape,
-    /// Its reshaped advance less the paragraph's over the same clusters:
-    /// what it moves the line's end by.
+    /// How far it moves the line's end: its advance less the paragraph's.
     delta: InlineLayoutUnit,
-    /// Whether breaking before its start changes the shaping, so it may not
-    /// join the glyphs before it.
+    /// Whether breaking before its start changes the shaping.
     start_unsafe: bool,
 }
 
-/// A line's reshaped pieces: none, one (its start, its end, or the whole
-/// line), or two (its start and its end), in order.
+/// A line's reshaped pieces, in order: none, one (its start, its end, or the
+/// whole line), or two (its start and its end).
 #[derive(Copy, Clone, Debug, Default)]
 struct ReshapedPieces {
     list: [Option<ReshapedPiece>; 2],
 }
 
 impl ReshapedPieces {
+    /// Adds `piece`, if any; a third is dropped.
     fn push(&mut self, piece: Option<ReshapedPiece>) {
         let Some(piece) = piece else {
             return;
@@ -1303,22 +1202,20 @@ impl ReshapedPieces {
     }
 }
 
-/// A line start's reshape window up to `end`, and what shaping it on its
-/// own moves the line's end by.
+/// The reshape window of a line's unsafe start, and how far it moves the
+/// line's end.
 #[derive(Copy, Clone, Debug)]
 struct StartWindow {
     /// The shaping run holding it, which its piece is shaped in.
     run: ShapedRunId,
     end: ClusterId,
     delta: InlineLayoutUnit,
-    /// The line starts at an opening mark it trims, under `space-first` or
-    /// `trim-start`.
+    /// The line starts at an opening mark it trims.
     trims: bool,
 }
 
 impl StartWindow {
-    /// Returns how a line start's window is shaped: as a line's start, its
-    /// opening mark trimmed where `trims`.
+    /// Returns the edges a start window is shaped with.
     fn edges(trims: bool) -> ShapingEdges {
         ShapingEdges {
             line_start: true,
@@ -1349,34 +1246,30 @@ struct BreakerParagraph {
     id: ParagraphId,
     start: ClusterId,
     end: ClusterId,
-    /// The prefix sum at its start, which fitting measures positions from.
+    /// The prefix sum at its start.
     origin: InlineLayoutUnit,
     /// Its text, the context a reshaped edge is shaped in.
     text: Range<TextOffset>,
     level: BidiLevel,
-    /// Its prefix never goes back, so a cut's width grows with the cut.
+    /// Its prefix never decreases.
     monotone: bool,
-    /// It has tabs, which a line's walk and candidates size.
+    /// It has tabs.
     tabs: bool,
     /// Some edge cost falls in it.
     costs: bool,
-    /// What a line ending at its end pays there.
-    ///
-    /// Every line's fit tries the paragraph's end first. Kept here, that
-    /// candidate leaves the line's cost cursor near the line.
+    /// What a line ending at its end pays there, kept here so trying the
+    /// end leaves the cost cursor near the line.
     end_cost: LineEdgeCost,
     /// Where a line ending at its end ends without what hangs, and how far
     /// what hangs reaches, unreshaped.
-    ///
-    /// A line's fit weighs its end with them before measuring the candidate
-    /// there, which fits on its last line only.
     end_tail: (ClusterId, InlineLayoutUnit),
-    /// `text-autospace` puts room at a seam in it, which a line ending there
-    /// gives back.
+    /// It has a `text-autospace` seam, whose room a line ending there gives
+    /// back.
     seams: bool,
     /// It ends in a separator, so its last line ends at a forced break.
     forced: bool,
-    /// Its lines need their ends exactly, so a break at a space is reshaped.
+    /// A break at a space and a removed space are reshaped, as alignment
+    /// needs exact ends.
     exact_end: bool,
     /// An inline box in it has a strut past the block's, which a line it is
     /// open across may hold.
@@ -1384,73 +1277,63 @@ struct BreakerParagraph {
 }
 
 impl BreakerParagraph {
-    /// Returns whether its lines are walked rather than searched: it has
-    /// tabs, or its prefix is not monotone.
+    /// Returns whether its lines are walked rather than searched.
     fn walks(&self) -> bool {
         self.tabs || !self.monotone
     }
 }
 
-/// Where a line starts, and what fitting it in one band holds fixed while
-/// its candidates are measured.
+/// Where a line starts, and what stays fixed while its candidates in one
+/// band are measured.
 ///
-/// [`Breaker::line_start`] builds it for each band a line is fitted in.
-/// Measuring the line again as its fit did reads the same one.
+/// [`Breaker::line_start`] builds it for each band.
 #[derive(Copy, Clone)]
 struct LineStart<'p> {
     para: &'p BreakerParagraph,
     start: ClusterId,
-    /// The first item at `start`, empty items first, or else the one
-    /// holding its cluster: the line's [`first_item`](LineRecord::first_item).
-    /// A walk over the line starts here with no search.
+    /// The line's [`first_item`](LineRecord::first_item): the first item at
+    /// `start`, empty items first, or else the one holding its cluster.
     first_item: ItemId,
     /// The reshape window of an unsafe start.
     window: Option<StartWindow>,
     /// The most the line may take: its band plus 1/64, less its indent.
+    ///
+    /// A balanced paragraph narrows the band first.
     room: LayoutUnit,
     start_cost: LayoutUnit,
     /// How far a mark hangs at its start under `hanging-punctuation: first`.
     hang_start: LayoutUnit,
-    /// The line's start where fitting reads it.
+    /// The line's start as a fitting position.
     fit_start: InlineLayoutUnit,
-    /// The `text-indent` it takes, which its tabs count from.
+    /// The `text-indent` it takes.
     indent: LayoutUnit,
-    /// Where it starts from the block's content edge on its paragraph's
-    /// start side, which tab stops count from.
+    /// Where it starts from the content edge, which tab stops count from.
     tab_origin: LayoutUnit,
 }
 
-/// A line's start in the edge tables: where the line's pieces begin, and
-/// its start window's piece.
-///
-/// The line shapes its window once, and every fit and candidate of the line
-/// shares the piece.
+/// A line's start in the edge tables, and its start window's piece, which
+/// every fit and candidate of the line shares.
 #[derive(Copy, Clone, Debug)]
 struct LineHead {
     /// The edge tables before anything of the line's.
     mark: EdgeMark,
     /// The window's piece in the tables, from `mark`, while they hold it.
-    ///
-    /// A candidate reshaped as one piece takes it back. The next candidate
-    /// that needs it shapes it again.
+    /// A candidate reshaped as one piece takes it back.
     shaped: Option<ReshapedStart>,
 }
 
 impl LineHead {
-    /// Returns where a candidate's own pieces start in the edge tables:
-    /// after the window's piece, or at `mark` without one.
+    /// Returns where a candidate's own pieces start in the edge tables.
     fn after(&self) -> EdgeMark {
         self.shaped.map_or(self.mark, |shaped| shaped.after)
     }
 }
 
-/// What one fit of a line holds while its candidates are measured: its
-/// start, its moving cost cursor, its head in the edge tables, and the shift
-/// of a column it continues.
+/// What one fit of a line holds while its candidates are measured.
 struct Fitting<'p, 'h> {
     line: LineStart<'p>,
-    /// The paragraph's line-edge costs, where it has any: sought at the
-    /// line's start and moved with the candidates.
+    /// The paragraph's line-edge costs, where it has any, moved with the
+    /// candidates.
     costs: Option<SortedCursor<'p, LineEdgeCost>>,
     head: &'h mut LineHead,
     /// How the rest of a column the line continues shifts prefix positions.
@@ -1463,79 +1346,66 @@ struct Breaker<'a, 'c, 'm> {
     /// The prepared tables in the variant of the line being broken.
     stages: LineStages<'a>,
     /// The prepared tables in the first line's variant, where `::first-line`
-    /// restyles something.
-    ///
-    /// They swap with `stages` while the first line is broken.
+    /// restyles something. They swap with `stages` for the first line.
     first_line: Option<LineStages<'a>>,
     clusters: &'a Clusters,
     /// How a line makes room for annotations and marks, where the content
     /// has either.
     annotation: Option<AnnotationRoom<'a>>,
-    /// Measurement's whole output, which holds each text's tab stops for
-    /// both variants.
+    /// Measurement's output, with both variants' tab stops.
     measured: &'a Measured,
     shaping: &'c mut ShapeSession<'m, 'a>,
-    /// The scratch for line heights, carried boxes and annotation levels.
+    /// The breaking scratch: placement facts, height and annotation buffers,
+    /// sized tabs and the scorer's tables.
     scratch: &'c mut BreakScratch,
     /// The host, which places the floats the lines reach and gives each
     /// line its band.
     exclusions: &'c mut dyn Exclusions,
     /// The block's `text-box-trim`, where it trims.
-    ///
-    /// Later lines stand where the trim moves the first. The host is asked
-    /// for their bands and floats there.
     trims: Option<TextBoxTrims>,
-    /// What is true of the shaped text: whether some cluster is unsafe to
-    /// break before, and whether punctuation is trimmed by halving it.
+    /// Facts of the shaped text, such as whether a cluster is unsafe to
+    /// break before.
     shaped: ShapedFlags,
-    /// Which clusters take word-spacing, in the prefix and in a reshaped
-    /// edge alike.
+    /// Which clusters take word-spacing, in the prefix and reshaped edges.
     words: WordSpacingRule,
-    /// Where `text-autospace` puts room, in the prefix and in a reshaped
-    /// edge alike.
+    /// Where `text-autospace` puts room, in the prefix and reshaped edges.
     seams: AutospaceRules,
+    /// The block's `text-align`, which decides whether a break at a space is
+    /// reshaped and whether the scorer weighs justified lines.
     text_align: TextAlign,
-    /// The content has a ruby column, which opportunity searches step over
-    /// whole.
+    /// The content has a ruby column, which searches step over whole.
     has_ruby_columns: bool,
-    /// The ruby column the last column search ended near, which the next
-    /// walks from: the breaker's searches stay near the line it fits.
+    /// The ruby column the last column search ended near, where the next
+    /// one starts.
     column: Cell<RubyColumnId>,
     /// Which opportunities a ruby column splits at.
     ruby_break_within: RubyBreakWithin,
-    /// The ruby column the line being fitted continues, split by the line
-    /// before.
+    /// The ruby column the line before split, which this line continues.
     continued: Option<Continued>,
     /// `text-indent`, and the lines it applies to.
     text_indent: TextIndent,
-    /// The block wraps its lines, so a line the floats narrow until it
-    /// overflows moves down past them.
-    ///
-    /// A block that does not wrap keeps every line beside the floats,
-    /// overflowing. Chrome's `ShouldWrapLine` decides this from the block's
-    /// own style.
+    /// The block wraps, so a line the floats narrow until it overflows
+    /// moves down past them, as Chrome's `ShouldWrapLine` decides.
     wraps: bool,
-    /// `text-overflow: ellipsis`: a line that overflows its band is cut for
-    /// an ellipsis.
+    /// `text-overflow: ellipsis`, which cuts an overflowing line.
     ellipsis: bool,
     /// `line-clamp`: the most lines the block keeps, or the end `auto`
     /// measures them against.
     clamp: Clamp,
-    /// How the paragraphs choose their lines: `text-wrap-style`, with the
-    /// config's rule for `pretty`.
+    /// How the paragraphs choose their lines: `text-wrap-style`, with
+    /// `Config::pretty`.
     choice: LineChoice,
-    /// What the line being fitted is held to. It is `Free` except while a
+    /// What the line being fitted is held to: `Free` except while a
     /// paragraph is balanced or scored.
     hold: Hold,
     /// The room the last kept line leaves the next at its end, or, for the
     /// first line, the room above the block.
     carry: Carry,
-    /// The text item and shaping run the last line's extent read, which the
-    /// next line's starts from.
+    /// The text item and shaping run the last line's extent read, where the
+    /// next line's starts.
     line_fonts: LineFonts,
     /// The block's `text-fit`, where it scales the lines.
     text_fit: Option<TextFitting>,
-    /// The scale the line being measured sets its text in, which its height
-    /// reads.
+    /// The scale the line being measured sets its text in.
     line_scale: f32,
 }

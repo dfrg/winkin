@@ -1,9 +1,6 @@
-//! Ruby columns, each sized where the scan meets it, before its first
-//! cluster is measured.
-//!
-//! A look-ahead runs over the column with a copy of the scan's walk. It
-//! measures the base as the scan is about to, each annotation as a line of
-//! its own, and how far the column overhangs the text beside it.
+//! Ruby columns, each sized where the scan meets it by a look-ahead over a
+//! copy of the scan's walk: the base as the scan will measure it, each
+//! annotation as a line of its own, and the overhang.
 
 use alloc::vec::Vec;
 use core::cell::Cell;
@@ -50,17 +47,13 @@ pub(super) struct OpenColumn {
     pub(super) may_break: bool,
     /// The boundary it ends at, after its last annotation.
     pub(super) end: ClusterId,
-    /// What it takes along the line past its base: its width, less the
-    /// base's, less its overhang either side.
+    /// Its width less its base's and its overhang either side.
     extra: InlineLayoutUnit,
-    /// How far it overhangs the text before it and after it.
-    ///
-    /// A line it starts or ends has no text there, so that line pays the
-    /// overhang.
+    /// How far it overhangs the text before and after it, which a line it
+    /// starts or ends pays.
     start_overhang: LayoutUnit,
     end_overhang: LayoutUnit,
-    /// The first item of the next column of its container, where one starts
-    /// where this one ends.
+    /// The first item of its container's next column, where one follows.
     next: Option<ItemId>,
 }
 
@@ -69,8 +62,8 @@ pub(super) struct OpenColumn {
 pub(super) struct RubyBoundaries {
     /// The ruby column the scan is in, sized where it started.
     pub(super) column: Option<OpenColumn>,
-    /// The column that just ended, as the min-content lines take it: its
-    /// whole width, and its first, last and widest pieces.
+    /// The last column that ended in pieces, for the min-content sizes: its
+    /// width less its overhang, and its first, last and widest pieces.
     pub(super) ended: Option<(LayoutUnit, LayoutUnit, LayoutUnit, LayoutUnit)>,
     /// The ruby container the scan is in.
     container: NodeId,
@@ -80,8 +73,7 @@ pub(super) struct RubyBoundaries {
     last: Option<EndedColumn>,
     /// The tabs of the blank run the scan last passed a tab in.
     tab_run: Option<TabRun>,
-    /// The font run the last column's em boxes ended in, which the next
-    /// column's walk starts from.
+    /// The font run the last em box walk ended in, where the next starts.
     font_run: FontRunId,
 }
 
@@ -110,10 +102,8 @@ impl RubyBoundaries {
         }
     }
 
-    /// Notes the tab at `tab`, which reaches `width` on its paragraph's
-    /// line, for a column starting after it.
-    ///
-    /// It joins the last run where only space separators stand between.
+    /// Notes the tab at `tab`, `width` wide, for a column after it. It joins
+    /// the last run where only spaces stand between.
     pub(super) fn pass_tab(&mut self, scan: &Scan<'_>, tab: ClusterId, width: InlineLayoutUnit) {
         let clusters = &scan.input.analysis.clusters;
         let blank = |at: ClusterId| {
@@ -136,11 +126,11 @@ impl RubyBoundaries {
     }
 
     /// Closes the ruby column ending at boundary `at`, sizes one starting
-    /// there, and adds the room of both to `room`.
+    /// there, and adds their room and nested columns' to `room`.
     ///
-    /// The scan's walk `walk` stands at `at`, its items crossed, and `sum` is
-    /// the prefix before them. A look-ahead sizes a new column over a copy of
-    /// `walk` and `seams`, so the scan's own stay where they are.
+    /// `walk` stands at `at` with its items crossed. `sum` is the running sum
+    /// before them; `line` turns a running sum into a place on the
+    /// paragraph's line.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn cross<'a>(
         &mut self,
@@ -175,9 +165,7 @@ impl RubyBoundaries {
             if let Some(open) = &self.column {
                 room.overhang.start = InlineLayoutUnit::from_layout(open.start_overhang);
             }
-            // A column with no clusters ends where it starts. Its room starts
-            // the line after, and is no part of a glyph's advance, as a nested
-            // one's is.
+            // A column with no clusters: its room starts the line after.
             if let Some(open) = self.column.take_if(|open| open.end == at) {
                 let extra = open.extra.to_layout();
                 if extra != LayoutUnit::ZERO {
@@ -192,11 +180,8 @@ impl RubyBoundaries {
         self.pass_child_rooms(at, room, out);
     }
 
-    /// Closes the column ending at `at`, if any, and returns it.
-    ///
-    /// The column takes what it adds past its base, as a closing edge does,
-    /// and its overhang after it. `sum` is the prefix before the items at
-    /// `at`.
+    /// Closes the column ending at `at`, if any, and returns it. Its room
+    /// joins `room` as a closing edge does.
     #[allow(clippy::too_many_arguments)]
     fn close(
         &mut self,
@@ -227,13 +212,10 @@ impl RubyBoundaries {
         Some(open)
     }
 
-    /// Returns how far a column whose first item is `first`, starting at the
-    /// running sum `start`, may overhang the text before it without meeting
-    /// the last column's annotation.
-    ///
-    /// Chrome takes the last column's end overhang off the text between them
-    /// where only text and tags stand between (`GetOverhang`,
-    /// `FindPreviousRubyIndex`). Anything else between leaves no bound.
+    /// Returns how far a column starting at item `first` and running sum
+    /// `start` may overhang the text before it without meeting the last
+    /// column's, as Chrome's `GetOverhang` bounds it. `None` where more than
+    /// text and tags stand between.
     fn start_limit(
         &self,
         scan: &Scan<'_>,
@@ -262,8 +244,7 @@ impl RubyBoundaries {
         Some((between - last.end_overhang).max(LayoutUnit::ZERO))
     }
 
-    /// Returns the first item of a column starting here: the first in a
-    /// container opening in `room`, or the next after `ended`.
+    /// Returns the first item of a column starting here, or `None`.
     fn next_first(
         &mut self,
         scan: &Scan<'_>,
@@ -271,8 +252,8 @@ impl RubyBoundaries {
         room: &BoundaryRoom,
         out: &MeasuredText,
     ) -> Option<ItemId> {
-        // Opening marks before the ending root's close belong to descendants
-        // that root's look-ahead sized already.
+        // A container opening before the ended column's close is nested in
+        // it, and that column's look-ahead sized it already.
         let opening = room.ruby_open.filter(|&opens| {
             ended.as_ref().is_none_or(|open| {
                 out.ruby_columns()
@@ -290,10 +271,7 @@ impl RubyBoundaries {
         }
     }
 
-    /// Adds to `room` what the columns nested in a base leave at `at`.
-    ///
-    /// An empty one's room starts the line after. Another's ends the line
-    /// before, as a closing edge does.
+    /// Adds to `room` what nested or empty columns leave at `at`.
     fn pass_child_rooms(&mut self, at: ClusterId, room: &mut BoundaryRoom, out: &MeasuredText) {
         while let Some(child) = out.ruby_columns().rooms.get(self.child_room) {
             if child.at > at {
@@ -310,8 +288,7 @@ impl RubyBoundaries {
     }
 }
 
-/// A ruby column starting where the scan is, to be sized, and what sizing
-/// reads beyond the scan's walk.
+/// A ruby column to size where the scan stands.
 pub(super) struct Sizing<'s, 'a> {
     pub(super) scan: &'s Scan<'a>,
     /// The running sums before the scan's boundary, and the shaped advances
@@ -319,39 +296,26 @@ pub(super) struct Sizing<'s, 'a> {
     pub(super) prefix: ScanPrefix<'s>,
     /// The ruby container it is in.
     container: NodeId,
+    /// The column whose base holds it, or `None` at the top level.
     parent: Option<RubyColumnId>,
-    /// How far its start overhang may reach before meeting the last
-    /// column's annotation, where that column is near enough to meet.
+    /// How far its start overhang may reach, where the last column bounds it.
     pub(super) start_limit: Option<LayoutUnit>,
     /// The tabs of the blank run the scan last passed a tab in.
     pub(super) tabs_before: Option<TabRun>,
     /// Where the column starts along its paragraph's line.
     pub(super) line_start: InlineLayoutUnit,
-    /// The font run the last em box walk ended in, which the next starts
-    /// from: the columns and their levels come nearly in text order.
+    /// The font run the last em box walk ended in, where the next starts.
     font_run: &'s Cell<FontRunId>,
 }
 
 impl<'a> Sizing<'_, 'a> {
-    /// Sizes the ruby column starting at boundary `at` into `out`'s columns
-    /// and levels.
+    /// Sizes the ruby column starting at boundary `at`, item `first`, into
+    /// `out`, and moves `walk` past it. `before` is the text before it.
     ///
-    /// `first` is the column's first item. The look-ahead runs over a copy
-    /// of the scan's walk `walk` and seams `seams`. The scan stands at `at`,
-    /// with the items there passed and the cluster there not yet measured.
-    /// `before` is the text before the column.
-    ///
-    /// Returns what the scan needs where the column ends, or `None` where
-    /// the tables are full.
-    ///
-    /// - The base is measured as the scan is about to measure it, cluster by
-    ///   cluster and edge by edge, so its width is what the prefix will hold.
-    /// - Each annotation is measured as a line of its own: its shaped
-    ///   advances, its own spacing and the edges of the boxes in it. Chrome
-    ///   measures an annotation's line at its max-content (`HandleRuby`).
-    /// - The column ends where its container does, or where base text
-    ///   follows its last annotation. That text starts the container's next
-    ///   column.
+    /// The base is measured as the prefix will hold it. Each annotation is
+    /// measured at its max-content, as Chrome's `HandleRuby` does. The column
+    /// ends with its container, or where base text follows its last
+    /// annotation. Returns `None` where a table is full.
     fn column(
         &self,
         walk: &mut ScanWalk<'a>,
@@ -363,8 +327,7 @@ impl<'a> Sizing<'_, 'a> {
     ) -> Option<OpenColumn> {
         let scan = self.scan;
         let content = scan.input.content;
-        // Reserve the parent row before its descendants: columns stay in
-        // preorder, with increasing base starts, even at equal boundaries.
+        // The row goes in before its descendants', in preorder.
         let id = out.rare_mut().rubies.columns.push(RubyColumn {
             open: first,
             base_end: first,
@@ -404,7 +367,7 @@ impl<'a> Sizing<'_, 'a> {
         let next =
             (state.count > 0 && !is_container_end(content, close) && state.annotation_follows)
                 .then_some(close);
-        // Add up what the column's parts measure, and so what it takes.
+        // The column's width from its parts.
         let levels_end = out.rare_mut().rubies.levels.next_id();
         let levels = if state.count == 0 {
             levels_end..levels_end
@@ -419,8 +382,6 @@ impl<'a> Sizing<'_, 'a> {
             .iter()
             .fold(base_width, |width, level| width.max(level.width));
         let space = width - base_width;
-        // Read the container's facts: its ruby properties, and its text's
-        // `text-justify` and size.
         let (nodes, facts) = (&content.nodes, &content.facts);
         let ruby = facts
             .box_facts(nodes.box_facts(self.container, scan.variant))
@@ -437,22 +398,20 @@ impl<'a> Sizing<'_, 'a> {
             None,
         )
         .map_or(0, |found| found.count_range(at..base_end));
-        // Work out the overhang, and so where the base sits in the column.
-        // It never reaches the container's next column, whose base is the
-        // text after it: Chrome reaches over no ruby column
-        // (`CommitPendingEndOverhang`).
+        // The text after the column, which its end overhang may reach. A
+        // column followed by its container's next column has none: Chrome
+        // overhangs no ruby column (`CommitPendingEndOverhang`).
         let after = match next {
             Some(_) => None,
             None => self.after_column(&state.look, end, close),
         };
-        // The base's em box, or the container's font's where the base holds
-        // no text: an empty base keeps its annotations, which stand on it.
+        // An empty base takes the container's font's em box.
         let base_em = self.em(first, base_end_item, false, at..base_end, out);
         let empty = base_em.is_none();
         let strut = || ruby::strut_em(scan.input.fonts, facts.text_request(text));
         let base_em = if empty { strut() } else { base_em };
-        // Collapsible spaces ending the base leave its em box on a line
-        // the column ends.
+        // The em box without trailing collapsible spaces, for a line the
+        // column ends.
         let kept = self.kept_clusters(at..base_end, (first, base_end_item), false);
         if kept.end < base_end {
             let trimmed = self.em(first, base_end_item, false, kept, out);
@@ -469,7 +428,8 @@ impl<'a> Sizing<'_, 'a> {
                 );
             }
         }
-        // Chrome overhangs nothing beside an empty base.
+        // A nested column, or one with an empty base, overhangs nothing, as
+        // in Chrome.
         let overhang = if self.parent.is_some() || empty {
             (LayoutUnit::ZERO, LayoutUnit::ZERO)
         } else {
@@ -488,13 +448,11 @@ impl<'a> Sizing<'_, 'a> {
             self.overhang(column, state.widest, out)
         };
         let spread = match scan.input.ruby_overhang {
-            // Chrome insets the base as if nothing overhung, and moves the
-            // column over the text beside it.
+            // Chrome insets the base as if nothing overhung.
             RubyOverhangRule::AdjacentText => {
                 RubySpread::from_base(ruby.align, space, opportunities)
             }
-            // JLREQ gives the base only what the overhang leaves, the
-            // annotation reaching past it either side.
+            // JLREQ gives the base only what the overhang leaves.
             RubyOverhangRule::KanaOnly => {
                 let left = space - overhang.0 - overhang.1;
                 let spread = RubySpread::from_base(ruby.align, left, opportunities);
@@ -549,12 +507,9 @@ impl<'a> Sizing<'_, 'a> {
         })
     }
 
-    /// Measures the parts of the column `id`, from boundary `at` and its
-    /// first item `first`: its base, cluster by cluster, the columns nested
-    /// in it, and its annotations.
-    ///
-    /// Returns the boundary the column ends at and the first item past what
-    /// was crossed there, or `None` where a table is full.
+    /// Measures column `id`'s base, nested columns and annotations, from
+    /// boundary `at` and item `first`. Returns its end boundary and the
+    /// first item past it, or `None` where a table is full.
     fn measure_parts(
         &self,
         state: &mut Measuring<'a>,
@@ -565,8 +520,6 @@ impl<'a> Sizing<'_, 'a> {
     ) -> Option<(ClusterId, ItemId)> {
         let scan = self.scan;
         let count = scan.input.analysis.clusters.len();
-        // The items at the column's start: the edges of the boxes its base
-        // opens with, and an annotation where its base is empty.
         let mut index = self.ruby_marks(state, at, first, out)?;
         let mut c = at;
         loop {
@@ -574,8 +527,7 @@ impl<'a> Sizing<'_, 'a> {
             if state.ended {
                 return Some((c, index));
             }
-            // A nested container is one unit of this base. Its own columns
-            // are measured independently and never overhang their siblings.
+            // A nested container is one unit of this base.
             if let Some(item) = scan.input.content.items.get(index)
                 && item.kind == ItemKind::RubyOpen
                 && item.node != self.container
@@ -587,9 +539,6 @@ impl<'a> Sizing<'_, 'a> {
                 return Some((c, index));
             }
             self.measure_cluster(state, c);
-            // Cross the boundary after it: its ruby marks and the edges of
-            // the base's boxes, in order, from past the item holding the
-            // cluster. The copy then moves into the next segment.
             let after = ClusterId::new(c.get() + 1);
             let past = state
                 .look
@@ -603,8 +552,7 @@ impl<'a> Sizing<'_, 'a> {
                 let _ = out.rare_mut().rubies.steps.push(level.width);
             }
             state.look.cross(scan, after, None);
-            // Base text after the column's annotations starts the next
-            // column.
+            // Base text after the annotations starts the next column.
             let next = !state.ended
                 && state.level.is_none()
                 && state.count > 0
@@ -618,12 +566,9 @@ impl<'a> Sizing<'_, 'a> {
         }
     }
 
-    /// Measures the ruby container `item` nested in the base of column
-    /// `parent`, opening at its item `index` and boundary `at`, as one unit
-    /// of the base: its edges and each of its columns, sized on their own.
-    ///
-    /// Returns where the base goes on, past the container's closing marks,
-    /// or `None` where a table is full.
+    /// Measures the ruby container `item`, at item `index` and boundary
+    /// `at`, as one unit of column `parent`'s base. Returns where the base
+    /// goes on, or `None` where a table is full.
     fn nested(
         &self,
         state: &mut Measuring<'a>,
@@ -654,8 +599,6 @@ impl<'a> Sizing<'_, 'a> {
             let rubies = out.ruby_columns();
             let record = rubies.get(child_id)?;
             state.base += InlineLayoutUnit::from_layout(record.width);
-            // The levels of the child and its descendants, written as it was
-            // sized.
             let written = rubies.levels.get_slice(levels..rubies.levels.next_id());
             for level in written.unwrap_or_default() {
                 let depth = match level.side {
@@ -679,8 +622,8 @@ impl<'a> Sizing<'_, 'a> {
         Some((c, index))
     }
 
-    /// Measures cluster `c` as the scan will, in the segment the copy of the
-    /// walk holds: into the annotation open, or into the base.
+    /// Measures cluster `c` as the scan will, into the open annotation or
+    /// the base.
     fn measure_cluster(&self, state: &mut Measuring<'a>, c: ClusterId) {
         let scan = self.scan;
         let attrs = scan.input.analysis.clusters.attrs(c);
@@ -705,13 +648,12 @@ impl<'a> Sizing<'_, 'a> {
         }
     }
 
-    /// Returns whether the column `record`, whose container's text facts are
+    /// Returns whether column `record`, whose container's text facts are
     /// `text`, may split across lines, as Chrome lets it.
     ///
-    /// A root column splits where its container wraps, the block's
-    /// `text-wrap-style` allows it, and its base has text and an opportunity
-    /// inside. Its base must hold more than four glyphs, or one of its levels
-    /// more than eight.
+    /// Only a top-level column that wraps under `text-wrap-style: auto` or
+    /// `stable` splits, at an opportunity inside a base of two or more
+    /// clusters, where it is not [`is_monolithic`].
     fn may_break(
         &self,
         record: &RubyColumn,
@@ -746,17 +688,9 @@ impl<'a> Sizing<'_, 'a> {
                     .is_some())
     }
 
-    /// Crosses the ruby marks among the items at boundary `at`, from
-    /// `index`, in order.
-    ///
-    /// - An annotation opening ends the base and starts a level.
-    /// - An annotation closing records its level.
-    /// - The edges of boxes in an annotation widen its line; those in the
-    ///   base widen the base.
-    /// - The container closing ends the column.
-    ///
-    /// Returns the first item past them, or `None` where the levels' table
-    /// is full.
+    /// Crosses the ruby marks and box edges among the items at boundary
+    /// `at`, from `index`. Returns the first item past them, or `None` where
+    /// the levels table is full.
     fn ruby_marks(
         &self,
         state: &mut Measuring<'a>,
@@ -838,10 +772,8 @@ impl<'a> Sizing<'_, 'a> {
         Some(index)
     }
 
-    /// Records the level `level` of the column being measured.
-    ///
-    /// It ends at boundary `at` with its closing item `close`, and is
-    /// `width` wide.
+    /// Records `level`, ending at boundary `at` and item `close`, `width`
+    /// wide.
     fn record_level(
         &self,
         state: &mut Measuring<'a>,
@@ -855,23 +787,17 @@ impl<'a> Sizing<'_, 'a> {
         let (content, analysis) = (scan.input.content, scan.input.analysis);
         let (nodes, facts) = (&content.nodes, &content.facts);
         let annotation = content.items.get(level.item);
-        // The side is the `ruby-position` of the container the annotation
-        // opened in, as Chrome reads it off the annotation's parent ruby.
-        // That includes a ruby written as a box inside another, whose box
-        // closes before its annotation opens. The builder writes the
-        // container's position into the annotation's style for that case.
+        // The builder writes the container's `ruby-position` into the
+        // annotation's style, as Chrome reads it off the parent ruby.
         let node = annotation.map_or(self.container, |item| item.node);
         let boxes = facts.box_facts(nodes.box_facts(node, scan.variant));
         let side = RubySide::from_position(boxes.ruby.position, state.count);
         let width = width.to_layout();
-        // An annotation is a line of its own, which keeps no collapsible
-        // space at either end.
+        // As a line of its own, it keeps no collapsible space at its ends.
         let clusters = level.start..at;
         let kept = self.kept_clusters(clusters.clone(), (level.item, close), true);
         let extent = self.em(level.item, close, true, kept, out);
-        // Its margin, border and padding across the line stand over and
-        // under its em box, and the levels stack by its margin box, as
-        // Chrome's annotation box does.
+        // The levels stack by the margin box, as Chrome's annotation box.
         let extent = if extent.is_none() {
             extent
         } else {
@@ -881,7 +807,6 @@ impl<'a> Sizing<'_, 'a> {
                 extent.descent() + margin.1 + across.1,
             )
         };
-        // What line layout spreads a column wider than the level over.
         let text = nodes.text_facts(node, scan.variant);
         let justify = facts.text(text).justify;
         let opportunities = JustifyOpportunities::new(content, analysis, clusters.clone(), justify)
@@ -911,20 +836,13 @@ impl<'a> Sizing<'_, 'a> {
         Some(())
     }
 
-    /// Returns the em box of the text and atomic inlines among items `from`
-    /// to `to`: a column's base, or one annotation, as `annotation` says.
+    /// Returns the em box of a base or an annotation: the text and atomic
+    /// inlines among items `from` to `to`, within clusters `within`, each
+    /// raised by the boxes around it as Chrome's `ComputeEmHeight` places
+    /// it. [`Extent::NONE`] where there are none.
     ///
-    /// An annotation's em box includes its own emphasis marks, as Chrome
-    /// adds them (`ComputeEmphasisHeights` in `AccumulateColumnOffsets` and
-    /// `PlaceLines`). So the next level out stands past them.
-    ///
-    /// Each item is taken where the shifts of the boxes around it, inside
-    /// the column, move it from the ruby container's baseline. Chrome's
-    /// `ComputeEmHeight` also takes each item where it is placed, so an
-    /// annotation over a raised base stands on the raised text. A running
-    /// sum of the open boxes' shifts, one entry a box, keeps the walk linear
-    /// however deep they nest. A box opened before `from` isn't the
-    /// column's.
+    /// An annotation's box includes its emphasis marks, as Chrome's
+    /// `ComputeEmphasisHeights` adds them.
     fn em(
         &self,
         from: ItemId,
@@ -941,14 +859,10 @@ impl<'a> Sizing<'_, 'a> {
         let item_clusters = &analysis.item_clusters;
         let mut em = Extent::NONE;
         let mut marks = (LayoutUnit::ZERO, LayoutUnit::ZERO);
-        // How far the boxes open around the text raise it: their shifts,
-        // and how many of them open with none.
+        // The count skips the close of a box opened before `from`.
         let mut shift = LayoutUnit::ZERO;
         let mut level = 0u32;
         let shifting = !text.shifts().is_empty();
-        // The font runs its text is drawn in, walked to its first text item
-        // from where the last walk ended, and on from there, since the
-        // items come in order.
         let (runs, text_end) = (fonts.runs(variant), analysis.clusters.end_id());
         let mut run = None;
         for item_id in (from..to).ids() {
@@ -1014,12 +928,8 @@ impl<'a> Sizing<'_, 'a> {
         Extent::new(em.ascent() + marks.0, em.descent() + marks.1)
     }
 
-    /// Returns `clusters` less the collapsible spaces at their end: what a
-    /// line ending with them keeps, as Chrome removes the collapsible spaces
-    /// at a line's ends.
-    ///
-    /// The items holding them run from `first` to `to`. An annotation's
-    /// clusters, a line of their own, lose them at their start too.
+    /// Returns `clusters`, held by items `first` to `to`, less the
+    /// collapsible spaces at their end, and for an annotation at their start.
     #[inline(never)]
     fn kept_clusters(
         &self,
@@ -1030,7 +940,6 @@ impl<'a> Sizing<'_, 'a> {
         let input = self.scan.input;
         let (analysis, content) = (input.analysis, input.content);
         let is_space = |at: ClusterId| analysis.clusters.class(at) == Some(ClusterClass::Space);
-        // Whether the text item holding cluster `at` collapses its spaces.
         let collapses = |at: ClusterId| {
             (first..to).ids().any(|id| {
                 work::step();
@@ -1065,11 +974,8 @@ impl<'a> Sizing<'_, 'a> {
         start..end
     }
 
-    /// Returns the text after the column ending at `end`, as its end
-    /// overhang reads it.
-    ///
-    /// The column's last item is before `close`. The text is the item the
-    /// scan's copy `look` holds there, where only tags stand between.
+    /// Returns the text item after the column ending at `end` and item
+    /// `close`, where only tags stand between.
     fn after_column(
         &self,
         look: &ScanWalk<'a>,
@@ -1082,8 +988,6 @@ impl<'a> Sizing<'_, 'a> {
         if end >= analysis.clusters.end_id() {
             return None;
         }
-        // Check the items from the column's end to the text. A tag or the
-        // container's end is a position; anything else stands between.
         let (holding, _) = look.item()?;
         for id in (close..holding).ids() {
             work::step();
@@ -1103,7 +1007,6 @@ impl<'a> Sizing<'_, 'a> {
             start: first,
             end: last,
         } = analysis.item_clusters.range(holding);
-        // Its whole width as shaped, from the advances ahead of the scan.
         let width = self.prefix.total(first..last);
         Some(TextBeside {
             item: holding,
@@ -1117,40 +1020,39 @@ impl<'a> Sizing<'_, 'a> {
 /// The state sizing a ruby column keeps as it looks ahead over it.
 #[derive(Copy, Clone)]
 struct Measuring<'a> {
-    /// The copy of the scan's walk, and of its seams, that the look-ahead
-    /// moves.
+    /// The look-ahead's copies of the scan's walk and seams.
     look: ScanWalk<'a>,
     seams: Seams,
     /// The base's width so far, as the prefix will hold it.
     base: InlineLayoutUnit,
-    /// Where the base ends, and the first item past it: the first
-    /// annotation's opening item, or the container's end. `None` while the
+    /// Where the base ends, and the first item past it. `None` while the
     /// base goes on.
     base_end: Option<(ClusterId, ItemId)>,
     /// The annotation open, if any.
     level: Option<OpenLevel>,
-    /// The column's first level in the stage's table.
+    /// The column's first level in the levels table.
     levels: RubyLevelId,
     /// How many levels it has so far.
     count: usize,
+    /// Over and under, one past the deepest band the levels of its nested
+    /// columns reach.
     depths: (u32, u32),
+    /// Over and under, how many of its own levels it has so far.
     own_depths: (u32, u32),
     /// Its widest level's width and font size.
     widest: Option<(LayoutUnit, f32)>,
     /// One past its last item.
     close: Option<ItemId>,
-    /// One past its last annotation's closing item so far. The next column
-    /// starts there, where base text follows.
+    /// One past its last annotation's closing item so far.
     after_close: ItemId,
-    /// Another annotation of the container follows its last annotation so
-    /// far.
+    /// Another annotation follows its last so far.
     annotation_follows: bool,
-    /// It has ended.
+    /// The column has ended.
     ended: bool,
 }
 
-/// Takes back the running widths a column that may not split recorded for
-/// its levels: the steps from `steps_start` on, and each level's mark.
+/// Drops the steps and floors a column that may not split wrote, from
+/// `steps_start` on, and clears its levels' `steps`.
 fn forget_steps(record: &RubyColumn, steps_start: StepId, out: &mut MeasuredText) {
     let rubies = &mut out.rare_mut().rubies;
     rubies.steps.truncate(steps_start);
@@ -1161,10 +1063,6 @@ fn forget_steps(record: &RubyColumn, steps_start: StepId, out: &mut MeasuredText
     }
 }
 
-/// Keeps the tabs a column's overhang reaches into.
-///
-/// Columns are sized in text order, so the tabs they reach come in order. A
-/// tab between two columns keeps the first one's reach.
 /// Keeps `trimmed` in the columns' table of trimmed em boxes, in column
 /// order: a nested column finishes before the column around it.
 #[cold]
@@ -1175,8 +1073,8 @@ fn keep_trimmed_em(trimmed: TrimmedEm, out: &mut MeasuredText) {
     ems.insert(found.unwrap_or_else(|at| at), trimmed);
 }
 
-/// Keeps `reach` in the columns' table of tabs their overhang moves, in
-/// text order.
+/// Keeps `reach` in text order. A tab between two columns keeps the first
+/// one's reach.
 pub(super) fn keep_tab_reach(reach: TabReach, out: &mut MeasuredText) {
     let reaches = &mut out.rare_mut().rubies.tab_reaches;
     if reaches.last().is_none_or(|last| last.tab < reach.tab) {
@@ -1184,19 +1082,17 @@ pub(super) fn keep_tab_reach(reach: TabReach, out: &mut MeasuredText) {
     }
 }
 
-/// The tabs of one run of blank, as a ruby column after it reads them: the
-/// last, and how far they reach together on their paragraph's line.
+/// The tabs of one blank run, as a ruby column after it reads them.
 #[derive(Copy, Clone, Debug)]
 pub(super) struct TabRun {
+    /// The run's last tab.
     pub(super) last: ClusterId,
+    /// How far the run's tabs reach together on their paragraph's line.
     pub(super) width: LayoutUnit,
 }
 
-/// Returns whether a ruby column whose items end before `close` ends with
-/// its container.
-///
-/// It does where `close` is the container's closing item, or a nested
-/// container's opening one, and no column of the container follows.
+/// Returns whether a ruby column ending before item `close` ends with its
+/// container: `close` opens or closes a ruby container, or is past the end.
 fn is_container_end(content: &Content, close: ItemId) -> bool {
     content
         .items

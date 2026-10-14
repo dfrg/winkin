@@ -1,11 +1,11 @@
 //! Optional host glyph metrics for selected fonts.
 //!
 //! Implement [`FontMetricsProvider`] to use metrics from the rendering
-//! rasterizer. Individual queries can fall back to font-table metrics.
-//! Horizontal advances support batch writes directly into the shaping buffer.
+//! rasterizer. Each query can fall back to font-table metrics. Horizontal
+//! advances can be written in batches directly into the shaping buffer.
 //!
-//! Fallback metrics use harfrust scaling and Blink-compatible vertical metrics,
-//! as when no provider is supplied.
+//! Fallback metrics use harfrust scaling and Blink-compatible vertical
+//! metrics, the same as when no provider is supplied.
 
 use harfrust::Advances;
 
@@ -84,8 +84,8 @@ impl<'a> GlyphAdvanceBatch<'a> {
         }
     }
 
-    /// The shaper's batch, for its own measurement where the host gives
-    /// none.
+    /// Returns the shaper's batch for table-based measurement when the host
+    /// declines it.
     pub(crate) fn into_inner(self) -> Advances<'a> {
         self.0
     }
@@ -99,9 +99,9 @@ impl<'a> GlyphAdvanceBatch<'a> {
 /// `Ok(())` requires every entry to be filled; `Err(batch)` requests fallback.
 ///
 /// Results must remain stable for the lifetime of a layout, including edge
-/// reshaping. Batch and single horizontal advances must agree. Font selection,
-/// face descriptors, line metrics and baseline calculations remain in fontwich
-/// and winkin.
+/// reshaping. Batch and single horizontal advances must agree. The provider
+/// does not affect font selection, face descriptors, line metrics or
+/// baselines.
 ///
 /// Methods take `&self`. Cache implementations may use interior mutability,
 /// such as `RefCell` or a lock. Calls may be reentrant. Release cache borrows

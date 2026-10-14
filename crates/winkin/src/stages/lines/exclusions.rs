@@ -1,25 +1,23 @@
-//! What a host answers for a layout's lines: the area they are broken in,
-//! and the floats they flow around.
+//! The host's side of line breaking: the area lines fill and the floats they
+//! flow around.
 //!
-//! Every position here is line-relative, as every position a layout
-//! reports is. The inline axis runs along a line from its line-left end.
-//! The block axis runs across the lines from the block-start edge. The
-//! block's writing mode maps both onto the page. Lengths are `f32` pixels,
-//! and the breaker rounds each onto the 1/64 px layout grid as it takes it.
+//! Positions are line-relative: inline from a line's line-left end, block
+//! from the block-start edge. Lengths are `f32` pixels, rounded onto the
+//! 1/64 px `LayoutUnit` grid as the breaker reads them.
 
 use crate::build::FloatSide;
 use crate::stages::content::NodeKey;
 
 /// Extents along a line, from line-left to line-right.
 ///
-/// For vertical writing, these are column top and bottom. Exclusion bands
-/// and floats are relative to area line-left. Runs, boxes, carets and
-/// selection rectangles are relative to line-box left.
+/// In vertical writing these are the column top and bottom. Bands and floats
+/// are relative to the area's line-left edge; runs, boxes, carets and
+/// selection rectangles to the line box's left edge.
 #[derive(Copy, Clone, PartialEq, Debug, Default)]
 pub struct InlineExtents {
-    /// Its line-left end.
+    /// The line-left end.
     pub left: f32,
-    /// Its line-right end.
+    /// The line-right end.
     pub right: f32,
 }
 
@@ -39,14 +37,14 @@ impl InlineExtents {
 
 /// Flow-relative extents from block-start to block-end.
 ///
-/// Used by floats and exclusions. [`CrossExtents`](crate::CrossExtents)
-/// instead measures from line-over. The coordinate systems differ only
-/// in `vertical-lr`, where lines stack from the left but line-over is right.
+/// [`CrossExtents`](crate::CrossExtents) measures from line-over instead.
+/// The two differ only in `vertical-lr`, where lines stack from the left but
+/// line-over is on the right.
 #[derive(Copy, Clone, PartialEq, Debug, Default)]
 pub struct BlockExtents {
-    /// Its block-start end.
+    /// The block-start end.
     pub start: f32,
-    /// Its block-end end.
+    /// The block-end end.
     pub end: f32,
 }
 
@@ -60,40 +58,38 @@ impl BlockExtents {
 
 /// The available area for line breaking.
 ///
-/// Change the area and call [`break_lines`](crate::Layout::break_lines)
-/// to relayout without repeating preparation.
+/// Change it and call [`break_lines`](crate::Layout::break_lines) to relayout
+/// without repeating preparation.
 #[derive(Copy, Clone, PartialEq, Debug, Default)]
 pub struct Area {
-    /// The block content-box inline extents.
+    /// The inline extents of the block's content box.
     ///
-    /// Defines the tab-stop origin and percentage `text-indent` basis.
+    /// These set the tab-stop origin and the basis of a percentage `text-indent`.
     pub inline: InlineExtents,
-    /// Where the first line box begins across the block.
+    /// The block position where the first line box begins.
     pub block_start: f32,
-    /// The block-end limit from `height` or `max-height`, if specified.
+    /// The block-end limit from `height` or `max-height`, if any.
     ///
-    /// Used only by `line-clamp: auto` to retain fitting lines. Other content
-    /// is not constrained by this limit. `None` allows content to determine
-    /// block size.
+    /// Only `line-clamp: auto` reads it, to keep the lines that fit. `None` lets
+    /// the content set the block size.
     pub block_end: Option<f32>,
-    /// Space above block-start available to first-line annotations.
+    /// The space above block-start that first-line annotations may use.
     ///
-    /// Ruby and emphasis use this space before shifting the first line down.
-    /// Includes start padding and, if no border intervenes, the collapsed
-    /// start margin and preceding [`Layout::room_below`](crate::Layout::room_below),
-    /// matching Chrome.
-    ///
-    /// Defaults to zero. Negative and NaN values count as zero. This is
-    /// layout-dependent space rather than a style property.
+    /// Ruby and emphasis marks fill it before the first line moves down. As in
+    /// Chrome, it includes the start padding and, where no border intervenes,
+    /// the collapsed start margin and the preceding block's
+    /// [`Layout::room_below`](crate::Layout::room_below). Defaults to zero;
+    /// negative and NaN values count as zero.
     pub room_above: f32,
 }
 
 impl Area {
     /// Creates an area with `width` pixels of inline space starting at zero.
     ///
-    /// Sets block-start to zero with no space above it. Zero, negative and
-    /// NaN widths provide no space; lines retain required content and overflow.
-    /// Infinite width saturates the layout grid at about 33.5 million pixels.
+    /// Block-start is zero, with no room above and no block-end limit. Zero,
+    /// negative and NaN widths give no space, so each line overflows with the
+    /// content it must keep. An infinite width saturates the 1/64 px grid at
+    /// about 33.5 million pixels.
     pub fn new(width: f32) -> Self {
         Self {
             inline: InlineExtents {
@@ -106,7 +102,7 @@ impl Area {
         }
     }
 
-    /// Returns the available inline size. Equivalent to [`inline.size()`](InlineExtents::size).
+    /// Returns the available inline size, as [`inline.size()`](InlineExtents::size).
     pub fn inline_size(&self) -> f32 {
         self.inline.size()
     }
@@ -114,105 +110,97 @@ impl Area {
 
 /// A float or initial letter to place through [`Exclusions::place`].
 ///
-/// The host uses the key to retrieve properties such as `clear` and shape;
-/// layout does not retain the float style.
+/// The host looks up properties such as `clear` and the float shape by key.
 ///
-/// Initial letters use the key of the box with `initial-letter`. The margin
-/// box extends from the line top (or above it for a raised letter) to the
-/// bottom of the fitted ink. To match Chrome, handle these separately:
-/// - place at `block_start`, at the start of the available band, even above
-///   an earlier float;
-/// - place subsequent same-side floats and clearing blocks below it,
-///   regardless of float `clear`;
-/// - place a block beginning with an initial letter below preceding initial
+/// An initial letter uses the key of the box with `initial-letter`. Its
+/// margin box runs from the line top, or above it for a raised letter, to the
+/// bottom of the fitted ink. To match Chrome:
+/// - place it at `block_start`, even above an earlier float;
+/// - place later same-side floats and clearing blocks below it, whatever
+///   their `clear`;
+/// - place a block that begins with an initial letter below earlier initial
 ///   letters on either side.
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[non_exhaustive]
 pub struct FloatRequest {
     /// The node key of the float.
     pub key: NodeKey,
-    /// The side it floats to.
+    /// The side the float floats to.
     pub side: FloatSide,
     /// The nonnegative margin-box size along the line.
     ///
-    /// Includes the supplied border box and style margins, truncated to
-    /// the 1/64-pixel layout grid.
+    /// The supplied border box plus the style margins, each truncated to the
+    /// 1/64 px grid.
     pub inline_size: f32,
-    /// Its margin box's size across the lines.
+    /// The nonnegative margin-box size across the lines, on the same grid.
     pub block_size: f32,
-    /// The minimum block-start position for placement.
+    /// The lowest block-start position the float may take.
     ///
-    /// Uses the reached line top if the float fits beside it, otherwise
-    /// the line bottom. The host may move it lower to find space.
+    /// This is the line top where the float fits beside the line, and the line
+    /// bottom otherwise. The host may place the float lower.
     pub block_start: f32,
 }
 
-/// A float margin-box placement returned by the host.
+/// The margin-box position of a float, as [`Exclusions::place`] returns it.
 #[derive(Copy, Clone, PartialEq, Debug, Default)]
 pub struct PlacedFloat {
-    /// Its margin box along the line.
+    /// The margin box along the line.
     pub inline: InlineExtents,
-    /// Its margin box across the block.
+    /// The margin box across the block.
     pub block: BlockExtents,
 }
 
 /// A host-defined checkpoint for speculative float placement.
 ///
-/// Used to rewind a trial break. Hosts that only append floats can store
-/// the float count.
+/// A host that only appends floats can store the float count.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub struct ExclusionsCheckpoint(pub u64);
 
 /// Float placement and available inline space for each line.
 ///
-/// Implement on the enclosing block formatting context so floats from
-/// adjacent blocks can affect this layout.
+/// Implement it on the enclosing block formatting context so that floats
+/// from adjacent blocks affect this layout.
 ///
-/// The breaker first queries a band at the block strut height. It queries
-/// again for taller lines and refits if the band narrows. Returned bands
-/// are clipped to [`Area`]; [`NoExclusions`] supplies unbounded bands.
+/// A line's band is first queried at the block's strut height, then again at
+/// the line's height, refitting at most twice if the band narrows. Bands are
+/// clipped to [`Area`]. A NaN band gives no space.
 ///
-/// Queries identify lines by [`Line::index`](crate::Line::index). The same
-/// line may be queried repeatedly and out of order during balancing or
-/// pretty wrapping. Providers such as [`path::PathRoom`](crate::path::PathRoom)
-/// should use the index rather than count queries.
+/// Queries identify a line by [`Line::index`](crate::Line::index), and may
+/// repeat or come out of order while balancing or pretty wrapping. A
+/// provider such as [`path::PathRoom`](crate::path::PathRoom) should key on
+/// the index, not count queries.
 ///
-/// Placed floats must remain stable so refitting converges. NaN bands
-/// provide no space, nonadvancing [`below`](Self::below) results are ignored,
-/// and a line moves down at most 256 times.
-///
-/// Floats are placed in logical order at the line top or below the line.
-/// Rejected trials restore placement using [`checkpoint`](Self::checkpoint)
-/// and [`rewind`](Self::rewind), matching Chrome.
+/// Floats are placed in logical order, at the line top or below the line,
+/// and must stay put so that refitting converges. A rejected trial break
+/// restores them through [`checkpoint`](Self::checkpoint) and
+/// [`rewind`](Self::rewind), as Chrome does.
 pub trait Exclusions {
-    /// Returns inline space for line `line` over the block extents `block`.
+    /// Returns the inline space for line `line` over the block extents `block`.
     fn band(&self, line: usize, block: BlockExtents) -> InlineExtents;
 
     /// Returns the next block position below `top` where the band changes.
     ///
-    /// Returns `None` if the band never changes. Overflowing lines narrowed
-    /// by floats may move to this position.
+    /// An overflowing line that floats narrow may move down to it, at most 256
+    /// times. Returns `None` if the band never changes; a result not below `top`
+    /// is ignored.
     fn below(&self, top: f32) -> Option<f32>;
 
     /// Places a float and returns its margin-box position.
     ///
-    /// Retain the placement so later band queries account for it. Requests
-    /// follow logical order. A placement undone by [`rewind`](Self::rewind)
-    /// may be requested again.
+    /// Keep the placement so that later bands account for it. A placement
+    /// undone by [`rewind`](Self::rewind) may be requested again.
     fn place(&mut self, float: FloatRequest) -> PlacedFloat;
 
     /// Returns a checkpoint for speculative placement.
     fn checkpoint(&self) -> ExclusionsCheckpoint;
 
-    /// Discards placements made after `to`.
-    ///
-    /// Called when rejecting a trial break, matching Chrome.
+    /// Discards the placements made after `to`.
     fn rewind(&mut self, to: ExclusionsCheckpoint);
 }
 
 /// An exclusion provider that gives each line the full [`Area`].
 ///
-/// Places floats at their anchors without retaining them.
+/// It places each float at line-left from its `block_start` and keeps none.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub struct NoExclusions;
 

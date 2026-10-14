@@ -9,14 +9,14 @@
 use super::*;
 use crate::stages::analysis::bidi::BidiInput;
 
-/// Whether some paragraph has clusters at other levels than its own.
+/// Returns whether some paragraph has clusters at other levels than its own.
 fn mixed(layout: &Layout) -> bool {
     analysis(layout)
         .flags
         .contains(ParagraphFlags::MIXED_LEVELS)
 }
 
-/// A style reading in `direction` with `unicode-bidi`.
+/// Returns a style with `direction` and `unicode-bidi`.
 fn bidi(direction: Direction, unicode_bidi: UnicodeBidi) -> ComputedStyle<'static> {
     styled(|style| {
         style.bidi.direction = direction;
@@ -500,9 +500,9 @@ fn annotations_are_isolated_and_upright_text_reads_left_to_right() {
     assert_eq!(cluster_levels(&layout), [1, 1]);
 }
 
-/// Whitespace or a separator carrying a mark resolves as the neutral that
-/// `unicode::cluster_bidi_class` gives the pair per character. `tests/bidi_conformance.rs`
-/// holds that function to both conformance files.
+/// White space or a separator with a mark resolves as the neutral that
+/// `unicode::cluster_bidi_class` gives. `bidi_conformance` holds that
+/// function to both conformance files.
 #[test]
 fn a_space_or_a_separator_carrying_a_mark_is_a_neutral() {
     use crate::unicode::{BidiClass as C, cluster_bidi_class};
@@ -523,10 +523,10 @@ fn a_space_or_a_separator_carrying_a_mark_is_a_neutral() {
     assert_eq!(class("\u{5D0}\u{5B8}"), C::RIGHT_TO_LEFT);
 }
 
-/// Nothing a caller nests, and nothing the text holds, panics the resolver:
-/// isolates and overrides three hundred deep, past UAX #9's 125 levels, and
-/// controls written into the text that close more than they open, or open
-/// and never close. Every level stays within the algorithm's.
+/// No nesting and no text panics the resolver: isolates and overrides three
+/// hundred deep, past UAX #9's 125 levels, and written controls that close
+/// more than they open, or open and never close. Every level stays within
+/// the algorithm's range.
 #[test]
 fn deep_nesting_and_unbalanced_controls_are_resolved() {
     for unicode_bidi in [

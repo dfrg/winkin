@@ -1,7 +1,7 @@
 //! Height tests. They pin:
 //! - item extents and the strut under each line-metrics source;
 //! - `line-height: normal` taking every used font;
-//! - what holds nothing of the line taking no room;
+//! - no room for floats, closing edges and annotations;
 //! - the em boxes of emphasis marks and of each text item.
 
 use super::*;
@@ -9,11 +9,9 @@ use crate::data::IdRange;
 use crate::style::FirstLineVariant;
 
 /// The strut and a text item's extent are the font's ascent and descent
-/// around the line height, the leading halved and floored to a whole pixel
-/// over the baseline and the rest under, from the metrics each `Config`
-/// source reads. `normal` is the font's own line spacing; a number
-/// multiplies the computed size; a length is itself; a line height under
-/// the font's own gives negative leading.
+/// from each `Config` metrics source, with half the leading, floored to a
+/// pixel, over the baseline and the rest under. A small line height gives
+/// negative leading.
 #[test]
 fn extents_and_the_strut_follow_each_metrics_source() {
     let sources = [
@@ -56,7 +54,7 @@ fn extents_and_the_strut_follow_each_metrics_source() {
             let expected = Extent::new(lu(over), lu(under));
             let text = layout.measured().text(FirstLineVariant::Standard);
             assert_eq!(text.extents.strut, expected, "{config:?} {height:?}");
-            // The text, and the box's opening edge: every box has a strut.
+            // The text and the box's opening edge both take the strut.
             for item in [0, 1] {
                 assert_eq!(
                     text.extents.get(ItemId::new(item)),
@@ -72,11 +70,10 @@ fn extents_and_the_strut_follow_each_metrics_source() {
     }
 }
 
-/// With `line-height: normal`, a text item reaches as far as every used font
-/// its clusters are set in, each with its own leading, as Blink accumulates
-/// used fonts; with any other line height, only its primary font counts.
-/// Ahem at 20 px is 16 over and 4 under; Test Han 14 and 8 with a gap of 4,
-/// so 16 and 10 once leaded.
+/// Under `line-height: normal`, a text item's extent unites every used
+/// font's, each with its own leading, as Blink does; otherwise only the
+/// primary font counts. At 20 px Ahem is 16 over and 4 under, and Test Han,
+/// leaded, 16 and 10.
 #[test]
 fn normal_line_height_unites_the_used_fonts() {
     let mut fixture = fixture();
@@ -102,18 +99,15 @@ fn normal_line_height_unites_the_used_fonts() {
         text.extents.get(ItemId::new(0)),
         Extent::new(lu(16.0), lu(4.0))
     );
-    // Latin alone is its primary font.
     fixture.text(&mut layout, &ahem, "abcd");
     let text = layout.measured().text(FirstLineVariant::Standard);
     assert_eq!(text.extents.get(ItemId::new(0)), text.extents.strut);
 }
 
-/// A float's anchor, a closing edge and annotation text take no room across
-/// the line, and a ruby annotation's clusters none along it: line layout sets
-/// them as a line of their own. The column is as wide as its
-/// annotation, the room past its base taken where it ends, less the half of
-/// the annotation's font size it reaches over the `E` after it; not over
-/// the `A`, a float standing between, as in Chrome.
+/// A float's anchor, a closing edge and annotation text have no extent, and
+/// annotation clusters take no room along the base line. The column's
+/// extra width comes at its end, less its overhang over `E`; it doesn't
+/// overhang `A` across the float, as in Chrome.
 #[test]
 fn what_holds_nothing_of_the_line_takes_no_room() {
     let mut fixture = fixture();
@@ -143,10 +137,8 @@ fn what_holds_nothing_of_the_line_takes_no_room() {
     }
 }
 
-/// Text that sets emphasis marks has the em box they are drawn in, among its
-/// text metrics: the primary font's at half the computed size, rounded to a
-/// pixel, 8 tall for 16px Ahem, 6.4 of it over the baseline; text with none
-/// has none.
+/// Text with emphasis marks has a mark em box in its text metrics: 8 px
+/// tall for 16 px Ahem, 6.4 over the baseline. Text without marks has none.
 #[test]
 fn a_marked_style_has_its_marks_em_box() {
     let mut fixture = fixture();
@@ -173,12 +165,10 @@ fn a_marked_style_has_its_marks_em_box() {
     assert!(mark(NodeId::BLOCK).is_none());
 }
 
-/// Where the content has ruby, each text item of the base line keeps the em
-/// box whatever of it a line holds has, as `em_box` finds it for every
-/// part of it: `AB`, drawn in one font, does, and so does the base; `A水B`,
-/// whose `水` falls back to a font of a taller em box, keeps none, its
-/// parts' boxes differing; the annotation's text and what is not text keep
-/// none. Where the content has neither ruby nor marks, nothing does.
+/// With ruby, a base-line text item stores an em box only where `em_box`
+/// gives the same box for every part: `AB` and the base `CD` do; `A水B`,
+/// whose `水` falls back to a taller em box, and annotation text don't.
+/// Without ruby or marks, nothing is stored.
 #[test]
 fn a_text_item_keeps_the_em_box_all_of_its_text_has() {
     let mut punct = TestFont::cjk("Test Punct", true);
@@ -232,7 +222,7 @@ fn a_text_item_keeps_the_em_box_all_of_its_text_has() {
         let expected: &[&str] = if ruby { &["AB", "CD"] } else { &[] };
         assert_eq!(kept, expected, "ruby: {ruby}");
     }
-    // The mixed item's parts' boxes do differ, so none holds for all of it.
+    // The mixed item's parts do have different boxes.
     let mixed = ItemId::new(1);
     let clusters = layout.analysis().item_clusters.range(mixed);
     let node = layout.content().item_node(mixed);
@@ -242,9 +232,10 @@ fn a_text_item_keeps_the_em_box_all_of_its_text_has() {
     assert_ne!(letter, whole);
 }
 
-/// First-line measurement stops at a preserved separator, but a cached item
-/// em box describes all of that item. Cover a partial item, a new item at
-/// the cutoff, empty boxes, fallback fonts and both shaped/reused variants.
+/// First-line measurement stops at a preserved separator, but a stored em
+/// box covers the whole item. Covers a partial item, a new item at the
+/// cutoff, an empty box, fallback fonts, and first-line shaping that is
+/// reshaped or reused.
 #[test]
 fn first_line_em_boxes_keep_whole_items_at_the_paragraph_cutoff() {
     let mut fixture = fixture();

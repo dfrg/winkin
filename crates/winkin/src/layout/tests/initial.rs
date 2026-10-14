@@ -4,7 +4,7 @@
 
 use super::*;
 
-/// A host with no floats that keeps what it is asked to place.
+/// Exclusions with no floats that record what they are asked to place.
 #[derive(Default)]
 struct Recording {
     asked: Vec<crate::FloatRequest>,
@@ -302,7 +302,7 @@ fn paragraph(direction: Direction) -> ComputedStyle<'static> {
     }
 }
 
-/// `style` with a `3 drop` initial letter.
+/// Returns `style` with a `3 drop` initial letter.
 fn dropped(style: &ComputedStyle<'static>) -> ComputedStyle<'static> {
     let mut letter = *style;
     letter.line.initial_letter = InitialLetter {

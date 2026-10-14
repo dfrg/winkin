@@ -1,16 +1,15 @@
-//! Fast path tests: each fast path held to the general path it stands in for.
+//! Fast path tests: each fast path gives what the general path gives.
 //!
-//! A fast path skips work where a fact its gate reads proves the work comes to
-//! nothing. The same content is laid out with the fast paths open, and again
-//! inside [`work::general_paths`], which closes them all on this thread. They
-//! pin:
+//! A fast path skips work that a fact its gate reads proves empty. The same
+//! content is laid out with the fast paths open, and again inside
+//! [`work::general_paths`], which closes them on this thread. Both agree on:
 //! - each stage's tables, as far as its fast path writes them;
-//! - the lines, their items and glyphs, and what they paint at several widths.
+//! - the lines, their items and glyphs, and their paints at several widths.
 //!
-//! The content is drawn at random. A seeded generator mixes plain Latin text
-//! with what each gate looks for: Latin-1 letters and pictographs, marks, soft
-//! hyphens, tabs, bidi and CJK text, boxes with edges and with none, decorated
-//! and spaced spans, and block styles that set what the scans skip.
+//! A seeded generator mixes plain Latin text with what each gate looks for:
+//! Latin-1 letters and pictographs, marks, soft hyphens, tabs, bidi and CJK
+//! text, boxes with and without edges, decorated and spaced spans, and block
+//! styles that set what the scans skip.
 
 use alloc::borrow::Cow;
 use alloc::string::String;
@@ -56,9 +55,8 @@ impl Rng {
     }
 }
 
-/// A Latin font covering ASCII, Latin-1's letters and signs and the
-/// general punctuation's dashes and quotes, with ligatures and a kerning
-/// pair, as text fonts are.
+/// A Latin font covering ASCII, the Latin-1 letters and signs, and the
+/// General Punctuation dashes and quotes, with ligatures and a kerning pair.
 pub(super) fn latin_1() -> TestFont {
     let mut font = TestFont::new(
         "Test Latin-1",
@@ -72,8 +70,8 @@ pub(super) fn latin_1() -> TestFont {
 const LATIN_1: [FontFamilyName<'static>; 1] =
     [FontFamilyName::Named(Cow::Borrowed("Test Latin-1"))];
 
-/// What text is drawn from: plain words most often, and now and then one of
-/// each kind a gate looks for.
+/// The words text is drawn from: mostly plain, with some of each kind a gate
+/// looks for.
 pub(super) const WORDS: &[&str] = &[
     "the", "office", "AVATAR", "Tomorrow", "of", "and", "affluent", "fly", "a", "line",
 ];
@@ -121,10 +119,11 @@ pub(super) const RARE: &[&str] = &[
     "Ελλάδα",
 ];
 
-/// What a word drawn from [`WORDS`] may have spliced into it, so that the
-/// Latin-1 fast path is left and taken again inside a word: a
-/// character past Latin-1 -- punctuation, a mark, a joiner, a variation
-/// selector, a letter, CJK, RTL -- or one the fast path passes to the general
+/// Characters spliced into a word from [`WORDS`], so that the Latin-1 fast
+/// path is left and taken again inside a word.
+///
+/// Each is past Latin-1 (punctuation, a mark, a joiner, a variation
+/// selector, a letter, CJK, RTL) or one the fast path passes to the general
 /// walk.
 const SPLICED: &[char] = &[
     '’', '—', '…', '\u{301}', '\u{308}', '\u{200d}', '\u{200c}', '\u{fe0f}', 'ā', 'ŀ', '日', 'か',
@@ -132,8 +131,8 @@ const SPLICED: &[char] = &[
     '(', ')', '-', '·',
 ];
 
-/// One case's content: its words, with spans opened and closed among them
-/// and forced breaks, built into `b`.
+/// Builds one case's content into `b`: words, spans opened and closed among
+/// them, and forced breaks.
 fn content(rng: &mut Rng, b: &mut LayoutBuilder<'_>, spans: &[ComputedStyle<'_>]) {
     let mut key = 1u64;
     let mut open = 0usize;
@@ -155,8 +154,8 @@ fn content(rng: &mut Rng, b: &mut LayoutBuilder<'_>, spans: &[ComputedStyle<'_>]
             && open < 3
             && let Some(style) = spans.get(rng.below(spans.len()))
         {
-            // Now and then inside the word, where a kern or a ligature may
-            // cross the box's edge.
+            // Sometimes inside the word, where a kern or a ligature may cross
+            // the box's edge.
             let mut at = rng.below(text.len());
             while !text.is_char_boundary(at) {
                 at -= 1;
@@ -183,13 +182,12 @@ fn content(rng: &mut Rng, b: &mut LayoutBuilder<'_>, spans: &[ComputedStyle<'_>]
     }
 }
 
-/// Everything the stages' fast paths write and a reader reads of `layout`,
-/// laid out at `widths` in turn, as text to compare.
+/// Returns, as text to compare, what the fast paths write and what a reader
+/// reads of `layout` at each of `widths`.
 fn snapshot(fixture: &mut Fixture, layout: &mut Layout, widths: &[f32]) -> String {
     let mut out = String::new();
-    // The analysis: every cluster's end, attributes and stop, each item's first
-    // cluster, the paragraphs, the levels, the runs and the flags, as the
-    // pass writes them.
+    // The analysis: each cluster's end, attributes and stop, each item's first
+    // cluster, the paragraphs, the levels, the runs and the flags.
     let analysis = layout.analysis();
     let ends = analysis.clusters.end_id();
     for at in 0..ends.get() {
@@ -208,8 +206,8 @@ fn snapshot(fixture: &mut Fixture, layout: &mut Layout, widths: &[f32]) -> Strin
     }
     let _ = writeln!(out, "runs {:?}", analysis.runs.as_slice());
     let _ = writeln!(out, "analysis {:?}", analysis.flags);
-    // The measurements: the prefix, each paragraph's flags, the line-edge costs
-    // and each item's extent, as the scan writes them.
+    // The measurements: the prefix sums, each paragraph's flags, the line-edge
+    // costs and each item's extent.
     let measured = layout.measured();
     let clusters = layout.analysis().clusters.end_id();
     for text in [
@@ -275,9 +273,10 @@ fn snapshot(fixture: &mut Fixture, layout: &mut Layout, widths: &[f32]) -> Strin
     out
 }
 
-/// The block styles the cases are set in, each with something the scans
-/// look for, or nothing.
-/// Now and then its first line restyled, `first`, as `::first-line` does.
+/// Returns the block styles the cases are set in, each with something the
+/// scans look for, or nothing.
+///
+/// Some restyle the first line with `first`.
 pub(super) fn blocks<'a>(
     root: &'a ComputedStyle<'a>,
     first: &'a ComputedStyle<'a>,
@@ -304,7 +303,8 @@ pub(super) fn blocks<'a>(
     block
 }
 
-/// The root styles: plain, and each with one thing a gate reads.
+/// Returns the root styles: one plain, the others each with one thing a gate
+/// reads.
 pub(super) fn roots() -> Vec<ComputedStyle<'static>> {
     let plain = ComputedStyle {
         font: FontGroup {
@@ -352,8 +352,8 @@ pub(super) fn roots() -> Vec<ComputedStyle<'static>> {
     ]
 }
 
-/// The spans' styles: bare, decorated, spaced, with edges, raised, larger,
-/// in Ahem, and isolated or embedded.
+/// Returns the span styles: bare, decorated, spaced, with edges, raised,
+/// larger, in Ahem, and isolated or embedded.
 pub(super) fn spans(root: &ComputedStyle<'static>) -> Vec<ComputedStyle<'static>> {
     let bare = *root;
     let painted = ComputedStyle {
@@ -393,7 +393,7 @@ pub(super) fn spans(root: &ComputedStyle<'static>) -> Vec<ComputedStyle<'static>
     let mut strict = *root;
     strict.text.line_break = LineBreak::Strict;
     strict.text.hyphens = Hyphens::None;
-    // Isolates as pages wrap names in, whose edges stop shaping, and an
+    // An isolate, as pages wrap names in, whose edges stop shaping; and an
     // embedding.
     let isolate = |direction, unicode_bidi| {
         let mut style = *root;
@@ -423,9 +423,8 @@ pub(super) fn spans(root: &ComputedStyle<'static>) -> Vec<ComputedStyle<'static>
     ]
 }
 
-/// No ASCII character is one harfrust hides: the font walk takes an ASCII
-/// cluster as covered where its font maps it, and as not where it does not,
-/// with no default-ignorable to pass it over (`Walker::kept_end`).
+/// harfrust hides no ASCII character, so the font walk can take an ASCII
+/// cluster as covered exactly where its font maps it (`Walker::kept_end`).
 #[test]
 fn no_ascii_character_is_default_ignorable() {
     for byte in 0..=0x7F_u8 {

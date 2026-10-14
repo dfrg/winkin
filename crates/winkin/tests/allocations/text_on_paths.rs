@@ -15,9 +15,9 @@ fn collection() -> Collection {
     test_fonts::collection(&[], ahem_fallback())
 }
 
-/// Paragraphs `repeat` times over, in `mode`: words, a box, marks,
-/// ruby, a soft hyphen, ideographs, an accented letter of more glyphs
-/// than a run's walk holds, justified.
+/// Builds justified paragraphs `repeat` times in `mode`: words, a box,
+/// marks, ruby, a soft hyphen, ideographs, and an accented letter of more
+/// glyphs than a run's walk holds.
 fn document(layout: &mut Layout, cx: &mut Context, mode: WritingMode, repeat: usize) {
     let families = [FontFamilyName::named("Ahem")];
     let root = ComputedStyle {
@@ -88,10 +88,11 @@ fn read<P: TextPath>(layout: &Layout, paths: &[P], ends: PastEnds) -> f32 {
     sum
 }
 
-/// Breaking a warm layout along paths, each line to its own path's
-/// length, allocates nothing, horizontal or vertical, nor does placing
-/// every line's paint along a polyline and a Bézier path, whatever is
-/// past their ends: the room answers from the caller's paths, and the
+/// Breaking a warm layout along paths, each line to its path's length,
+/// allocates nothing, horizontal or vertical.
+///
+/// Nor does placing every line's paint along a polyline and a Bézier path,
+/// past their ends included. The room comes from the host's paths, and
 /// placing reads each run's glyphs twice, keeping none.
 #[test]
 fn text_on_paths_allocates_nothing_warm() {

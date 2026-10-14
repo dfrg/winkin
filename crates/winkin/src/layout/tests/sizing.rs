@@ -83,7 +83,7 @@ fn sizing_sizes_as_breaking_does() {
     }
 }
 
-/// Sizes handed out once, by an iterator that cannot be cloned.
+/// Sizes yielded once, by an iterator that cannot be cloned.
 struct OnePass(vec::IntoIter<(NodeKey, BoxSize)>);
 
 impl Iterator for OnePass {
@@ -111,7 +111,7 @@ fn atomics(
     });
 }
 
-/// A line's width, ascent and descent.
+/// Returns a line's width, ascent and descent.
 type LineSize = (f32, f32, f32);
 
 /// Breaks `layout` at `width`, and returns each line's size and each atomic
@@ -140,7 +140,7 @@ fn atomic_places(
     (lines, places)
 }
 
-/// The size an atomic inline keyed `key` is built with.
+/// Returns the size an atomic inline keyed `key` is built with.
 fn small(key: u64) -> BoxSize {
     BoxSize {
         inline: 10.0 + key as f32,
@@ -149,7 +149,7 @@ fn small(key: u64) -> BoxSize {
     }
 }
 
-/// The size an atomic inline keyed `key` is measured with.
+/// Returns the size an atomic inline keyed `key` is measured with.
 fn large(key: u64) -> BoxSize {
     BoxSize {
         inline: 14.0 + key as f32,
@@ -158,8 +158,8 @@ fn large(key: u64) -> BoxSize {
     }
 }
 
-/// Measuring with sizes an iterator hands out once, which cannot be cloned,
-/// sets what a layout built with the sizes has.
+/// Measuring with sizes from an iterator that cannot be cloned sets what a
+/// layout built with the sizes has.
 #[test]
 fn measuring_sizes_handed_out_once_equals_a_fresh_layout() {
     let root = sized(&AHEM_FAMILY, 10.0);
@@ -180,8 +180,8 @@ fn measuring_sizes_handed_out_once_equals_a_fresh_layout() {
     }
 }
 
-/// Measuring with sizes handed out once sets every atomic inline of a key
-/// that several share, and those keyed otherwise their own sizes.
+/// Measuring with sizes yielded once sets every atomic inline of a key that
+/// several share, and gives those keyed otherwise their own sizes.
 #[test]
 fn measuring_shared_keys_handed_out_once_equals_a_fresh_layout() {
     let root = sized(&AHEM_FAMILY, 10.0);

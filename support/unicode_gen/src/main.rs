@@ -61,7 +61,9 @@
 //! | 17..21 | the text-spacing class: Blink's `HanKerningCharType`, 0 to 10 |
 //! | 21..24 | the emphasis class: 0 marked, 1 a space, 2 punctuation, 3 a symbol, 4 never marked |
 //! | 24..26 | the first-letter class: 0 other, 1 a space, 2 opening punctuation or a dash, 3 other punctuation |
-//! | 26..32 | zero |
+//! | 26 | Cased |
+//! | 27 | Case_Ignorable |
+//! | 28..32 | zero |
 //!
 //! Joining_Type, East_Asian_Width, Vertical_Orientation and the glue classes
 //! were each a field of their own until the simplification wave
@@ -155,6 +157,37 @@
 //! after four values Unicode has assigned to no character since 11.0. Four
 //! bits hold 0 to 15, so ZWJ is 13 here and the four are refused.
 //!
+//! # Case mapping
+//!
+//! What `text-transform` maps case by (`unicode/case.rs`), read from
+//! icu_casemap: each character's full lowercase, uppercase and titlecase in
+//! the root language, alone. The conditional mappings and the language
+//! tailorings are code there, as ICU4C writes them.
+//!
+//! - `CASE_RUNS` holds every run of neighbours that map alike, binary
+//!   searched: each the run's first character, its length less one and its
+//!   kind. A run of lowercase letters maps up by one delta, a run of capitals
+//!   down by one, and a run of pairs alternates capital and small letter.
+//!   338 runs hold every mapped character of Unicode 17.
+//! - `CASE_RUN_DATA` names each run's delta in `CASE_DELTAS`, or its first
+//!   exception.
+//! - An exception is a character one delta cannot map: a mapping longer than
+//!   one character (`ß`, `ﬁ`, `ŉ`), or a titlecase that is not the uppercase
+//!   (`ǆ`, `ǅ`). `CASE_EXCEPTIONS` spells its three mappings in
+//!   `CASE_STRINGS`.
+//! - Uppercase leaves Georgian Mkhedruli as it is, as Chrome's
+//!   `DisableNewGeorgianCapitalLetters` does, so it needs no exception.
+//! - `SOFT_DOTTED` is the Soft_Dotted ranges, which Lithuanian reads.
+//! - `GREEK_LETTERS` is what ICU4C's `GreekUpper` reads of each character of
+//!   U+0370 to U+03FF and U+1F00 to U+1FFF: the capital of its base letter,
+//!   from its canonical decomposition, and whether it is a vowel and carries
+//!   an accent, a dialytika or an iota subscript. A character that is not a
+//!   Greek letter with Greek diacritics only is zero.
+//!
+//! Cased and Case_Ignorable, which the final sigma and Greek uppercasing read
+//! of the characters beside them, are two bits of the rare word, which they
+//! grow by 2.4 KB: Case_Ignorable's 400-odd ranges would take more.
+//!
 //! # The paragraph separator
 //!
 //! Line_Break BK, CR, LF or NL: LF, VT, FF, CR, NEL, U+2028 and U+2029. These
@@ -205,10 +238,11 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use icu_properties::props::{
-    BidiClass, BidiMirroringGlyph, BidiPairedBracketType, DefaultIgnorableCodePoint,
-    EastAsianWidth, Emoji, EmojiComponent, EmojiModifierBase, EmojiPresentation,
-    ExtendedPictographic, GeneralCategory, GraphemeClusterBreak, IndicConjunctBreak, JoiningType,
-    LineBreak, RegionalIndicator, Script, VerticalOrientation, WhiteSpace,
+    BidiClass, BidiMirroringGlyph, BidiPairedBracketType, CaseIgnorable, Cased,
+    DefaultIgnorableCodePoint, EastAsianWidth, Emoji, EmojiComponent, EmojiModifierBase,
+    EmojiPresentation, ExtendedPictographic, GeneralCategory, GraphemeClusterBreak,
+    IndicConjunctBreak, JoiningType, LineBreak, RegionalIndicator, Script, SoftDotted,
+    VerticalOrientation, WhiteSpace,
 };
 use icu_properties::script::ScriptWithExtensions;
 use icu_properties::{CodePointMapData, CodePointSetData, PropertyNamesShort};
@@ -332,8 +366,10 @@ const EAST_ASIAN_SPACING: Field = Field::new("EAST_ASIAN_SPACING", 14, 3);
 const TEXT_SPACING: Field = Field::new("TEXT_SPACING", 17, 4);
 const EMPHASIS: Field = Field::new("EMPHASIS", 21, 3);
 const FIRST_LETTER: Field = Field::new("FIRST_LETTER", 24, 2);
+const CASED: Field = Field::new("CASED", 26, 1);
+const CASE_IGNORABLE: Field = Field::new("CASE_IGNORABLE", 27, 1);
 
-const RARE: [&Field; 14] = [
+const RARE: [&Field; 16] = [
     &JOIN_CAUSING,
     &WIDE,
     &UPRIGHT_IN_MIXED,
@@ -348,7 +384,85 @@ const RARE: [&Field; 14] = [
     &TEXT_SPACING,
     &EMPHASIS,
     &FIRST_LETTER,
+    &CASED,
+    &CASE_IGNORABLE,
 ];
+
+// The kinds of case run, in a run's low bits.
+/// Each character's lowercase is itself, and its uppercase and titlecase
+/// are it plus the run's delta.
+const RUN_LOWER: u32 = 0;
+/// Each character's uppercase and titlecase are itself, and its lowercase
+/// is it plus the run's delta.
+const RUN_UPPER: u32 = 1;
+/// Capital and small letters alternate, the capital first: each capital's
+/// lowercase is the next character, and each small letter's uppercase and
+/// titlecase the one before.
+const RUN_PAIRS: u32 = 2;
+/// Each character is an exception, in order from the run's first index.
+const RUN_EXCEPTIONS: u32 = 3;
+/// The bits of a run's kind, below its length.
+const RUN_KIND_BITS: u32 = 3;
+/// The bits of a run's length less one, below its start.
+const RUN_LENGTH_BITS: u32 = 8;
+
+// The Greek letter flags, above the ten bits of the capital.
+const GREEK_UPPER_MASK: u32 = 0x3FF;
+const GREEK_VOWEL: u32 = 1 << 10;
+const GREEK_YPOGEGRAMMENI: u32 = 1 << 11;
+const GREEK_ACCENT: u32 = 1 << 12;
+const GREEK_DIALYTIKA: u32 = 1 << 13;
+
+/// The Greek diacritics ICU's Greek uppercasing reads, and what each says
+/// (`GreekUpper::getDiacriticData`): an accent, a dialytika, both, an iota
+/// subscript, or another diacritic, which says nothing.
+fn greek_diacritic(ch: char) -> Option<u32> {
+    match ch {
+        '\u{300}' | '\u{301}' | '\u{342}' | '\u{302}' | '\u{303}' | '\u{311}' => Some(GREEK_ACCENT),
+        '\u{308}' => Some(GREEK_DIALYTIKA),
+        '\u{344}' => Some(GREEK_DIALYTIKA | GREEK_ACCENT),
+        '\u{345}' => Some(GREEK_YPOGEGRAMMENI),
+        '\u{304}' | '\u{306}' | '\u{313}' | '\u{314}' | '\u{343}' => Some(0),
+        _ => None,
+    }
+}
+
+/// The Greek uppercasing entry of `cp`: its base letter's capital and the
+/// flags its diacritics set, or zero for a character that is not a Greek
+/// letter, possibly with Greek diacritics.
+fn greek_letter(
+    cp: u32,
+    nfd: &icu_normalizer::DecomposingNormalizerBorrowed<'_>,
+    categories: &icu_properties::CodePointMapDataBorrowed<'_, GeneralCategory>,
+    case: &icu_casemap::CaseMapperBorrowed<'_>,
+) -> u32 {
+    let Some(ch) = char::from_u32(cp) else {
+        return 0;
+    };
+    let decomposed: Vec<char> = nfd.normalize_iter([ch].into_iter()).collect();
+    let (&base, marks) = decomposed
+        .split_first()
+        .expect("a decomposition is never empty");
+    if !(0x370..=0x3FF).contains(&u32::from(base)) || !is_letter(categories.get(base)) {
+        return 0;
+    }
+    let mut flags = 0;
+    for &mark in marks {
+        match greek_diacritic(mark) {
+            Some(flag) => flags |= flag,
+            None => return 0,
+        }
+    }
+    let upper = u32::from(case.simple_uppercase(base));
+    assert!(
+        upper <= GREEK_UPPER_MASK,
+        "U+{cp:04X}'s capital is past U+03FF"
+    );
+    if [0x391, 0x395, 0x397, 0x399, 0x39F, 0x3A5, 0x3A9].contains(&upper) {
+        flags |= GREEK_VOWEL;
+    }
+    upper | flags
+}
 
 /// ICU4C's `UCharDirection` numbering, which is the bidi resolver's.
 fn bidi_class(class: BidiClass) -> u32 {
@@ -792,6 +906,26 @@ fn pack(name: &str, values: &[i64]) -> Lookup {
     }
 }
 
+/// Renders `values` as `pub(super) static {name}: [{ty}; _]`, with `doc`.
+fn emit_array<T: std::fmt::Display>(
+    code: &mut String,
+    doc: &str,
+    name: &str,
+    ty: &str,
+    values: &[T],
+) {
+    writeln!(
+        code,
+        "\n/// {doc}\npub(super) static {name}: [{ty}; {}] = [",
+        values.len()
+    )
+    .unwrap();
+    for value in values {
+        write!(code, "{value},").unwrap();
+    }
+    code.push_str("];\n");
+}
+
 /// Rewrites every `array[index]` in packtab's expression as
 /// `at(&ARRAY, index)`, and refuses any other use of an array.
 fn guard_reads(body: &str, arrays: &[(String, String)]) -> String {
@@ -878,6 +1012,9 @@ fn main() {
     let modifier_base = CodePointSetData::new::<EmojiModifierBase>();
     let component = CodePointSetData::new::<EmojiComponent>();
     let ignorable = CodePointSetData::new::<DefaultIgnorableCodePoint>();
+    let cased = CodePointSetData::new::<Cased>();
+    let case_ignorable = CodePointSetData::new::<CaseIgnorable>();
+    let soft_dotted = CodePointSetData::new::<SoftDotted>();
     let scripts = ScriptWithExtensions::new();
     let script_names = PropertyNamesShort::<Script>::new();
     let categories = CodePointMapData::<GeneralCategory>::new();
@@ -1002,8 +1139,175 @@ fn main() {
         TEXT_SPACING.put(&mut word, text_spacing(cp, gc, eaw));
         EMPHASIS.put(&mut word, emphasis(cp, gc));
         FIRST_LETTER.put(&mut word, first_letter(cp, gc));
+        CASED.put(&mut word, u32::from(cased.contains32(cp)));
+        CASE_IGNORABLE.put(&mut word, u32::from(case_ignorable.contains32(cp)));
         rare.push(i64::from(word));
     }
+
+    // --- case --------------------------------------------------------------
+    // Every code point's full mappings in the root language, one character
+    // alone. Uppercase leaves Georgian Mkhedruli as it is, as Chrome does
+    // (`DisableNewGeorgianCapitalLetters`). A character whose mappings one
+    // delta cannot say, as where one is more than one character or its
+    // titlecase is not its uppercase, is an exception: its three mappings are
+    // spelled in `CASE_STRINGS`. Neighbours that map alike are a run.
+    let case = icu_casemap::CaseMapper::new();
+    let root = icu_locale_core::LanguageIdentifier::UNKNOWN;
+    let mut title_options = icu_casemap::options::TitlecaseOptions::default();
+    title_options.leading_adjustment = Some(icu_casemap::options::LeadingAdjustment::None);
+    title_options.trailing_case = Some(icu_casemap::options::TrailingCase::Unchanged);
+    let mut exceptions: Vec<[u16; 3]> = Vec::new();
+    let mut strings: Vec<u16> = Vec::new();
+    // Appends `mapping` to the strings, or finds it there, and returns its
+    // offset and length.
+    let mut spell = |mapping: &str| -> u16 {
+        let units: Vec<u16> = mapping
+            .chars()
+            .map(|ch| u16::try_from(u32::from(ch)).expect("an exception's mapping is in the BMP"))
+            .collect();
+        assert!(
+            (1..=3).contains(&units.len()),
+            "{mapping:?} is not one to three characters"
+        );
+        let at = strings
+            .windows(units.len())
+            .position(|window| window == units)
+            .unwrap_or_else(|| {
+                strings.extend(&units);
+                strings.len() - units.len()
+            });
+        let at = u16::try_from(at).expect("the strings fit in u16 offsets");
+        assert!(at < 1 << 14, "the strings outgrow 14 bits of offset");
+        at << 2 | u16::try_from(units.len()).expect("three fit")
+    };
+    // Each mapped character's run kind and delta, or exception index.
+    let mut mapped: Vec<(u32, u32, i64)> = Vec::new();
+    for ch in (0..=0x10FFFF_u32).filter_map(char::from_u32) {
+        let cp = u32::from(ch);
+        let one = ch.to_string();
+        let lower = case.lowercase_to_string(&one, &root).into_owned();
+        let mut upper = case.uppercase_to_string(&one, &root).into_owned();
+        let title = case
+            .titlecase_segment_with_only_case_data_to_string(&one, &root, title_options)
+            .into_owned();
+        if lower == one
+            && upper
+                .chars()
+                .all(|ch| ('\u{1C90}'..='\u{1CBF}').contains(&ch))
+        {
+            upper.clone_from(&one);
+        }
+        if lower == one && upper == one && title == one {
+            continue;
+        }
+        let single = |mapping: &str| {
+            let mut chars = mapping.chars();
+            match (chars.next(), chars.next()) {
+                (Some(ch), None) => Some(i64::from(u32::from(ch)) - i64::from(cp)),
+                _ => None,
+            }
+        };
+        let run = if lower == one && title == upper {
+            single(&upper).map(|delta| (RUN_LOWER, delta))
+        } else if upper == one && title == one {
+            single(&lower).map(|delta| (RUN_UPPER, delta))
+        } else {
+            None
+        };
+        mapped.push(match run {
+            Some((kind, delta)) => (cp, kind, delta),
+            None => {
+                assert!(cp < 0x10000, "U+{cp:04X} is an exception past the BMP");
+                let index = exceptions.len();
+                exceptions.push([spell(&lower), spell(&upper), spell(&title)]);
+                (
+                    cp,
+                    RUN_EXCEPTIONS,
+                    i64::try_from(index).expect("few exceptions"),
+                )
+            }
+        });
+    }
+    // Runs as (start, length, kind, delta or first exception).
+    let mut runs: Vec<(u32, u32, u32, i64)> = Vec::new();
+    let mut at = 0;
+    while at < mapped.len() {
+        let (cp, kind, value) = mapped[at];
+        // Whether a capital and its small letter start at `i`, in step with
+        // the run from `at`.
+        let pair = |i: usize| {
+            let first = cp + u32::try_from(i - at).expect("short runs");
+            mapped.get(i) == Some(&(first, RUN_UPPER, 1))
+                && mapped.get(i + 1) == Some(&(first + 1, RUN_LOWER, -1))
+        };
+        if pair(at) {
+            let mut end = at + 2;
+            while end - at + 2 <= 1 << RUN_LENGTH_BITS && pair(end) {
+                end += 2;
+            }
+            let length = u32::try_from(end - at).expect("short runs");
+            runs.push((cp, length, RUN_PAIRS, 0));
+            at = end;
+            continue;
+        }
+        let mut end = at + 1;
+        while end - at < 1 << RUN_LENGTH_BITS {
+            let Some(&(next, next_kind, next_value)) = mapped.get(end) else {
+                break;
+            };
+            let offset = u32::try_from(end - at).expect("short runs");
+            let follows = next == cp + offset
+                && next_kind == kind
+                && if kind == RUN_EXCEPTIONS {
+                    next_value == value + i64::from(offset)
+                } else {
+                    next_value == value
+                };
+            if !follows {
+                break;
+            }
+            end += 1;
+        }
+        let length = u32::try_from(end - at).expect("short runs");
+        runs.push((cp, length, kind, value));
+        at = end;
+    }
+    let mut deltas: Vec<i32> = Vec::new();
+    let mut run_words: Vec<u32> = Vec::new();
+    let mut run_data: Vec<u8> = Vec::new();
+    for &(start, length, kind, value) in &runs {
+        run_words.push(
+            start << (RUN_LENGTH_BITS + RUN_KIND_BITS) | (length - 1) << RUN_KIND_BITS | kind,
+        );
+        let data = match kind {
+            RUN_LOWER | RUN_UPPER => {
+                let delta = i32::try_from(value).expect("a delta fits in i32");
+                let index = deltas.iter().position(|&d| d == delta).unwrap_or_else(|| {
+                    deltas.push(delta);
+                    deltas.len() - 1
+                });
+                u8::try_from(index).expect("fewer than 256 deltas")
+            }
+            RUN_EXCEPTIONS => u8::try_from(value).expect("fewer than 256 exceptions"),
+            _ => 0,
+        };
+        run_data.push(data);
+    }
+    // Soft_Dotted, each range its start shifted left by eight over its
+    // length less one.
+    let soft_dotted_runs: Vec<u32> = soft_dotted
+        .iter_ranges()
+        .map(|range| {
+            let (start, end) = (*range.start(), *range.end());
+            assert!(end - start < 1 << 8, "a Soft_Dotted range is long");
+            start << 8 | (end - start)
+        })
+        .collect();
+    let nfd = icu_normalizer::DecomposingNormalizerBorrowed::new_nfd();
+    let greek: Vec<u32> = (0x370..=0x3FF_u32)
+        .chain(0x1F00..=0x1FFF)
+        .map(|cp| greek_letter(cp, &nfd, &categories, &case))
+        .collect();
 
     // --- emit ------------------------------------------------------------
     let mut code = String::from(HEADER);
@@ -1097,6 +1401,97 @@ fn main() {
     }
     code.push_str("];\n\n");
 
+    writeln!(
+        code,
+        "// The case runs: each its first character shifted left by {}, over its\n\
+         // length less one shifted left by {}, over its kind.\n\
+         pub(super) const RUN_LENGTH_SHIFT: u32 = {RUN_KIND_BITS};\n\
+         pub(super) const RUN_START_SHIFT: u32 = {};\n\
+         pub(super) const RUN_KIND_MASK: u32 = {};\n\
+         pub(super) const RUN_LENGTH_MASK: u32 = {};\n\
+         pub(super) const RUN_LOWER: u32 = {RUN_LOWER};\n\
+         pub(super) const RUN_UPPER: u32 = {RUN_UPPER};\n\
+         pub(super) const RUN_PAIRS: u32 = {RUN_PAIRS};\n\
+         pub(super) const RUN_EXCEPTIONS: u32 = {RUN_EXCEPTIONS};",
+        RUN_LENGTH_BITS + RUN_KIND_BITS,
+        RUN_KIND_BITS,
+        RUN_LENGTH_BITS + RUN_KIND_BITS,
+        (1 << RUN_KIND_BITS) - 1,
+        (1 << RUN_LENGTH_BITS) - 1,
+    )
+    .unwrap();
+    emit_array(
+        &mut code,
+        "Every run of characters that map alike, in code point order.",
+        "CASE_RUNS",
+        "u32",
+        &run_words,
+    );
+    emit_array(
+        &mut code,
+        "Each run's delta, as an index into [`CASE_DELTAS`], or its first\n\
+         /// exception, as an index into [`CASE_EXCEPTIONS`].",
+        "CASE_RUN_DATA",
+        "u8",
+        &run_data,
+    );
+    emit_array(
+        &mut code,
+        "The deltas the runs add to a character to map it.",
+        "CASE_DELTAS",
+        "i32",
+        &deltas,
+    );
+    let exception_words: Vec<u16> = exceptions.iter().flatten().copied().collect();
+    emit_array(
+        &mut code,
+        "Each exception's full lowercase, uppercase and titlecase mappings, three\n\
+         /// in a row: each its offset into [`CASE_STRINGS`] shifted left by two,\n\
+         /// over its length in characters.",
+        "CASE_EXCEPTIONS",
+        "u16",
+        &exception_words,
+    );
+    emit_array(
+        &mut code,
+        "The exceptions' mappings, spelled out, each character in the BMP.",
+        "CASE_STRINGS",
+        "u16",
+        &strings,
+    );
+    emit_array(
+        &mut code,
+        "Soft_Dotted, each range its first character shifted left by eight,\n\
+         /// over its length less one.",
+        "SOFT_DOTTED",
+        "u32",
+        &soft_dotted_runs,
+    );
+
+    writeln!(
+        code,
+        "\n// The Greek letter flags, above the ten bits of the capital.\n\
+         pub(super) const GREEK_UPPER_MASK: u32 = 0x{GREEK_UPPER_MASK:X};\n\
+         pub(super) const GREEK_VOWEL: u32 = 1 << {};\n\
+         pub(super) const GREEK_YPOGEGRAMMENI: u32 = 1 << {};\n\
+         pub(super) const GREEK_ACCENT: u32 = 1 << {};\n\
+         pub(super) const GREEK_DIALYTIKA: u32 = 1 << {};\n\n\
+         /// What Greek uppercasing reads of each character of U+0370 to U+03FF and\n\
+         /// then U+1F00 to U+1FFF: its base letter's capital and the flags its\n\
+         /// diacritics set, or zero where it is no Greek letter.\n\
+         pub(super) static GREEK_LETTERS: [u16; {}] = [",
+        GREEK_VOWEL.trailing_zeros(),
+        GREEK_YPOGEGRAMMENI.trailing_zeros(),
+        GREEK_ACCENT.trailing_zeros(),
+        GREEK_DIALYTIKA.trailing_zeros(),
+        greek.len()
+    )
+    .unwrap();
+    for entry in &greek {
+        write!(code, "0x{entry:X},").unwrap();
+    }
+    code.push_str("];\n\n");
+
     let core = pack("core", &core);
     let rare = pack("rare", &rare);
     code.push_str(&core.code);
@@ -1111,6 +1506,19 @@ fn main() {
     println!("wrote {}", std::path::Path::new(OUT).display());
     println!("core:  {} bytes, packtab {}", core.bytes, core.shape);
     println!("rare: {} bytes, packtab {}", rare.bytes, rare.shape);
+    println!(
+        "case: {} runs {} B, {} deltas {} B, {} exceptions {} B, strings {} B, \
+         Soft_Dotted {} B, Greek {} B",
+        runs.len(),
+        runs.len() * 5,
+        deltas.len(),
+        deltas.len() * 4,
+        exceptions.len(),
+        exceptions.len() * 6,
+        strings.len() * 2,
+        soft_dotted_runs.len() * 4,
+        greek.len() * 2
+    );
     println!(
         "side: {} bytes ({script_count} script tags {tags} B, {set_count} sets in {} entries {set_bytes} B, {pair_count} bracket pairs {bracket_bytes} B)",
         tags + set_bytes + bracket_bytes,

@@ -9,8 +9,8 @@
 //!   Chrome's `UnapplyAutoSpacing` does.
 //!
 //! In Test Punct at 20px every ideograph and full-width mark is 20px wide.
-//! Its `halt` sets a mark in 10, an ASCII letter is 10, and its `水` makes an
-//! autospace seam 2.5px.
+//! Its `halt` sets a mark in 10, an ASCII letter is 10, and an autospace
+//! seam is 2.5px.
 
 use super::*;
 use crate::config::PunctuationTrim;
@@ -18,8 +18,8 @@ use crate::style::FirstLineVariant;
 use crate::style::{TextAlign, TextAutospace, TextSpacingTrim};
 use crate::tests::{PLAIN_PUNCT, PUNCT, ahem_fallback};
 
-/// Returns a fixture over Ahem, a Japanese font with `halt` and one
-/// without.
+/// Returns a fixture over Ahem and two Japanese fonts, one with `halt` and
+/// one without.
 fn cjk() -> Fixture {
     Fixture::new(
         &[
@@ -31,7 +31,7 @@ fn cjk() -> Fixture {
     )
 }
 
-/// Returns each line's clusters and width.
+/// Returns each line's clusters and width, in pixels.
 fn widths(layout: &Layout) -> Vec<(Range<usize>, f32)> {
     layout
         .line_records()
@@ -44,7 +44,7 @@ fn widths(layout: &Layout) -> Vec<(Range<usize>, f32)> {
         .collect()
 }
 
-/// Returns `family` at 20px, trimming as `trim` says.
+/// Returns `family` at 20px with `text-spacing-trim: trim`.
 fn trimmed(
     family: &'static [FontFamilyName<'static>],
     trim: TextSpacingTrim,
@@ -57,8 +57,7 @@ fn trimmed(
 /// A line that wraps to an opening mark keeps its blank under `normal`, and
 /// gives it back under `space-first` and `trim-start`.
 ///
-/// The mark is reshaped as a start. The block's first line is not a wrapped
-/// one. Chrome 153 in Yu Gothic at 160px sets `「漢字」` at 160 and at 140.
+/// Chrome 153 in Yu Gothic sets the second line, `「漢字」`, at 160 and 140.
 #[test]
 fn a_line_wrapping_to_an_opening_mark_trims_it_under_space_first() {
     let mut fixture = cjk();
@@ -91,10 +90,9 @@ fn a_line_wrapping_to_an_opening_mark_trims_it_under_space_first() {
 /// A closing mark that fits only trimmed at a line's end ends the line
 /// trimmed, where a line may break after it.
 ///
-/// One that fits whole keeps its blank. One that fits neither way goes to
-/// the next line, with what may not start a line without it. These match
-/// Chrome 153 in Yu Gothic at 180, 200 and 179px. A paragraph's end is a
-/// line's end too.
+/// A mark that fits whole keeps its blank, and one that fits neither way
+/// moves to the next line. These match Chrome 153 in Yu Gothic at 180, 200
+/// and 179px.
 #[test]
 fn a_closing_mark_that_fits_only_trimmed_ends_the_line_trimmed() {
     let mut fixture = cjk();
@@ -114,7 +112,7 @@ fn a_closing_mark_that_fits_only_trimmed_ends_the_line_trimmed() {
     );
     fixture.lay_out(&mut layout, 90.0);
     assert_eq!(widths(&layout), [(0..3, 60.0), (3..7, 80.0)]);
-    // At the paragraph's end, where no break is set, the line ends too:
+    // The paragraph's end is a line end even without a break opportunity.
     // Chrome 155 sets WPT's `text-spacing-trim-end-span-001` on one line of
     // 7.5 em.
     let style = trimmed(&PUNCT, TextSpacingTrim::Normal);
@@ -130,11 +128,9 @@ fn a_closing_mark_that_fits_only_trimmed_ends_the_line_trimmed() {
 /// A pair of marks a break parts keeps the closing trim and gives the
 /// opening blank back.
 ///
-/// A closing mark kerned against the one after stays trimmed at the line's
-/// end, as Chrome's reshaped end reads the text after it. An opening mark
-/// kerned against the one before gets its blank back at the next line's
-/// start, shaped as a start. These match Chrome 153 in Yu Gothic at 180 and
-/// 160px.
+/// Chrome reshapes a line end with the text after it as context, so the
+/// closing mark stays trimmed. The opening mark is shaped as a line start.
+/// These match Chrome 153 in Yu Gothic at 180 and 160px.
 #[test]
 fn a_pair_a_break_parts_keeps_its_closing_trim_and_gives_its_blank_back() {
     let mut fixture = cjk();
@@ -151,12 +147,12 @@ fn a_pair_a_break_parts_keeps_its_closing_trim_and_gives_its_blank_back() {
     assert_eq!(widths(&layout), [(0..4, 80.0), (4..8, 80.0), (8..9, 20.0)]);
 }
 
-/// A host whose area narrows to `shelf.1` from `shelf.0` down, and which
-/// places each float at the left edge, as high as asked.
+/// Exclusions whose right edge moves in to `shelf.1` from `shelf.0` down,
+/// and which place each float at the left edge, at its requested block start.
 struct Shelf {
     width: f32,
     shelf: (f32, f32),
-    /// Each float placed: its right edge, top and bottom.
+    /// Each placed float's right edge, top and bottom.
     floats: Vec<(f32, f32, f32)>,
 }
 
@@ -202,9 +198,10 @@ impl Exclusions for Shelf {
     }
 }
 
-/// Returns how many lines of `layout` start at a cluster the font shaped
-/// across, and asserts no such start's reshape is repeated, `at` naming the
-/// layout.
+/// Returns how many lines of `layout` start at an unsafe-to-break cluster,
+/// and asserts each such start is reshaped once.
+///
+/// `at` labels the layout in failure messages.
 fn starts_reshaped_once(layout: &Layout, at: &str) -> usize {
     let records = layout.line_records();
     let glyphs = &layout.shaped().text(FirstLineVariant::Standard).glyphs;
@@ -228,14 +225,9 @@ fn starts_reshaped_once(layout: &Layout, at: &str) -> usize {
 
 /// A line reshapes each of its edges once.
 ///
-/// Its start window is reshaped once, however many candidate ends it
-/// measures. Each candidate starts with the window's piece from the edge
-/// tables, and each end is measured once. Here every line after the first
-/// starts at an opening mark kerned against the one before, so each is
-/// reshaped at its start.
-///
-/// A line fitted again keeps its start's piece: beside a float it places,
-/// and in the narrower band its own height meets.
+/// Every candidate end reuses the start window's piece. A line refitted
+/// beside its float, or in the band its height reaches, keeps that piece
+/// too.
 #[test]
 fn a_line_reshapes_each_edge_once() {
     let mut fixture = cjk();
@@ -271,8 +263,8 @@ fn a_line_reshapes_each_edge_once() {
     }
     assert!(starts >= 10, "{starts} line starts reshaped");
 
-    // Each unit holds a float, 10 wide, and a letter twice as tall as the
-    // text, so a line refits beside its float and settles past the shelf.
+    // Each unit holds a 10 px float and a letter twice as tall as the text,
+    // so a line refits beside its float and in the band past the shelf.
     let mut large = style;
     large.font.size = 40.0;
     fixture.build(&mut layout, &ComputedBlockStyle::new(&style), |b| {
@@ -310,7 +302,6 @@ fn a_line_reshapes_each_edge_once() {
 
 /// A line ending at an autospace seam gives the seam's room back.
 ///
-/// The line fits without it, and its text ends at its width when aligned.
 /// Chrome 153 sets `漢字漢字ABCD` in MS Gothic at 160 and 400px this way.
 #[test]
 fn a_line_ending_at_a_seam_gives_its_room_back() {
@@ -319,7 +310,7 @@ fn a_line_ending_at_a_seam_gives_its_room_back() {
     let mut style = sized(&PUNCT, 20.0);
     style.text.autospace = TextAutospace::NORMAL;
     fixture.text(&mut layout, &style, "漢字漢字ABCD");
-    // The whole paragraph takes the room once: 80, 2.5 and 40.
+    // The whole paragraph pays the seam once: 80, 2.5 and 40.
     fixture.lay_out(&mut layout, 200.0);
     assert_eq!(widths(&layout), [(0..8, 122.5)]);
     fixture.lay_out(&mut layout, 80.0);
@@ -334,7 +325,7 @@ fn a_line_ending_at_a_seam_gives_its_room_back() {
         })
         .sum();
     assert_eq!(text, 80.0);
-    // Right-aligned in 100, it ends at the band's end.
+    // Right-aligned in 100, the text ends at the band's end.
     let block = ComputedBlockStyle {
         text_align: TextAlign::Right,
         ..ComputedBlockStyle::new(&style)
@@ -355,8 +346,8 @@ fn a_line_ending_at_a_seam_gives_its_room_back() {
             (l.min(run.left), r.max(run.right))
         });
     assert_eq!((origin + left, origin + right), (20.0, 100.0));
-    // Min-content does not pay it where an unbreakable part ends at the
-    // seam: `漢` alone is 20, and with the room it would be 22.5.
+    // Min-content does not pay the seam where an unbreakable part ends at
+    // it: `漢` alone is 20, and with the seam it would be 22.5.
     fixture.text(&mut layout, &style, "漢A");
     let sizes = layout.intrinsic_sizes();
     assert_eq!((sizes.min_content, sizes.max_content), (20.0, 32.5));

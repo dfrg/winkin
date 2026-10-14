@@ -1,5 +1,5 @@
 //! Tries a candidate list on a grapheme: what the grapheme asks of a font,
-//! the memo's first pass, the second pass and the partial cover.
+//! the first pass with the memo, the second pass and the best partial cover.
 
 use alloc::boxed::Box;
 
@@ -20,24 +20,26 @@ use crate::style::FontVariantEmoji;
 use crate::unicode;
 use crate::unicode::is_variation_selector;
 
-/// How many candidates of a list keep their last [`CharsetPage`] while a
-/// span is walked. Past these a candidate searches its charset once a
-/// character; the first covers nearly everything.
+/// The number of a list's first candidates that keep their last
+/// [`CharsetPage`] while a span is walked.
+///
+/// A later candidate searches its charset once per character. The first
+/// candidate covers nearly everything.
 const PAGES: usize = 8;
 
 /// The charset page each of a list's first [`PAGES`] candidates last found.
 ///
-/// Kept while a span is walked, so text in one candidate costs a bit test
-/// per character, and a search only where the text leaves the page.
+/// It is kept while a span is walked, so text in one candidate costs a bit
+/// test per character, and a search only where the text leaves the page.
 pub(super) struct Pages<'a>([Option<CharsetPage<'a>>; PAGES]);
 
 impl<'a> Pages<'a> {
-    /// None found yet.
+    /// Returns pages with none found.
     pub(super) const fn new() -> Self {
         Self([None; PAGES])
     }
 
-    /// Where `candidate` keeps the page it last found, or `None` for a
+    /// Returns the slot for the page `candidate` last found, or `None` for a
     /// candidate past the first [`PAGES`], which keeps none.
     pub(super) fn get_mut(
         &mut self,
@@ -46,19 +48,18 @@ impl<'a> Pages<'a> {
         self.0.get_mut(candidate.get())
     }
 
-    /// The page `candidate` last found, if it keeps one and found one.
+    /// Returns the page `candidate` last found, if it keeps one and found one.
     pub(super) fn get(&self, candidate: CandidateId) -> Option<CharsetPage<'a>> {
         self.0.get(candidate.get()).copied().flatten()
     }
 }
 
-/// Whether pending `font` wants a character of `text`.
+/// Returns whether pending `font` wants a character of `text`.
 fn wants(font: &Font, text: &str) -> bool {
     text.chars().any(|ch| font.wants(ch))
 }
 
-/// Adds pending `face`, which wants a character of a cluster, to the faces
-/// the host fetches. Each face goes in once.
+/// Adds pending `face` to the faces the host fetches, once.
 fn want(wanted: &mut WantedFaces, face: FaceId) {
     let faces = wanted.get_or_insert_with(Box::default);
     if !faces.contains(&face) {
@@ -76,14 +77,16 @@ pub(super) struct GraphemeNeeds<'t> {
     text: &'t str,
     /// The presentation it asks for.
     pub(super) presentation: Presentation,
-    /// Whether it holds a variation sequence cluster matching asks a font
-    /// for: the first pass then takes a font only with every such sequence.
+    /// Whether it holds a variation sequence that cluster matching asks a
+    /// font for. The first pass then takes only a font with every such
+    /// sequence.
     sequences: bool,
-    /// The sequence whose presence in a font's `cmap` accepts the font for
-    /// the presentation whatever its colour, for a forced one.
+    /// The sequence that accepts a font for a forced presentation, whatever
+    /// the font's colour, where the font's `cmap` has it.
     presented: Option<(char, char)>,
-    /// It starts with a private-use character or a noncharacter in text,
-    /// which only the listed families and the Standard font draw.
+    /// Whether it starts with a private-use character or a noncharacter in
+    /// text presentation, which only the listed families and the Standard
+    /// font draw.
     listed_only: bool,
 }
 
@@ -92,8 +95,8 @@ impl<'t> GraphemeNeeds<'t> {
     /// `variant`.
     ///
     /// `class` is its first cluster's class, and `selector` says whether it
-    /// holds a variation selector. A grapheme without one costs nothing beyond
-    /// its presentation.
+    /// holds a variation selector. A grapheme without one skips the scan for
+    /// sequences.
     pub(super) fn new(
         class: ClusterClass,
         text: &'t str,
@@ -111,8 +114,8 @@ impl<'t> GraphemeNeeds<'t> {
         }
     }
 
-    /// The same needs in presentation `p`: a forced form's base, tried
-    /// where no font takes the form.
+    /// Returns the same needs in presentation `p`, a forced form's base,
+    /// which is tried where no font takes the form.
     fn with_presentation(self, p: Presentation) -> Self {
         Self {
             presentation: p,
@@ -121,11 +124,11 @@ impl<'t> GraphemeNeeds<'t> {
         }
     }
 
-    /// Whether `font` may draw the grapheme in its presentation.
+    /// Returns whether `font` may draw the grapheme in its presentation.
     ///
     /// It may if its colour agrees, or if its `cmap` has the sequence that
-    /// asks for the presentation. Blink likewise accepts a monochrome font
-    /// with a VS16 sequence for emoji.
+    /// asks for the presentation. Blink also accepts a monochrome font with
+    /// a VS16 sequence for emoji.
     fn accepts(&self, font: &Font) -> bool {
         self.presentation.accepts(font)
             || self
@@ -133,8 +136,10 @@ impl<'t> GraphemeNeeds<'t> {
                 .is_some_and(|(base, selector)| font.maps_variation_sequence(base, selector))
     }
 
-    /// Whether `font`, which covers the grapheme, has every variation sequence
-    /// of it cluster matching asks for: always, where it asks for none.
+    /// Returns whether `font`, which covers the grapheme, has every variation
+    /// sequence of it that cluster matching asks for.
+    ///
+    /// True where the grapheme asks for none.
     fn has_sequences(&self, font: &Font) -> bool {
         !self.sequences || coverage::has_sequences(font, self.text)
     }
@@ -158,8 +163,9 @@ impl<'t> GraphemeNeeds<'t> {
             return CandidateFit::Passed;
         };
         if font.is_pending() {
-            // Nothing to draw with yet: the face to fetch, if it wants any
-            // of this, and the list goes on to draw something meanwhile.
+            // A pending face draws nothing yet. It is fetched if it wants
+            // any of the grapheme, and the list goes on to a font that draws
+            // it meanwhile.
             if wants(font, self.text)
                 && let Some(face) = font.face_id()
             {
@@ -183,37 +189,44 @@ impl<'t> GraphemeNeeds<'t> {
 
 /// How a candidate fits a grapheme's [`GraphemeNeeds`].
 pub(super) enum CandidateFit<'l> {
-    /// It is not asked: its bytes are lost, or its colour is not the
-    /// presentation's.
+    /// A candidate that is skipped: its bytes are lost, or its colour does
+    /// not suit the presentation.
     Passed,
-    /// It is a face still pending, which draws nothing yet: its font, for
-    /// the walk's memo.
+    /// A pending face, which draws nothing yet, with its font for the
+    /// walk's memo.
     Pending(&'l Font),
-    /// It covers the grapheme, with every variation sequence of it cluster
-    /// matching asks for: the first pass's answer.
+    /// A candidate that covers the grapheme with every variation sequence
+    /// cluster matching asks for: the first pass's answer.
     Covers,
-    /// It covers the grapheme without every sequence: the second pass's answer,
-    /// used where no candidate of the whole list has them.
+    /// A candidate that covers the grapheme without every sequence: the
+    /// second pass's answer, used where no candidate of the whole list has
+    /// them.
     CoversBase,
-    /// It does not cover the grapheme: its font, for the walk's memo.
+    /// A candidate that does not cover the grapheme, with its font for the
+    /// walk's memo.
     Misses(&'l Font),
 }
 
-/// What trying a candidate list on a cluster found.
+/// The result of trying a candidate list on a cluster.
 pub(super) enum ListOutcome {
-    /// This candidate covers it.
+    /// The candidate that covers the cluster.
     Found(CandidateId),
-    /// The list's next family is to be matched first.
+    /// The list's next family must be matched first.
     Match,
-    /// Nothing the list has so far covers it with every sequence it asks
-    /// for, and every family the list has is matched: the first
-    /// that covers it without them, if any, cluster matching's second pass.
+    /// The list is exhausted and no candidate covers the cluster with every
+    /// sequence it asks for.
+    ///
+    /// Holds the first candidate that covers it without them, if any: the
+    /// answer of cluster matching's second pass.
     Exhausted(Option<CandidateId>),
 }
 
-/// What `list`, none of whose candidates covers a grapheme with every sequence
-/// it asks for, says, `base` the first that covers it without them: that
-/// it has matched every family, or that the next is to be matched first.
+/// Returns the outcome for `list` where none of its candidates covers a
+/// grapheme with every sequence it asks for.
+///
+/// `base` is the first candidate that covers the grapheme without them.
+/// Returns [`ListOutcome::Exhausted`] where every family is matched, and
+/// [`ListOutcome::Match`] otherwise.
 pub(super) fn second_pass(list: &CandidateList, base: Option<CandidateId>) -> ListOutcome {
     if list.is_exhausted() {
         ListOutcome::Exhausted(base)
@@ -222,7 +235,7 @@ pub(super) fn second_pass(list: &CandidateList, base: Option<CandidateId>) -> Li
     }
 }
 
-/// Returns the candidate of `list` (named `list_id`) that a grapheme with
+/// Returns the candidate of `list` (with id `list_id`) that a grapheme with
 /// `needs` is set in, using `pick` to try the list.
 ///
 /// It tries, in order:
@@ -233,8 +246,10 @@ pub(super) fn second_pass(list: &CandidateList, base: Option<CandidateId>) -> Li
 /// 4. for a forced presentation that nothing takes, the base form;
 /// 5. the best partial cover.
 ///
-/// Returns `None` where nothing draws any of it, and `Err` with the change
-/// to make where a family must be matched or a fallback walked first.
+/// A private-use or noncharacter grapheme in text stops after step 3.
+/// Returns `None` where nothing draws any of the grapheme, and `Err` with
+/// the change to make where a family must be matched or a fallback walked
+/// first.
 pub(super) fn resolve(
     lists: &CandidateLists,
     list: &CandidateList,
@@ -272,12 +287,13 @@ pub(super) fn resolve(
     })
 }
 
-/// Whether the position feature covering `chars` has a glyph for every
-/// drawn character of `text`.
+/// Returns whether the position feature covering `chars` has a glyph for
+/// every drawn character of `text`.
 ///
-/// `page` is the page of `chars` last found. Default-ignorables are skipped:
-/// the shaper hides them, so there is no glyph to vary. Returns `false`
-/// where the font has no key, so its coverage could not be read.
+/// `page` is the page of `chars` last found. Default-ignorables are skipped,
+/// since the shaper hides them and leaves no glyph to vary. Returns `false`
+/// where `chars` is `None`: the font has no key, so its coverage could not
+/// be read.
 pub(super) fn feature_covers<'a>(
     chars: Option<&'a Charset>,
     text: &str,
@@ -290,19 +306,19 @@ pub(super) fn feature_covers<'a>(
         .all(|ch| unicode::rare_props(ch).is_default_ignorable() || coverage::maps(chars, ch, page))
 }
 
-/// What trying a candidate list on a cluster reads, besides the list.
+/// The span's text and clusters, which trying a candidate list reads.
 pub(super) struct SpanText<'w> {
     pub(super) source: &'w TextCursor<'w>,
     pub(super) clusters: &'w Clusters,
-    /// The span's end, which the memo's scans stop at.
+    /// The span's end, where the memo's scans stop.
     pub(super) end: ClusterId,
     /// Where its item's graphemes cross the item's edges.
     pub(super) graphemes: ItemGraphemes,
 }
 
 impl<'w> SpanText<'w> {
-    /// The text `cluster` is chosen for with: its own, and that of the later
-    /// parts of its grapheme that join it.
+    /// Returns the text `cluster` chooses with: its own, and that of the
+    /// later parts of its grapheme that join it.
     fn grapheme_text(&self, cluster: ClusterId) -> &'w str {
         let start = self.clusters.range(cluster).start;
         let end = self
@@ -312,13 +328,12 @@ impl<'w> SpanText<'w> {
         self.source.slice(start..end)
     }
 
-    /// Returns the grapheme's text, as [`grapheme_text`](Self::grapheme_text) gives it,
-    /// and whether it holds a variation selector.
+    /// Returns the grapheme's text, as [`grapheme_text`](Self::grapheme_text)
+    /// gives it, and whether it holds a variation selector.
     ///
     /// `start` and `end` are the cluster's start and end, which the walk has
-    /// read. The analysis flags a selector in the cluster's own characters
-    /// in `end`. A joined later part may start with one, so its text is
-    /// scanned.
+    /// read. `end` flags a selector in the cluster's own characters. A
+    /// joined later part may start with one, so its text is scanned.
     pub(super) fn grapheme(
         &self,
         cluster: ClusterId,
@@ -341,15 +356,14 @@ impl<'w> SpanText<'w> {
     /// that misses or is pending.
     ///
     /// Finds the first candidate that `memo` does not rule out, that accepts
-    /// the presentation and that covers the grapheme. A pending face that wants
-    /// the grapheme goes in `wanted`.
+    /// the presentation and that covers the grapheme. A pending face that
+    /// wants the grapheme goes in `wanted`.
     ///
-    /// A grapheme with a variation sequence wants a candidate that also has the
-    /// sequence, searched over the whole list as far as matching and
-    /// fallback go. Only if none has it does the first that covers the bases
-    /// win, drawing them and hiding the selectors. These are Blink's two
-    /// passes. Such a base-only candidate is not memoized, since it covers
-    /// the cluster.
+    /// A grapheme with a variation sequence wants a candidate that also has
+    /// the sequence, searched over the whole list as far as matching and
+    /// fallback go. If none has it, the first that covers the bases wins,
+    /// drawing them and hiding the selectors. These are Blink's two passes.
+    /// A base-only candidate is not memoized, since it covers the cluster.
     pub(super) fn pick<'l>(
         &self,
         list: &'l CandidateList,
@@ -359,8 +373,8 @@ impl<'w> SpanText<'w> {
         cluster: ClusterId,
         needs: &GraphemeNeeds<'_>,
     ) -> ListOutcome {
-        // The first candidate covering the grapheme without every sequence: the
-        // second pass's answer.
+        // The second pass's answer: the first candidate that covers the
+        // grapheme without every sequence.
         let mut base: Option<CandidateId> = None;
         let tried = if needs.listed_only {
             list.listed_candidates()
@@ -382,8 +396,7 @@ impl<'w> SpanText<'w> {
                     let next = self.next_covered(font, page, cluster);
                     memo.set_growing(at, next, ClusterId::new(0));
                 }
-                // Skipped like a miss until the next grapheme that wants it,
-                // which wants it again.
+                // Skipped like a miss until the next grapheme that wants it.
                 CandidateFit::Pending(font) => {
                     let next = self.next_wanting(font, cluster);
                     memo.set_growing(at, next, ClusterId::new(0));
@@ -391,16 +404,19 @@ impl<'w> SpanText<'w> {
                 CandidateFit::Passed => {}
             }
         }
-        // Every listed family is matched, and no other is tried.
+        // A private-use grapheme tries only the listed families, which are
+        // all matched.
         if tried != usize::MAX {
             return ListOutcome::Exhausted(base);
         }
         second_pass(list, base)
     }
 
-    /// The next cluster of the span after `cluster` that `font` covers, or
-    /// the span's end: until then the font is skipped. Clusters that draw
-    /// nothing are passed over, since they never ask.
+    /// Returns the next cluster of the span after `cluster` that `font`
+    /// covers, or the span's end.
+    ///
+    /// The font is skipped until then. Clusters that draw nothing are passed
+    /// over, since they never ask.
     fn next_covered<'l>(
         &self,
         font: &'l Font,
@@ -416,9 +432,11 @@ impl<'w> SpanText<'w> {
         self.end
     }
 
-    /// The next cluster of the span after `cluster` whose grapheme pending
-    /// `font` wants a character of, or the span's end: until then the font
-    /// is skipped, as it draws nothing and is wanted for nothing new.
+    /// Returns the next cluster of the span after `cluster` whose grapheme
+    /// pending `font` wants a character of, or the span's end.
+    ///
+    /// The font is skipped until then, since it draws nothing and is wanted
+    /// for nothing new.
     fn next_wanting(&self, font: &Font, cluster: ClusterId) -> ClusterId {
         let after = ClusterId::new(cluster.get() + 1);
         for cluster in (after..self.end).ids() {
@@ -429,8 +447,9 @@ impl<'w> SpanText<'w> {
         self.end
     }
 
-    /// Whether `cluster` asks the list for a font: it draws, and is not the
-    /// later part of a grapheme that takes the part before it.
+    /// Returns whether `cluster` asks the list for a font: it draws, and is
+    /// not a later part of a grapheme that takes the font of the part before
+    /// it.
     fn asks(&self, cluster: ClusterId) -> bool {
         !self.graphemes.joins(cluster)
             && self
@@ -442,8 +461,9 @@ impl<'w> SpanText<'w> {
 
 /// Returns the candidate of `list` that draws the most of `chars`.
 ///
-/// Covering the base character ranks first, then the count. `None` where
-/// none draws any of it.
+/// Covering the base character ranks first, then the count of characters
+/// drawn. Unusable and pending candidates are skipped. `None` where none
+/// draws any of it.
 fn best_partial(list: &CandidateList, chars: &str) -> Option<CandidateId> {
     let mut best: Option<(CandidateId, coverage::Score)> = None;
     for (at, candidate) in list.iter() {

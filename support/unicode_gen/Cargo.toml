@@ -6,9 +6,14 @@ license.workspace = true
 publish = false
 description = "Generates winkin's packed Unicode property tables."
 
-# Both are the generator's alone: winkin reads the file this writes and links
-# neither. icu_properties is also winkin's dev-dependency, for the sweep test
-# that checks the file against it.
+# The generator's alone: winkin reads the file this writes, and its runtime
+# reads none of these but icu_locale_core. icu_properties, icu_casemap and
+# icu_normalizer are also winkin's dev-dependencies, for the sweep tests that
+# check the file against them. icu_casemap gives the case mappings, and
+# icu_normalizer the decompositions the Greek uppercasing table is read from.
 [dependencies]
+icu_casemap = { version = "2.3.0", default-features = false, features = ["compiled_data"] }
+icu_locale_core = { version = "2.3.0", default-features = false }
+icu_normalizer = { version = "2.3.0", default-features = false, features = ["compiled_data"] }
 icu_properties = { version = "2.3.0", default-features = false, features = ["compiled_data"] }
 packtab = "1.9.0"

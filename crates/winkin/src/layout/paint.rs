@@ -27,8 +27,9 @@
 //! An initial letter's text has the decorations of its own box and of the
 //! boxes inside it only.
 //!
-//! Each bar provides reference baseline and font metrics, Chrome-compatible
-//! underline helpers, and font underline/strikeout metrics for `from-font`.
+//! Each bar provides its reference baseline and font metrics, underline
+//! helpers that match Chrome, and font underline and strikeout metrics for
+//! `from-font`.
 //! A box's bars use the baseline of its own fragment, where it keeps one, or
 //! else of the innermost retained box around it; block decorations use the
 //! line baseline.
@@ -58,7 +59,7 @@ use crate::work;
 ///
 /// Underlines and overlines paint before the text they decorate, and a line
 /// through it after. [`Line::paints`] asks the host which lines the block
-/// and each box draws.
+/// and each decorating box draw.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub enum Decorates {
     /// No decoration line.
@@ -73,12 +74,12 @@ pub enum Decorates {
 }
 
 impl Decorates {
-    /// Whether it draws a line painted before the text.
+    /// Returns whether it draws a line painted before the text.
     fn before_text(self) -> bool {
         matches!(self, Self::BeforeText | Self::Both)
     }
 
-    /// Whether it draws a line painted after the text.
+    /// Returns whether it draws a line painted after the text.
     fn after_text(self) -> bool {
         matches!(self, Self::AfterText | Self::Both)
     }
@@ -132,17 +133,17 @@ pub enum Paint<'a> {
 #[derive(Copy, Clone)]
 pub struct Background<'a> {
     inline: InlineExtents,
-    /// Its line, whose font gives the extent across it when asked.
+    /// The line, whose font gives the extent across it.
     line: Line<'a>,
 }
 
 impl Background<'_> {
-    /// Returns inline extents relative to line-box left.
+    /// Returns the inline extents, relative to the line box's left edge.
     pub fn inline(&self) -> InlineExtents {
         self.inline
     }
 
-    /// Returns cross-line extents relative to the line-over edge.
+    /// Returns the cross-line extents, relative to the line-over edge.
     pub fn block(&self) -> CrossExtents {
         // The block's content area, in its first-line font on the first
         // line, as Chrome paints the line's root inline box.
@@ -191,8 +192,8 @@ pub struct Decoration {
     descent: f32,
     underline: Option<FontDecorationLine>,
     line_through: Option<FontDecorationLine>,
-    /// The first and one past the last of its line's text items it runs
-    /// under, which [`runs`](Self::runs) reads.
+    /// The text item it lies over, as a one-item range, which
+    /// [`runs`](Self::runs) reads. Empty before the bar is placed over a run.
     first: FragmentItemId,
     end: FragmentItemId,
 }
@@ -241,12 +242,12 @@ impl Decoration {
         self.key
     }
 
-    /// Returns inline extents relative to line-box left.
+    /// Returns the inline extents, relative to the line box's left edge.
     pub fn inline(&self) -> InlineExtents {
         self.inline
     }
 
-    /// Returns the reference baseline offset from line-box top.
+    /// Returns the reference baseline's offset from the line box's top.
     pub fn baseline(&self) -> f32 {
         self.baseline
     }
@@ -254,7 +255,7 @@ impl Decoration {
     /// Returns the computed font size, the basis for decoration thickness
     /// and for lengths in `em`.
     ///
-    /// It is the size before `font-size-adjust` and `@font-face`
+    /// This is the size before `font-size-adjust` and `@font-face`
     /// `size-adjust`, scaled where `text-fit` scales the line.
     pub fn font_size(&self) -> f32 {
         self.size
@@ -270,7 +271,7 @@ impl Decoration {
         self.descent
     }
 
-    /// Returns the Chrome-compatible underline thickness.
+    /// Returns the underline thickness, as Chrome computes it.
     ///
     /// One tenth of the font size, rounded down, with a minimum of one pixel.
     pub fn underline_thickness(&self) -> f32 {
@@ -319,17 +320,14 @@ impl Decoration {
             .map_or_else(|| self.underline_gap(), |line| line.offset)
     }
 
-    /// The thickness in whole pixels, worked in integers because a float
-    /// has no rounding of its own without std.
+    /// Returns the thickness in whole pixels, computed in integers since
+    /// `f32` has no rounding without std.
     fn thickness(&self) -> i32 {
         unit::floor(self.size / 10.0).max(1)
     }
 
-    /// Returns the text runs of `line`, the line it was painted on, that it
-    /// was found over, in visual order.
-    ///
-    /// They are the runs it decorates, and any that take no room among
-    /// them.
+    /// Returns the text run it lies over, on `line`, the line that painted
+    /// it.
     pub(crate) fn runs<'a>(&self, line: Line<'a>) -> DecorationRuns<'a> {
         let items = line
             .layout()
@@ -343,8 +341,7 @@ impl Decoration {
     }
 }
 
-/// The text runs a decoration bar was found over, in visual order: what
-/// [`Decoration::runs`] walks.
+/// The text run under a decoration bar: what [`Decoration::runs`] walks.
 pub(crate) struct DecorationRuns<'a> {
     line: Line<'a>,
     items: Iter<'a, FragmentItem>,
@@ -361,7 +358,7 @@ impl<'a> Iterator for DecorationRuns<'a> {
     }
 }
 
-/// The phase a line's paint is in, with where it has got to.
+/// The phase a line's paint is in, with its position.
 #[derive(Copy, Clone, Debug)]
 enum Phase {
     /// The block's background behind the line.
@@ -407,7 +404,7 @@ pub(super) struct PaintWalk<'a, F> {
 /// The line a paint walks, and what its bars read.
 struct PaintedLine<'a> {
     line: Line<'a>,
-    /// Every item of the layout, of which the walk reads the line's.
+    /// The layout's fragment items.
     items: &'a Table<FragmentItemId, FragmentItem>,
     /// The line's own items.
     own: Range<FragmentItemId>,
@@ -425,7 +422,8 @@ struct PaintedLine<'a> {
 }
 
 impl<'a, F: Fn(NodeKey) -> Decorates> PaintWalk<'a, F> {
-    /// What `line` paints, asking `decorates` which decoration lines each key draws.
+    /// Creates the walk of `line`'s paint, asking `decorates` which
+    /// decoration lines each key draws.
     pub(super) fn new(line: &Line<'a>, decorates: F) -> Self {
         let layout = line.layout();
         let fragments = layout.fragments();
@@ -463,12 +461,11 @@ fn after(at: FragmentItemId) -> FragmentItemId {
     FragmentItemId::new(at.get() + 1)
 }
 
-// The walk is generic, so it is built in the crate that calls it, which
-// inlines only what is marked `#[inline]`: each step it takes is. The walk
-// up a run's boxes asks `decorates` through a `&dyn Fn` and is built once,
-// here.
+// The walk is generic, so it is instantiated in the calling crate, which
+// inlines only `#[inline]` functions; every step is marked so. The walk up a
+// run's boxes takes `decorates` as a `&dyn Fn`, so it is compiled once, here.
 impl<'a> PaintedLine<'a> {
-    /// Whether `item` is a leaf that is painted, and not what hangs.
+    /// Returns whether `item` is a painted leaf that does not hang.
     #[inline]
     fn content(item: &FragmentItem) -> bool {
         matches!(
@@ -478,7 +475,7 @@ impl<'a> PaintedLine<'a> {
             && !item.flags.contains(FragmentItemFlags::HANGS)
     }
 
-    /// Item `at` where it is one of the line's own.
+    /// Returns item `at` where it is one of the line's own.
     #[inline]
     fn line_item(&self, at: FragmentItemId) -> Option<&'a FragmentItem> {
         if self.own.contains(&at) {
@@ -488,7 +485,8 @@ impl<'a> PaintedLine<'a> {
         }
     }
 
-    /// The background: the extent of the line's content, where it has any.
+    /// Returns the background over the extent of the line's content, or
+    /// `None` where it has none.
     #[inline]
     fn background(&self) -> Option<Background<'a>> {
         let mut extent: Option<(InlineLayoutUnit, InlineLayoutUnit)> = None;
@@ -509,8 +507,8 @@ impl<'a> PaintedLine<'a> {
         })
     }
 
-    /// The next of the line's items from `at`, moving `at` past it: a paint,
-    /// or `Err` with a text run, whose bars go around it.
+    /// Returns the line's next item from `at`, moving `at` past it: a paint,
+    /// or `Err` with a text run, which its bars surround.
     #[inline]
     fn next_item(&self, at: &mut FragmentItemId) -> Option<Result<Paint<'a>, FragmentItemId>> {
         while let Some(item) = self.line_item(*at) {
@@ -537,9 +535,9 @@ impl<'a> PaintedLine<'a> {
         None
     }
 
-    /// The next bar over text run `run` past the bar of `last`, painted after
-    /// the text where `after_text` and before it otherwise, moving `last` to
-    /// it.
+    /// Returns the next bar over text run `run` after the bar of `last`, and
+    /// moves `last` to it; bars painted after the text where `after_text`,
+    /// else before it.
     ///
     /// Its bars are the block's, then those of each box around it that
     /// `decorates` says draws one, outermost first. Text that hangs has none,
@@ -625,8 +623,8 @@ impl<'a> PaintedLine<'a> {
         found
     }
 
-    /// The bar of `node`'s decoration over text run `run`, `item`, made from
-    /// the one `held` keeps for `node` where it keeps one.
+    /// Returns the bar of `node`'s decoration over text run `run`, `item`,
+    /// reusing the bar `held` keeps for `node`.
     #[inline]
     fn bar(
         &self,
@@ -656,8 +654,8 @@ impl<'a> PaintedLine<'a> {
         }
     }
 
-    /// The bar of `node`'s decoration, with its box's font, on its baseline,
-    /// over no run yet.
+    /// Returns the bar of `node`'s decoration, with its box's font, on its
+    /// baseline, over no run yet.
     ///
     /// The block's baseline is the line's. A box's is that of the innermost
     /// box part on the line around it, its own where it keeps one.
@@ -725,9 +723,11 @@ impl<'a> PaintedLine<'a> {
         }
     }
 
-    /// The next of the line's annotations' boxes, runs of text or atomic
-    /// inlines from `at`, moving `at` past it: each annotation's boxes
-    /// first, outermost first, then its runs and atomic inlines.
+    /// Returns the next box, text run or atomic inline of the line's
+    /// annotations from `at`, moving `at` past it.
+    ///
+    /// Each annotation yields its boxes first, outermost first, then its runs
+    /// and atomic inlines.
     #[inline]
     fn next_annotation(&self, at: &mut FragmentItemId) -> Option<Paint<'a>> {
         while self.annotations.contains(at)

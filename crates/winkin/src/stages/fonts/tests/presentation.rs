@@ -1,13 +1,18 @@
-//! Emoji presentation tests: color or text fonts by variation selector,
-//! then by `font-variant-emoji`.
+//! Emoji presentation tests:
+//! - color or text fonts by variation selector, then by
+//!   `font-variant-emoji`;
+//! - each cluster's presentation from its class, selectors and the property;
+//! - every emoji character is asked its presentation.
 
 use super::*;
 
-/// A text-presentation pictograph takes the first font that has it, color
-/// or not; a variation selector 16 or `font-variant-emoji: emoji` asks for a
-/// color font; an emoji takes one where the text font has none; and a
-/// variation selector 15 asks for a text font, falling back to the color
-/// one where there is no other.
+/// Presentation chooses between color and text fonts:
+/// - a text-presentation pictograph takes the first font that has it,
+///   color or not;
+/// - VS16 or `font-variant-emoji: emoji` asks for a color font;
+/// - an emoji the text font lacks takes the color font;
+/// - VS15 asks for a text font, and falls back to the color font where no
+///   other has the character.
 #[test]
 fn emoji_presentation_chooses_between_color_and_text() {
     let mut fixture = fixture_with(&[symbols(), emoji()]);
@@ -41,11 +46,11 @@ fn emoji_presentation_chooses_between_color_and_text() {
     assert_eq!(fixture.families(&layout), ["Test Emoji", "Test Symbols"]);
 }
 
-/// Each cluster's presentation, from its class and its selectors, then
-/// `font-variant-emoji`, which forces a form on an emoji character (Emoji=Yes)
-/// as Chrome's glyph callback does, and only prefers one for a pictograph
-/// that is no emoji, as Chrome's fallback priority does. A keycap base is asked, as
-/// Chrome asks it (e9, e11).
+/// Each cluster's presentation comes from its class and its selectors, then
+/// `font-variant-emoji`. The property forces a form on an emoji character
+/// (Emoji=Yes), as Chrome's glyph callback does. It only prefers a form for
+/// a pictograph that is no emoji, as Chrome's fallback priority does. A
+/// keycap base is asked its presentation, as Chrome asks it (e9, e11).
 #[test]
 fn presentation_follows_selectors_then_the_property() {
     use ClusterClass::{Emoji, Symbol, Text};
@@ -62,12 +67,12 @@ fn presentation_follows_selectors_then_the_property() {
         (Symbol, "\u{2665}\u{FE0E}", AsEmoji, P::TextOnly),
         (Text, "a", AsEmoji, P::Text),
         // `unicode` forces the form Emoji_Presentation says, as Chrome's
-        // `kUseUnicodeDefaultPresentation` does, and CSS: 😀 is emoji and ♥
-        // text, a font of the other colour refused.
+        // `kUseUnicodeDefaultPresentation` and CSS do: 😀 is emoji and ♥
+        // text, and a font of the other colour is refused.
         (Emoji, "\u{1F600}", Unicode, P::EmojiOnly),
         (Symbol, "\u{2665}", Unicode, P::TextOnly),
         // The keycap bases: `#` with VS16 asks for emoji, `*` with VS15 for
-        // text, a digit takes the property, and alone is text.
+        // text, and a digit takes the property, or is text without one.
         (Text, "#\u{FE0F}", Normal, P::EmojiOnly),
         (Text, "*\u{FE0E}", AsEmoji, P::TextOnly),
         (Text, "0", AsEmoji, P::EmojiOnly),
@@ -80,7 +85,7 @@ fn presentation_follows_selectors_then_the_property() {
         (Text, "2\u{20E3}", Unicode, P::TextOnly),
         (Text, "3\u{20E3}", AsEmoji, P::EmojiOnly),
         (Text, "5\u{FE0E}\u{20E3}", AsEmoji, P::TextOnly),
-        // ★ is a pictograph and no emoji: the property prefers a form and
+        // ★ is a pictograph and no emoji. The property prefers a form and
         // forces none, and `unicode` leaves it as `normal` does.
         (Symbol, "\u{2605}", AsEmoji, P::Emoji),
         (Symbol, "\u{2605}", AsText, P::Text),
@@ -95,11 +100,11 @@ fn presentation_follows_selectors_then_the_property() {
     }
 }
 
-/// Every emoji character (Emoji=Yes) starts a cluster presentation is asked
-/// of: an emoji or a pictograph's, which the analysis classes by
-/// Emoji_Presentation and Extended_Pictographic, or a keycap base's, which
-/// it classes as text and presentation asks after; so asking of those three
-/// misses none Chrome's glyph callback asks of.
+/// Every emoji character (Emoji=Yes) starts a cluster that is asked its
+/// presentation. It is an emoji or a pictograph, which the analysis classes
+/// by Emoji_Presentation and Extended_Pictographic, or one of the 12 keycap
+/// bases, which it classes as text and presentation tests separately. So
+/// no character Chrome's glyph callback asks about is missed.
 #[test]
 fn every_emoji_character_is_asked_its_presentation() {
     let mut keycaps = 0;

@@ -1,37 +1,26 @@
-//! The first paragraph as its first line draws it, where a first-line
-//! transform differs from a node's own.
+//! The first paragraph's text as the first line draws it, when
+//! `::first-line` gives some node a different `text-transform`.
 //!
-//! The content's text holds each node's own transform, which every line but
-//! the first shows and every stage reads. Where the block's `::first-line`
-//! gives a node another transform, the first line draws other characters.
-//! `FirstLineSource` holds them: the first paragraph's text with each such
-//! node's text transformed as its first-line style says. It also holds a
-//! map from the content's offsets to its own. The first-line measurements
-//! use the map to read each cluster's characters by its content offsets.
+//! The content's text holds each node's own transform. [`FirstLineSource`]
+//! holds the first paragraph with first-line transforms applied, and a map
+//! from content offsets to its own, so first-line font selection, shaping
+//! and measurement read a cluster's characters by content offsets.
 //!
-//! The writer keeps it in step with the text as it writes. From the first
-//! text a first-line transform changes, it writes everything here too: the
-//! same text where no transform differs, and the first line's transform of
-//! the caller's text where one does. It also makes the same edits
-//! collapsing makes: a space written where its run began, and the block's
-//! leading and trailing trim. It stops where the first paragraph ends, since
-//! no first line reaches past it. A document whose first line transforms
-//! nothing its own way keeps nothing here.
+//! The writer starts it at the first text whose first-line transform
+//! differs, copying the text so far, and from then on mirrors every write
+//! and every collapsing edit (a space inserted where its run began, the
+//! block's leading and trailing trim). It stops at the end of the first
+//! paragraph. It stays empty when no first-line transform differs.
 //!
-//! **The map** is a list of entries ([`MapEntry`]), sorted by content offset,
-//! each running to the next. Before the first entry the two texts are the
-//! same.
-//! - In an aligned entry the two texts match byte for byte. They do
-//!   wherever the transforms agree, or change a character for one of the
-//!   same length.
-//! - An entry that is not aligned is one of the caller's characters that
-//!   the two transforms made differently long (`ß` in capitals is `SS` in
-//!   the text and itself on the first line). It maps as a whole: an offset
-//!   inside it goes to its end. So the first cluster it holds draws all of
-//!   it and the rest draw nothing, as a ligature's continuations do.
-//! - Where the two transforms do not map the caller's characters one for
-//!   one, as a Greek accent dropped in context can, the whole run of text
-//!   is one entry that is not aligned.
+//! **The map** is a list of [`MapEntry`] sorted by content offset, each
+//! running to the next. Before the first entry the texts are identical.
+//! - An aligned entry matches byte for byte.
+//! - An unaligned entry is a source character the two transforms made of
+//!   different lengths (`ß` is `SS` in capitals). It maps as a whole: an
+//!   offset inside it maps to its end, so its first cluster draws all of it,
+//!   as a ligature does.
+//! - When the transforms don't map characters one for one (a Greek accent
+//!   dropped in context), the whole run is one unaligned entry.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -42,16 +31,15 @@ use super::transform::{Transforms, align_counts};
 use crate::data::{TextOffset, heap_bytes};
 use crate::work;
 
-/// The first paragraph as its first line draws it, where some node's
-/// `::first-line` transform differs from its own.
+/// The first paragraph's text with first-line transforms applied.
 ///
-/// The first-line variant selects fonts for this text and shapes it. It is
-/// empty unless the first line transforms some text its own way.
+/// It lives in the content's boxed extras and is empty unless some
+/// first-line transform differs.
 #[derive(Default)]
 pub(super) struct FirstLineSource {
     /// The text, from the content's start through its first paragraph.
     pub(super) text: String,
-    /// Where the content's offsets are in `text`, one entry a piece, sorted.
+    /// Entries mapping content offsets into `text`, sorted.
     pub(super) map: Vec<MapEntry>,
 }
 
@@ -59,11 +47,8 @@ heap_bytes! {
     FirstLineSource { text, map }
 }
 
-/// One entry of [`FirstLineSource`]'s map, for a piece of text. 12 bytes.
-///
-/// It records where the piece starts in the content's text and in the first
-/// line's. It also records whether the two match byte for byte through it,
-/// or map only as wholes.
+/// One map entry: where a piece starts in the content's text and in the
+/// first line's, and whether the two match byte for byte. 12 bytes.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub(super) struct MapEntry {
     content: TextOffset,
@@ -71,11 +56,11 @@ pub(super) struct MapEntry {
     aligned: bool,
 }
 
-/// How many entries a cursor steps back one at a time before it halves.
+/// How many entries a cursor steps back before it binary searches.
 const BACK_STEPS: usize = 8;
 
 impl FirstLineSource {
-    /// No text, allocating nothing.
+    /// Creates an empty source, allocating nothing.
     pub(super) const fn new() -> Self {
         Self {
             text: String::new(),
@@ -83,7 +68,7 @@ impl FirstLineSource {
         }
     }
 
-    /// Empties it for a new build, keeping the allocations.
+    /// Empties it, keeping the allocations.
     pub(super) fn clear(&mut self) {
         self.text.clear();
         self.map.clear();
@@ -91,14 +76,11 @@ impl FirstLineSource {
 
     /// Maps content offset `at` into the first line's text.
     ///
-    /// In an aligned entry it keeps its distance from the entry's start. In
-    /// an entry that is not aligned, its start maps to the entry's start
-    /// and an offset inside maps to its end. An offset past what the text
-    /// reaches maps to the text's end, since no first line reaches past the
-    /// first paragraph.
-    ///
-    /// An offset before the first entry or from the last on maps at once.
-    /// Any other is found by halving.
+    /// In an aligned entry the offset keeps its distance from the entry's
+    /// start. In an unaligned entry the start maps to the start and any
+    /// offset inside to the end. Offsets past the text clamp to its end.
+    /// Offsets before the first entry or in the last map directly; others
+    /// are binary searched.
     pub(super) fn offset(&self, at: TextOffset) -> TextOffset {
         let count = self.edge_count(at).unwrap_or_else(|| {
             work::seek();
@@ -107,20 +89,20 @@ impl FirstLineSource {
         self.mapped(at, count)
     }
 
-    /// Maps content offset `at` as [`offset`](Self::offset) does, moving
-    /// `after` to it.
+    /// Maps content offset `at` as [`offset`](Self::offset) does, using
+    /// `after` as a cursor.
     ///
-    /// `after` counts the entries that start at or before the offset asked
-    /// last. It steps an entry at a time to `at`, so offsets asked in order
-    /// search nothing. Back past a few entries it halves. An offset before
-    /// the first entry or from the last on maps at once and leaves `after`.
+    /// `after` counts the entries starting at or before the last offset
+    /// asked. It steps toward `at`, so offsets asked in order cost no search.
+    /// Stepping back more than [`BACK_STEPS`] binary searches. Offsets before
+    /// the first entry or in the last leave `after` unchanged.
     pub(super) fn offset_stepped(&self, at: TextOffset, after: &Cell<usize>) -> TextOffset {
         if let Some(count) = self.edge_count(at) {
             return self.mapped(at, count);
         }
         let map = &self.map;
-        // Whether the first `count` entries start at or before `at`, and
-        // whether the rest start after it.
+        // `count` is right when entries before it start at or before `at`
+        // and the rest start after it.
         let through = |count: usize| {
             count
                 .checked_sub(1)
@@ -146,8 +128,8 @@ impl FirstLineSource {
         self.mapped(at, count)
     }
 
-    /// How many entries start at or before content offset `at`, where it is
-    /// before the first entry or from the last on: `None` between.
+    /// Returns how many entries start at or before `at` when `at` is before
+    /// the first entry or in the last; `None` otherwise.
     fn edge_count(&self, at: TextOffset) -> Option<usize> {
         if self.map.first().is_none_or(|first| first.content > at) {
             Some(0)
@@ -158,7 +140,8 @@ impl FirstLineSource {
         }
     }
 
-    /// Maps content offset `at`, which `after` entries start at or before.
+    /// Maps content offset `at`, given that `after` entries start at or
+    /// before it.
     fn mapped(&self, at: TextOffset, after: usize) -> TextOffset {
         let here = match after.checked_sub(1).and_then(|last| self.map.get(last)) {
             None => at.get(),
@@ -180,27 +163,26 @@ impl FirstLineSource {
         self.text.get(start.get()..end.get()).unwrap_or_default()
     }
 
-    /// Starts keeping the first line's text, from a copy of the content's
-    /// text so far, `text`.
+    /// Starts the source with `text`, the content's text so far.
     pub(super) fn start(&mut self, text: &str) {
         self.clear();
         self.text.push_str(text);
     }
 
-    /// Whether it holds anything.
+    /// Whether it holds no text.
     pub(super) fn is_empty(&self) -> bool {
         self.text.is_empty()
     }
 
-    /// Appends `text`, which the content's text took at `at` and the first
-    /// line draws the same.
+    /// Appends `text`, written to the content at `at` and identical on the
+    /// first line.
     pub(super) fn push_same(&mut self, at: TextOffset, text: &str) {
         self.align_here(at, true);
         self.text.push_str(text);
     }
 
-    /// Opens an entry at content offset `at` and this text's end, aligned or
-    /// not, unless an aligned one already runs on there.
+    /// Opens an entry at content offset `at` and the current text end,
+    /// unless it is aligned and the open entry is too.
     fn align_here(&mut self, at: TextOffset, aligned: bool) {
         let open_aligned = self.map.last().is_none_or(|last| last.aligned);
         if aligned && open_aligned {
@@ -213,13 +195,11 @@ impl FirstLineSource {
         });
     }
 
-    /// Appends the caller's `src` as the first line draws it.
+    /// Appends source text `src` with the first-line transform applied.
     ///
-    /// The content's text took `written` for `src` at `at`. This appends
-    /// `src` as `transforms` has the first line transform it, and aligns it
-    /// with `written` a caller's character at a time. `before` is the
-    /// caller's character before `src`, and `scratch` is where capitalize
-    /// joins the two.
+    /// The content wrote `written` for `src` at `at`; the two are aligned
+    /// one source character at a time. `before` is the source character
+    /// before `src`, for capitalize; `scratch` is segmenter scratch.
     pub(super) fn push_transformed(
         &mut self,
         at: TextOffset,
@@ -239,13 +219,12 @@ impl FirstLineSource {
         });
     }
 
-    /// Aligns `content`, which the content's text took at `at`, with what
-    /// this text took from `from` to its end.
+    /// Maps `content`, written to the content at `at`, onto this text from
+    /// `from` to its end.
     ///
-    /// The two transforms made both of one run of the caller's text.
-    /// `counts` gives, for each of the caller's characters in order, how
-    /// many characters each made of it. Where those do not add up to what
-    /// was written, the whole run becomes one entry that is not aligned.
+    /// Both come from one source run; `counts` gives each source
+    /// character's output length in each. If the counts don't add up, the
+    /// whole run becomes one unaligned entry.
     fn align(
         &mut self,
         at: TextOffset,
@@ -278,11 +257,8 @@ impl FirstLineSource {
         }
     }
 
-    /// Inserts the space the content's text took at `at`, where a run of
-    /// white space began.
-    ///
-    /// The same space goes where `at` maps here, and every entry after it
-    /// moves along by one.
+    /// Inserts the collapsed space the content inserted at `at`, shifting
+    /// later entries by one byte.
     pub(super) fn insert_space(&mut self, at: TextOffset) {
         let here = self.offset(at).get();
         if here > self.text.len() || !self.text.is_char_boundary(here) {
@@ -299,8 +275,8 @@ impl FirstLineSource {
         }
     }
 
-    /// Drops what the content's first `cut` bytes map to here, for the
-    /// block's leading trim.
+    /// Drops what the content's first `cut` bytes map to, for the block's
+    /// leading trim.
     pub(super) fn drain_front(&mut self, cut: TextOffset) {
         let here = self.offset(cut).get().min(self.text.len());
         if !self.text.is_char_boundary(here) {
@@ -315,8 +291,7 @@ impl FirstLineSource {
         }
     }
 
-    /// Cuts this text where content offset `cut` maps, for the block's
-    /// trailing trim.
+    /// Truncates at content offset `cut`, for the block's trailing trim.
     pub(super) fn truncate(&mut self, cut: TextOffset) {
         let here = self.offset(cut).get();
         if here < self.text.len() && self.text.is_char_boundary(here) {

@@ -1,21 +1,18 @@
-//! Tables' ids by the hash of what each names.
+//! Ids found by the hash of their records.
 
 use hashbrown::HashTable;
 
 use super::{HeapBytes, Id, index_to_u32, u32_to_index};
 
-/// A table's ids by the hash of what each names.
+/// Ids found by the hash of their records.
 ///
-/// An interning table or a cache keeps one beside its records, to find a
-/// record by its content. Every such index is one of these, whatever its id.
-/// It holds ids as plain `u32`s, so hashbrown's table compiles once for all
-/// id types. That table is a kilobyte or more of code for each type it
-/// holds.
+/// Interning tables and caches keep one beside their records to find a
+/// record by content. It stores ids as plain `u32`s, so hashbrown's table,
+/// a kilobyte or more of code per type, compiles once for every id type.
 ///
-/// An id goes in and comes out typed, each call naming its type. So one
-/// index may hold several tables' ids, as the layout's interning tables
-/// share one. A find's `same` compares in its own table, so it passes over
-/// another table's entry that hashes alike.
+/// Each call names its id type, so one index may hold several tables' ids.
+/// A find's `same` compares within its own table and passes over another
+/// table's entry with the same hash.
 pub(crate) struct HashIndex {
     entries: HashTable<(u64, u32)>,
 }
@@ -33,9 +30,9 @@ impl HashIndex {
         self.entries.clear();
     }
 
-    /// The id noted under `hash` that `same` accepts, if there is one.
+    /// The id noted under `hash` that `same` accepts, or `None`.
     ///
-    /// Skips an entry that no `I` can name, which belongs to another table.
+    /// Skips entries no `I` can name; they belong to another table.
     #[inline]
     pub(crate) fn find<I: Id>(&self, hash: u64, mut same: impl FnMut(I) -> bool) -> Option<I> {
         self.entries
@@ -51,7 +48,7 @@ impl HashIndex {
             .insert_unique(hash, (hash, index_to_u32(id.get())), noted_hash);
     }
 
-    /// Forgets `id`, noted under `hash`, where it is noted.
+    /// Forgets `id`, noted under `hash`, if it is there.
     pub(crate) fn remove<I: Id>(&mut self, hash: u64, id: I) {
         let packed = index_to_u32(id.get());
         if let Ok(entry) = self
@@ -63,8 +60,8 @@ impl HashIndex {
     }
 }
 
-/// The hash an entry of a [`HashIndex`] was noted under: one function for
-/// every index, so that growing one is compiled once.
+/// The hash an entry of a [`HashIndex`] was noted under. One function serves
+/// every index, so growing compiles once.
 fn noted_hash(entry: &(u64, u32)) -> u64 {
     entry.0
 }

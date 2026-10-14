@@ -1,17 +1,15 @@
-//! The extent: how far something reaches over and under a baseline.
+//! [`Extent`]: how far something reaches over and under a baseline.
 
 use crate::stages::content::Atomic;
 use crate::stages::fonts::LineBaseline;
 use crate::style::WritingMode;
 use crate::unit::LayoutUnit;
 
-/// A pair of distances either side of a baseline, on layout's grid: 8 bytes.
+/// A pair of distances either side of a baseline, in 26.6 `LayoutUnit`s.
 ///
-/// The ascent is how far it reaches over the baseline, and the descent how
-/// far under. Each is positive away from the baseline. Either may be
-/// negative: that is how a line height under a font's own makes lines
-/// overlap rather than clip. A line box's extent is the union of the strut
-/// and the extents of what is on it.
+/// The ascent reaches over the baseline and the descent under, each positive
+/// away from it. Either may be negative, so a small line height makes lines
+/// overlap rather than clip.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct Extent {
     ascent: LayoutUnit,
@@ -19,12 +17,11 @@ pub(crate) struct Extent {
 }
 
 impl Extent {
-    /// What takes no room across the line: a closing edge, a float's anchor,
-    /// an item out of the line's flow.
+    /// The extent of what takes no room across the line: a closing edge, a
+    /// float's anchor, an item out of the line's flow.
     ///
-    /// Both sides are the grid's least, as in Chrome's `FontHeight::Empty()`.
-    /// So it is the identity of [`unite`](Self::unite). Something that holds
-    /// nothing doesn't floor a line of negative leading at zero.
+    /// Both sides are `LayoutUnit::MIN`, as in Chrome's `FontHeight::Empty()`,
+    /// so it is the identity of [`unite`](Self::unite).
     pub(crate) const NONE: Self = Self {
         ascent: LayoutUnit::MIN,
         descent: LayoutUnit::MIN,
@@ -40,29 +37,22 @@ impl Extent {
     /// of `writing_mode` whose lines are set on `baseline`.
     ///
     /// This follows Blink's `BaselineMetrics`:
-    /// - An atomic inline with a baseline of its own sits on it.
-    /// - One without sits its margin box's under edge on the line's
-    ///   baseline, as a replaced element does.
-    /// - In a centred vertical line, one without is centred instead, with
-    ///   the odd 1/64 over (`SynthesizeMetrics`, `size - size / 2` over).
+    /// - An atomic inline with its own baseline sits on it.
+    /// - One without sits its margin box's under edge on the line's baseline,
+    ///   or on a `central` baseline is centred, the odd 1/64 over
+    ///   (`SynthesizeMetrics`).
     ///
-    /// Its baseline is measured down from its block-start edge. Where lines
-    /// flip, in `vertical-lr` only, that edge is the under side: the left,
-    /// with the lines' over side on the right. There the baseline is that
-    /// far over the under edge, as Blink's `IsFlippedLines` turns it. In
-    /// `sideways-lr` the left is the over side, and the baseline is that far
-    /// under it (Chrome 153).
-    ///
-    /// It lives here, not in the content, because the content stage doesn't
-    /// name extents.
+    /// An atomic's baseline is measured down from its block-start edge. In
+    /// `vertical-lr`, where lines flip, that edge is the under side, so the
+    /// baseline is measured up from it (Blink's `IsFlippedLines`). In
+    /// `sideways-lr` it is the over side (Chrome 153).
     pub(crate) fn from_atomic(
         atomic: &Atomic,
         writing_mode: WritingMode,
         baseline: LineBaseline,
     ) -> Self {
-        // Chrome truncates the margins and the size onto the grid. The row
-        // holds the margins already. The baseline is a position in the
-        // host's layout, not a given length, so it rounds to the nearest.
+        // Chrome truncates the margins (already so in the row) and the size.
+        // The baseline is a position in the host's layout, so it rounds.
         let (over, under) = atomic.margins_across;
         let size = atomic.size;
         let block = LayoutUnit::from_px_truncated(size.block);
@@ -96,8 +86,7 @@ impl Extent {
         self.descent
     }
 
-    /// Returns the farther of the two on each side, which is how a line box
-    /// grows.
+    /// Returns the farther of the two on each side, as a line box grows.
     pub(crate) fn unite(self, other: Self) -> Self {
         Self {
             ascent: self.ascent.max(other.ascent),
@@ -112,9 +101,8 @@ impl Extent {
 
     /// Returns the extent with its baseline raised by `up`.
     ///
-    /// A negative `up` lowers it. The ascent shrinks by `up` and the descent
-    /// grows by it, as Blink's `FontHeight::Move` moves by the opposite.
-    /// [`NONE`](Self::NONE) stays `NONE`.
+    /// The ascent grows by `up` and the descent shrinks by it, as Blink's
+    /// `FontHeight::Move` by `-up`. [`NONE`](Self::NONE) stays `NONE`.
     pub(crate) fn raised(self, up: LayoutUnit) -> Self {
         if self.is_none() {
             return self;
@@ -125,9 +113,7 @@ impl Extent {
         }
     }
 
-    /// Returns how far it reaches from edge to edge: ascent plus descent.
-    ///
-    /// [`NONE`](Self::NONE) has zero height.
+    /// Returns the ascent plus the descent; zero for [`NONE`](Self::NONE).
     pub(crate) fn height(self) -> LayoutUnit {
         if self.is_none() {
             LayoutUnit::ZERO
@@ -139,9 +125,8 @@ impl Extent {
     /// Returns the extent, or zero on both sides where it is
     /// [`NONE`](Self::NONE).
     ///
-    /// Blink takes an empty `FontHeight` as zero before it aligns one, and
-    /// Chrome does the same for an empty annotation line. A line box of
-    /// `NONE` then reaches nowhere from its baseline.
+    /// Blink zeroes an empty `FontHeight` before aligning it, and Chrome
+    /// does the same for an empty annotation line.
     #[inline]
     pub(crate) fn zero_if_none(self) -> Self {
         if self.is_none() {
@@ -151,20 +136,15 @@ impl Extent {
         }
     }
 
-    /// Returns how tall a line box of this extent is: its
+    /// Returns the height of a line box of this extent:
     /// [`height`](Self::height), never negative.
-    ///
-    /// A line box of negative leading, or one that holds nothing, takes no
-    /// room across the block.
     #[inline]
     pub(crate) fn box_height(self) -> LayoutUnit {
         self.height().max(LayoutUnit::ZERO)
     }
 
-    /// Returns its top and bottom across the block, around a baseline at
-    /// `baseline`.
-    ///
-    /// Both are at the baseline for [`NONE`](Self::NONE).
+    /// Returns its top and bottom around the baseline position `baseline`;
+    /// both at `baseline` for [`NONE`](Self::NONE).
     #[inline]
     pub(crate) fn around(self, baseline: LayoutUnit) -> (LayoutUnit, LayoutUnit) {
         let extent = self.zero_if_none();

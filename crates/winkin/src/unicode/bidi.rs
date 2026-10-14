@@ -1,21 +1,17 @@
 //! The Unicode bidirectional algorithm's classes, and its reordering of a
 //! line (UAX #9, rule L2).
 //!
-//! [`BidiClass`] is the class the tables give each character, in ICU4C's
-//! numbering. Analysis resolves a paragraph's levels from these classes
-//! (`stages::analysis`), and line layout puts a line's pieces in visual
-//! order with [`reorder_bidi`].
+//! [`BidiClass`] is each character's class from the tables. Analysis
+//! resolves a paragraph's levels from these classes, and line layout puts a
+//! line's pieces in visual order with [`reorder_bidi`].
 
 // --------------------------------------------------------------------------
-// The types a caller deals in
+// Classes
 // --------------------------------------------------------------------------
 
-/// Bidirectional class value using ICU's numeric `UCharDirection` representation.
+/// A Bidi_Class in ICU4C's `UCharDirection` numbering.
 ///
-/// The numeric values used here match ICU4C's bidi class constants so custom
-/// Unicode engines can pass through ICU-derived data without remapping.
-/// See <https://unicode-org.github.io/icu-docs/apidoc/dev/icu4c/ubidi_8h.html>
-/// and the `UCharDirection` enum definition for the source values.
+/// The core word stores the same numbers, so a lookup needs no conversion.
 #[derive(Copy, Clone, Default, Eq, PartialEq, Debug)]
 #[repr(transparent)]
 pub(crate) struct BidiClass(pub(crate) u8);
@@ -69,20 +65,19 @@ impl BidiClass {
     pub(crate) const POP_DIRECTIONAL_ISOLATE: Self = Self(22);
 }
 
-/// Returns the class a cluster resolves as, given its first character's
-/// class `first` and the others' classes `rest`.
+/// Returns the class a cluster resolves as, from its first character's
+/// class `first` and the other characters' classes `rest`.
 ///
-/// This is `first`, except that whitespace or a separator carrying anything
-/// X9 does not remove is an other neutral. An example is a space or a plus
-/// sign with a combining mark.
+/// This is `first`, except that white space or a separator followed by a
+/// character X9 keeps, such as a space or plus sign with a combining mark,
+/// is ON.
 ///
-/// Per character, the mark takes the type before it (W1). A space and its
-/// mark are then one neutral, of which rule L1 resets only the space,
-/// stopping at the mark. A separator and its mark are two separators, which
-/// W4 does not join two numbers across and W6 makes neutral. ON resolves as
-/// the pair does both ways and is never reset. So the per-cluster answer
-/// matches the per-character one over every string of both conformance
-/// files (`stages/analysis/tests/bidi_conformance.rs`).
+/// Per character, the mark takes the class before it (W1). A space and its
+/// mark are one neutral, of which L1 resets only the space. A separator and
+/// its mark are two separators, which W4 does not join numbers across and W6
+/// makes neutral. ON resolves as the pair does in both cases and is never
+/// reset, so the per-cluster answer matches the per-character one over both
+/// conformance files (`stages/analysis/tests/bidi_conformance.rs`).
 pub(crate) fn cluster_bidi_class(
     first: BidiClass,
     mut rest: impl Iterator<Item = BidiClass>,
@@ -106,13 +101,12 @@ impl BidiClass {
         self.mask() & REMOVED_BY_X9_MASK != 0
     }
 
-    /// The class as a single bit, for testing membership of a set of classes.
+    /// Returns the class as a single bit, for testing membership of a set of
+    /// classes.
     ///
-    /// Saturating the shift keeps this total, and branchless, without letting
-    /// an undefined value masquerade as a defined one: every class the
-    /// algorithm defines is well under 31, so anything from 31 up lands on the
-    /// top bit, which no class has. Wrapping the shift instead would alias
-    /// 200 onto class 8.
+    /// Every defined class is under 31, so the shift saturates: any value
+    /// from 31 up maps to the top bit, which no class has. A wrapping shift
+    /// would alias 200 onto class 8.
     pub(crate) const fn mask(self) -> u32 {
         1u32 << if self.0 < 31 { self.0 as u32 } else { 31 }
     }
@@ -131,16 +125,14 @@ pub(crate) const OVERRIDE_MASK: u32 = BidiClass::RIGHT_TO_LEFT_EMBEDDING.mask()
 /// A paired bracket, as rule N0 needs it.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub(crate) struct BidiBracket {
-    /// Position of the bracket in the paragraph.
+    /// The bracket's position in the paragraph's units.
     ///
-    /// The class at this position must be [`BidiClass::OTHER_NEUTRAL`], which
-    /// is what every character with a Bidi_Paired_Bracket_Type carries.
+    /// The class there must be [`BidiClass::OTHER_NEUTRAL`], as it is for
+    /// every character with a Bidi_Paired_Bracket_Type.
     pub(crate) index: u32,
-    /// The closing character of the pair.
+    /// The closing character of the pair, for either end.
     ///
-    /// For an opening bracket this is the character it pairs with; for a
-    /// closing bracket it is the character itself. N0 matches openers to
-    /// closers on this value alone, so both ends of a pair carry the same one.
+    /// N0 matches openers to closers on this value alone.
     pub(crate) closing: char,
     /// Whether this is the opening bracket of the pair.
     pub(crate) is_open: bool,
@@ -150,24 +142,16 @@ pub(crate) struct BidiBracket {
 // Reordering a line: L2
 // --------------------------------------------------------------------------
 
-// Line layout calls `reorder_bidi` once per line, for its pieces and for its
-// annotations' pieces, after breaking has said where lines end.
-
-/// Computes a visual ordering from embedding levels, applying rule L2.
+/// Computes a visual order from embedding levels by rule L2.
 ///
-/// `order` receives a permutation of `0..order.len()`: reading it left to
-/// right gives the visual order of the items, each entry being the logical
-/// position of the item that goes there. Its length decides how many items
-/// there are, and `levels(i)` supplies the level of item `i`.
+/// `order` receives a permutation of `0..order.len()`: entry `v` is the
+/// logical index of the item at visual position `v`, left to right.
+/// `levels(i)` returns the level of item `i`.
 ///
-/// The level is taken through a closure rather than a slice so that this can
-/// order anything carrying a level, such as a run, a grapheme cluster or a
-/// character, without laying it out as a `&[u8]` first. L2 walks the items
-/// once per level between the lowest odd level and the highest, so `levels`
-/// is called many times and should be a cheap lookup.
-///
-/// The entries are `u32`. Nothing reordered here comes in counts that will not
-/// hold, and a caller keeping the answer keeps half as much of it.
+/// The closure lets this order anything with a level without building a
+/// `&[u8]`. L2 walks the items once per level from the lowest odd level to
+/// the highest, so `levels` should be cheap. Entries are `u32` to halve what
+/// a kept order costs.
 pub(crate) fn reorder_bidi<F>(order: &mut [u32], levels: F)
 where
     F: Fn(usize) -> u8,

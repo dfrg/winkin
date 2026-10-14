@@ -1,33 +1,28 @@
 //! Line-break opportunities in Latin-1 text from a pair table, which the
-//! line stream reads before it asks ICU.
+//! line stream tries before ICU.
 //!
-//! The stream's opportunities are ICU's, and this table finds most of them
-//! without ICU. It is ICU4X's line segmenter read off for the Latin-1
-//! characters it decides by pairs. The test holds it to ICU for every pair
-//! of the characters it covers, and every string of their classes up to six
-//! characters long.
+//! The table is ICU4X's line segmenter restricted to the Latin-1 characters
+//! it decides by pairs, so it gives ICU's answers, not Blink's. Blink's own
+//! ASCII rules are in `ascii`, which the writer asks first and which
+//! overrides the stream where it decides. The tests hold the table to ICU for every pair of
+//! covered characters and every string of their classes up to six long.
 //!
-//! It is not Blink's table, whose ASCII pairs follow Blink's own rules, not
-//! ICU's. Those rules are `ascii`'s, which the writer asks before the stream
-//! and which overrule it where they decide.
+//! ICU4X's segmenter is a state machine over pairs of classes that restarts
+//! at each opportunity. For these classes it needs one extra state: no line
+//! breaks after an opening punctuation and its following spaces (UAX #14
+//! LB14).
 //!
-//! ICU4X's segmenter is a state machine over a table of pairs of classes.
-//! It forgets everything at an opportunity and goes on as from the text's
-//! start. For the classes here, its table is a pair table with one extra
-//! state: after an opening punctuation and the spaces after it, no line
-//! breaks (UAX #14 LB14).
-//!
-//! The table leaves out everything else ICU keeps state for: the French
-//! quotation marks of LB15a and LB15b, a combining mark's LB9, and a class
-//! the options remap. It also leaves out the characters `line-break: loose`
-//! reads apart in Japanese and Chinese (`¤`, `°`, `±`), and every control.
-//! At any of them the table answers nothing, and the stream asks ICU from
-//! the last opportunity.
+//! The table leaves out every other character ICU keeps state for: the
+//! French quotation marks (LB15a, LB15b), combining marks (LB9), classes the
+//! options remap, the characters `line-break: loose` treats specially in
+//! Japanese and Chinese (`¤`, `°`, `±`), and every control. At any of them
+//! the table gives no answer and the stream asks ICU from the last
+//! opportunity.
 
 use crate::work;
 
-/// A class of the characters the table covers: the Line_Break property as
-/// ICU4X's segmenter reads it (AI as AL), numbered for the table's bits.
+/// A covered character's Line_Break class as ICU4X reads it (AI as AL),
+/// numbered as a bit of a table row.
 type Class = u8;
 
 const AL: Class = 0;
@@ -50,12 +45,12 @@ const BB: Class = 15;
 /// A character the table does not cover.
 const NONE: Class = 0xFF;
 
-/// The state after an opening punctuation and one or more spaces, in which
-/// no line breaks before whatever follows the spaces (LB14): the one state
-/// that is not a class.
+/// The state after an opening punctuation and one or more spaces, where no
+/// line breaks before the next character (LB14). It is the one state that
+/// is not a class.
 const OP_SP: u8 = 16;
 
-/// The class of the code point `cp`, a Latin-1 character, or [`NONE`].
+/// Returns the class of the Latin-1 code point `cp`, or [`NONE`].
 const fn class(cp: u8) -> Class {
     match cp {
         b'a'..=b'z'
@@ -116,7 +111,8 @@ static CLASSES: [Class; 256] = {
     classes
 };
 
-/// A row of the table: a bit for each class a line may break before.
+/// Returns a table row with a bit set for each class in `classes`, which a
+/// line may break before.
 const fn before(classes: &[Class]) -> u16 {
     let mut bits = 0;
     let mut at = 0;
@@ -127,10 +123,11 @@ const fn before(classes: &[Class]) -> u16 {
     bits
 }
 
-/// ICU4X's pair table for these classes, one row per state.
+/// ICU4X's pair table for these classes, one row per state: a class, or
+/// [`OP_SP`].
 ///
-/// A row says whether a line may break between a character in that state,
-/// a class or [`OP_SP`], and one of each class after it.
+/// Bit `c` of a row is set where a line may break between the state and a
+/// following character of class `c`.
 static BREAKS: [u16; 17] = [
     /* AL */ before(&[BB]),
     /* NU */ before(&[BB]),
@@ -151,9 +148,11 @@ static BREAKS: [u16; 17] = [
     /* OP_SP */ before(&[]),
 ];
 
-/// The class of the character at byte `at` of `bytes` and its length in
-/// bytes, where the table covers it: an ASCII byte, or a two-byte sequence
-/// for U+0080 to U+00FF.
+/// Returns the class and byte length of the character at byte `at`, or
+/// `None` where the table does not cover it.
+///
+/// Only an ASCII byte or a two-byte sequence for U+0080 to U+00FF can be
+/// covered.
 #[inline]
 fn table_class(bytes: &[u8], at: usize) -> Option<(Class, usize)> {
     let lead = *bytes.get(at)?;
@@ -172,12 +171,11 @@ fn table_class(bytes: &[u8], at: usize) -> Option<(Class, usize)> {
     (class != NONE).then_some((class, len))
 }
 
-/// The next opportunity after byte `from` of `text`, if the table decides
-/// every pair up to it.
+/// Returns the next opportunity after byte `from` of `text`, segmenting
+/// from `from` as from the text's start.
 ///
-/// The segmenter would go on from `from` as from the text's start. Returns
-/// the text's end if the text ends first. Returns `None` if a character the
-/// table does not cover comes first, or starts at `from`.
+/// Returns the text's end if no opportunity comes first, and `None` if an
+/// uncovered character starts at `from` or comes before the opportunity.
 pub(super) fn next_break(text: &str, from: usize) -> Option<usize> {
     let bytes = text.as_bytes();
     let (mut state, len) = table_class(bytes, from)?;
@@ -199,18 +197,17 @@ pub(super) fn next_break(text: &str, from: usize) -> Option<usize> {
     Some(bytes.len())
 }
 
-/// Whether the character at byte `at` of `text` may be one the table
-/// covers, by its first byte alone.
+/// Returns whether the character at byte `at` of `text` may be covered,
+/// judged by its first byte.
 ///
-/// The test is cheap enough to make at every opportunity before
-/// [`next_break`] is asked, even in text the table covers none of, such as
-/// ideographs.
+/// It is cheap enough to test at every opportunity before [`next_break`],
+/// even in text the table never covers, such as ideographs.
 #[inline]
 pub(super) fn may_cover(text: &str, at: usize) -> bool {
     text.as_bytes().get(at).is_some_and(|&lead| lead < 0xC4)
 }
 
-/// Whether the table covers `ch`: what the test sweeps.
+/// Returns whether the table covers `ch`.
 #[cfg(test)]
 pub(super) fn covers(ch: char) -> bool {
     u8::try_from(u32::from(ch)).is_ok_and(|cp| class(cp) != NONE)

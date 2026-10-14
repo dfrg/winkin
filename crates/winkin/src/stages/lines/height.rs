@@ -1,44 +1,34 @@
-//! How tall a line is: its line box's extent, and the baseline shifts only
-//! the line can settle.
+//! Line height: a line box's extent, and the baseline shifts only the line
+//! can settle.
 //!
-//! The extent is the union, from the strut, of what is on the line:
-//! - every item's extent, where its box's baseline puts it;
-//! - the strut of every box open across the line's start, as Blink's
-//!   `OnBeginPlaceItems` keeps an open box's `text_metrics` for the next
-//!   line.
+//! The extent is the strut united with every item's extent at its box's
+//! baseline, and with the strut of every box open across the line's start
+//! (Blink's `OnBeginPlaceItems` keeps an open box's `text_metrics`).
 //!
-//! Where nothing is shifted, every baseline is the line's and the union is
-//! flat. The boxes open across the start come from `carried_struts`, which
-//! walks up few boxes and keeps a record where a line starts inside many.
-//! A line then costs its own items however deep the boxes nest.
+//! An unshifted line is one flat union; [`carried_struts`] finds the boxes
+//! open across its start at a cost independent of nesting depth.
 //!
-//! Where something is shifted, the line is walked as Blink's
-//! `InlineLayoutStateStack` walks it. Each open box unites what it holds
-//! around its own baseline and applies its shift when it closes, as
-//! `ApplyBaselineShift` does. Measurement holds the shifts that do not
-//! depend on the line. This module settles the rest:
-//! - `middle` centres the box's extent on its parent's baseline raised by
-//!   half the parent's x-height.
-//! - `text-top` and `text-bottom` wait for the parent to close. They set the
-//!   box's top on the top of the parent's unleaded text, or its bottom on
-//!   the bottom.
-//! - `top` and `bottom` wait for the nearest `top` or `bottom` box around
-//!   them, or the line. They are settled last, against its aligned subtree:
-//!   everything it holds but the `top` and `bottom` boxes and their content.
-//!   A taller pinned box grows the subtree's other edge, as Blink's
-//!   `MetricsForTopAndBottomAlign` does. The whole subtree moves with its
-//!   box.
+//! A line with a shifted box or `text-fit` scaling is walked box by box, as
+//! Blink's `InlineLayoutStateStack` does. Each box unites its content around
+//! its own baseline and applies its shift when it closes. Measurement holds
+//! the shifts that do not depend on the line. This module settles the rest:
+//! - `middle` centres the box on its parent's baseline raised by half the
+//!   parent's x-height.
+//! - `text-top` and `text-bottom` align with the parent's unleaded text once
+//!   the parent closes.
+//! - `top` and `bottom` settle last, against the aligned subtree of the
+//!   nearest `top` or `bottom` box around them, or of the line. A taller
+//!   pinned box grows the subtree's other edge, as in Blink's
+//!   `MetricsForTopAndBottomAlign`.
 //!
-//! The settled shifts go in `shifts`, a line's together and sorted by node.
-//! Line layout adds them to measurement's and places everything once.
+//! Settled shifts go in the lines' rare `shifts` table, sorted by node within
+//! a line. Placement adds them to measurement's.
 //!
-//! Two of Blink's ways break CSS 2.1 for `top` and `bottom`, so this module
-//! follows CSS: a `top` box inside a raised span lands on the line's top,
-//! and a box inside a `top` box does not grow the line it is pinned to.
+//! For `top` and `bottom` this follows CSS 2.1 where Blink does not: a `top`
+//! box inside a raised span lands on the line's top, and a box inside a
+//! `top` box does not grow the line.
 //!
-//! Nothing here allocates once warm. Any nesting depth is walked without
-//! recursion. Each box links the boxes waiting for it, so settling never
-//! looks at another box's.
+//! Nothing here allocates once warm or recurses.
 
 use alloc::vec::Vec;
 use core::mem;
@@ -60,32 +50,25 @@ use crate::unit::LayoutUnit;
 use crate::work;
 
 define_id! {
-    /// Names a box open on the line being measured, in a [`BoxStack`].
-    ///
-    /// The line's own box is the first.
+    /// Names a box open on the line, in a [`BoxStack`]; the line's box is
+    /// first.
     struct OpenBoxId(u32);
 }
 
 define_id! {
-    /// Names a closed box waiting for a box around it to close, in a
-    /// [`BoxStack`].
+    /// Names a closed box waiting for a box around it, in a [`BoxStack`].
     struct WaitingId(u32);
 }
 
-/// A line walked box by box, where something on it is shifted.
-///
-/// It holds the boxes open on the line and those closed and waiting for a
-/// box around them.
+/// The box-by-box walk of a line with a shifted box or scaled text.
 pub(super) struct BoxStack {
-    /// The boxes open on the line being measured, the line's own first.
+    /// The boxes open on the line, the line's own box first.
     stack: Table<OpenBoxId, OpenBox>,
-    /// Boxes closed on it and waiting for a box around them to close.
+    /// The closed boxes waiting for a box around them.
     waiting: Table<WaitingId, Waiting>,
-    /// The boxes open across the line's start, innermost first, which the
-    /// walk opens before the line's items.
+    /// The boxes open across the line's start, innermost first.
     carried: Vec<NodeId>,
-    /// The scale `text-fit` sets the line's text in, which its boxes'
-    /// shifts take: 1 where it keeps its size.
+    /// The line's `text-fit` scale, which also scales its boxes' shifts.
     scale: f32,
 }
 
@@ -109,33 +92,22 @@ heap_bytes! {
     CarriedBoxes { record, walked; at, deep }
 }
 
-/// The boxes open across a line's start, whose struts an unshifted line
-/// holds.
-///
-/// [`carried_struts`] walks up the parent links where a line starts inside
-/// few boxes. Once a line starts inside more than [`SHALLOW`], it reads a
-/// record kept from line to line instead.
+/// The boxes open across a line's start, recorded from line to line where a
+/// line starts inside more than [`SHALLOW`] boxes.
 pub(super) struct CarriedBoxes {
     /// The boxes open before item `at`, outermost first, each with its strut
     /// united with those around it.
-    ///
-    /// It moves on with the lines, so no line walks the boxes. It stays
-    /// empty, with `deep` false, until a line starts inside more than
-    /// [`SHALLOW`] boxes.
     record: Vec<Ancestor>,
+    /// The item the record stands before.
     at: ItemId,
+    /// Whether the record is in use.
     deep: bool,
-    /// The boxes among an item's ancestors, innermost first, that start the
-    /// record.
+    /// Scratch for the boxes around an item, innermost first.
     walked: Vec<NodeId>,
 }
 
-/// The most boxes a line's start may be inside for the breaker to walk up
-/// them.
-///
-/// Up to this depth, walking costs as little as reading a record. Past it,
-/// the breaker keeps the record in [`CarriedBoxes`], at a step an item and
-/// one a line.
+/// The most boxes around a line's start that the breaker walks up rather
+/// than keeping a record in [`CarriedBoxes`].
 const SHALLOW: usize = 16;
 
 impl CarriedBoxes {
@@ -158,8 +130,8 @@ impl CarriedBoxes {
 
     /// Starts the record at item `holding` from the parent links.
     ///
-    /// It takes the item's node where that is a box, as for a `<wbr>` the
-    /// builder made, and every box among its ancestors.
+    /// The item's own node counts where it is a box, as for a `<wbr>` the
+    /// builder made.
     fn start(&mut self, stages: &LineStages<'_>, holding: ItemId, item: &Item) {
         let nodes = &stages.content.nodes;
         self.walked.clear();
@@ -178,8 +150,8 @@ impl CarriedBoxes {
         self.deep = true;
     }
 
-    /// Pushes box `node`, opened by item `open`, onto the record, its strut
-    /// united with those of the boxes around it.
+    /// Pushes box `node`, opened by item `open`, with its strut united with
+    /// those around it.
     fn push_box(&mut self, stages: &LineStages<'_>, node: NodeId, open: ItemId) {
         let strut = stages.measured.extents.get(open);
         let struts = self
@@ -193,12 +165,10 @@ impl CarriedBoxes {
         });
     }
 
-    /// Moves the record on to item `to`, opening and closing boxes as the
-    /// items between do.
+    /// Moves the record forward to item `to`, opening and closing boxes as
+    /// the items between do.
     ///
-    /// Lines break in order, so a break passes each item once. A line
-    /// before the record restarts it: [`carried_struts`] uses the parent
-    /// links, and this falls back to the first item.
+    /// An item before the record restarts it from the first item.
     fn move_to(&mut self, stages: &LineStages<'_>, to: ItemId) {
         if to < self.at {
             self.record.clear();
@@ -223,8 +193,7 @@ impl CarriedBoxes {
     }
 }
 
-/// A box open on the line, with how far its content so far reaches around
-/// its baseline, as Blink's `InlineBoxState::metrics`.
+/// A box open on the line.
 #[derive(Copy, Clone, Debug)]
 struct OpenBox {
     node: NodeId,
@@ -232,18 +201,16 @@ struct OpenBox {
     /// and `middle` boxes inside it.
     text: TextFactsId,
     align: VerticalAlign,
+    /// Its content's extent so far, as Blink's `InlineBoxState::metrics`.
     metrics: Extent,
     /// The nearest `top` or `bottom` box, itself or one around it, or else
-    /// the line's own box.
-    ///
-    /// A `top` or `bottom` box inside it waits for this one.
+    /// the line's box. `top` and `bottom` boxes inside it wait for that box.
     pinned: OpenBoxId,
-    /// The first and last boxes waiting for it, linked in the order they
-    /// closed; `None` where nothing waits.
+    /// The first and last boxes waiting for it, in closing order.
     waiting: Option<(WaitingId, WaitingId)>,
 }
 
-/// A box open where a line starts, as the breaker's record of them keeps it.
+/// A box open where a line starts, as [`CarriedBoxes`] records it.
 #[derive(Copy, Clone, Debug)]
 struct Ancestor {
     node: NodeId,
@@ -253,10 +220,8 @@ struct Ancestor {
     struts: Extent,
 }
 
-/// A closed box whose place waits for a box around it, as Blink's
+/// A closed box whose shift waits for a box around it, as in Blink's
 /// `PendingPositions`.
-///
-/// `next` links the next box waiting for the same one.
 #[derive(Copy, Clone, Debug)]
 struct Waiting {
     node: NodeId,
@@ -270,8 +235,8 @@ impl LineStages<'_> {
     /// Returns whether something on a line may be shifted off its parent's
     /// baseline.
     ///
-    /// Shifts come only from `vertical-align` or `dominant-baseline`, so
-    /// plain content answers from its flags without reading the rare tables.
+    /// Content without `vertical-align` or `dominant-baseline` answers from
+    /// its flags alone.
     #[inline]
     pub(super) fn has_shifts(&self) -> bool {
         let flags = self.content.flags;
@@ -290,9 +255,8 @@ impl LineStages<'_> {
 
     /// Fills `carried` with the boxes open across `start`, innermost first.
     ///
-    /// `item` holds the cluster at `start`. Only ancestors that opened
-    /// before `start` count, since those opening there are the line's own
-    /// items.
+    /// `item` holds the cluster at `start`. A box opening at `start` is one
+    /// of the line's items, so it does not count.
     fn carried(&self, item: &Item, start: ClusterId, carried: &mut Vec<NodeId>) {
         carried.clear();
         let nodes = &self.content.nodes;
@@ -303,11 +267,10 @@ impl LineStages<'_> {
         );
     }
 
-    /// Returns the inline boxes around `node`, innermost first, up the
-    /// parent links.
+    /// Returns the inline boxes around `node`, innermost first.
     ///
-    /// It takes one work step a node and at most as many steps as there are
-    /// nodes, whatever the links say.
+    /// It takes one work step a node and stops after as many steps as there
+    /// are nodes, even where the links form a cycle.
     fn boxes_around(&self, node: NodeId) -> impl Iterator<Item = NodeId> + '_ {
         let nodes = &self.content.nodes;
         let mut node = node;
@@ -325,9 +288,7 @@ impl LineStages<'_> {
 
     /// Returns the item holding the cluster at `start`, with its id.
     ///
-    /// It walks from the line's first item `from`, as kept in
-    /// [`LineRecord::first_item`](super::LineRecord::first_item), past items at the
-    /// start that hold no clusters. No search is needed.
+    /// It walks forward from the line's first item `from`, past empty items.
     fn start_item(&self, from: ItemId, start: ClusterId) -> Option<(ItemId, &Item)> {
         let item_clusters = &self.analysis.item_clusters;
         let mut cursor = item_clusters.cursor(from);
@@ -350,11 +311,10 @@ impl LineStages<'_> {
     /// Calls `each` for every item on the line from `start` to `end`, with
     /// its clusters, and returns the first item that may be on the next line.
     ///
-    /// An item holding clusters is on every line holding one of them. An
-    /// item holding none is on the line its boundary starts, except at a
-    /// break, where the items up to the last close end this line
-    /// ([`items_after_break`](measure::items_after_break)). At the text's end
-    /// every item is the last line's.
+    /// An empty item is on the line its boundary starts, except that at a
+    /// break the empty items up to the last close end the line before
+    /// ([`items_after_break`](measure::items_after_break)). At the text's
+    /// end every item is the last line's.
     #[inline]
     pub(super) fn items_on_line(
         &self,
@@ -368,9 +328,7 @@ impl LineStages<'_> {
         let text_end = end == self.analysis.clusters.end_id();
         let mut resume = None;
         let mut item = from;
-        // The first items on this line and on the next at the breaks before
-        // and after it. A line starting past the text's start starts at a
-        // break.
+        // The first items of this line and the next, found once each.
         let mut line_first = None;
         let mut next_line = None;
         while item < count {
@@ -400,8 +358,7 @@ impl LineStages<'_> {
             let on_line = if !empty {
                 next > start
             } else if first == start && start.get() > 0 {
-                // The items up to the last close at the break before are the
-                // line before's.
+                // The items up to the last close belong to the line before.
                 let mine = *line_first.get_or_insert_with(|| {
                     measure::items_after_break(self.content, self.analysis, start, item)
                 });
@@ -421,15 +378,10 @@ impl LineStages<'_> {
     /// its extent on the line, and returns the first item that may be on the
     /// next line.
     ///
-    /// An item's extent is measurement's, except for text across the line's
-    /// start or end that its fonts widened. That text is widened only by the
-    /// fonts of its clusters on the line, as Chrome's
-    /// `InlineBoxState::AccumulateUsedFonts` reads the fallback fonts of the
-    /// line's part of the shape result. `fonts` carries the text item and
-    /// the cursor over the shaping runs from the line before.
-    ///
-    /// Where the line makes room for annotations and marks, `ems` gathers
-    /// its em boxes in the same walk.
+    /// Text across the line's start or end is widened only by the fonts of
+    /// its clusters on the line, as Chrome's
+    /// `InlineBoxState::AccumulateUsedFonts` does. Where given, `ems` gathers
+    /// the line's em boxes in the same walk.
     #[inline]
     pub(super) fn extents_on_line(
         &self,
@@ -458,11 +410,8 @@ impl LineStages<'_> {
     /// Returns the extent of text item `item`'s clusters `on_line`, where
     /// measurement gives the whole item `extent`.
     ///
-    /// Only text under `line-height: normal` is widened by its fonts. Its
-    /// extent on the line is its primary font's, united with that of each
-    /// font its clusters there are shaped in. Measurement united the fonts of
-    /// all the item's clusters, so once a font widens the text to the whole
-    /// item's extent, no other can widen it further.
+    /// Only text under `line-height: normal` is widened by its fonts. The
+    /// walk stops once the union reaches `extent`, which unites them all.
     #[inline(never)]
     fn text_on_line(
         &self,
@@ -486,10 +435,8 @@ impl LineStages<'_> {
             return extent;
         };
         let shaped = &self.shaped.runs;
-        // The cursor's run starts at or before `reusable`. One that ends
-        // before the line's text, as where the line before stopped early, is
-        // sought again: its count of starts finds the run at once, where
-        // stepping passes every run between.
+        // A kept cursor whose run ends before the line's text is sought
+        // again: one seek beats stepping over every run between.
         let cursor = match &mut fonts.runs {
             Some((cursor, reusable))
                 if *reusable <= on_line.start && cursor.end() > on_line.start =>
@@ -509,7 +456,7 @@ impl LineStages<'_> {
             let before = cursor.id();
             if cursor.end() > on_line.start {
                 let font = shaped.get(before).map(|run| run.font);
-                // A font the line's text used already widens nothing.
+                // A run in the font just united adds nothing.
                 if font != last
                     && let Some(used) = font.and_then(|font| self.fonts.used.get(font))
                 {
@@ -528,10 +475,10 @@ impl LineStages<'_> {
     }
 
     /// Returns the primary font's extent of text item `item`, where its
-    /// fonts widened it past that to its measured `extent`.
+    /// fonts widened it to `extent`.
     ///
-    /// `None` where they did not, or where `item` is no text under
-    /// `line-height: normal`, whose fonts widen nothing.
+    /// `None` where they did not, or where `item` is not text under
+    /// `line-height: normal`.
     fn widened_text(&self, item: ItemId, extent: Extent) -> Option<Extent> {
         let content = self.content;
         let found = content.items.get(item)?;
@@ -548,34 +495,23 @@ impl LineStages<'_> {
     }
 }
 
-/// What a line's text extents carry to the next line: the text item last
-/// asked about, and the cursor over the shaping runs.
-///
-/// Lines are broken forward, so the text across one line's end is across
-/// the next line's start, and that line's runs follow. Each line then reads
-/// the item's facts and seeks its first run only where they change.
+/// The text item and shaping-run cursor one line's extents pass to the
+/// next, which starts in the same text.
 #[derive(Default)]
 pub(super) struct LineFonts {
     /// The text item, with its primary font's extent where its fonts
     /// widened it.
     item: Option<(ItemId, Option<Extent>)>,
-    /// The cursor, and the cluster at or after its run's start from which
-    /// a line may reuse it.
+    /// The cursor, and the cluster from which a line may reuse it.
     runs: Option<(RunCursor<ShapedRunId, ClusterId>, ClusterId)>,
 }
 
 /// Returns an unshifted line's `extent` united with the strut of every box
 /// open across its `start`.
 ///
-/// Blink likewise keeps an open box's text metrics for the next line. The
-/// node of the item holding the start does not count, even where it is a
-/// box, as for a `<wbr>` the builder made. It stays out of the fit loop,
-/// which calls it only where the content has a box.
-///
-/// The cost is constant a line, however deep the boxes nest. A line inside
-/// few boxes walks up them. Past [`SHALLOW`], `carried` keeps a record with
-/// each box's strut united with those around it. A line then reads one
-/// union, and the items between two lines' starts are passed once.
+/// The node of the item holding the start does not count, even where it is
+/// a box. A line inside at most [`SHALLOW`] boxes walks up them; deeper, it
+/// reads `carried`, which unites each box's strut with those around it.
 #[inline(never)]
 pub(super) fn carried_struts(
     stages: &LineStages<'_>,
@@ -599,12 +535,11 @@ pub(super) fn carried_struts(
         if boxes.next().is_none() {
             return extent;
         }
-        // Deeper than that, the record takes over and holds every box.
+        // Deeper, the record takes over.
         carried.start(stages, holding, item);
     } else if holding < carried.at {
-        // A line before the record's: balancing and scoring lay a paragraph
-        // out again from its start. The record restarts there from the
-        // parent links, at the depth's cost.
+        // A line before the record's, as balancing and scoring lay a
+        // paragraph out again.
         carried.start(stages, holding, item);
     }
     carried.move_to(stages, holding);
@@ -618,18 +553,14 @@ pub(super) fn carried_struts(
     outer.map_or(extent, |open| extent.unite(open.struts))
 }
 
-/// Returns the extent of a line with shifted boxes, and the first item that
-/// may be on the next line.
+/// Returns the extent of a line with shifted boxes or scaled text, and the
+/// first item that may be on the next line.
 ///
-/// The boxes shift as Blink's `InlineLayoutStateStack` shifts them. The
-/// shifts the line settles are pushed to `shifts`, sorted by node. The line
-/// holds `clusters`, from item `from`, and `ems` gathers its em boxes where
-/// given.
+/// The line holds `clusters` from item `from`, with its text at `scale`.
+/// Its settled shifts are pushed to `shifts`, sorted by node. Where given,
+/// `ems` gathers its em boxes.
 ///
-/// A line whose text `text-fit` scales by `scale` takes its items' extents
-/// and its boxes' shifts at that scale.
-///
-/// Out of line, so that a line with no shift keeps its extent's code small.
+/// Out of line, so that an unshifted line keeps its code small.
 #[allow(clippy::too_many_arguments)]
 #[inline(never)]
 pub(super) fn shifted(
@@ -673,8 +604,7 @@ pub(super) fn shifted(
     boxes
         .stack
         .push_bounded(line, "an empty stack takes the line's box");
-    // The boxes open across the start, outermost first, each with its own
-    // strut, as Blink keeps an open box's text metrics for the next line.
+    // The boxes open across the start, outermost first, each with its strut.
     if let Some((_, item)) = stages.start_item(from, start) {
         let mut carried = mem::take(&mut boxes.carried);
         stages.carried(item, start, &mut carried);
@@ -697,8 +627,7 @@ pub(super) fn shifted(
         match item.kind {
             ItemKind::Open if stages.is_box(node) => boxes.open(stages, node, extent),
             ItemKind::Close => {
-                // A close at the line's start ends a box of the line before,
-                // which this line never opened.
+                // A close at the line's start ends a box of the line before.
                 if boxes.stack.len() > 1 && boxes.stack.last().is_some_and(|b| b.node == node) {
                     boxes.close(stages, shifts);
                 }
@@ -710,8 +639,8 @@ pub(super) fn shifted(
             _ => boxes.unite(extent),
         }
     });
-    // The boxes still open end with the line, innermost first, and then the
-    // line's own box settles what waits for it.
+    // The boxes still open close with the line. Then the line's box settles
+    // what waits for it.
     while boxes.stack.len() > 1 {
         work::step();
         boxes.close(stages, shifts);
@@ -750,9 +679,7 @@ impl BoxStack {
             .push_bounded(open, "no more boxes open than an OpenBoxId names");
     }
 
-    /// Leaves the closed box `node` waiting for the open box `owner`.
-    ///
-    /// It goes last among the boxes waiting for `owner`.
+    /// Leaves the closed box `node` last in line for the open box `owner`.
     fn wait(&mut self, owner: OpenBoxId, node: NodeId, align: VerticalAlign, metrics: Extent) {
         let waiting = Waiting {
             node,
@@ -788,9 +715,8 @@ impl BoxStack {
     /// Closes the innermost open box, as Blink's `EndBoxState` and
     /// `ApplyBaselineShift` do.
     ///
-    /// It settles what waits for the box, then shifts the box. The box is
-    /// united into its parent or left waiting. Settled shifts go in
-    /// `shifts`.
+    /// Settles what waits for the box, then shifts it into its parent or
+    /// leaves it waiting.
     fn close(&mut self, stages: &LineStages<'_>, shifts: &mut Table<LineShiftId, LineShift>) {
         let Some(index) = self.stack.last_id() else {
             return;
@@ -799,7 +725,6 @@ impl BoxStack {
         let Some(open) = self.stack.pop() else {
             return;
         };
-        // The box around it is now the stack's last.
         let Some(around) = self.stack.last_id() else {
             return;
         };
@@ -812,8 +737,7 @@ impl BoxStack {
         };
         let mut own = stages.measured.shift(open.node);
         if self.scale != 1.0 {
-            // The scaled shift goes in the line's settled shifts, as what it
-            // adds to the measured one.
+            // The settled shift holds what scaling adds to the measured one.
             let more = stages.scaled_shift(open.node, open.align, self.scale);
             record(shifts, open.node, more);
             own = own + more;
@@ -827,9 +751,7 @@ impl BoxStack {
                 self.wait(around, open.node, open.align, open.metrics);
             }
             VerticalAlign::Middle => {
-                // The extent's middle goes on the parent's baseline raised
-                // by half the parent's x-height. The half rounds onto the
-                // grid as Chrome's `FromFloatRound` rounds it.
+                // Half the x-height rounds as Chrome's `FromFloatRound` does.
                 let half_x = primary_metrics(stages, parent).map_or(LayoutUnit::ZERO, |m| {
                     LayoutUnit::from_px(m.x_height.to_px() / 2.0)
                 });
@@ -843,15 +765,10 @@ impl BoxStack {
     }
 
     /// Places the boxes waiting for the open box `index`, as Blink's
-    /// `ApplyBaselineShift` on `pending_descendants`.
+    /// `ApplyBaselineShift` does for `pending_descendants`.
     ///
-    /// `text-top` and `text-bottom` boxes go first. Then `top` and `bottom`
-    /// boxes are pinned against what the box now holds. Settled shifts go in
-    /// `shifts`.
-    ///
-    /// A box nothing waits for costs one test. Otherwise only its own
-    /// waiting list is walked, so a line looks at each waiting box at most
-    /// three times.
+    /// `text-top` and `text-bottom` boxes go first, then `top` and `bottom`
+    /// boxes are pinned against what the box holds.
     fn settle(
         &mut self,
         stages: &LineStages<'_>,
@@ -865,11 +782,9 @@ impl BoxStack {
         else {
             return;
         };
-        // The waiting list is consumed here, whatever this finds.
         if let Some(open) = self.stack.get_mut(index) {
             open.waiting = None;
         }
-        // Its text's primary font's ascent and descent, unleaded.
         let font = primary_metrics(stages, text);
         let (ascent, descent) = font.map_or((LayoutUnit::ZERO, LayoutUnit::ZERO), |m| {
             (m.ascent, m.descent)
@@ -892,7 +807,7 @@ impl BoxStack {
             self.unite_box(index, metrics.raised(up));
         }
         if pinned {
-            // The aligned subtree, and how far the pinned boxes grow it.
+            // The aligned subtree, then grown by the tallest pinned box.
             let subtree = self
                 .stack
                 .get(index)
@@ -946,10 +861,8 @@ fn record(shifts: &mut Table<LineShiftId, LineShift>, node: NodeId, shift: Layou
     }
 }
 
-/// Returns the unleaded line metrics of the primary font for `text`.
-///
-/// `middle`, `text-top` and `text-bottom` measure by these, not by the
-/// leaded text metrics.
+/// Returns the unleaded line metrics of the primary font for `text`, by
+/// which `middle`, `text-top` and `text-bottom` align.
 pub(super) fn primary_metrics<'a>(
     stages: &LineStages<'a>,
     text: TextFactsId,
@@ -958,27 +871,26 @@ pub(super) fn primary_metrics<'a>(
     stages.fonts.primary_font(request).map(|used| &used.metrics)
 }
 
-/// What a line's height measure finds.
-///
-/// It holds the line box's extent, the first item that may be on the next
-/// line, the room the line leaves the next at its end, and how far its
-/// annotations move an initial letter it opens down.
+/// A measured line's height and what it passes to the next line.
 #[derive(Copy, Clone, Debug)]
 pub(super) struct Height {
+    /// The line box's extent around its baseline.
     pub(super) extent: Extent,
+    /// The first item that may be on the next line.
     pub(super) next_item: ItemId,
+    /// The room the line leaves the next at its end.
     pub(super) carry: Carry,
+    /// How far the first line's annotations move the initial letter down.
     pub(super) letter_shift: LayoutUnit,
 }
 
 /// A line's height, as more of the breaker's `impl`.
 impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
-    /// Returns how tall a line from `start` is taken to be before its own
+    /// Returns the height a line from `start` is fitted at before its own
     /// height is known.
     ///
-    /// That is the strut's height. For the line an initial letter opens, it
-    /// reaches the letter's margin box's bottom if further. Chrome's
-    /// `ComputeTotalBlockSize` does the same.
+    /// That is the strut's, or on an initial letter's line the letter's
+    /// margin box bottom where lower, as in Chrome's `ComputeTotalBlockSize`.
     pub(super) fn reserve(&self, start: ClusterId) -> LayoutUnit {
         let strut = self.stages.measured.extents.strut.box_height();
         if start == ClusterId::new(0)
@@ -990,17 +902,11 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         strut
     }
 
-    /// Returns the line box's height for a line from `start` to `end`, from
-    /// item `from` on.
+    /// Returns the height of the line from `start` to `end`, whose first
+    /// item is `from`.
     ///
-    /// The extent unites the strut, every item on the line at its baseline,
-    /// and the strut of every box open across its start. The result also
-    /// holds the next line's first item and the room left at the line's end.
-    ///
-    /// Where nothing is shifted, this is one flat union. Otherwise the line
-    /// is walked box by box, and settles the shifts only it can. Both find
-    /// the line's items with
-    /// [`LineStages::extents_on_line`](crate::stages::LineStages::extents_on_line).
+    /// The extent grows for a raised initial letter and makes room for
+    /// annotations and marks.
     pub(super) fn extent(
         &mut self,
         out: &mut Lines,
@@ -1010,11 +916,9 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         end: ClusterId,
     ) -> Height {
         let (extent, next_item) = self.natural_extent(out, para, from, start, end);
-        // A raised initial letter moves its line down by how far it stands
-        // above the paragraph, as Chrome's
-        // `SetInitialLetterBlockStartAdjustment` does. The line box grows
-        // on its block-start side by as much: over its baseline, or under it
-        // where lines flip.
+        // A raised initial letter moves its line down by its raise, as
+        // Chrome's `SetInitialLetterBlockStartAdjustment` does, growing the
+        // line box on its block-start side.
         let extent = match self.stages.measured.initial_letter() {
             Some(letter) if start == ClusterId::new(0) && letter.raise > LayoutUnit::ZERO => {
                 let extent = extent.zero_if_none();
@@ -1054,8 +958,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
                     .map(|ruby| (ruby, ruby.recent_line_parts(out.lines.next_id()))),
             },
         );
-        // Annotations that move the line down past a raised letter's raise
-        // move the letter down with it, as Chrome's
+        // Annotations that move the line down past the letter's raise move
+        // the letter by the excess, as Chrome's
         // `ComputeInitialLetterBoxBlockStartAdjustment` does.
         let letter_shift = if start == ClusterId::new(0) && !extent.is_none() {
             (annotated.ascent() - extent.ascent()).max(LayoutUnit::ZERO)
@@ -1070,8 +974,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         }
     }
 
-    /// Returns the line's own extent, before annotations and marks make
-    /// room (see [`extent`](Self::extent)).
+    /// Returns the line's extent before an initial letter, annotations and
+    /// marks change it, and the first item that may be on the next line.
     fn natural_extent(
         &mut self,
         out: &mut Lines,
@@ -1080,8 +984,6 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         start: ClusterId,
         end: ClusterId,
     ) -> (Extent, ItemId) {
-        // A line making room for annotations and marks gathers its em boxes
-        // in the walk that measures its extent.
         let room = self.annotation.as_ref();
         let ems = &mut self.scratch.ems;
         let mut ems = room.map(|room| EmWalk::new(&self.stages, Some(room), ems, start..end));
@@ -1112,9 +1014,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             .extents_on_line(from, start, end, fonts, ems.as_mut(), |_, own| {
                 extent = extent.unite(own);
             });
-        // The boxes open across the start, whose struts the line holds.
-        // Content with no box skips this. So does a paragraph whose every
-        // box strut the block's strut already holds.
+        // Only content with an inline box whose strut passes the block's has
+        // boxes to carry.
         let boxes = self
             .stages
             .content

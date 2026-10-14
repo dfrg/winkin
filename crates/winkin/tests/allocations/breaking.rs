@@ -12,9 +12,9 @@ use winkin::style::{
 use winkin::{Area, BuildOptions, ComputedBlockStyle, Context, Glyph, Item, Layout, NodeKey};
 
 /// Ahem; a Latin font with ligatures and kerning pairs, one of them a
-/// letter against the space after it, which a line ending there is
-/// reshaped without; an Arabic font with joining forms; and a CJK font
-/// that Han and kana fall back to.
+/// letter against the following space, so a line ending there reshapes;
+/// an Arabic font with joining forms; and a CJK font that Han and kana fall
+/// back to.
 fn collection() -> Collection {
     let mut latin = TestFont::new("Test Latin", &[(0x20, 0x7E)]);
     latin.ligatures = vec![vec!['f', 'f', 'i'], vec!['f', 'i'], vec!['f', 'l']];
@@ -22,10 +22,11 @@ fn collection() -> Collection {
     test_fonts::collection(&[latin, arabic(), han()], han_fallback("Test Han"))
 }
 
-/// `text` in paragraphs, in `family` and `language`, each paragraph
-/// again in a span that breaks between any two letters, so lines end
-/// and start inside kerned pairs, ligatures and joined words, whose
-/// edges are reshaped, and again in a box with edges.
+/// Builds `text` in paragraphs, in `family` and `language`.
+///
+/// Each paragraph comes again in a span that breaks between any two
+/// letters, so lines end inside kerned pairs, ligatures and joined words
+/// and reshape their edges, and again in a box with edges.
 fn prose(layout: &mut Layout, cx: &mut Context, (family, language): (&str, &str), text: &str) {
     let families = [FontFamilyName::named(family)];
     let root = ComputedStyle {
@@ -67,9 +68,9 @@ fn prose(layout: &mut Layout, cx: &mut Context, (family, language): (&str, &str)
     assert!(b.finish().is_complete());
 }
 
-/// Latin with kerning and ligatures, Arabic in a left-to-right
-/// paragraph, Han falling back, and the three mixed: each document's
-/// font and language, and a line of it.
+/// The documents, each with its font, language and a line of text: Latin
+/// with kerning and ligatures, Arabic in a left-to-right paragraph, Han
+/// falling back, and the three mixed.
 const DOCUMENTS: [((&str, &str), &str); 4] = [
     (
         ("Test Latin", "en"),
@@ -89,12 +90,11 @@ const DOCUMENTS: [((&str, &str), &str); 4] = [
 /// The widths each document is broken at.
 const WIDTHS: [f32; 8] = [37.0, 55.5, 81.25, 12.0, 120.0, 250.0, 600.0, 3.0];
 
-/// Breaking again allocates nothing, at any width broken at before:
-/// the lines, the reshaped edges' words, glyphs and advances keep their
-/// capacity, and the reshapes find the context's plans and buffer warm.
-/// So for Latin with kerning and ligatures, Arabic in a left-to-right
-/// paragraph, Han falling back, and the three mixed, with lines broken
-/// inside words where the font shaped across the break.
+/// Breaking again at any width used before allocates nothing.
+///
+/// The lines and the reshaped edges' words, glyphs and advances keep their
+/// capacity, and reshaping finds the context's plans and buffer warm.
+/// Lines break inside words the font shaped across.
 #[test]
 fn breaking_allocates_nothing_warm() {
     let widths = WIDTHS;
@@ -117,13 +117,12 @@ fn breaking_allocates_nothing_warm() {
     }
 }
 
-/// The context is a cache: a host frees every cache by
-/// replacing it with a new one over the same fonts, which breaks a
-/// layout built in the old into the same lines and glyphs, making what
-/// the reshaped edges need again from the layout's own record of its
-/// fonts, which allocates; and warm again after, breaking again
-/// allocates nothing. The new context lays out the documents in other
-/// fonts first, so that its tables hold their entries first and name the
+/// A new context over the same fonts breaks a layout built in the old one
+/// into the same lines and glyphs.
+///
+/// The first break rebuilds what the reshaped edges need from the layout's
+/// fonts, which allocates; breaking again allocates nothing. The new
+/// context first lays out documents in other fonts, so its tables name the
 /// layout's fonts by other ids.
 #[test]
 fn a_relayout_in_a_new_context_is_warm_again_after() {
@@ -168,13 +167,13 @@ fn a_relayout_in_a_new_context_is_warm_again_after() {
     assert!(made > 0, "the reshapes made harfrust's data again");
 }
 
-/// Breaking around floats again allocates nothing, at any width broken
-/// at before: each paragraph opens beside a float, and
-/// reaches two more inside it, one on each side, which go beside a line
-/// or below it as the width has it; lines the floats leave no room move
-/// below them, and trials taken back place their floats again; the
-/// block opens with an initial letter, whose room is the host's to keep.
-/// The host keeps its own floats in room it has.
+/// Breaking around floats again at any width used before allocates nothing.
+///
+/// Each paragraph opens beside a float and holds two more, one on each
+/// side, which go beside a line or below it as the width allows. Lines with
+/// no room move below the floats, and trials taken back place their floats
+/// again. The block opens with an initial letter. The host keeps its floats
+/// in room it reserved.
 #[test]
 fn breaking_around_floats_allocates_nothing_warm() {
     let floated = |layout: &mut Layout, cx: &mut Context, (family, language), text: &str| {

@@ -1,10 +1,9 @@
-//! The sweep: every character's two words, and every side table, against
-//! icu_properties 2.3.
+//! The sweep: every character's two words, and every side table, checked
+//! against icu_properties 2.3.
 //!
-//! The expected values are mapped from ICU's here, by name, rather than by the
-//! generator's code, so that the two have to agree rather than share a
-//! mistake. Surrogates are not characters, so no lookup can be asked about
-//! one, and the sweep skips them.
+//! The expected values are mapped from ICU's here by name, not by the
+//! generator's code, so the two cannot share a mistake. Surrogates are not
+//! characters, so the sweep skips them.
 
 use icu_properties::props::{self as icu, BidiPairedBracketType};
 use icu_properties::script::{ScriptWithExtensions, ScriptWithExtensionsBorrowed};
@@ -17,7 +16,7 @@ fn chars() -> impl Iterator<Item = char> {
     (0..=0x10FFFF_u32).filter_map(char::from_u32)
 }
 
-/// ICU4C's `UCharDirection` value for `class`, as the bidi resolver numbers it.
+/// Returns ICU4C's `UCharDirection` value for `class`.
 fn bidi_class(class: icu::BidiClass) -> u8 {
     match class {
         icu::BidiClass::LeftToRight => 0,
@@ -77,7 +76,7 @@ fn indic_conjunct_break(value: icu::IndicConjunctBreak) -> IndicConjunctBreak {
     }
 }
 
-/// ICU's ISO 15924 tag for `script`.
+/// Returns ICU's ISO 15924 tag for `script`.
 fn tag(script: icu::Script) -> [u8; 4] {
     let name = PropertyNamesShort::<icu::Script>::new()
         .get(script)
@@ -87,7 +86,7 @@ fn tag(script: icu::Script) -> [u8; 4] {
         .expect("script short names are tags")
 }
 
-/// The member of a canonically equivalent pair of brackets the table keeps.
+/// Returns the bracket the table keeps for a canonically equivalent pair.
 fn canonical_bracket(ch: char) -> char {
     match ch {
         '\u{2329}' => '\u{3008}',
@@ -178,13 +177,20 @@ fn the_cold_word_agrees_with_icu() {
     let component = CodePointSetData::new::<icu::EmojiComponent>();
     let ignorable = CodePointSetData::new::<icu::DefaultIgnorableCodePoint>();
     let white_space = CodePointSetData::new::<icu::WhiteSpace>();
+    let cased = CodePointSetData::new::<icu::Cased>();
+    let case_ignorable = CodePointSetData::new::<icu::CaseIgnorable>();
     for ch in chars() {
         let word = rare_props(ch);
         let cp = u32::from(ch);
         let lb = line_break.get(ch);
-        // The first-letter class takes bits 24 and 25 (and its own sweep
-        // checks it), and none past them is set.
-        assert_eq!(word.0 >> 26, 0, "U+{cp:04X}: bits past the layout");
+        // Bits 26 and 27 hold Cased and Case_Ignorable; no higher bit is set.
+        assert_eq!(word.0 >> 28, 0, "U+{cp:04X}: bits past the layout");
+        assert_eq!(word.is_cased(), cased.contains(ch), "U+{cp:04X}");
+        assert_eq!(
+            word.is_case_ignorable(),
+            case_ignorable.contains(ch),
+            "U+{cp:04X}"
+        );
         assert_eq!(
             word.is_join_causing(),
             joining.get(ch) == icu::JoiningType::JoinCausing,
@@ -216,13 +222,13 @@ fn the_cold_word_agrees_with_icu() {
             ),
             "U+{cp:04X}"
         );
-        // A space separator that glues is GL, a no-break space, which the
-        // analysis's classes read the bit as.
+        // A space separator that glues is GL, a no-break space, as the
+        // analysis's classes assume.
         if white_space.contains(ch) && word.is_glue() {
             assert_eq!(lb, icu::LineBreak::Glue, "U+{cp:04X}");
         }
-        // Latin-1 stands alone, and holds no default-ignorable character but
-        // the soft hyphen, which the analysis reads no rare word of it for.
+        // Latin-1 stands alone, and its only default-ignorable is the soft
+        // hyphen, which analysis classifies without the rare word.
         if cp < 0x100 {
             assert!(word.grapheme_cluster_break().stands_alone(), "U+{cp:04X}");
             assert_eq!(word.is_default_ignorable(), cp == 0xAD, "U+{cp:04X}");
@@ -255,11 +261,12 @@ fn the_cold_word_agrees_with_icu() {
     }
 }
 
-/// UTR #59's East_Asian_Spacing for `ch`, derived by its own words (section 3.1):
-/// the ideographic scripts less punctuation, symbols and halfwidth forms are
-/// wide; narrow other punctuation, less eight, is conditional; narrow
-/// letters, marks and decimal digits are narrow. The crate's two refinements
-/// are then applied: marks apart, and digits apart.
+/// Returns UTR #59's East_Asian_Spacing for `ch`, derived from its text
+/// (section 3.1), with the crate's separate classes for marks and digits.
+///
+/// The ideographic scripts less punctuation, symbols and halfwidth forms are
+/// wide; narrow other punctuation, less eight characters, is conditional;
+/// narrow letters, marks and decimal digits are narrow.
 fn east_asian_spacing(
     ch: char,
     gc: icu::GeneralCategory,
@@ -326,7 +333,7 @@ fn east_asian_spacing(
     }
 }
 
-/// CSS Text 4's text-spacing class of `ch`, in Blink's numbering.
+/// Returns CSS Text 4's text-spacing class of `ch`, in Blink's numbering.
 fn text_spacing(
     ch: char,
     gc: icu::GeneralCategory,
@@ -390,8 +397,8 @@ fn the_spacing_classes_agree_with_icu() {
     assert_eq!(spacing('\u{2C7}'), EastAsianSpacing::Wide);
 }
 
-/// The emphasis class of `ch`, derived from icu_properties as the generator
-/// derives it, in Chrome's order (`Character::CanReceiveTextEmphasis`).
+/// Returns the emphasis class of `ch`, derived from icu_properties as the
+/// generator does, in Chrome's order (`Character::CanReceiveTextEmphasis`).
 fn emphasis(ch: char, gc: icu::GeneralCategory) -> EmphasisClass {
     use icu::GeneralCategory as G;
     match gc {
@@ -426,8 +433,8 @@ fn emphasis(ch: char, gc: icu::GeneralCategory) -> EmphasisClass {
     }
 }
 
-/// The first-letter class of `ch`, derived from icu_properties as the
-/// generator derives it (CSS Pseudo-Elements 4, section 2.2.1).
+/// Returns the first-letter class of `ch`, derived from icu_properties as
+/// the generator does (CSS Pseudo-Elements 4, section 2.2.1).
 fn first_letter(ch: char, gc: icu::GeneralCategory) -> FirstLetterClass {
     use icu::GeneralCategory as G;
     match gc {
@@ -513,8 +520,7 @@ fn scripts_agree_with_icu() {
             assert_eq!(ours.tag(), tag(theirs), "U+{cp:04X}");
         }
 
-        // A set is spent only on a character whose extensions are more than
-        // its script.
+        // Only a character whose extensions go beyond its script uses a set.
         let alone = extensions.iter().count() == 1 && extensions.iter().next() == Some(expected);
         assert_eq!(word.scripts().single().is_some(), alone, "U+{cp:04X}");
     }
@@ -541,7 +547,7 @@ fn brackets_agree_with_icu() {
             Some((closing, opens)) => {
                 assert!(word.bracket_pair().is_some(), "U+{cp:04X}");
                 assert_eq!(word.opens_bracket(), opens, "U+{cp:04X}");
-                // Analysis asks for a bracket only of an ON cluster.
+                // Analysis reads brackets only for ON clusters.
                 assert_eq!(word.bidi_class(), BidiClass::OTHER_NEUTRAL, "U+{cp:04X}");
                 assert_eq!(
                     closing_bracket(word),
@@ -557,7 +563,7 @@ fn brackets_agree_with_icu() {
         }
     }
 
-    // One pair, one closing bracket, so comparing ids is comparing closings.
+    // Each pair has one closing bracket, so comparing ids compares closings.
     for (a, first) in tables::BRACKET_CLOSINGS.iter().enumerate() {
         for second in &tables::BRACKET_CLOSINGS[a + 1..] {
             assert_ne!(first, second, "two pairs close with the same bracket");
@@ -682,12 +688,12 @@ fn the_script_tables_are_well_formed() {
     }
 }
 
-/// The characters word motion segments a run of whole are exactly those
-/// ICU4X's word segmenter hands its dictionaries or its LSTM (the word
-/// data's complex property): Line_Break SA always, and Script Han and
-/// Hiragana with dictionaries, which without them are stood in for and never
-/// reach it. For every character, against icu_properties and against the
-/// word data itself, so that an ICU marking others fails here.
+/// The characters whose runs word motion segments whole are exactly those
+/// ICU4X's word segmenter hands to its dictionaries or LSTM (the word data's
+/// complex property): Line_Break SA, plus Han and Hiragana with
+/// dictionaries; without them those are replaced and never reach ICU.
+/// Checked for every character against icu_properties and the word data, so
+/// an ICU that marks others fails here.
 #[test]
 fn a_complex_character_is_icus() {
     use icu_segmenter::provider::Baked;
@@ -709,16 +715,17 @@ fn a_complex_character_is_icus() {
     }
 }
 
-/// Without dictionaries, what ICU's word segmenter is given in place of
-/// each ideograph and hiragana has its Word_Break, so that UAX #29's rules
-/// segment it as they would it: every Han, Hiragana and Katakana character,
-/// as it is given, against icu_properties. It is no pictograph where the
-/// character is none (WB3c); it is as long in UTF-8, so that `capitalize`
-/// reads its words where the copy has them; it is a letter or a digit where
-/// the character is one, for Chrome's full stops (`word_boundaries`), but
-/// where it is Other, which UAX #29 parts from a full stop already; and it
-/// never reaches ICU's dictionaries itself. With dictionaries nothing is
-/// stood in for.
+/// Without dictionaries, the stand-in for each ideograph and hiragana has its
+/// Word_Break, so UAX #29 segments it the same way. Checked for every Han,
+/// Hiragana and Katakana character against icu_properties. The stand-in:
+/// - is no pictograph where the character is none (WB3c);
+/// - is as long in UTF-8, so `capitalize` finds words at the same offsets;
+/// - is a letter or digit where the character is one, for Chrome's full
+///   stops (`word_boundaries`), except where it is Other, which UAX #29
+///   already separates from a full stop;
+/// - never reaches ICU's dictionaries itself.
+///
+/// With dictionaries nothing is replaced.
 #[test]
 fn a_stand_in_has_its_characters_word_break() {
     use icu_segmenter::provider::Baked;
@@ -766,4 +773,5 @@ fn a_stand_in_has_its_characters_word_break() {
     assert!(asked > 100_000, "{asked} characters");
 }
 
+mod case;
 mod normalize;

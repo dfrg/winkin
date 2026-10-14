@@ -112,8 +112,8 @@ fn a_selection_copies_math_auto_text() {
 /// A selection copies the text as laid out.
 ///
 /// White space is collapsed, each element's transform applied and `<br>` a
-/// newline. What the builder inserted is left out and what the caller wrote
-/// kept. A no-break space is copied as asked.
+/// newline. Text the builder inserted is left out and source text kept. A
+/// no-break space is copied as the copy kind asks.
 #[test]
 fn a_selection_copies_the_text_as_laid_out() {
     let layout = laid("hello      world\n   again\ttab", 400.0);

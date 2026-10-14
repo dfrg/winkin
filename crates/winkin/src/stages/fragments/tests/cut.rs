@@ -315,10 +315,10 @@ fn right_to_left_the_ellipsis_is_at_the_left() {
 /// the paragraph's counts, not the block's. That happens under `direction:
 /// auto`, or under `unicode-bidi: plaintext` in either block direction.
 ///
-/// Chrome 153 was probed with 20 px Ahem whose U+2026 has an `rtla`
-/// alternate. Under `plaintext`, it draws the alternate on a Hebrew line and
-/// the plain glyph on a Latin one. Each line of a block holding both gets its
-/// own, and a clamped line gets its paragraph's.
+/// Chrome 153, with 20 px Ahem whose U+2026 has an `rtla` alternate, draws
+/// the alternate under `plaintext` on a Hebrew line and the plain glyph on a
+/// Latin one. Each line of a block holding both gets its own, and a clamped
+/// line gets its paragraph's.
 #[test]
 fn the_ellipsis_is_shaped_in_its_lines_direction() {
     const FAMILY: [FontFamilyName<'static>; 1] =
@@ -584,7 +584,7 @@ fn a_cut_closes_no_box() {
 /// Right to left, a cut through boxes leads the line with its ellipsis and keeps the boxes whole.
 ///
 /// Two nested painted spans over the cut text keep their box parts. They
-/// stay linked in paint order past the ellipsis, and [`check`] follows the
+/// stay linked in box order past the ellipsis, and [`check`] follows the
 /// links.
 #[test]
 fn right_to_left_a_cut_through_boxes_keeps_them() {

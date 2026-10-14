@@ -1,17 +1,14 @@
 //! Text runs: a text item read back with its font, its glyphs and its
 //! clusters.
 //!
-//! **A run's font is its shaping run's.** A text item holds clusters of one
-//! used font, and names the shaping run of its first shaped cluster, whose
-//! font that is. The used font holds what a renderer draws with: the font's
-//! shared bytes, its index, its coordinates and its synthesis. Font
-//! selection copies these from the context's instance. So a layout is read
-//! without the context, and [`TextRun::font`] borrows the layout alone.
-//!
-//! **Glyphs are decoded on the fly** by `fragments::GlyphWalk`. It yields the
-//! paragraph's glyphs, and the line's own at its reshaped edges, in drawing
-//! order and placed exactly. This file converts them to pixels. Nothing is
-//! allocated and nothing restarts.
+//! - A text item holds clusters of one used font and names the shaping run
+//!   of its first shaped cluster, which carries that font. The used font
+//!   holds what a renderer draws with: shared bytes, index, coordinates and
+//!   synthesis, copied from the context's instance during font selection.
+//!   So [`TextRun::font`] borrows the layout alone, with no context.
+//! - `fragments::GlyphWalk` decodes glyphs on the fly: the paragraph's
+//!   glyphs, and the line's own at its reshaped edges, in drawing order and
+//!   placed exactly. This file converts them to pixels without allocating.
 
 use core::fmt;
 use core::ops::Range;
@@ -153,7 +150,9 @@ impl<'a> TextRun<'a> {
         self.item.level
     }
 
-    /// Returns `true` if the run is RTL. Glyphs are drawn from the logical end.
+    /// Returns `true` if the run is RTL.
+    ///
+    /// Glyphs are drawn from the logical end.
     pub fn is_rtl(&self) -> bool {
         self.item.level.is_rtl()
     }
@@ -180,12 +179,12 @@ impl<'a> TextRun<'a> {
             .map_or(RunOrientation::Horizontal, |(_, run)| run.orientation)
     }
 
-    /// Returns the scale across the line for combined text.
+    /// Returns the scale across the line for combined text, or `1.0` for
+    /// other runs.
     ///
-    /// Narrows combined text to one em when narrower font forms are insufficient.
-    /// Scale each glyph about its supplied position; positions are already
-    /// scaled, matching Chrome.
-    /// Returns `1.0` for other runs.
+    /// Narrows combined text to one em where narrower font forms are not
+    /// enough. Scale each glyph about its supplied position; positions are
+    /// already scaled, matching Chrome.
     pub fn combine_scale(&self) -> f32 {
         if self.orientation() != RunOrientation::Combined {
             return 1.0;
@@ -223,8 +222,8 @@ impl<'a> TextRun<'a> {
 
 // What a caret walks on a line.
 impl<'a> Line<'a> {
-    /// Returns its text runs and atomic inlines in visual order, from either
-    /// end, the tail an ellipsis hides among them: the leaves a caret walks.
+    /// Returns the line's text runs and atomic inlines in visual order,
+    /// including the tail an ellipsis hides: the leaves a caret walks.
     pub(crate) fn leaf_items(&self) -> impl DoubleEndedIterator<Item = Item<'a>> + Clone + use<'a> {
         let line = *self;
         let items = self.layout().fragments().line_items(self.id());
@@ -241,31 +240,32 @@ impl<'a> Line<'a> {
 
 // What the other views and the paths read of a run.
 impl<'a> TextRun<'a> {
-    /// The run text item `item` of `line` is.
+    /// Returns text item `item` of `line` as a run.
     #[inline]
     pub(super) fn new(line: Line<'a>, item: &'a FragmentItem) -> Self {
         Self { line, item }
     }
 
-    /// Its line.
+    /// Returns the run's line.
     #[inline]
     pub(super) fn line(&self) -> Line<'a> {
         self.line
     }
 
-    /// Its item.
+    /// Returns the run's fragment item.
     #[inline]
     pub(super) fn item(&self) -> &'a FragmentItem {
         self.item
     }
 
-    /// The generated text a generated run draws.
+    /// Returns the generated text a generated run draws, or `None` for
+    /// content text.
     fn shaped_generated(&self) -> Option<&'a ShapedGenerated> {
         let at = self.item.generated()?;
         self.line.layout().measured().generated().get(at)
     }
 
-    /// Returns the shaping run it is drawn in, as its item names it.
+    /// Returns the shaping run its item names.
     ///
     /// The block's first line is set in its own shaping, where it has one.
     fn shaped_run(&self) -> Option<&'a ShapedRun> {
@@ -273,7 +273,7 @@ impl<'a> TextRun<'a> {
         runs.get(self.item.run()?)
     }
 
-    /// Returns the analysis run it lies in: its shaping run's.
+    /// Returns the analysis run of its shaping run.
     ///
     /// A shaping run never crosses an analysis run. The first line's shaping
     /// runs name the same analysis runs as the ordinary ones.
@@ -283,14 +283,14 @@ impl<'a> TextRun<'a> {
         runs.get(id).map(|run| (id, run))
     }
 
-    /// Its used font, where one draws it.
+    /// Returns its used font, or `None` where none draws it.
     fn used(&self) -> Option<&'a UsedFont> {
         let id = self.used_id()?;
         self.line.layout().fonts().used.get(id)
     }
 
-    /// Its used font's id: its shaping run's font, or for generated text
-    /// the font chosen for it.
+    /// Returns its used font's id: its shaping run's font, or for generated
+    /// text the font chosen for it.
     fn used_id(&self) -> Option<UsedFontId> {
         if let Some(generated) = self.shaped_generated() {
             return Some(generated.font);
@@ -298,7 +298,8 @@ impl<'a> TextRun<'a> {
         self.shaped_run().map(|run| run.font)
     }
 
-    /// The same, on layout's grid.
+    /// Returns its font's extent across the line, on the 26.6 grid, as
+    /// [`block`](Self::block) reports it.
     pub(super) fn block_extent(&self) -> (LayoutUnit, LayoutUnit) {
         let extent = self.used().map_or(Extent::NONE, |used| {
             let metrics = &used.metrics;
@@ -315,16 +316,14 @@ impl<'a> TextRun<'a> {
 
     /// Returns where its glyphs' baseline is from the line box's top.
     ///
-    /// It is its box's baseline less a synthesized raise. Sideways text in a
-    /// line on its central baseline sits on the font's alphabetic baseline,
-    /// under the central one. Upright and combined glyphs are placed about the
-    /// line's own baseline. Only a line on its central baseline has the two
-    /// apart.
+    /// This is its box's baseline less any synthesized raise. On a line with
+    /// a central baseline, sideways text sits on the font's alphabetic
+    /// baseline, below the central one, while upright and combined glyphs are
+    /// placed about the central one.
     fn glyph_baseline(&self) -> LayoutUnit {
-        // A used font draws off its run's baseline only where a style sets
-        // `font-variant-position`, which it may synthesize, or the line's
-        // baseline is the central one, which its alphabetic one stands
-        // under: elsewhere no font is looked for.
+        // Glyphs leave the run's baseline only where a style sets
+        // `font-variant-position`, which may be synthesized, or on a line
+        // with a central baseline. Elsewhere the font lookup is skipped.
         let content = self.line.layout().content();
         if !content.flags.contains(ContentFlags::VARIANT_POSITION)
             && LineBaseline::from_content(content) == LineBaseline::Alphabetic
@@ -354,8 +353,8 @@ impl<'a> TextRun<'a> {
         }
     }
 
-    /// Its clusters in logical order, where each stands along the line and
-    /// how far it reaches: what [`clusters`](Self::clusters) reads.
+    /// Returns the walk of its clusters in logical order, each with its exact
+    /// start and advance: what [`clusters`](Self::clusters) reads.
     #[inline]
     pub(super) fn cluster_walk(&self) -> ClusterWalk<'a> {
         self.line.cluster_walk(self.item)
@@ -364,8 +363,8 @@ impl<'a> TextRun<'a> {
     /// Returns its clusters as carets and marks see them, in logical order.
     ///
     /// A cluster's place is its own extent, or its even share of the ligature
-    /// it is drawn in, as Blink divides a ligature among its graphemes. Its
-    /// emphasis marks and the selection's carets read these.
+    /// it is drawn in, as Blink divides a ligature among its graphemes.
+    /// Emphasis marks and carets read these.
     pub(crate) fn places(&self) -> Places<'a> {
         Places::new(
             self.cluster_walk(),
@@ -375,17 +374,17 @@ impl<'a> TextRun<'a> {
         )
     }
 
-    /// Whether it is combined text, set across its line in one em
+    /// Returns whether it is combined text, set across its line in one em
     /// (`text-combine-upright`).
     #[inline]
     pub(crate) fn is_combined(&self) -> bool {
         self.orientation() == RunOrientation::Combined
     }
 
-    /// Returns a combined run's clusters where carets and selections see them.
+    /// Returns a combined run's clusters as carets and selections see them.
     ///
-    /// They come in logical order, each with where it starts and ends across
-    /// the line from the line box's top. `None` for a run that is not
+    /// They come in logical order, each with its start and end across the
+    /// line from the line box's top. Returns `None` for a run that is not
     /// combined.
     ///
     /// A combined unit's text is horizontal text set across its em, from the
@@ -424,10 +423,10 @@ impl<'a> TextRun<'a> {
         ))
     }
 
-    /// How wide a space is in its font, exactly.
+    /// Returns the exact width of a space in its font.
     ///
-    /// The selection marks a line's end this wide, as Blink draws it one space
-    /// of the font of the fragment ending the line.
+    /// The selection's line-end mark is this wide, as Blink draws one space
+    /// in the font of the fragment ending the line.
     pub(crate) fn space_width(&self) -> InlineLayoutUnit {
         let layout = self.line.layout();
         let content = layout.content();
@@ -479,7 +478,8 @@ pub struct FontInstance<'a> {
     pub index: u32,
     /// The rendering size in pixels.
     ///
-    /// Includes size reductions for synthesized small capitals and positions.
+    /// Includes size reductions for synthesized small capitals and positions,
+    /// and the scale `text-fit` sets on the line.
     pub size: f32,
     /// Normalized variation coordinates in `fvar` axis order.
     ///
@@ -541,7 +541,7 @@ pub struct Glyph {
 
 /// Where a run's glyphs come from.
 ///
-/// There is one per run being read, on the reader's stack and never in a
+/// One exists per run being read, on the reader's stack and never in a
 /// collection, so the text walk's larger size costs nothing. Boxing it, as
 /// the lint asks, would allocate on every read.
 #[allow(clippy::large_enum_variant)]
@@ -551,8 +551,10 @@ enum Source<'a> {
     /// reshaped edges.
     Text(GlyphWalk<'a>),
     /// Generated text's glyphs, shaped once during measurement, drawn from
-    /// the run's start with their own advances. The text is one character,
-    /// from `left`, `advance` wide, its glyphs sharing one text offset.
+    /// the run's start with their own advances.
+    ///
+    /// The text is one character, from `left`, `advance` wide, its glyphs
+    /// sharing one text offset.
     Generated {
         glyphs: Iter<'a, SidecarGlyph>,
         pen: InlineLayoutUnit,
@@ -570,20 +572,20 @@ pub(crate) struct RunGlyphs<'a> {
     /// The run's baseline from the line box's top, less any synthesized
     /// raise, in pixels.
     baseline: f32,
-    /// The scale `text-fit` sets the line's text in, which generated text's
-    /// glyphs take; the text's walk scales its own.
+    /// The scale `text-fit` sets the line's text in, applied to generated
+    /// text's glyphs; the text walk scales its own.
     scale: f32,
 }
 
 impl<'a> RunGlyphs<'a> {
-    /// `run`'s glyphs, in drawing order.
+    /// Creates the walk of `run`'s glyphs, in drawing order.
     #[inline]
     pub(crate) fn new(run: &TextRun<'a>) -> Self {
         let layout = run.line.layout();
         let baseline = run.glyph_baseline().to_px();
         let clusters = &layout.analysis().clusters;
-        // Each arm makes the walk where the result keeps it, so that the
-        // text's walk, a few hundred bytes, is not copied on the way out.
+        // Each arm builds the walk in place, so the text walk, a few hundred
+        // bytes, is not copied out.
         match run.shaped_generated() {
             Some(generated) => {
                 let glyphs = layout.measured().generated().glyphs(generated);
@@ -611,8 +613,8 @@ impl<'a> RunGlyphs<'a> {
 }
 
 impl RunGlyphs<'_> {
-    /// Returns the next glyph, with where its character starts along the line
-    /// and how far it reaches, in pixels.
+    /// Returns the next glyph, with its character's start along the line and
+    /// advance, in pixels.
     ///
     /// The character is its cluster, as the walk placed it, or generated
     /// text's whole run. Text on a path turns the character about its middle.
@@ -636,9 +638,9 @@ impl RunGlyphs<'_> {
     }
 }
 
-/// A text item's glyph as a renderer draws it, in pixels: its run's glyph
-/// baseline `baseline` from the line box's top, and the text it draws a
-/// byte offset of `clusters`.
+/// Converts a text item's exact glyph to pixels, with the run's glyph
+/// baseline `baseline` from the line box's top and its text offset from
+/// `clusters`.
 #[inline]
 fn drawn(glyph: ExactGlyph, baseline: f32, clusters: &ClusterTable) -> Glyph {
     Glyph {
@@ -667,8 +669,8 @@ impl Iterator for RunGlyphs<'_> {
                 left,
                 ..
             } => {
-                // The pen runs at the text's own size from the run's left;
-                // a line `text-fit` scales draws it `scale` times as far.
+                // The pen runs at the text's own size from the run's left; on
+                // a line `text-fit` scales, offsets scale by `scale`.
                 let glyph = glyphs.next()?;
                 let (dx, dy) = (glyph.x_offset, glyph.y_offset);
                 let advance = InlineLayoutUnit::from_text(glyph.advance);
@@ -727,7 +729,7 @@ pub(crate) struct RunClusters<'a> {
 }
 
 impl<'a> RunClusters<'a> {
-    /// `run`'s clusters, in logical order.
+    /// Creates the walk of `run`'s clusters, in logical order.
     pub(crate) fn new(run: &TextRun<'a>) -> Self {
         Self {
             walk: run.cluster_walk(),
@@ -757,7 +759,7 @@ impl Iterator for RunClusters<'_> {
 
 impl ExactSizeIterator for RunClusters<'_> {}
 
-// The extents the views hand out, made from exact positions.
+// The pixel extents the views return, made from exact positions.
 impl InlineExtents {
     /// Returns the extents from `left` to `right`, exact positions along the
     /// line, in pixels.

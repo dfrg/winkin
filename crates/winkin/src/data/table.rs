@@ -12,19 +12,18 @@ use core::ops::Range;
 use super::{HeapBytes, Id, IdRange};
 use crate::work;
 
-/// The widest record whose table grows as a plain vector does: see
-/// [`Table::push`].
+/// The widest record, in bytes, whose table grows as a plain vector does.
+/// See [`Table::push`].
 pub(super) const NARROW_RECORD: usize = 4;
 
-/// Makes room in `items` for `count` in all, as [`Table::reserve`] does.
+/// Makes room in `items` for `count` items in all, as [`Table::reserve`]
+/// does.
 ///
-/// A vector that has never held any gets exactly that many. One that has
-/// grows by doubling where they do not fit, and is left alone where they do.
-/// Where the allocator refuses, nothing happens, and pushing grows it as it
-/// would have.
+/// An unused vector gets exactly `count`. A used one doubles where `count`
+/// does not fit and is left alone where it does. An allocation failure is
+/// ignored; pushes then grow the vector as usual.
 ///
-/// The tables use it, and so do buffers kept beside them, such as the
-/// advances that shaping hands to measurement.
+/// Shaping's advances and measurement's sums use it beside the tables.
 pub(crate) fn make_room<T>(items: &mut Vec<T>, count: usize) {
     let additional = count.saturating_sub(items.len());
     let _refused = if items.capacity() == 0 {
@@ -34,12 +33,11 @@ pub(crate) fn make_room<T>(items: &mut Vec<T>, count: usize) {
     };
 }
 
-/// A vector that only its own id can index.
+/// A vector indexed only by its own id type.
 ///
-/// It is how every per-layout table is stored: one per node column, one for
-/// the items, one for the clusters, and so on. A stage builds its tables by
-/// pushing and freezes them by returning; later stages read them. [`clear`]
-/// keeps the capacity, which is how a rebuild allocates nothing.
+/// Most per-layout tables are one. A stage builds its tables by pushing and
+/// freezes them by returning. [`clear`] keeps the capacity, so a rebuild
+/// allocates nothing.
 ///
 /// [`clear`]: Table::clear
 pub(crate) struct Table<I, T> {
@@ -56,27 +54,23 @@ impl<I: Id, T> Table<I, T> {
         }
     }
 
-    /// Appends `item` and returns its id, or keeps nothing and returns `None`
+    /// Appends `item` and returns its id, or returns `None` and keeps nothing
     /// if the table is full.
     ///
-    /// A table holds at most `I::MAX` items, one short of what `I` can name, so
-    /// that its length, the id one past the end, is always an id too.
+    /// A table holds at most `I::MAX` items, one fewer than `I` can name, so
+    /// its length is always an id too.
     ///
-    /// Nothing here panics, however large the input. The table's owner
-    /// decides what running out means. The builder drops content past its
-    /// limits and reports what it dropped. The font stage falls back to a
-    /// font it already has. A caller cannot know in advance whether its text,
-    /// once collapsed and transformed, crosses a limit. So crossing one is
-    /// never fatal, and this returns an `Option` rather than asserting.
+    /// Never panics. The owner decides what a full table means: the builder
+    /// drops content and reports it, and font selection reuses a font it
+    /// already has. Input cannot tell in advance whether collapsed and
+    /// transformed text crosses a limit, so crossing one is never fatal.
     ///
-    /// A full table of records wider than 4 bytes doubles its room, from one
-    /// at its first push, where a vector's first growth makes room for four.
-    /// A small layout most often holds one style, one font and one
-    /// paragraph, and keeps the room it grew to for good. A table that goes
-    /// on to hold more takes one or two more allocations to reach four.
+    /// A full table of records wider than [`NARROW_RECORD`] doubles its room,
+    /// starting from one, where a vector starts from four. A small layout
+    /// often holds one style, one font and one paragraph, and keeps that room.
     ///
-    /// Narrower records, the per-cluster tables among them, grow as a vector
-    /// does: the size test is a constant, so their pushes test nothing more.
+    /// Narrower records, such as per-cluster tables, grow as a vector does.
+    /// The size test is a constant, so their pushes test nothing more.
     /// Testing every push slows a warm rebuild by about 4%.
     #[inline]
     #[must_use]
@@ -92,9 +86,8 @@ impl<I: Id, T> Table<I, T> {
         Some(I::new(len))
     }
 
-    /// Doubles the room of a full table, from one, never past what the
-    /// table can hold. Where the allocator refuses, the push grows the table
-    /// as a vector would.
+    /// Doubles the room of a full table, starting from one, up to `I::MAX`.
+    /// On allocation failure the push grows the table as a vector would.
     #[cold]
     #[inline(never)]
     fn grow(&mut self) {
@@ -104,13 +97,10 @@ impl<I: Id, T> Table<I, T> {
             .try_reserve_exact(len.max(1).min(I::MAX.saturating_sub(len)));
     }
 
-    /// Appends `item`, which the pushing code knows fits.
+    /// Appends `item` to a table whose length another table's ids bound.
     ///
-    /// Another table's ids already bound this one's length. For example, a
-    /// paragraph's flags are one per paragraph, which a `ParagraphId` names.
-    /// `invariant` says why at the push. Overflow is a bug in the crate, never
-    /// something a caller did. It fails in debug builds and keeps nothing in
-    /// release.
+    /// `invariant` says why the item fits. Overflow is a bug in the crate: it
+    /// fails in debug builds and keeps nothing in release.
     #[inline]
     pub(crate) fn push_bounded(&mut self, item: T, invariant: &'static str) {
         if self.push(item).is_none() {
@@ -118,11 +108,8 @@ impl<I: Id, T> Table<I, T> {
         }
     }
 
-    /// Appends every item of `items` and returns the range of their ids, or
-    /// `None` if they do not all fit.
-    ///
-    /// Where they do not fit it keeps none of them. A table interning lists
-    /// uses it to store each list whole or not at all.
+    /// Appends all of `items` and returns their ids, or returns `None` and
+    /// keeps none of them if they do not all fit.
     #[must_use]
     pub(crate) fn extend_from_slice(&mut self, items: &[T]) -> Option<Range<I>>
     where
@@ -136,11 +123,8 @@ impl<I: Id, T> Table<I, T> {
         Some(start..self.next_id())
     }
 
-    /// Appends every item `items` yields and returns the range of their ids,
-    /// or `None` if they do not all fit.
-    ///
-    /// It works as [`extend_from_slice`](Self::extend_from_slice) does, for
-    /// items made as they are stored, such as a list converted on its way in.
+    /// Appends every item `items` yields and returns their ids, or returns
+    /// `None` and keeps none of them if they do not all fit.
     #[must_use]
     pub(crate) fn extend<It>(&mut self, items: It) -> Option<Range<I>>
     where
@@ -153,18 +137,16 @@ impl<I: Id, T> Table<I, T> {
             return None;
         }
         let start = self.next_id();
-        // Bounded by the room as well, so an iterator that says less than
-        // it yields cannot take the table past what its ids name.
+        // An iterator may yield more than its length says.
         self.items.extend(items.take(room));
         Some(start..self.next_id())
     }
 
-    /// Sets the item `id` names to `item`, first filling the table with
-    /// `fill` up to it where it is shorter.
+    /// Sets the item at `id` to `item`, first padding the table with `fill`
+    /// up to `id`.
     ///
-    /// A table kept beside another table's ids grows this way as later ids
-    /// are reached. The font stage keeps a memo beside a list of fonts like
-    /// this. Nothing happens for an id past what the table can hold.
+    /// Font selection's memo beside a font list grows this way. Does nothing
+    /// for an id at or past `I::MAX`.
     pub(crate) fn set_growing(&mut self, id: I, item: T, fill: T)
     where
         T: Clone,
@@ -181,25 +163,20 @@ impl<I: Id, T> Table<I, T> {
         }
     }
 
-    /// Removes the last item and returns it, or `None` where the table is
-    /// empty.
-    ///
-    /// A table used as a stack pops this way, as the builder's open
-    /// containers do.
+    /// Removes and returns the last item, or `None` if the table is empty.
     #[inline]
     pub(crate) fn pop(&mut self) -> Option<T> {
         self.items.pop()
     }
 
-    /// The number of items the table can still take before
-    /// [`push`](Self::push) refuses.
+    /// The number of items the table can still take.
     #[inline]
     pub(crate) fn remaining(&self) -> usize {
         I::MAX - self.items.len()
     }
 
-    /// The id the next [`push`](Self::push) will return, which is also the end
-    /// of the range of every id handed out so far.
+    /// The id the next [`push`](Self::push) returns: the end of every id
+    /// handed out so far.
     #[inline]
     pub(crate) fn next_id(&self) -> I {
         I::new(self.items.len())
@@ -223,8 +200,7 @@ impl<I: Id, T> Table<I, T> {
         self.items.get(id.get())
     }
 
-    /// The item `id` names, for the stage building the table, or `None` past
-    /// the end.
+    /// The item `id` names, mutably, or `None` past the end.
     #[inline]
     pub(crate) fn get_mut(&mut self, id: I) -> Option<&mut T> {
         self.items.get_mut(id.get())
@@ -240,50 +216,44 @@ impl<I: Id, T> Table<I, T> {
         &self.items[range.start.get()..range.end.get()]
     }
 
-    /// The items `range` names, or `None` where it is out of order or runs
-    /// past the end.
-    ///
-    /// It is [`slice`](Self::slice) for a range a reader cannot vouch for,
-    /// as [`get`](Self::get) is for indexing.
+    /// The items `range` names, or `None` if it is out of order or runs past
+    /// the end.
     #[inline]
     pub(crate) fn get_slice(&self, range: Range<I>) -> Option<&[T]> {
         self.items.get(range.start.get()..range.end.get())
     }
 
-    /// The items `range` names, for the stage building the table, or `None`
-    /// where it is out of order or runs past the end.
+    /// The items `range` names, mutably, or `None` if it is out of order or
+    /// runs past the end.
     #[inline]
     pub(crate) fn get_slice_mut(&mut self, range: Range<I>) -> Option<&mut [T]> {
         self.items.get_mut(range.start.get()..range.end.get())
     }
 
-    /// The last item, or `None` where the table is empty.
+    /// The last item, or `None` if the table is empty.
     #[inline]
     pub(crate) fn last(&self) -> Option<&T> {
         self.items.last()
     }
 
-    /// The last item, for the stage building the table, or `None` where it
-    /// is empty: the top of a table used as a stack.
+    /// The last item, mutably, or `None` if the table is empty.
     #[inline]
     pub(crate) fn last_mut(&mut self) -> Option<&mut T> {
         self.items.last_mut()
     }
 
-    /// The id of the last item, or `None` where the table is empty.
+    /// The id of the last item, or `None` if the table is empty.
     #[inline]
     pub(crate) fn last_id(&self) -> Option<I> {
         self.items.len().checked_sub(1).map(I::new)
     }
 
-    /// The id of the last item `before` holds of, by halving, or `None`
-    /// where it holds of none.
+    /// Finds, by binary search, the id of the last item `before` accepts, or
+    /// `None` if it accepts none.
     ///
-    /// `before` must hold of every item up to some point and of none after,
-    /// as [`slice::partition_point`] requires. A table ordered by where its
-    /// entries start uses it to find the entry holding a position, the last
-    /// starting at or before it. Examples are the paragraph, run or item
-    /// holding a cluster.
+    /// `before` must accept a prefix of the items, as
+    /// [`slice::partition_point`] requires. In a table ordered by start, this
+    /// finds the entry containing a position.
     #[inline]
     pub(crate) fn last_where(&self, before: impl FnMut(&T) -> bool) -> Option<I> {
         work::seek();
@@ -299,7 +269,7 @@ impl<I: Id, T> Table<I, T> {
         &self.items
     }
 
-    /// Every item, in id order, for the stage building the table.
+    /// Every item, mutably, in id order.
     #[inline]
     pub(crate) fn as_mut_slice(&mut self) -> &mut [T] {
         &mut self.items
@@ -324,32 +294,23 @@ impl<I: Id, T> Table<I, T> {
         self.items.clear();
     }
 
-    /// Makes room for `count` items in all, for a stage that knows how many
-    /// it will push.
+    /// Makes room for `count` items in all.
     ///
-    /// Analysis knows the clusters once it has found them, and the builder
-    /// knows the items once it has written them.
+    /// An unused table takes exactly `count`; doubling would leave it about a
+    /// third empty and allocate once per doubling. A used table that lacks
+    /// room doubles, so growing content still takes few allocations. One with
+    /// room keeps its capacity.
     ///
-    /// A table that has never held any takes exactly that many. Growing by
-    /// doubling would leave it about a third empty for good and allocate once
-    /// per doubling on the way. A table that has held items and lacks room
-    /// grows by doubling, so a rebuild of growing content still takes few
-    /// allocations. One with the room keeps what it has, so a rebuild of
-    /// less content keeps the larger capacity.
-    ///
-    /// It never reserves past what the table can hold, and never panics.
-    /// Where the allocator refuses, the pushes grow the table as they would
-    /// have.
+    /// Never reserves past `I::MAX` and never panics. On allocation failure
+    /// pushes grow the table as usual.
     pub(crate) fn reserve(&mut self, count: usize) {
         make_room(&mut self.items, count.min(I::MAX));
     }
 
-    /// Removes every item from `to` on, keeping those before it and the
-    /// allocation.
+    /// Removes every item from `to` on and keeps the allocation.
     ///
-    /// A stage takes back what it wrote on trial this way, as the breaker
-    /// takes back a reshaped line edge it did not keep. Nothing happens where
-    /// `to` is past the end.
+    /// Line breaking rewinds trial lines and reshaped edges this way. Does
+    /// nothing if `to` is past the end.
     #[inline]
     pub(crate) fn truncate(&mut self, to: I) {
         self.items.truncate(to.get());
@@ -357,8 +318,8 @@ impl<I: Id, T> Table<I, T> {
 }
 
 impl<I, T> HeapBytes for Table<I, T> {
-    /// Its capacity, whose items hold nothing on the heap themselves: a
-    /// table whose items do counts theirs on its owner's behalf.
+    /// The table's capacity in bytes. Heap memory its items own is not
+    /// counted; their owner counts it.
     fn heap_bytes(&self) -> usize {
         self.items.heap_bytes()
     }
@@ -378,8 +339,7 @@ impl<I: Id, T: Clone> Clone for Table<I, T> {
         }
     }
 
-    /// Reuses this table's allocation, which a derived `clone_from` would
-    /// not.
+    /// Reuses this table's allocation, which a derived `clone_from` does not.
     fn clone_from(&mut self, source: &Self) {
         self.items.clone_from(&source.items);
     }
@@ -391,8 +351,8 @@ impl<I: Id, T: fmt::Debug> fmt::Debug for Table<I, T> {
     }
 }
 
-/// Reads a row by its id, for tests. The crate reads rows through
-/// [`get`](Table::get), which never panics.
+/// Panicking indexing, for tests only. The crate reads rows with
+/// [`get`](Table::get).
 #[cfg(test)]
 impl<I: Id, T> Index<I> for Table<I, T> {
     type Output = T;
@@ -405,12 +365,12 @@ impl<I: Id, T> Index<I> for Table<I, T> {
 
 /// The most bytes a [`Staging`] room keeps between builds.
 ///
-/// A larger room saves a large table's allocations as it grows, and the
-/// context keeps it for good: at 64 KB the context keeps about 200 KB more
-/// over the bench documents, for 20 to 30 fewer allocations a new article.
+/// A larger room saves allocations for large tables but stays on the context.
+/// At 64 KB the context keeps about 200 KB more over the bench documents, for
+/// 20 to 30 fewer allocations per new article.
 const STAGING_LIMIT: usize = 16384;
 
-/// A table a [`Staging`] room stands in for.
+/// A table that a [`Staging`] room can be lent to.
 pub(crate) trait Staged {
     /// Returns the bytes its capacity takes.
     fn capacity_bytes(&self) -> usize;
@@ -425,20 +385,17 @@ pub(crate) trait Staged {
     fn clear(&mut self);
 }
 
-/// Room in the context that a stage writes a layout's table in, and the
-/// table's capacity before the stage.
+/// A context-owned allocation that a stage writes a layout's table into.
 ///
-/// A new layout's table has no capacity. [`lend`](Self::lend) swaps the
-/// room in, so the stage writes in the context's allocation, and
-/// [`settle`](Self::settle) copies what it wrote to an allocation of its
-/// exact length and takes the room back. A table that already has capacity,
-/// as a rebuilt layout's does, is written in place, and copied to its exact
-/// length only where the stage grew it.
+/// A new layout's table has no capacity. [`lend`](Self::lend) swaps the room
+/// in, and [`settle`](Self::settle) copies the result to an exact-length
+/// allocation and takes the room back. A table with capacity, as in a rebuilt
+/// layout, is written in place and copied only if the stage grew it.
 pub(crate) struct Staging<V> {
     room: V,
     /// Whether a table holds the room.
     lent: bool,
-    /// The bytes the table's capacity took when the stage began.
+    /// The table's capacity in bytes when the stage began.
     before: usize,
 }
 
@@ -454,8 +411,8 @@ impl<V> Staging<V> {
 }
 
 impl<V: Staged> Staging<V> {
-    /// Lends the room to `table` where the table has no capacity of its own,
-    /// and notes the capacity it has otherwise.
+    /// Lends the room to `table` if it has no capacity, and notes its
+    /// capacity otherwise. Does nothing while the room is already lent.
     #[inline]
     pub(crate) fn lend(&mut self, table: &mut V) {
         if self.lent {
@@ -468,12 +425,11 @@ impl<V: Staged> Staging<V> {
         }
     }
 
-    /// Leaves `table` its rows at their exact length where it was lent the
-    /// room or grew, and takes the room back.
+    /// Copies `table` to an exact-length allocation if it was lent the room
+    /// or grew, and takes the room back.
     ///
-    /// A room grown past [`STAGING_LIMIT`] is dropped, and grows again in
-    /// the next table lent it. Where the allocator refuses the copy, the
-    /// table keeps what it has, and the room is made again.
+    /// A room grown past [`STAGING_LIMIT`] is dropped. If the copy fails to
+    /// allocate, the table keeps the room and the staging starts a new one.
     #[inline]
     pub(crate) fn settle(&mut self, table: &mut V) {
         let lent = mem::take(&mut self.lent);

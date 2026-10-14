@@ -1,39 +1,33 @@
-//! `text-wrap-style: balance` and `pretty`: a driver over the greedy fit, a
-//! paragraph at a time.
+//! `text-wrap-style: balance` and `pretty`, a paragraph at a time over the
+//! greedy fit.
 //!
-//! **Greedy first.** Each paragraph is laid out greedily, with floats, the
-//! initial letter, the first line's variant and a clamp. Those lines stay
-//! unless something better is found, so a fine paragraph costs one layout.
-//! Otherwise the lines are taken back, with the host's floats, and laid out
-//! again. A paragraph is the lines between forced breaks, balanced
-//! separately as CSS Text 4 says. Chrome balances only a block's first
-//! paragraph, which is not copied.
+//! Each paragraph is laid out greedily first, with floats, the initial
+//! letter, the first-line variant and a clamp. Those lines stay unless a
+//! better choice is found; otherwise they and the host's floats are taken
+//! back and laid out again. Every paragraph is balanced, as CSS Text 4 says;
+//! Chrome balances only a block's first.
 //!
-//! **`balance`**, as Chrome does it:
-//! - Where the greedy lines are six or fewer and their rooms don't depend on
-//!   where they break, the scorer evens their slack over the same count.
-//!   That needs no float anchored in them, no first-line variant, and a
-//!   searched prefix.
-//! - Otherwise, or where the scorer finds nothing, the room is halved down
-//!   to the narrowest that holds the paragraph in as many lines. It starts
-//!   from four fifths of the lines' average and stops at a pixel, as in
-//!   Chrome's `ParagraphLineBreaker`.
-//! - Beyond Chrome, halving has no line limit and runs beside floats. Every
-//!   band is narrowed alike, so each line leaves even room, as CSS Text 4's
-//!   "remaining space" says. The initial letter's lines are scored too.
-//! - Each trial is a whole greedy layout, taken back. A pixel's precision
-//!   takes at most 25 trials.
+//! `balance`, as Chrome does it:
+//! - Up to six greedy lines whose rooms don't depend on where they break
+//!   are scored over the same count. That needs no float anchored in them,
+//!   no first-line variant, and a searched prefix.
+//! - Otherwise the room is halved to the narrowest that keeps the line
+//!   count, from four fifths of the lines' average to a pixel, as Chrome's
+//!   `ParagraphLineBreaker` does: at most 25 trials, each a whole greedy
+//!   layout.
+//! - Beyond Chrome, halving has no line limit and works beside floats,
+//!   narrowing every band alike as CSS Text 4's "remaining space" says.
+//!   Lines beside an initial letter are balanced in the rooms it leaves.
 //!
-//! **`pretty`**: the scorer weighs a paragraph's last lines where the last
-//! one ends short. Chrome's rule weighs four lines. It calls a line short
-//! when it is one word under a third of its room, or the two lines before it
-//! are hyphenated. `Pretty::Even` weighs six, and also counts any last line
-//! under a fifth. The count of lines stays as the greedy fit made it.
+//! `pretty` scores a paragraph's last lines where the last one ends short,
+//! keeping the greedy line count. Chrome's rule scores four lines and calls
+//! a line short when it is one word under a third of its room, or the two
+//! lines before it are hyphenated. `Pretty::Even` scores six and also counts
+//! any last line under a fifth.
 //!
-//! **A plan is followed while it fits.** A line the scorer ended is fitted
-//! to that end and measured like any candidate. If it no longer fits, the
-//! rest of the paragraph is fitted greedily. That happens when a float lands
-//! elsewhere, a taller line meets another band, or a reshaped edge is wider.
+//! A planned line is fitted to its end like any candidate. Where it no
+//! longer fits, as when a float lands elsewhere or a reshaped edge is wider,
+//! the rest of the paragraph is greedy.
 
 use core::ops::Range;
 
@@ -53,11 +47,8 @@ use crate::style::TextAlign;
 use crate::unit::LayoutUnit;
 use crate::work;
 
-/// Where a line of a paragraph started, which a layout from that line
-/// rewinds to.
-///
-/// It records the host's floats, the lines' tables, the cursor and the
-/// carry.
+/// A layout's state at the start of one of a paragraph's lines: the host's
+/// floats, the lines' tables, the cursor and the carry.
 #[derive(Copy, Clone, Debug)]
 pub(super) struct LayoutMark {
     from: Resume,
@@ -68,8 +59,7 @@ pub(super) struct LayoutMark {
 }
 
 impl LayoutMark {
-    /// Returns where the lines stand now, before the paragraph's line
-    /// `from`.
+    /// Returns the state now, before the paragraph's line `from`.
     pub(super) fn new(
         from: Resume,
         carry: Carry,
@@ -86,8 +76,8 @@ impl LayoutMark {
         }
     }
 
-    /// Takes back every line laid out since, with everything it placed,
-    /// reshaped and settled, as Chrome's `RewindFloats` does for floats.
+    /// Takes back every line laid out since, as Chrome's `RewindFloats`
+    /// does for floats.
     fn rewind(&self, cursor: &mut Cursor, out: &mut Lines, exclusions: &mut dyn Exclusions) {
         exclusions.rewind(self.placing);
         out.rewind(self.stage);
@@ -95,28 +85,24 @@ impl LayoutMark {
     }
 }
 
-/// How many of a paragraph's last lines [`RecentMarks`] keeps: the most the
-/// scorer weighs.
+/// How many of a paragraph's last lines [`RecentMarks`] keeps.
 const RECENT: usize = BALANCE_LINES;
 
-/// The marks of a paragraph's last [`RECENT`] greedy lines, on the stack.
+/// The marks of a paragraph's last [`RECENT`] greedy lines.
 ///
-/// A replan rewinds to the first changed line rather than the paragraph's
-/// start. So a long paragraph whose last lines `pretty` changes is laid out
-/// again only from them.
+/// A replan rewinds to the first changed line, not the paragraph's start.
 pub(super) struct RecentMarks {
     marks: [Option<LayoutMark>; RECENT],
 }
 
 impl RecentMarks {
-    /// Returns no marks.
     fn new() -> Self {
         Self {
             marks: [None; RECENT],
         }
     }
 
-    /// Keeps `mark`, in place of the mark [`RECENT`] lines before it.
+    /// Keeps `mark` in place of the mark [`RECENT`] lines before it.
     pub(super) fn record(&mut self, mark: LayoutMark) {
         if let Some(slot) = self.marks.get_mut(mark.from.line.get() % RECENT) {
             *slot = Some(mark);
@@ -132,23 +118,22 @@ impl RecentMarks {
     }
 }
 
-/// What the driver does with a paragraph once its greedy lines are laid
-/// out.
+/// What to do with a paragraph's greedy lines.
 #[derive(Copy, Clone, Debug)]
 enum WrapDecision {
     /// Keep them.
     Keep,
-    /// Lay them out again to the scorer's ends, `plan`, from `from`, the
-    /// first line that differs.
+    /// Lay them out again to `plan` from `from`, the first line that
+    /// differs.
     Ends { from: WrapLineId, plan: PlannedEnds },
-    /// Keep them, since they end where the scorer's ends, `plan`, do.
+    /// Keep them: they end where `plan` does.
     Scored(PlannedEnds),
     /// Balance them by halving the room.
     Halve(Halving),
 }
 
-/// What halving holds a paragraph to: as many lines as the greedy ones,
-/// reaching as far, in a room of at least `lower`.
+/// The goal of halving: as many lines as the greedy ones, reaching as far,
+/// in a room of at least `lower`.
 #[derive(Copy, Clone, Debug)]
 struct Halving {
     lower: LayoutUnit,
@@ -156,8 +141,7 @@ struct Halving {
     end: ClusterId,
 }
 
-/// Returns what to do with the greedy `lines` under `plan`: lay them out
-/// again from the first line it ends elsewhere, or keep them.
+/// Returns what to do with the greedy `lines` under `plan`.
 fn ends_differ(lines: &[LineRecord], plan: PlannedEnds) -> WrapDecision {
     let differs = plan.iter().find(|&(line, end)| {
         lines
@@ -171,10 +155,10 @@ fn ends_differ(lines: &[LineRecord], plan: PlannedEnds) -> WrapDecision {
 }
 
 impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
-    /// Lays out a paragraph's lines balanced or scored, as
-    /// `text-wrap-style` asks, from where `cursor` stands.
+    /// Lays out a paragraph's lines balanced or scored, from where `cursor`
+    /// stands.
     ///
-    /// Out of line, so that a greedy paragraph's breaking stays compact.
+    /// Out of line, so that greedy breaking stays compact.
     #[inline(never)]
     pub(super) fn wrapped_paragraph<const FLOATS: bool>(
         &mut self,
@@ -197,8 +181,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         match decision {
             WrapDecision::Keep => {}
             WrapDecision::Scored(plan) => {
-                // The lines end where the scorer put their ends, as if laid
-                // out to them.
+                // The lines already end where the scorer put them.
                 for (line, _) in plan.iter() {
                     let id = LineId::new(first.get() + line.get());
                     if let Some(record) = out.lines.get_mut(id) {
@@ -207,8 +190,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
                 }
             }
             WrapDecision::Ends { from, plan } => {
-                // Back to the first line the plan changes, where its mark is
-                // kept, or else to the paragraph's start.
+                // Back to the first changed line's mark, or the paragraph's
+                // start.
                 let mark = *recent.get(from).unwrap_or(&mark);
                 self.take_back(out, &mark, cursor);
                 let (planned, from) = (ParagraphPlan::Planned(plan), mark.from);
@@ -220,7 +203,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         }
     }
 
-    /// Takes back what was laid out since `mark`, and the carry with it.
+    /// Takes back what was laid out since `mark`, with its placement facts
+    /// and carry.
     fn take_back(&mut self, out: &mut Lines, mark: &LayoutMark, cursor: &mut Cursor) {
         mark.rewind(cursor, out, self.exclusions);
         self.scratch.placements.truncate(out.lines.next_id());
@@ -238,9 +222,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         let (Some(first), Some(last)) = (greedy_lines.first(), greedy_lines.last()) else {
             return WrapDecision::Keep;
         };
-        // One line has nothing to even, and an overflowing line leaves
-        // nothing to even against. Chrome declines both, and a line ending at
-        // an emergency break, which its breaker takes only after overflowing.
+        // One line has nothing to even. Chrome also declines an overflowing
+        // line, or one ending at an emergency break.
         if greedy_lines.len() <= 1
             || greedy_lines.iter().any(|line| line.flags.overflowed())
             || lines.area.width() <= LayoutUnit::ZERO
@@ -253,7 +236,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             && !self.holds_floats(out, greedy.clone(), lines.para.start);
         let rule = scorable.then(|| self.score_rule(LineChoice::Balance, last));
         // Chrome's bisection starts from four fifths of the lines' average,
-        // their indents included (`LineWidthSum`).
+        // indents included (`LineWidthSum`).
         let sum = greedy_lines
             .iter()
             .fold(LayoutUnit::ZERO, |sum, line| sum + line.width + line.indent);
@@ -284,8 +267,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         if count <= 1 || para.walks() {
             return WrapDecision::Keep;
         }
-        // The scored lines are the last ones. A first line in its own variant
-        // stays as it is, since the standard prefix does not measure it.
+        // The last lines are scored, except a first line in its own variant,
+        // which the standard prefix does not measure.
         let choice = LineChoice::Pretty(rule);
         let mut from = LineId::new(greedy.end.get() - count.min(choice.scored()));
         if out
@@ -320,11 +303,9 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             })
     }
 
-    /// Returns whether the last of `scored` ends short by `rule`.
-    ///
-    /// Chrome's `ShouldOptimize` calls it short when it is one word under a
-    /// third of its room, or the two lines before it are hyphenated.
-    /// `Pretty::Even` also counts any last line under a fifth of its room.
+    /// Returns whether the last of `scored` ends short by `rule`, as in
+    /// Chrome's `ShouldOptimize`: one word under a third of its room, or
+    /// after two hyphenated lines. `Pretty::Even` adds any under a fifth.
     fn ends_short(&self, scored: &[LineRecord], content_end: ClusterId, rule: Pretty) -> bool {
         let Some(last) = scored.last() else {
             return false;
@@ -355,11 +336,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         start < last && self.opportunity(start..last, false, false).is_some()
     }
 
-    /// Returns whether any of `lines` holds a float anchored after `from`.
-    ///
-    /// Such a float is placed where the lines break, so its band depends on
-    /// them. Floats at the paragraph's start are placed before its first
-    /// line.
+    /// Returns whether any of `lines` holds a float anchored after `from`,
+    /// whose band depends on where the lines break.
     fn holds_floats(&self, out: &Lines, lines: Range<LineId>, from: ClusterId) -> bool {
         let stages = &self.stages;
         let (floats, item_clusters) = (stages.content.floats(), &stages.analysis.item_clusters);
@@ -374,20 +352,18 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         })
     }
 
-    /// Returns what the scorer weighs lines by under `choice`.
+    /// Returns the scorer's weights under `choice`.
     ///
-    /// The last greedy line's band is the room a line has, as Chrome's
-    /// `LineWidths::Default`, at the block's own font size.
+    /// The room is the last greedy line's band, as Chrome's
+    /// `LineWidths::Default`, at the block's font size.
     fn score_rule(&self, choice: LineChoice, last: &LineRecord) -> ScoreRule {
         let justified = self.text_align == TextAlign::Justify;
         let size = self.stages.block_size();
         ScoreRule::new(choice, justified, last.band.width(), size)
     }
 
-    /// Weighs `para`'s lines from `from` to the end of `greedy` by `rule`,
-    /// and plans their ends.
-    ///
-    /// Returns `None` where the scorer finds nothing to choose.
+    /// Scores `para`'s lines from `from` to the end of `greedy` by `rule`,
+    /// and plans their ends; `None` where the scorer finds nothing.
     fn score(
         &mut self,
         out: &Lines,
@@ -399,8 +375,6 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         let scored = out.lines.slice(from..greedy.end);
         let (first, last) = (scored.first()?, scored.last()?);
         let (start, end) = (first.clusters().start, last.clusters().end);
-        // The costs move forward with the break points, from the scored
-        // lines' start.
         let mut costs = self.edge_costs(para, start);
         let scoring = &mut self.scratch.scoring;
         scoring.begin(WrapLineId::new(from.get() - greedy.start.get()));
@@ -410,9 +384,9 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
                 return None;
             }
         }
-        // The scored lines' start, every opportunity inside them, and their
-        // end. A `hanging-punctuation: first` mark hangs only from the
-        // block's first line.
+        // The break points: the start, every opportunity, and the end. A
+        // `hanging-punctuation: first` mark hangs only on the block's first
+        // line.
         let opening = BreakPoint::new(
             start,
             self.start_position(para, &mut costs, start, from == LineId::new(0)),
@@ -427,9 +401,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         let mut next = start;
         while let Some(opportunity) = self.opportunity(next..before_end, false, false) {
             work::step();
-            // Hanging white space after an opportunity belongs to the line
-            // before, as in the greedy fit and Blink's `AppendTrailingSpaces`.
-            // Only an atomic inline's opportunity has any. Measured from the
+            // White space hanging after an opportunity belongs to the line
+            // before, as in Blink's `AppendTrailingSpaces`; measured from the
             // space, the next line would score fuller than it is.
             let mut at = opportunity;
             while at < end && self.clusters.hangs(at) {
@@ -463,7 +436,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// Returns where a line starting at `start` starts on the grid, from the
     /// paragraph's start, less its start cost.
     ///
-    /// `first` marks the block's first line. `costs` moves to `start`.
+    /// `first` marks the block's first line.
     fn start_position(
         &self,
         para: &BreakerParagraph,
@@ -478,10 +451,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// Returns where a line ending at `end` ends on the grid, from the
     /// paragraph's start, and whether it shows a hyphen.
     ///
-    /// It measures by the prefix as the fit does, back to `floor` at most.
-    /// It takes off what hangs and a seam's room, and adds the end cost less
-    /// a `force-end` hang. Reshaped edges are measured only when the line is
-    /// fitted. `costs` moves to `end`.
+    /// It measures by the prefix as the fit does, back to `floor` at most,
+    /// without reshaped edges.
     fn line_end(
         &self,
         para: &BreakerParagraph,
@@ -499,12 +470,11 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         )
     }
 
-    /// Balances a paragraph by halving its room to the narrowest that holds
-    /// it as `halving` says, to a pixel.
+    /// Balances a paragraph by halving its room to the narrowest that meets
+    /// `halving`, to a pixel.
     ///
     /// Each trial rewinds to `mark`, as in Chrome's
-    /// `ParagraphLineBreaker::BisectAvailableWidth`. The final layout narrows
-    /// each line's own band by as much.
+    /// `ParagraphLineBreaker::BisectAvailableWidth`.
     fn halve<const FLOATS: bool>(
         &mut self,
         out: &mut Lines,
@@ -514,11 +484,9 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         cursor: &mut Cursor,
     ) {
         let full = lines.area.width();
-        // Halving past a pixel moves nothing worth the trial.
         let pixel = LayoutUnit::from_px(1.0);
         let (mut lower, mut upper) = (halving.lower, full);
-        // Whether the last lines laid out are the found room's: the greedy
-        // ones at first, then a trial that held.
+        // Whether the last lines laid out are the found room's.
         let mut found = true;
         while lower + pixel < upper {
             work::step();
@@ -536,8 +504,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
                 lower = middle;
             }
         }
-        // A trial that held laid out every line with none overflowing, so its
-        // lines are kept.
+        // A trial that held laid out every line, so its lines stay.
         if found {
             return;
         }

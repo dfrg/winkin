@@ -1,31 +1,31 @@
-//! Whether a font covers a cluster, and which presentation a cluster asks for.
+//! Font coverage of a cluster, and the presentation a cluster asks for.
 //!
 //! **Coverage is all or nothing per cluster.** A font covers a cluster where
-//! harfrust, shaping the cluster in it, draws no `.notdef`. Three tests ask
-//! this against fontwich's [`Charset`], each only where the one before cannot
-//! say:
+//! harfrust shapes the cluster in it with no `.notdef`. Three tests answer
+//! this against fontwich's [`Charset`], each only where the one before
+//! cannot:
 //! - **As written:** every character is mapped, or is a default-ignorable
-//!   that harfrust hides ([`is_default_ignorable`]). Each
-//!   candidate keeps the last [`CharsetPage`] it found, so most characters
-//!   cost one bit test.
+//!   that harfrust hides ([`is_default_ignorable`]). A list's first
+//!   candidates each keep the last [`CharsetPage`] they found, so most
+//!   characters cost one bit test.
 //! - **A lone character with no decomposition:** harfrust draws it only by
-//!   faking it ([`faked_from`]). This catches every ideograph a Latin font
-//!   sends to fallback in one lookup.
+//!   faking it ([`faked_from`]). One lookup rejects a Latin font for an
+//!   ideograph.
 //! - **harfrust's normalizer** (`_hb_ot_shape_normalize`), replayed against
 //!   the charset in its three rounds: decompose, reorder marks, recompose.
 //!   A cluster the font draws in a mix of forms is covered. For example, `ǘ`
 //!   in a font with `ü` and U+0301 but neither `ǘ` nor U+0308 draws as `ü`
-//!   and U+0301. Hangul follows harfrust's Hangul shaper instead.
+//!   and U+0301. Hangul follows harfrust's Hangul shaper.
 //!
-//! The replay skips the Indic, Khmer, Myanmar, USE and Hebrew shapers' own
-//! compositions and the Thai shaper's sara am. It allocates nothing: a
-//! cluster of more than [`MAX_NORMALIZED_CHARS`] characters is tested as
+//! The replay skips the compositions of the Indic, Khmer, Myanmar, USE and
+//! Hebrew shapers, and the Thai shaper's sara am. It allocates nothing. A
+//! cluster longer than [`MAX_NORMALIZED_CHARS`] characters is tested as
 //! written only.
 //!
 //! **A variation sequence** is covered as its base, since harfrust draws the
-//! base where the font lacks the sequence. Cluster matching asks
-//! [`has_sequences`] in Blink's two passes: first the first font with every
-//! sequence of the cluster, then the first font that covers it.
+//! base where the font lacks the sequence. Cluster matching makes Blink's two
+//! passes: the first font with every sequence of the cluster
+//! ([`has_sequences`]), else the first font that covers it.
 
 use fontwich::{Charset, CharsetPage, Font, Presentation};
 
@@ -37,32 +37,31 @@ use crate::unicode::{
     modified_combining_class,
 };
 
-/// The longest cluster harfrust's normalizer is replayed on, in characters.
-/// Past it a cluster -- a pile of combining marks -- is tested as written
-/// only, which keeps the replay's buffers inline and its work bounded.
+/// The longest cluster, in characters, that the normalizer replay takes.
+///
+/// A longer cluster, a pile of combining marks, is tested as written only.
+/// The bound keeps the replay's buffers inline and its work bounded.
 const MAX_NORMALIZED_CHARS: usize = 16;
 
-/// The most jamo harfrust's Hangul shaper writes a character as: a
-/// syllable's leading consonant, vowel and trailing consonant.
+/// The most jamo harfrust's Hangul shaper writes one character as: a
+/// leading consonant, a vowel and a trailing consonant.
 const MAX_JAMO: usize = 3;
 
-/// The longest run of marks harfrust reorders, `MAX_COMBINING_MARKS`
-/// (HarfBuzz's `HB_OT_SHAPE_MAX_COMBINING_MARKS`): a longer run is left in
-/// the order it was written.
+/// The longest run of marks harfrust reorders, as HarfBuzz's
+/// `HB_OT_SHAPE_MAX_COMBINING_MARKS`. A longer run keeps its written order.
 const MAX_COMBINING_MARKS: usize = 32;
 
-/// Whether a cluster of `class` puts nothing on the page of its own.
+/// Returns whether a cluster of `class` draws nothing of its own.
 ///
-/// These are the classes shaping skips: a tab, whose advance is the line's,
-/// a separator, an atomic inline's U+FFFC, and a U+200B the builder made.
-/// They also include the default-ignorables shaped with the text around them
-/// but hidden by the shaper: a soft hyphen, a U+200B the caller wrote, a lone
-/// joiner or a bidi control.
+/// These are the classes shaping skips: a tab, whose advance line layout
+/// sets, a separator, an atomic inline's U+FFFC and a generated U+200B. They
+/// also include the default-ignorables the shaper hides: a soft hyphen, a
+/// U+200B in the text, and any other lone default-ignorable, such as a joiner
+/// or a bidi control.
 ///
-/// Such a cluster takes the font of the text around it rather than asking
-/// the list. So a joiner in a fallback run does not end it, and a kern across
-/// a word joiner is shaped in one font. A `<br>` does not send the walk to
-/// fallback for a character no font maps.
+/// Such a cluster takes the font of the text around it without asking the
+/// list. So a joiner does not end a fallback run, and a kern across a word
+/// joiner shapes in one font. A `<br>` never sends the walk to fallback.
 pub(super) fn draws_nothing(class: ClusterClass) -> bool {
     matches!(
         class,
@@ -78,28 +77,26 @@ pub(super) fn draws_nothing(class: ClusterClass) -> bool {
 
 /// Returns the presentation a cluster asks for.
 ///
-/// Three kinds of cluster ask, as Chrome asks them; everything else is text:
+/// Three kinds of cluster ask, as in Chrome; everything else is text:
 /// - an emoji cluster: an Emoji_Presentation character, a flag, or a
 ///   modifier, tag or ZWJ sequence;
 /// - a pictograph in text presentation;
 /// - a keycap base (`#`, `*` or a digit). It is an emoji character and one of
-///   CSS's Emoji Presentation Participating Code Points, though no
-///   pictograph.
+///   CSS's Emoji Presentation Participating Code Points, but no pictograph.
 ///
-/// VS16 asks for emoji only, and VS15 for text only. Without one, a keycap
-/// asks for emoji only, an emoji cluster for emoji first, and anything else
-/// for text first.
+/// VS16 asks for emoji only, and VS15 for text only. Without a selector, a
+/// keycap sequence (a base and U+20E3) asks for emoji only, an emoji cluster
+/// for emoji first, and anything else for text first.
 ///
 /// `font-variant-emoji` forces a form on a cluster whose first character is
-/// an emoji (Emoji=Yes), a keycap's base among them, unless a selector in the
-/// text overrides it. Chrome 155 sets a keycap as text under `text` and
-/// `unicode`, and a keycap after VS15 as text under `emoji`. Chrome's
-/// glyph callback (`HarfBuzzGetGlyph`) does the same by supplying VS15 or
-/// VS16 to every such character. `text` forces the text form, `emoji` the
-/// emoji form, and `unicode` the form Emoji_Presentation says. Like Chrome,
-/// this does not limit it to the spec's 371 participating bases. A
-/// pictograph that is no emoji is only preferred in the form asked for, as
-/// Chrome's fallback prefers it (`ApplyFontVariantEmojiOnFallbackPriority`).
+/// Emoji=Yes, keycap bases included, unless the text has a selector. `text`
+/// forces the text form, `emoji` the emoji form, and `unicode` the form
+/// Emoji_Presentation gives. Chrome's glyph callback (`HarfBuzzGetGlyph`)
+/// does the same by supplying VS15 or VS16, so Chrome 155 sets a keycap
+/// sequence as text under `text` and `unicode`. Like Chrome, this covers
+/// every emoji, not only the spec's 371 participating bases. Any other
+/// pictograph only prefers the form asked for, as Chrome's fallback does
+/// (`ApplyFontVariantEmojiOnFallbackPriority`).
 pub(super) fn presentation(
     class: ClusterClass,
     text: &str,
@@ -150,22 +147,22 @@ pub(super) fn presentation(
     }
 }
 
-/// Whether `ch` is a keycap base: `#`, `*` or an ASCII digit.
+/// Returns whether `ch` is a keycap base: `#`, `*` or an ASCII digit.
 ///
-/// A keycap base is an emoji character that no pictograph class takes in.
+/// A keycap base is an emoji character that classifies as plain text.
 pub(super) fn is_keycap_base(ch: char) -> bool {
     matches!(ch, '#' | '*' | '0'..='9')
 }
 
-/// Returns the variation sequence that accepts a font for presentation `p`
-/// of `text`, whatever the font's colour.
+/// Returns the variation sequence whose presence in a font's `cmap` accepts
+/// the font for presentation `p` of `text`, whatever its colour.
 ///
-/// Blink's glyph callback asks for it in the font's `cmap` before it tests
-/// the font's colour tables. It is VS16 after its base for emoji alone, and
-/// VS15 for text alone. The base is the character before the written
-/// selector, or the first character where `font-variant-emoji` or a keycap
-/// forced the form. Returns `None` for a presentation that accepts every
-/// font.
+/// Blink's glyph callback looks the sequence up in the font's `cmap` before
+/// it tests the font's colour tables. It is a base and VS16 for emoji only,
+/// or a base and VS15 for text only. The base is the character before the
+/// written selector, or the first character where `font-variant-emoji` or a
+/// keycap forced the form. Returns `None` for a presentation that accepts
+/// every font.
 pub(super) fn presentation_sequence(text: &str, p: Presentation) -> Option<(char, char)> {
     let selector = match p {
         Presentation::EmojiOnly => '\u{FE0F}',
@@ -182,12 +179,12 @@ pub(super) fn presentation_sequence(text: &str, p: Presentation) -> Option<(char
     text.chars().next().map(|first| (first, selector))
 }
 
-/// Whether `ch` is a variation selector that cluster matching asks a font
-/// for with its base.
+/// Returns whether `ch` is a variation selector that cluster matching asks a
+/// font for together with its base.
 ///
 /// These are VS1 to VS256 except VS15 and VS16, which ask for a
-/// presentation instead. Every such selector counts, where Blink counts only
-/// the sequences Unicode defines.
+/// presentation. Every such selector counts, where Blink counts only the
+/// sequences Unicode defines.
 fn is_sequence_selector(ch: char) -> bool {
     is_variation_selector(ch) && !matches!(ch, '\u{FE0E}' | '\u{FE0F}')
 }
@@ -195,9 +192,9 @@ fn is_sequence_selector(ch: char) -> bool {
 /// Returns the variation sequences of the cluster `text` that cluster
 /// matching asks a font for.
 ///
-/// Each is a character other than a selector, with the selector after it,
-/// where [`is_sequence_selector`] says. harfrust looks them up the same way
-/// (`handle_variation_selector_cluster`): it passes over a selector after a
+/// Each is a character that is no selector, followed by a selector that
+/// [`is_sequence_selector`] accepts. harfrust pairs them the same way
+/// (`handle_variation_selector_cluster`), passing over a selector after a
 /// selector. Where the font lacks a sequence, harfrust draws the base and
 /// hides the selector.
 fn sequences(text: &str) -> impl Iterator<Item = (char, char)> + '_ {
@@ -206,26 +203,27 @@ fn sequences(text: &str) -> impl Iterator<Item = (char, char)> + '_ {
         .filter(|&(base, selector)| is_sequence_selector(selector) && !is_variation_selector(base))
 }
 
-/// Whether the cluster `text` holds a variation sequence that cluster
+/// Returns whether the cluster `text` has a variation sequence that cluster
 /// matching asks a font for.
 ///
-/// Where it does, the first pass wants a font with every one of them.
+/// The first pass then looks for a font with every one of them.
 pub(super) fn asks_sequences(text: &str) -> bool {
     sequences(text).next().is_some()
 }
 
-/// Whether `font` has every variation sequence of `text` that cluster
-/// matching asks for.
+/// Returns whether `font` has every variation sequence of `text` that
+/// cluster matching asks for.
 ///
 /// fontwich reads the font's `cmap` format 14. A Default UVS entry counts
-/// where the font maps the base, as harfrust's `Charmap::map_variant` has
-/// it. The first pass asks this of a font that covers the cluster.
+/// where the font maps the base, as in harfrust's `Charmap::map_variant`.
+/// The first pass asks this of a font that covers the cluster.
 pub(super) fn has_sequences(font: &Font, text: &str) -> bool {
     sequences(text).all(|(base, selector)| font.maps_variation_sequence(base, selector))
 }
 
-/// Whether `charset` maps `ch`, with `page` the page last found for it: one
-/// bit test while characters stay on that page.
+/// Returns whether `charset` maps `ch`.
+///
+/// `page` is the page last found, so a character on it costs one bit test.
 pub(super) fn maps<'a>(charset: &'a Charset, ch: char, page: &mut Option<CharsetPage<'a>>) -> bool {
     match *page {
         Some(held) if held.holds(ch) => held.contains(ch),
@@ -236,9 +234,11 @@ pub(super) fn maps<'a>(charset: &'a Charset, ch: char, page: &mut Option<Charset
     }
 }
 
-/// The character whose glyph harfrust draws `ch` with in a font that does
-/// not map it, where it fakes one: U+0020's for the space separators it
-/// fakes, U+2010's for U+2011.
+/// Returns the character whose glyph harfrust draws `ch` with in a font
+/// that does not map `ch`.
+///
+/// It is U+0020 for the space separators harfrust fakes, and U+2010 for
+/// U+2011. Returns `None` for a character harfrust does not fake.
 pub(super) fn faked_from(ch: char) -> Option<char> {
     match ch {
         '\u{A0}' | '\u{2000}'..='\u{200A}' | '\u{202F}' | '\u{205F}' | '\u{3000}' => Some(' '),
@@ -253,8 +253,8 @@ pub(super) const FAKED: [char; 16] = [
     '\u{2007}', '\u{2008}', '\u{2009}', '\u{200A}', '\u{202F}', '\u{205F}', '\u{3000}', '\u{2011}',
 ];
 
-/// Whether harfrust draws `ch` with a font that does not map it, as written:
-/// fakes it, or hides it.
+/// Returns whether harfrust draws `ch` as written in a font that does not
+/// map it, by faking or hiding it.
 fn allowed<'a>(charset: &'a Charset, ch: char, page: &mut Option<CharsetPage<'a>>) -> bool {
     match faked_from(ch) {
         Some(from) => maps(charset, from, page),
@@ -262,12 +262,13 @@ fn allowed<'a>(charset: &'a Charset, ch: char, page: &mut Option<CharsetPage<'a>
     }
 }
 
-/// Whether `charset` draws `text` as written, with `page` its last page.
+/// Returns whether `charset` draws `text` as written, with `page` its last
+/// page found.
 ///
 /// Every character must be mapped or hidden by harfrust. [`covers`] asks
-/// this first. The run loop asks only this of text in the font it last set
-/// text in. A character harfrust fakes is left to [`covers`], which knows
-/// where harfrust may fake it.
+/// this first. The run loop asks only this while it keeps the font it chose
+/// last. A character harfrust fakes is left to [`covers`], which knows where
+/// harfrust may fake it.
 pub(super) fn covers_as_written<'a>(
     charset: &'a Charset,
     text: &str,
@@ -277,8 +278,10 @@ pub(super) fn covers_as_written<'a>(
         .all(|ch| maps(charset, ch, page) || is_default_ignorable(ch))
 }
 
-/// Whether harfrust draws `text`, a cluster, in `font` with no `.notdef`,
-/// with `page` its last page (see the module documentation).
+/// Returns whether harfrust shapes the cluster `text` in `font` with no
+/// `.notdef`, with `page` its last page found.
+///
+/// The module documentation lists the three tests.
 pub(super) fn covers<'a>(font: &'a Font, text: &str, page: &mut Option<CharsetPage<'a>>) -> bool {
     let charset = font.charset();
     if covers_as_written(charset, text, page) {
@@ -297,11 +300,12 @@ pub(super) fn covers<'a>(font: &'a Font, text: &str, page: &mut Option<CharsetPa
     !input.overflowed && Normalizer::new(charset, page).draws(input.as_slice())
 }
 
-/// How much of a cluster a font draws, for when no font draws it all.
+/// How much of a cluster a font draws, for ranking fonts when none draws it
+/// all.
 ///
 /// It records whether the font draws the base (the first visible character)
 /// and how many visible characters it draws. Default-ignorables count in
-/// neither, since they are invisible whether or not a font has them.
+/// neither, since they are invisible in any font.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub(super) struct Score {
     base: bool,
@@ -309,10 +313,10 @@ pub(super) struct Score {
 }
 
 impl Score {
-    /// Whether this is the better of two scores for one cluster.
+    /// Returns whether this score beats `other` for the same cluster.
     ///
-    /// The base counts first, since losing the base loses the word and
-    /// losing a mark loses a nuance. The count decides the rest.
+    /// The base counts first: losing the base loses the word, while losing a
+    /// mark loses a nuance. The count breaks a tie.
     pub(super) fn beats(self, other: Self) -> bool {
         if self.base != other.base {
             return self.base;
@@ -321,8 +325,8 @@ impl Score {
     }
 }
 
-/// How much of `text` `font` draws as written, or `None` where it draws
-/// nothing visible.
+/// Returns how much of `text` `font` draws as written, or `None` where it
+/// draws nothing visible.
 pub(super) fn score(font: &Font, text: &str) -> Option<Score> {
     let charset = font.charset();
     let mut page = None;
@@ -347,8 +351,8 @@ pub(super) fn score(font: &Font, text: &str) -> Option<Score> {
 
 /// A replay of harfrust's normalizer on one cluster against one charset.
 ///
-/// It builds what harfrust would put in its buffer, and whether the font
-/// draws each character.
+/// It builds the characters harfrust's buffer would hold, each marked drawn
+/// or not.
 struct Normalizer<'a, 'p> {
     charset: &'a Charset,
     page: &'p mut Option<CharsetPage<'a>>,
@@ -356,13 +360,12 @@ struct Normalizer<'a, 'p> {
     out: Inline<NormalizedChar, { MAX_NORMALIZED_CHARS * MAX_DECOMPOSITION }>,
 }
 
-/// One character of a cluster being normalized.
+/// One character of a cluster under normalization.
 #[derive(Copy, Clone, Debug)]
 struct NormalizedChar {
     ch: char,
-    /// Whether the font draws it: maps it, or fakes it.
+    /// Whether the font draws it: maps it, or harfrust fakes it.
     drawn: bool,
-    /// Whether it is a mark.
     mark: bool,
     /// The class harfrust reorders it by and tests blocking with.
     ///
@@ -398,15 +401,17 @@ impl<'a, 'p> Normalizer<'a, 'p> {
         }
     }
 
-    /// Whether the font maps `ch`: harfrust's nominal glyph lookup.
+    /// Returns whether the font maps `ch`, as harfrust's nominal glyph lookup
+    /// does.
     fn maps(&mut self, ch: char) -> bool {
         maps(self.charset, ch, self.page)
     }
 
-    /// Whether harfrust draws the cluster `input` with no `.notdef`.
+    /// Returns whether harfrust draws the cluster `input` with no `.notdef`.
     ///
-    /// Runs the three rounds, or the Hangul shaper's, then checks that every
-    /// character is drawn or hidden.
+    /// Runs the three rounds, or for Hangul the Hangul shaper's composition
+    /// and then the first round. Then checks that every character is drawn
+    /// or hidden.
     fn draws(mut self, input: &[char]) -> bool {
         if input.first().is_some_and(|&ch| is_hangul(ch)) {
             // The Hangul shaper's normalizer takes every character as it
@@ -429,11 +434,11 @@ impl<'a, 'p> Normalizer<'a, 'p> {
     /// Runs the first round: decomposes each character of `input` into `out`
     /// as harfrust's normalizer does.
     ///
-    /// A character no mark follows stands alone, taken as written where the
-    /// font maps it. A character and the marks after it decompose together,
-    /// as far as the font allows unless `marks_shortest`. They stay as
-    /// written where they hold a variation selector. Returns whether any
-    /// character took marks, since only then do the other two rounds run.
+    /// A character no mark follows is taken as written where the font maps
+    /// it. A character and the marks after it decompose fully, or only as far
+    /// as the font needs where `marks_shortest`. A group that holds a
+    /// variation selector stays as written. Returns whether any character
+    /// had marks, since only then do the other two rounds run.
     fn decompose_all(&mut self, input: &[char], marks_shortest: bool) -> bool {
         let mut marked = false;
         let mut at = 0;
@@ -479,7 +484,7 @@ impl<'a, 'p> Normalizer<'a, 'p> {
     ///
     /// In order of preference, `ch` is:
     /// - as written, where the font maps it and `shortest`;
-    /// - decomposed as far as the font needs;
+    /// - decomposed into characters the font maps;
     /// - as written, where the font maps it or harfrust fakes it;
     /// - a `.notdef` the third round may yet compose away.
     fn decompose_current(&mut self, ch: char, shortest: bool) {
@@ -499,8 +504,8 @@ impl<'a, 'p> Normalizer<'a, 'p> {
     /// `decompose` does.
     ///
     /// It decomposes one step, then the first half further. Returns how many
-    /// characters it wrote, zero where it cannot. `depth` counts the steps
-    /// so far, which no decomposition exceeds.
+    /// characters it wrote, or zero where it cannot. `depth` counts the steps
+    /// so far, which stay under [`MAX_DECOMPOSITION`].
     fn decompose(&mut self, ab: char, shortest: bool, depth: usize) -> usize {
         if depth >= MAX_DECOMPOSITION {
             return 0;
@@ -528,8 +533,8 @@ impl<'a, 'p> Normalizer<'a, 'p> {
         1 + self.push_second(b)
     }
 
-    /// Writes the second half of a decomposition, where there is one; how
-    /// many characters that wrote.
+    /// Writes `b`, the second half of a decomposition, where there is one.
+    /// Returns how many characters it wrote.
     fn push_second(&mut self, b: Option<char>) -> usize {
         match b {
             Some(b) => {
@@ -540,10 +545,10 @@ impl<'a, 'p> Normalizer<'a, 'p> {
         }
     }
 
-    /// Runs the second round: sorts each run of marks stably by class.
+    /// Runs the second round: sorts each run of marks stably by class, as
+    /// harfrust's insertion sort does.
     ///
-    /// It sorts as harfrust's insertion sort does, and only runs no longer
-    /// than [`MAX_COMBINING_MARKS`].
+    /// A run longer than [`MAX_COMBINING_MARKS`] keeps its order.
     fn reorder(&mut self) {
         let chars = self.out.as_mut_slice();
         let mut at = 0;
@@ -716,12 +721,11 @@ const T_COUNT: u32 = 28;
 const N_COUNT: u32 = V_COUNT * T_COUNT;
 const S_COUNT: u32 = L_COUNT * N_COUNT;
 
-/// Whether harfrust shapes a cluster that starts with `ch` with its Hangul
-/// shaper.
+/// Returns whether harfrust shapes a cluster that starts with `ch` with its
+/// Hangul shaper: a conjoining jamo or a precomposed syllable.
 ///
-/// That holds for a conjoining jamo or a precomposed syllable. A
-/// compatibility or halfwidth jamo composes with nothing, so the default
-/// shaper's normalizer draws it the same way.
+/// A compatibility or halfwidth jamo composes with nothing, so the default
+/// normalizer draws it the same way.
 fn is_hangul(ch: char) -> bool {
     is_leading(ch)
         || is_vowel(ch)
@@ -729,22 +733,23 @@ fn is_hangul(ch: char) -> bool {
         || (S_BASE..S_BASE + S_COUNT).contains(&u32::from(ch))
 }
 
-/// A leading consonant jamo, a syllable's first.
+/// Returns whether `ch` is a leading consonant jamo, a syllable's first.
 fn is_leading(ch: char) -> bool {
     matches!(ch, '\u{1100}'..='\u{115F}' | '\u{A960}'..='\u{A97C}')
 }
 
-/// A vowel jamo, a syllable's second.
+/// Returns whether `ch` is a vowel jamo, a syllable's second.
 fn is_vowel(ch: char) -> bool {
     matches!(ch, '\u{1160}'..='\u{11A7}' | '\u{D7B0}'..='\u{D7C6}')
 }
 
-/// A trailing consonant jamo, a syllable's last.
+/// Returns whether `ch` is a trailing consonant jamo, a syllable's last.
 fn is_trailing(ch: char) -> bool {
     matches!(ch, '\u{11A8}'..='\u{11FF}' | '\u{D7CB}'..='\u{D7FB}')
 }
 
-/// Whether `t` is a trailing consonant a precomposed syllable takes.
+/// Returns whether `t` is a trailing consonant that composes into a
+/// precomposed syllable.
 fn is_combining_trailing(t: u32) -> bool {
     (T_BASE + 1..T_BASE + T_COUNT).contains(&t)
 }
@@ -779,19 +784,19 @@ impl<T: Copy, const N: usize> Inline<T, N> {
         }
     }
 
-    /// Returns the item at `at`.
+    /// Returns the item at `at`, or `None` past the end.
     fn get(&self, at: usize) -> Option<T> {
         self.as_slice().get(at).copied()
     }
 
-    /// Puts `item` at `at`, where there is one.
+    /// Replaces the item at `at`, where there is one.
     fn set(&mut self, at: usize, item: T) {
         if let Some(slot) = self.as_mut_slice().get_mut(at) {
             *slot = item;
         }
     }
 
-    /// Keeps the first `len`.
+    /// Keeps the first `len` items.
     fn truncate(&mut self, len: usize) {
         self.len = self.len.min(len);
     }

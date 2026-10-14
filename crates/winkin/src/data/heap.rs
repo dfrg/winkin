@@ -1,20 +1,16 @@
-//! What a table keeps on the heap.
+//! Heap usage of tables.
 //!
-//! Every table answers [`HeapBytes::heap_bytes`]: the bytes its capacity
-//! takes, counting both what it holds and what it keeps for the next build.
-//! Each stage's data type sums its own tables in a method of its own.
+//! [`HeapBytes::heap_bytes`] counts a table's capacity, used or kept for the
+//! next build. Each stage's data sums its own tables.
 //! [`Layout::heap_bytes`](crate::Layout::heap_bytes) and
-//! [`Context::heap_bytes`](crate::Context::heap_bytes) report the sums stage
-//! by stage, as [`LayoutHeap`](crate::LayoutHeap) and
+//! [`Context::heap_bytes`](crate::Context::heap_bytes) report the sums per
+//! stage as [`LayoutHeap`](crate::LayoutHeap) and
 //! [`ContextHeap`](crate::ContextHeap).
 //!
-//! A table does not count what its items share with others. A used font's
-//! bytes belong to its file, behind an `Arc` the context's font instances
-//! share. Values from other crates that do not report their size count at
-//! their own size only. These are harfrust's font data, instances, plans and
-//! buffer in the shaping context, and fontwich's family lists and character
-//! sets in the font caches. The segmenters keep nothing on the heap, since
-//! their data is compiled in.
+//! Shared memory is not counted here: font bytes shared with the collection
+//! are reported apart, as `ContextHeap::font_data`. Values from read-fonts,
+//! harfrust and fontwich that do not report their size count at their own
+//! size only. Segmenter data is compiled in and takes no heap.
 
 use alloc::boxed::Box;
 use alloc::string::String;
@@ -25,27 +21,25 @@ use hashbrown::HashTable;
 
 /// A value that keeps bytes on the heap.
 pub(crate) trait HeapBytes {
-    /// The bytes its tables' capacity takes on the heap, used or kept for
-    /// the next build: what it owns, not what it shares.
+    /// The heap bytes its capacity takes, used or kept for the next build.
+    /// Excludes memory it shares.
     fn heap_bytes(&self) -> usize;
 }
 
-/// Implements [`HeapBytes`] for a struct as the sum of its fields'.
+/// Implements [`HeapBytes`] for a struct as the sum of its fields.
 ///
-/// Each field is named once. The fields after the `;` keep nothing on the
-/// heap and are not counted.
+/// Fields after the `;` keep nothing on the heap and are not counted.
 ///
 /// ```ignore
 /// heap_bytes! {
 ///     /// Its tables; the initial letter holds nothing on the heap.
-///     MeasuredText { prefix, paragraphs, extents; initial_letter }
+///     RareMeasures { edge_costs, shifts, em_boxes, rubies, kept_boxes; initial_letter }
 /// }
 /// ```
 ///
-/// Every field is named, as a written-out destructuring names it, so a
-/// field added to the struct and not here fails to compile rather than go
-/// uncounted, which `tests/heap.rs` would find only later. A struct whose
-/// sum is more than its fields' is written out.
+/// The impl destructures the struct, so a field missing here fails to
+/// compile instead of going uncounted. A struct that owns more than its
+/// fields' sum writes the impl out.
 macro_rules! heap_bytes {
     (
         $(#[$meta:meta])*
@@ -71,8 +65,8 @@ macro_rules! heap_bytes {
 pub(crate) use heap_bytes;
 
 impl<T> HeapBytes for Vec<T> {
-    /// Its capacity, whose items hold nothing on the heap themselves: a
-    /// vector whose items do counts theirs on its owner's behalf.
+    /// The vector's capacity in bytes. Heap memory its items own is not
+    /// counted; their owner counts it.
     fn heap_bytes(&self) -> usize {
         self.capacity().saturating_mul(size_of::<T>())
     }
@@ -85,17 +79,15 @@ impl HeapBytes for String {
 }
 
 impl<T> HeapBytes for HashTable<T> {
-    /// Its buckets and their control bytes, as hashbrown allocated them.
+    /// The buckets and control bytes hashbrown allocated.
     fn heap_bytes(&self) -> usize {
         self.allocation_size()
     }
 }
 
 impl<T: HeapBytes> HeapBytes for Option<Box<T>> {
-    /// Rare tables, boxed and made the first time a build has any.
-    ///
-    /// Counts the box and its tables where one was made, and nothing where
-    /// none was.
+    /// A box of rare tables, made the first time a build needs one. Counts
+    /// the box and its tables, or zero for `None`.
     fn heap_bytes(&self) -> usize {
         self.as_deref()
             .map_or(0, |rare| size_of::<T>() + rare.heap_bytes())

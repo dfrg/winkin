@@ -54,7 +54,8 @@ fn with_room(style: ComputedStyle<'static>, room: Room) -> ComputedStyle<'static
     ComputedStyle { edges, ..style }
 }
 
-/// Returns `before`, a box with `room` holding `inside`, and `after`, as nodes 1 to 4, in `block`.
+/// Returns `before`, a box with `room` holding `inside`, and `after`, as
+/// nodes 1 to 4, in `block`.
 fn boxed(block: &ComputedBlockStyle<'_>, room: Room, [before, inside, after]: [&str; 3]) -> Layout {
     let spanned = with_room(ahem(), room);
     laid_with(block, 400.0, |b| {
@@ -72,7 +73,8 @@ fn stop(layout: &Layout, position: Position) -> Stop {
     (position.offset, position.affinity, x)
 }
 
-/// Returns the stops a caret visits moving by `motion` from `from`, until it stops.
+/// Returns the stops a caret visits moving by `motion` from `from`, until
+/// it stops.
 fn steps(layout: &Layout, from: Position, motion: Motion) -> Vec<Stop> {
     let mut at = Selection::from(from);
     let mut visited = vec![stop(layout, from)];
@@ -93,7 +95,8 @@ fn node(layout: &Layout, position: Position) -> Node {
     (found.key.0, found.offset)
 }
 
-/// Returns the stops going forward from the text's start and backward from its end.
+/// Returns the stops going forward from the text's start and backward from
+/// its end.
 fn both_ways(layout: &Layout) -> [Vec<Stop>; 2] {
     let end = Position::from(layout.text().len());
     [
@@ -126,8 +129,8 @@ fn screen_ways(layout: &Layout, from_left: usize, from_right: usize) -> [Vec<Sto
     ]
 }
 
-/// A click in a box's room takes the nearer side: the room is split at its
-/// middle, a tie going left. On a glyph the halves decide, and a click in
+/// A click in a box's room takes the nearer side, the room split at its
+/// middle and a tie going left. On a glyph the halves decide, so a click in
 /// the box's first or last glyph lands inside the box.
 ///
 /// From the left: `a` 0..20, room 20..30, `bc` 30..70, room 70..80, `d`
@@ -162,9 +165,9 @@ fn a_click_in_a_boxs_room_takes_the_nearer_side() {
 }
 
 /// Character motion stops once at each box edge each way, on the side it
-/// came from: forward at the trailing edge of what it passed, upstream;
+/// came from: forward at the trailing edge of what it passed, upstream, and
 /// backward at the leading edge, downstream. The next step crosses the room
-/// and the character past it together. Right and left go the same way on
+/// and the following character together. Right and left behave the same on
 /// the screen.
 #[test]
 fn character_motion_lands_on_the_side_it_came_from() {
@@ -312,7 +315,7 @@ fn nested_box_edges_are_crossed_together() {
     assert_eq!(node(&layout, Position::new(3, D)), (4, 0));
 }
 
-/// An empty box holds no position: its edges are one boundary with a side
+/// An empty box holds no position. Its edges are one boundary, with a side
 /// before the box and a side after it.
 ///
 /// `a` 0..20, the box's room 20..40, `b` 40..60.
@@ -335,8 +338,8 @@ fn an_empty_box_holds_no_position() {
     assert_eq!(node(&layout, Position::new(1, D)), (4, 0));
 }
 
-/// In a right-to-left paragraph the sides mirror: forward, leftward on the
-/// screen, lands at the trailing edge of what it passed.
+/// In a right-to-left paragraph the sides mirror: forward, which is leftward
+/// on the screen, lands at the trailing edge of what it passed.
 ///
 /// Alef, a box holding bet and gimel, and dalet, from the left of the line
 /// box: dalet 0..20, room 20..30, gimel 30..50, bet 50..70, room 70..80,
@@ -406,7 +409,7 @@ fn hebrew_in_a_left_to_right_box_keeps_each_side_of_its_edges() {
     assert_eq!(stop(&layout, Position::new(5, D)), (5, D, 80.0));
     assert_eq!(node(&layout, Position::new(5, U)), (3, 4));
     assert_eq!(node(&layout, Position::new(5, D)), (4, 0));
-    // In text order the caret goes on through the box's text.
+    // In text order the caret continues through the box's text.
     let [forward, backward] = both_ways(&layout);
     assert_eq!(
         forward,

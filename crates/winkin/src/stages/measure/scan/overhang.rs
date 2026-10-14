@@ -14,12 +14,12 @@ use crate::unit::{InlineLayoutUnit, LayoutUnit};
 use crate::{unicode, work};
 
 impl Sizing<'_, '_> {
-    /// Returns how far `column` overhangs the text before it and after it,
-    /// by `Config::ruby_overhang`'s rule.
+    /// Returns how far `column` overhangs the text before and after it, by
+    /// `Config::ruby_overhang`'s rule.
     ///
-    /// `widest` is its widest annotation's width and font size. The overhang
-    /// is zero where the text beside it can't be reached over. Keeps in
-    /// `out` how far each tab after the column moves for the overhang.
+    /// `widest` is its widest annotation's width and font size. Zero where the
+    /// text beside can't be reached over. Keeps in `out` how far each tab after
+    /// the column moves.
     pub(super) fn overhang(
         &self,
         column: Overhanging,
@@ -42,18 +42,16 @@ impl Sizing<'_, '_> {
     /// Returns Chrome's overhang (Blink's `GetOverhang`,
     /// `CanApplyStartOverhang` and `CommitPendingEndOverhang`).
     ///
-    /// - Under `auto`: the base's inset or half the annotation's font size,
-    ///   whichever is less, at each side. Under `ruby-align: start`, at the
-    ///   end only. Never further than half the text there.
-    ///   It never reaches a tab.
-    /// - Under `spaces`: as far as the blank beside the column reaches,
-    ///   within the inset ([`blank_before`](Self::blank_before),
-    ///   [`end_take`](Self::end_take)). The start stops where the last
-    ///   column's end overhang reaches.
-    /// - Under `space-between`: none.
+    /// - `auto`: the lesser of the base's inset and half the annotation's font
+    ///   size, at each side, or the end only under `ruby-align: start`. At
+    ///   most half the text there, and never over a tab.
+    /// - `spaces`: as far as the blank beside reaches, within the inset
+    ///   ([`blank_before`](Self::blank_before), [`end_take`](Self::end_take)).
+    ///   The start stops where the previous column's end overhang reaches.
+    /// - `space-between`: none.
     ///
-    /// It reaches only over text no larger than the ruby's, and not marked
-    /// for emphasis on the annotation's side.
+    /// It reaches only over text no larger than the ruby's and not marked for
+    /// emphasis on the annotation's side.
     fn chrome_overhang(
         &self,
         column: Overhanging,
@@ -72,13 +70,11 @@ impl Sizing<'_, '_> {
         if align == RubyAlign::SpaceBetween {
             return (LayoutUnit::ZERO, LayoutUnit::ZERO);
         }
-        // Half the annotation's font size, halved as a whole number of
-        // pixels, as Blink takes it: `FontSize() / 2`. `FontSize()` is the
-        // computed size rounded to a pixel (`ComputedPixelSize`). So a 17px
+        // Half the annotation's font size in whole pixels, as Blink's
+        // `FontSize() / 2` with `FontSize()` rounded (`ComputedPixelSize`): a 17px
         // annotation overhangs by 8, not 8.5 (measured with Chrome 153).
         let half = LayoutUnit::from_px_whole(size).half().floor_px();
-        // The base's inset each side under `space-around`, as Chrome's
-        // `ComputeRubyBaseInset` takes it.
+        // The base's inset each side under `space-around` (`ComputeRubyBaseInset`).
         let inset = RubySpread::from_base(RubyAlign::SpaceAround, space, opportunities).start;
         let spaces = ruby.group.overhang == RubyOverhang::Spaces;
         let (start, end) = match (spaces, align) {
@@ -89,8 +85,6 @@ impl Sizing<'_, '_> {
         };
         let scan = self.scan;
         let side = RubySide::from_position(ruby.group.position, 0);
-        // The text beside may be overhung if it is no larger than the ruby
-        // and not marked for emphasis on the annotation's side.
         let may = |beside: &TextBeside| {
             let text = self.item_text(beside.item);
             let facts = scan.input.content.facts.text(text);
@@ -99,8 +93,8 @@ impl Sizing<'_, '_> {
             scan.input.size(text) <= ruby.size && !marked
         };
         let is_tab = |beside: &TextBeside| scan.input.analysis.clusters.is_tab(beside.cluster);
-        // Under `spaces` the blank is the bound; otherwise half the text,
-        // where no tab stands beside the column.
+        // Under `spaces` the blank bounds it; otherwise half the text, unless a tab
+        // stands beside the column.
         let mut start = match before {
             Some(beside) if may(&beside) && spaces => start.min(self.blank_before(&beside)),
             Some(beside) if may(&beside) && !is_tab(&beside) => {
@@ -123,20 +117,17 @@ impl Sizing<'_, '_> {
         (start, end)
     }
 
-    /// Returns how much blank the text before a column, `beside`, offers it,
-    /// as Chrome's `spaces` reads it (`GetOverhang`).
+    /// Returns the blank the text before a column, `beside`, offers it, as
+    /// Chrome's `spaces` reads it (`GetOverhang`).
     ///
-    /// It counts back from the cluster next to the column: the space
-    /// separators and tabs there, then the blank half of a full-width closing
-    /// mark, or a quarter of a middle dot's. `prefix` holds sums before the
-    /// scan's boundary. A tab counts as wide as on its paragraph's line,
-    /// which the scan has passed: the tabs of a blank run as one.
+    /// Counting back from the column: spaces and tabs, then the blank half of a
+    /// full-width closing mark or a quarter of a middle dot. The tab run counts
+    /// once, as wide as on the paragraph's line.
     fn blank_before(&self, beside: &TextBeside) -> LayoutUnit {
         let prefix = self.prefix;
         let cluster = beside.cluster;
         let clusters = &self.scan.input.analysis.clusters;
-        // A cluster's advance behind the scan: the difference of two sums,
-        // the last of them the scan's own.
+        // A passed cluster's advance: the difference of two sums.
         let advance = |at: ClusterId| -> InlineLayoutUnit {
             let from = prefix.get(at).unwrap_or_default();
             let to = if at == cluster {
@@ -180,13 +171,13 @@ impl Sizing<'_, '_> {
         (blank + InlineLayoutUnit::from_layout(facing)).to_layout()
     }
 
-    /// Returns the blank a mark `mark` that faces a column offers it: half
-    /// a full-width opening mark after the column (`forward`) or closing
-    /// mark before it, or a quarter of a middle dot. It advances `advance`.
+    /// Returns the blank `mark`, advancing `advance`, offers a column it faces:
+    /// half a full-width opening mark after it (`forward`) or closing mark
+    /// before it, or a quarter of a middle dot.
     ///
-    /// A mark set narrower than full width has no blank half left
-    /// (`IsFullWidthGlyph`). A middle dot's quarter counts however wide it
-    /// is set, as Chrome's `MaybeHanKerningMiddle` reads only the character.
+    /// A mark narrower than full width offers none (`IsFullWidthGlyph`). A
+    /// middle dot counts at any width, as Chrome's `MaybeHanKerningMiddle`
+    /// reads only the character.
     fn facing(
         &self,
         item: ItemId,
@@ -209,15 +200,13 @@ impl Sizing<'_, '_> {
         }
     }
 
-    /// Returns how far `column`, whose start overhang is `start`, overhangs
-    /// the blank after it, `beside`, by at most `pending`, and keeps in
-    /// `out` how far each tab there moves.
+    /// Returns how far `column`, with start overhang `start`, overhangs the
+    /// blank after it, `beside`, up to `pending`. Keeps in `out` how far each
+    /// tab there moves.
     ///
-    /// The column ends on its paragraph's line where its full width ends.
     /// Chrome's `CommitPendingEndOverhang` takes the overhang off the items
-    /// after it one by one ([`end_take`](Self::end_take)). The prefix takes
-    /// all of it off the column, so each tab there is sized where Chrome
-    /// sizes it, past what the items before it gave back.
+    /// after the column one by one ([`end_take`](Self::end_take)); the prefix
+    /// takes it off the column. Each tab is sized where Chrome sizes it.
     fn end_overhang(
         &self,
         column: &Overhanging,
@@ -241,14 +230,13 @@ impl Sizing<'_, '_> {
         taken
     }
 
-    /// Returns how much of `pending` the blank after a column, `beside`,
-    /// takes, the column ending `from` along its paragraph's line, as
-    /// Chrome's `CommitPendingEndOverhang` takes it.
+    /// Returns how much of `pending` the blank after a column, `beside`, takes,
+    /// the column ending at `from` on its paragraph's line, as Chrome's
+    /// `CommitPendingEndOverhang` does.
     ///
-    /// Each item takes what it can of what is left: a run of tabs, sized one
-    /// after another from where it starts, its whole width; a run of spaces
-    /// its advance, with the blank of a mark facing the column after it.
-    /// Calls `tab` with each tab and how much the items before it took.
+    /// Each item takes what it can of what is left: a tab run its width, sized
+    /// from where it starts; a space run its advance, plus the blank of a mark
+    /// facing the column. Calls `tab` with each tab and what was taken before it.
     fn end_take(
         &self,
         beside: &TextBeside,
@@ -260,7 +248,7 @@ impl Sizing<'_, '_> {
         let clusters = &self.scan.input.analysis.clusters;
         let mut left = InlineLayoutUnit::from_layout(pending);
         let mut taken = InlineLayoutUnit::ZERO;
-        // Where Chrome's breaker stands, and the item being added up.
+        // Where Chrome's breaker stands, and the run being added up.
         let mut pen = from;
         let (mut spaces, mut tabs) = (InlineLayoutUnit::ZERO, InlineLayoutUnit::ZERO);
         // Takes what an item `width` wide can of what is left.
@@ -320,23 +308,21 @@ impl Sizing<'_, '_> {
         taken.to_layout()
     }
 
-    /// Returns the computed font size of the text holding `cluster`,
-    /// truncated onto the grid as Chrome's `LayoutUnit(font_size)` is.
-    ///
-    /// The holding item is walked to from `item`, the text beside a column.
-    /// Where no item holds it, the block's size is used.
+    /// Returns the computed font size of the text holding `cluster`, truncated
+    /// to the grid as Chrome's `LayoutUnit(font_size)` is. Searches from `item`;
+    /// the block's size where no item holds it.
     fn size(&self, item: ItemId, cluster: ClusterId) -> LayoutUnit {
         let text = self.text(item, cluster);
         LayoutUnit::from_px_truncated(self.scan.input.size(text))
     }
 
-    /// Returns the text facts of the item holding `cluster`, found from
-    /// `item` as [`size`](Self::size) finds it.
+    /// Returns the text facts of the item holding `cluster`, searching from
+    /// `item`.
     fn text(&self, item: ItemId, cluster: ClusterId) -> TextFactsId {
         let content = self.scan.input.content;
         let items = &self.scan.input.analysis.item_clusters;
-        // The first item at the cluster's start may be a box's edge: the
-        // cluster's own item is the first after it that holds clusters.
+        // The first item at the cluster's start may be a box's edge; the cluster's
+        // own is the first after it that holds clusters.
         let id = items.walk_to_cluster(item, cluster);
         if items.range(id).contains(&cluster) {
             self.item_text(id)
@@ -356,17 +342,13 @@ impl Sizing<'_, '_> {
         content.nodes.text_facts(node, self.scan.variant)
     }
 
-    /// Returns the overhang of the Japanese Layout Requirements (JLREQ
-    /// 3.3.7).
+    /// Returns the overhang of the Japanese Layout Requirements (JLREQ 3.3.7).
     ///
-    /// - Under `auto`: over kana only, by at most one annotation em and half
-    ///   the difference.
-    /// - Under `spaces`: into blank only, by at most half the difference.
-    ///   Blank is a space's whole advance, the blank half of a full-width
-    ///   mark facing the column, or a quarter of a middle dot's.
+    /// - `auto`: over kana only, by at most one annotation em and half the
+    ///   difference.
+    /// - `spaces`: into blank only, by at most half the difference.
     ///
-    /// It never reaches over another column, whose annotation is already
-    /// there.
+    /// It never reaches over another column.
     fn jlreq_overhang(
         &self,
         column: Overhanging,
@@ -414,8 +396,7 @@ impl Sizing<'_, '_> {
     }
 }
 
-/// A column as its overhang reads it: how much wider than its base it is,
-/// its container, and the text either side.
+/// A ruby column as its overhang reads it.
 #[derive(Copy, Clone, Debug)]
 pub(super) struct Overhanging {
     /// How much wider the column is than its base.
@@ -423,32 +404,31 @@ pub(super) struct Overhanging {
     /// How many justification opportunities its base has.
     pub(super) opportunities: u32,
     pub(super) ruby: Ruby,
-    /// The text before the column and after it, where it can be reached.
+    /// The text before and after the column, where it can be reached.
     pub(super) before: Option<TextBeside>,
     pub(super) after: Option<TextBeside>,
-    /// Where the column starts along its paragraph's line, before any
-    /// overhang, and its width.
+    /// Where the column starts on its paragraph's line, before overhang, and
+    /// its width.
     pub(super) line_start: InlineLayoutUnit,
     pub(super) width: LayoutUnit,
 }
 
-/// A ruby container as a column's overhang reads it: its ruby properties,
-/// and its text's computed size.
+/// A ruby container's ruby properties and computed font size.
 #[derive(Copy, Clone, Debug)]
 pub(super) struct Ruby {
     pub(super) group: RubyGroup,
     pub(super) size: f32,
 }
 
-/// The text beside a ruby column, as its overhang reads it.
+/// The text beside a ruby column.
 #[derive(Copy, Clone, Debug)]
 pub(super) struct TextBeside {
     pub(super) item: ItemId,
+    /// Its width: up to the column before it, its whole width after it.
     pub(super) width: InlineLayoutUnit,
-    /// The cluster beside the column: the text's last before it, its first
-    /// after it.
+    /// The cluster next to the column.
     pub(super) cluster: ClusterId,
-    /// Before the column, the running sum where the text ends, which the
-    /// scan's prefix doesn't hold yet. Zero after the column.
+    /// Before the column, the running sum where the text ends, not yet in the
+    /// prefix. Zero after it.
     pub(super) end: InlineLayoutUnit,
 }

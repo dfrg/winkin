@@ -194,7 +194,7 @@ fn clusters_across_latin_1_and_the_rest_are_icus_graphemes() {
     }
 }
 
-/// A cluster always ends after U+FFFC, an atomic inline's or the caller's. A
+/// A cluster always ends after U+FFFC, an atomic inline's or the text's. A
 /// mark after one is a cluster of its own, not a continuation.
 #[test]
 fn a_mark_after_an_object_does_not_join_it() {
@@ -326,7 +326,7 @@ fn a_clusters_class_comes_from_its_characters() {
 
 /// A U+200B the builder generates, for a `<wbr>` or the wrap opportunity
 /// collapsing keeps, has a class of its own and is not shaped, as Blink's
-/// control items are not. One the caller writes is shaped with its text. Each
+/// control items are not. One in the input text is shaped with its text. Each
 /// is a break opportunity.
 #[test]
 fn a_generated_zero_width_space_is_a_class_of_its_own() {

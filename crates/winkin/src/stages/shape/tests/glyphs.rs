@@ -8,12 +8,14 @@ use crate::style::FirstLineVariant;
 // Advances -----------------------------------------------------------------
 
 /// Ahem's every glyph is a square of the em, so every cluster advances by
-/// the size, shaped at harfrust scale `size × 65536` as Chrome sets
-/// HarfBuzz up: exactly the size in 16.16 wherever harfrust's arithmetic
-/// lands there, and harfrust's arithmetic to the unit everywhere. The size
-/// is Chrome's effective one, floored to a hundredth of a pixel in `f32`,
-/// so 16.3 px is set at 16.29, as Chrome sets a hundred of Ahem's squares at
-/// 16.3 px 1629 px wide. Every cluster is compact: 4 bytes a cluster.
+/// the size.
+///
+/// Text is shaped at harfrust scale `size × 65536`, as Chrome sets HarfBuzz
+/// up. The advance is exactly the size in 16.16 where harfrust's arithmetic
+/// lands there, and matches harfrust's arithmetic to the unit everywhere.
+/// The size is Chrome's effective one, floored to a hundredth of a pixel in
+/// `f32`: Chrome sets a hundred of Ahem's squares at 16.3 px 1629 px wide.
+/// Every cluster is compact, 4 bytes.
 #[test]
 fn square_glyphs_advance_exactly_at_16_16() {
     let mut fixture = fixture();
@@ -53,14 +55,13 @@ fn square_glyphs_advance_exactly_at_16_16() {
     }
 }
 
-/// A size of zero, a negative size, and one past the largest Chrome allows
-/// each shape: nothing is wide at zero, and a size past ten thousand pixels
-/// is ten thousand, whose em still fits 16.16.
+/// A zero, negative, non-finite or tiny size and one past the largest Chrome
+/// allows each shape. Nothing is wide at zero, and a size past ten thousand
+/// pixels is ten thousand, whose em still fits 16.16.
 #[test]
 fn any_font_size_gives_valid_advances() {
     let mut fixture = fixture();
-    // A size that is not finite is the font stage's zero, as is one too
-    // small for 16.16.
+    // A size that is not finite is zero, as is one too small for 16.16.
     for size in [0.0, -3.0, f32::NAN, 1e-9, 50_000.0, f32::INFINITY] {
         let mut layout = Layout::new();
         fixture.span(&mut layout, &sized(&AHEM_FAMILY, size), "XpÉ x");
@@ -71,8 +72,8 @@ fn any_font_size_gives_valid_advances() {
             "{size}: {advances:?}"
         );
     }
-    // A cluster of several glyphs at ten thousand pixels measures exactly,
-    // its advance summed in 48.16, the prefix's own type.
+    // A cluster of several glyphs at ten thousand pixels measures exactly:
+    // its glyphs are summed in 64 bits, and the sum fits 16.16.
     let mut layout = Layout::new();
     fixture.span(&mut layout, &sized(&LATIN_HEBREW, 50_000.0), "Q");
     let q = fixture.cx.shaped_advances();
@@ -81,7 +82,7 @@ fn any_font_size_gives_valid_advances() {
 
 // Glyphs -------------------------------------------------------------------
 
-/// Latin set in a font with nothing to substitute or move is all compact:
+/// Latin set in a font with nothing to substitute or move is all compact,
 /// 4 bytes a cluster, with nothing in the sidecar.
 #[test]
 fn text_with_nothing_to_substitute_or_move_is_compact() {
@@ -108,9 +109,10 @@ fn text_with_nothing_to_substitute_or_move_is_compact() {
     assert_eq!(shaped.runs.len(), 1, "one run");
 }
 
-/// A character drawn as two glyphs, and a glyph drawn raised, are expanded:
-/// their glyphs are in the sidecar, 16 bytes each, the last marked, and
-/// the cluster's advance is theirs. Everything else stays compact.
+/// A character drawn as two glyphs and a glyph drawn raised are expanded.
+///
+/// Their glyphs are in the sidecar, 16 bytes each, the last marked, and the
+/// cluster's advance is their sum. Everything else stays compact.
 #[test]
 fn several_glyphs_or_an_offset_expand_a_cluster() {
     let mut fixture = fixture();
@@ -138,8 +140,8 @@ fn several_glyphs_or_an_offset_expand_a_cluster() {
     assert_eq!(shaped.glyphs.sidecar.len(), 3);
 }
 
-/// A ligature's glyph is its first cluster's, and the clusters inside it are
-/// continuations with no glyphs and no advance, and unsafe to break before.
+/// A ligature's glyph is its first cluster's. The clusters inside it are
+/// continuations with no glyphs and no advance, unsafe to break before.
 #[test]
 fn a_ligature_leaves_continuations() {
     let mut fixture = fixture();
@@ -172,9 +174,10 @@ fn a_ligature_leaves_continuations() {
 }
 
 /// A ligature that takes a grapheme's first character takes the rest of
-/// that grapheme too: the mark after a ligated `i` is the ligature's
-/// cluster's, and the `i`'s cluster is a continuation, as HarfBuzz's
-/// grapheme cluster level merges them. The same holds right to left.
+/// that grapheme too, as HarfBuzz's grapheme cluster level merges them.
+///
+/// The mark after a ligated `i` is the ligature's cluster's, and the `i`'s
+/// cluster is a continuation. The same holds right to left.
 #[test]
 fn a_ligature_takes_the_rest_of_a_grapheme() {
     let mut fixture = fixture();
@@ -208,13 +211,12 @@ fn a_ligature_takes_the_rest_of_a_grapheme() {
 }
 
 /// In a right-to-left run the words are still in cluster order, a ligature
-/// on its first cluster, and a cluster's several glyphs are in the order
-/// they are drawn, which for Hebrew is the reverse of the text's.
+/// on its first cluster. A cluster's several glyphs are in the order they
+/// are drawn, which for Hebrew is the reverse of the text's.
 ///
-/// Each run is shaped in its level's direction: Latin in a
-/// right-to-left paragraph resolves to level 2 and is shaped left to right,
-/// so it ligates as it would anywhere; step 13, with every cluster at its
-/// paragraph's level, set it right to left, reversed and unligated.
+/// Each run is shaped in its level's direction. Latin in a right-to-left
+/// paragraph resolves to level 2 and is shaped left to right, so it ligates
+/// as it would anywhere.
 #[test]
 fn right_to_left_is_stored_in_cluster_order() {
     let mut fixture = fixture();
@@ -278,12 +280,13 @@ fn right_to_left_is_stored_in_cluster_order() {
     assert_eq!(ids(&layout), expected);
 }
 
-/// Each run is shaped in the direction of its level: Arabic
-/// in a left-to-right paragraph resolves to level 1 and joins exactly as it
-/// does in a right-to-left one, its first letter initial and its last
-/// final. Under a left-to-right override it is set against its direction,
-/// which harfrust reverses as HarfBuzz does. It then draws differently from
-/// the unforced text.
+/// Each run is shaped in the direction of its level.
+///
+/// Arabic in a left-to-right paragraph resolves to level 1 and joins exactly
+/// as in a right-to-left one, its first letter initial and its last final.
+/// Under a left-to-right override it is shaped left to right, against its
+/// direction, as HarfBuzz does, and draws differently from the unforced
+/// text.
 #[test]
 fn a_run_is_shaped_in_its_bidi_levels_direction() {
     let mut fixture = fixture();
@@ -338,8 +341,8 @@ fn a_run_is_shaped_in_its_bidi_levels_direction() {
     assert_ne!(ids(&layout), right_to_left);
 }
 
-/// A cluster no font covers is drawn in its style's primary font, whose
-/// `.notdef` is glyph 0: compact, with its advance.
+/// A cluster no font covers is drawn in its style's primary font as
+/// `.notdef`, glyph 0, compact, with its advance.
 #[test]
 fn a_cluster_no_font_covers_draws_notdef() {
     let mut fixture = fixture_with(&[latin_hebrew()]);

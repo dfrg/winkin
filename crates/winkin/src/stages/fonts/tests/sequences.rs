@@ -3,9 +3,9 @@
 //!   pages over the probe's own fonts, VsA to VsF, at the probe's 50 px so
 //!   that each width is Chrome's;
 //! - the cases where winkin chooses otherwise, each saying why;
-//! - the emoji changes, and a web font wanted for a sequence;
-//! - harfrust, shaping each case in the font chosen, draws the sequence's
-//!   own glyph exactly where fontwich says the font has it.
+//! - the emoji cases, and a web font wanted for a sequence;
+//! - in every case, harfrust shaping in the chosen font draws the
+//!   sequence's own glyph exactly where fontwich says the font has it.
 //!
 //! The probe's fonts are a document's web fonts here, as they were in
 //! Chrome. Fallback never reads a document's fonts. So where the list has
@@ -15,12 +15,14 @@ use super::*;
 use crate::tests::VARIATION_FONTS;
 use crate::unicode::is_variation_selector;
 
-/// The probe's size, at which VsA's base glyph is 35 px and its variants 36,
-/// 37 and 38; VsB's base 40, VsC's 45 and its variants 46 to 48, VsD's 50,
-/// and VsF's 60.
+/// The probe's size in pixels.
+///
+/// At this size VsA's base glyph is 35 px wide and its variants 36, 37 and
+/// 38; VsB's base is 40, VsC's 45 with variants 46 to 48, VsD's 50 and
+/// VsF's 60.
 const PX: f32 = 50.0;
 
-/// The bytes of the probe font `family`.
+/// Returns the bytes of the probe font `family`.
 fn probe_bytes(family: &str) -> &'static [u8] {
     VARIATION_FONTS
         .iter()
@@ -29,12 +31,14 @@ fn probe_bytes(family: &str) -> &'static [u8] {
         .expect("a probe font")
 }
 
-/// A context over the probe's fonts as a document's web fonts, over an
-/// application layer of Ahem, `fonts` and the probe fonts `readable`, each
-/// under a family name of its own (`Fallback VsC`), which fallback reads:
-/// Ahem first, `han` among Han's script fonts where one is named, and
-/// [`keycaps`] as the emoji font, the one Chrome's fallback found for
-/// ❤ and the keycap bases (Segoe UI Emoji).
+/// Returns a fixture with the probe's fonts as a document's web fonts.
+///
+/// Under them is an application layer, which fallback reads, of Ahem,
+/// `fonts`, and copies of the probe fonts `readable`, each under a family
+/// name of its own (`Fallback VsC`). Fallback puts Ahem first, `han` among
+/// Han's script fonts where one is named, and [`keycaps`] as the emoji
+/// font, standing in for Segoe UI Emoji, which Chrome's fallback found for
+/// ❤ and the keycap bases.
 fn probe(fonts: &[TestFont], readable: &[&str], han: Option<&str>) -> Fixture {
     let mut application = LayerBuilder::new(Role::Application);
     assert!(application.add_data(AHEM).is_ok());
@@ -65,7 +69,7 @@ fn probe(fonts: &[TestFont], readable: &[&str], han: Option<&str>) -> Fixture {
     fixture_over(collection, &names)
 }
 
-/// The families listed, as a style names them.
+/// Returns `families` as a style names them.
 fn listed(families: &[&'static str]) -> Vec<FontFamilyName<'static>> {
     families
         .iter()
@@ -85,11 +89,13 @@ type Case = (
     Option<f32>,
 );
 
-/// Lays out each case in `fixture` at the probe's size, and checks the
-/// family each cluster is set in and the width; then that harfrust, shaping
-/// each cluster in the probe font chosen for it, draws a sequence's own
-/// glyph exactly where fontwich says that font has the sequence, and never
-/// a `.notdef` but where no font has the base.
+/// Lays out each case in `fixture` at the probe's size and checks the
+/// family of each cluster and the width.
+///
+/// Then checks that harfrust, shaping each cluster in the probe font chosen
+/// for it, draws a sequence's own glyph exactly where fontwich says that
+/// font has the sequence. It draws a `.notdef` only in case i15, where no
+/// font has the base.
 fn pin(fixture: &mut Fixture, cases: &[Case]) {
     for &(name, families, text, variant, expected, width) in cases {
         let families = listed(families);
@@ -134,8 +140,8 @@ fn pin(fixture: &mut Fixture, cases: &[Case]) {
     }
 }
 
-/// The glyphs harfrust shapes `text` into in the font `bytes` hold, as the
-/// shaping stage sets up its buffer.
+/// Returns the glyphs harfrust shapes `text` into in the font `bytes` hold,
+/// with the buffer set up as shaping sets it up.
 fn harfrust_glyphs(bytes: &[u8], text: &str) -> Vec<u32> {
     let font = harfrust::Font::new(bytes.to_vec(), 0).expect("a font");
     let shaper = harfrust::ShaperFont::new(&font);
@@ -155,9 +161,9 @@ fn harfrust_glyphs(bytes: &[u8], text: &str) -> Vec<u32> {
 const NORMAL: FontVariantEmoji = FontVariantEmoji::Normal;
 
 /// Chrome 153 takes the first font of the whole chain with the sequence,
-/// its Default UVS included, over list order; with none anywhere, the first
-/// font with the base, the selector hidden; each cluster alone. winkin does
-/// the same.
+/// Default UVS included, over list order. With none anywhere, it takes the
+/// first font with the base and hides the selector. Each cluster chooses
+/// alone. winkin does the same.
 #[test]
 fn the_first_font_with_the_sequence_wins_else_the_first_with_the_base() {
     let mut fixture = probe(&[], &[], None);
@@ -170,8 +176,8 @@ fn the_first_font_with_the_sequence_wins_else_the_first_with_the_base() {
         ("i2", &["VsB", "VsA"], "\u{845B}\u{E0100}", NORMAL, &["VsA"], Some(36.0)),
         ("i3", &["VsB", "VsC", "VsA"], "\u{845B}\u{E0100}", NORMAL, &["VsC"], Some(46.0)),
         ("i4", &["VsE", "VsB", "VsA"], "\u{845B}\u{E0100}", NORMAL, &["VsA"], Some(36.0)),
-        // A Default UVS is the sequence: the base's own glyph, in the font
-        // that lists it.
+        // A Default UVS entry counts as the sequence: the base's own glyph,
+        // in the font that lists it.
         ("i5", &["VsB", "VsF"], "\u{845B}\u{E0100}", NORMAL, &["VsF"], Some(60.0)),
         ("i13", &["VsB", "VsA"], "\u{845B}\u{E0101}", NORMAL, &["VsA"], Some(35.0)),
         // Standardized sequences, ∩ VS1, 0 VS1 and a CJK compatibility one.
@@ -189,7 +195,8 @@ fn the_first_font_with_the_sequence_wins_else_the_first_with_the_base() {
         // No font has even the base: the primary font's `.notdef`, the
         // selector hidden.
         ("i15", &["VsE"], "\u{E000}\u{E0100}", NORMAL, &["VsE"], Some(20.0)),
-        // A text selector no font lists falls to the base, as any sequence.
+        // A text selector no font lists falls back to the base, as any
+        // sequence does.
         ("e3", &["VsB"], "\u{2764}\u{FE0E}", NORMAL, &["VsB"], Some(40.0)),
     ];
     pin(&mut fixture, &cases);
@@ -199,16 +206,17 @@ fn the_first_font_with_the_sequence_wins_else_the_first_with_the_base() {
 /// listed font with the base alone only where its system fallback for the
 /// base's script and language happens to be that font: Yu Gothic for Han in
 /// Japanese (i6ja, s9), Cambria Math for ∩ (s3). winkin agrees where a
-/// fallback font for the script has it, the font named for Han here.
+/// fallback font for the script has the sequence, here the font named for
+/// Han.
 ///
-/// And it differs where Chrome's does not: Chrome asks system fallback by
-/// the base alone, one font a script and language, so with `lang=en` it
-/// draws 葛 VS17 in the list's font though Yu Gothic and MS Gothic on the
-/// same system have the sequence (i6, i6zh, i6ko, r5), and `0` VS1 though
-/// Yu Gothic has it (s8). That is a limitation of how Chrome is built, and
-/// winkin doesn't copy it. CSS Fonts 4's cluster matching asks
-/// system fallback "to find a font that supports the full sequence", and
-/// winkin asks every font of its list, and a miss every installed family.
+/// winkin differs elsewhere. Chrome asks system fallback by the base alone,
+/// one font per script and language. So with `lang=en` it draws 葛 VS17 in
+/// the list's font though Yu Gothic and MS Gothic on the same system have
+/// the sequence (i6, i6zh, i6ko, r5), and `0` VS1 though Yu Gothic has it
+/// (s8). winkin does not copy that limitation. CSS Fonts 4's cluster
+/// matching asks system fallback "to find a font that supports the full
+/// sequence". winkin asks every font of its list, and on a miss every
+/// installed family.
 #[test]
 fn fallback_is_asked_for_the_sequence_not_the_base() {
     // i6ja: the script's fallback font has it.
@@ -218,8 +226,8 @@ fn fallback_is_asked_for_the_sequence_not_the_base() {
         ("i6ja", &["VsB", "VsD"], "\u{845B}\u{E0100}", NORMAL, &["Fallback VsC"], Some(46.0)),
         ("s9", &["VsB", "VsD"], "\u{8279}\u{FE00}", NORMAL, &["Fallback VsC"], Some(46.0)),
     ]);
-    // i6 and s8 in Chrome draw the base; here a font no script names, which
-    // the miss reaches, has the sequence, and draws it.
+    // Chrome draws the base for i6 and s8. Here the miss reaches a font no
+    // script names, which has the sequence and draws it.
     let mut fixture = probe(&[], &["VsC"], None);
     #[rustfmt::skip]
     pin(&mut fixture, &[
@@ -228,8 +236,8 @@ fn fallback_is_asked_for_the_sequence_not_the_base() {
         // With none anywhere, still the first with the base.
         ("i7", &["VsB", "VsD"], "\u{845B}\u{E0106}", NORMAL, &["VsB"], Some(40.0)),
     ]);
-    // Whatever the language: Chrome's i6zh and i6ko drew the base, its
-    // fallback for Han in Chinese and Korean lacking the sequence.
+    // The same in every language. Chrome draws the base for i6zh and i6ko,
+    // since its fallback for Han in Chinese and Korean lacks the sequence.
     let families = listed(&["VsB", "VsD"]);
     for tag in ["zh-Hans", "ko", "ja", "en"] {
         let mut style = sized(&families, PX);
@@ -244,7 +252,9 @@ fn fallback_is_asked_for_the_sequence_not_the_base() {
 /// standardized sequence, an ideographic one after an ideograph with no
 /// decomposition, or VS15 and VS16 after an emoji. Any other selector
 /// chooses by the base, though a later font lists the sequence (i10, s5,
-/// i11, measured). winkin asks for every selector but VS15 and VS16. A font
+/// i11, measured).
+///
+/// winkin asks for the sequence of every selector but VS15 and VS16. A font
 /// that lists a sequence draws it, as harfrust would in that font, Unicode
 /// or not. Across the 15,673 pairs real fonts carry, this differs from
 /// Blink's rule only for five Myanmar pairs no Unicode file sanctions.
@@ -255,24 +265,26 @@ fn every_selector_but_vs15_and_vs16_asks_for_its_sequence() {
     let cases: [Case; 3] = [
         // 葛 VS1 is in no Unicode file: Chrome draws VsB's base, 40.
         ("i10", &["VsB", "VsA"], "\u{845B}\u{FE00}", NORMAL, &["VsA"], Some(38.0)),
-        // ∩ VS2 is not in StandardizedVariants: Chrome, VsB's base.
+        // ∩ VS2 is not in StandardizedVariants: Chrome draws VsB's base.
         ("s5", &["VsB", "VsA"], "\u{2229}\u{FE01}", NORMAL, &["VsA"], Some(37.0)),
-        // 豈 decomposes canonically, so Blink takes no IVS after it: Chrome,
-        // VsB's base.
+        // 豈 decomposes canonically, so Blink takes no IVS after it: Chrome
+        // draws VsB's base.
         ("i11", &["VsB", "VsA"], "\u{F900}\u{E0100}", NORMAL, &["VsA"], Some(36.0)),
     ];
     pin(&mut fixture, &cases);
 }
 
-/// The emoji changes, with Chrome 153's answers. A
-/// keycap base is asked its presentation: `#` VS16 goes to the emoji font
-/// (e9), and so does a bare digit under `font-variant-emoji: emoji` (e11).
-/// A monochrome font whose
-/// `cmap` has ❤ VS16 is taken for emoji, as Blink's glyph callback asks for
-/// the sequence before the colour tables (e1). Besides, a
-/// selector wins over the property, a color font lacking VS15's sequence is
-/// passed over for text, and 😀 in text goes to a monochrome fallback font,
-/// which Chrome found in Segoe UI Symbol (e7, e13).
+/// The emoji cases, with Chrome 153's answers:
+/// - a keycap base is asked its presentation: `#` VS16 goes to the emoji
+///   font (e9), and so does a bare digit under `font-variant-emoji: emoji`
+///   (e11);
+/// - a monochrome font whose `cmap` has ❤ VS16 is taken for emoji, as
+///   Blink's glyph callback asks for the sequence before the colour tables
+///   (e1);
+/// - a selector wins over the property;
+/// - a color font lacking VS15's sequence is passed over for text;
+/// - 😀 in text goes to a monochrome fallback font, which Chrome found in
+///   Segoe UI Symbol (e7, e13).
 #[test]
 fn keycaps_and_an_emoji_sequence_choose_as_chrome_does() {
     use FontVariantEmoji::{Emoji, Text};
@@ -299,12 +311,12 @@ fn keycaps_and_an_emoji_sequence_choose_as_chrome_does() {
     pin(&mut fixture, &cases);
 }
 
-/// A web font still loading that has the sequence is wanted, and the text
-/// is drawn meanwhile as though no font had it: the base, in the first font
-/// with it. When the face lands and the host builds again, the cluster takes
-/// the sequence. Chrome 153 keeps its answer from while the font loaded,
+/// A pending web font that has the sequence is wanted. Meanwhile the text
+/// is drawn as though no font had the sequence: the base, in the first font
+/// with it. When the face loads and the host builds again, the cluster takes
+/// the sequence. Chrome 153 keeps the answer it gave while the font loaded,
 /// for new text of the same style too, until something restyles it (L1,
-/// L2, L3). winkin doesn't copy that limitation.
+/// L2, L3). winkin does not copy that limitation.
 #[test]
 fn a_web_font_with_the_sequence_is_wanted_and_takes_it_once_loaded() {
     let mut application = LayerBuilder::new(Role::Application);
@@ -342,18 +354,18 @@ fn a_web_font_with_the_sequence_is_wanted_and_takes_it_once_loaded() {
     assert_eq!(layout.intrinsic_sizes().max_content, 36.0);
 }
 
-/// Text around a sequence keeps its fonts: a font passed over for lacking
-/// a sequence is not ruled out for the text after it, nor is one whose
-/// base-only cover is the second pass's answer; and a run of text in one
-/// font ends at a sequence and goes on after it.
+/// Text around a sequence keeps its fonts. A font passed over for lacking a
+/// sequence is not ruled out for the text after it, nor is one whose
+/// base-only cover is the second pass's answer. A run of text in one font
+/// ends at a sequence and resumes after it.
 #[test]
 fn a_sequence_leaves_the_fonts_of_the_text_around_it() {
     let mut fixture = probe(&[], &[], None);
     let families = listed(&["VsB", "VsE", "VsA"]);
     let style = sized(&families, PX);
     let mut layout = Layout::new();
-    // x is VsB's; 葛 VS17 is VsA's; 葛 and 辻 VS241, which no font has, VsB's;
-    // x and 辻 VS17 again VsB's and VsA's.
+    // x is VsB's; 葛 VS17 is VsA's; 葛 and 辻 VS241, which no font has, are
+    // VsB's; 辻 VS17 is VsA's; each x is VsB's.
     fixture.span(
         &mut layout,
         &style,
@@ -365,9 +377,9 @@ fn a_sequence_leaves_the_fonts_of_the_text_around_it() {
     );
 }
 
-/// A grapheme a span divides between its base and its selector, the spans
-/// shaping alike, is chosen for whole: the sequence, in the font that has
-/// it.
+/// A grapheme divided by a span between its base and its selector, where
+/// the spans shape alike, is chosen for whole: the sequence, in the font
+/// that has it.
 #[test]
 fn a_sequence_divided_by_a_span_is_chosen_for_whole() {
     let mut fixture = probe(&[], &[], None);

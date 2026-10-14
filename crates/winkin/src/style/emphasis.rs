@@ -27,8 +27,7 @@ pub enum EmphasisVerticalSide {
 impl EmphasisVerticalSide {
     /// Returns the side of a vertical typographic line it names.
     ///
-    /// `right` is over in `vertical-rl` and `vertical-lr` alike. Their lines
-    /// are over on the right whichever way they stack.
+    /// `right` is over in both `vertical-rl` and `vertical-lr`.
     pub(crate) fn line_side(self) -> EmphasisSide {
         match self {
             Self::Right => EmphasisSide::Over,
@@ -49,13 +48,10 @@ pub struct EmphasisPosition {
 impl EmphasisPosition {
     /// Returns the side of the line the marks take in a block of `writing_mode`.
     ///
-    /// CSS Text Decoration 4 reads `over` and `under` in horizontal
-    /// typographic modes, and `right` and `left` in vertical ones.
-    /// - `vertical-rl` and `vertical-lr` use the vertical side, as Chrome 153
-    ///   does.
-    /// - `horizontal-tb` and the sideways modes use the horizontal side. The
-    ///   sideways modes are horizontal typographic modes turned whole. Chrome
-    ///   still reads `right` and `left` in them, and this doesn't copy that.
+    /// `vertical-rl` and `vertical-lr` read the vertical side, and
+    /// `horizontal-tb` and the sideways modes read the horizontal one, as
+    /// CSS Text Decoration 4 specifies. Chrome 153 reads the vertical side
+    /// in the sideways modes too.
     pub(crate) fn side(self, writing_mode: WritingMode) -> EmphasisSide {
         if writing_mode.is_vertical_typographic() {
             self.vertical_side.line_side()
@@ -91,11 +87,11 @@ impl EmphasisSkip {
         Self(self.0 | other.0)
     }
 
-    /// Whether a character of emphasis class `class` takes no mark.
+    /// Returns whether a character of emphasis class `class` takes no mark.
     ///
-    /// `wide` says whether its East Asian width is wide or fullwidth. It
-    /// takes no mark where its class is skipped, or where `narrow` is
-    /// skipped and the character isn't wide.
+    /// `wide` says whether its East Asian width is wide or fullwidth. A
+    /// character takes no mark where its class is skipped, or where `narrow`
+    /// is skipped and it is not wide.
     #[inline]
     pub(crate) fn skips(self, class: EmphasisClass, wide: bool) -> bool {
         let skipped = match class {
@@ -118,13 +114,13 @@ impl Default for EmphasisSkip {
 
 /// Layout properties for `text-emphasis`.
 ///
-/// Specifies which text receives marks and their positions. The host supplies
-/// mark shapes and colors when painting.
+/// Sets which text takes marks and on which side. The host supplies mark
+/// shapes and colors when painting.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub struct TextEmphasis {
-    /// Whether `text-emphasis-style` sets marks at all.
+    /// Whether `text-emphasis-style` sets marks.
     ///
-    /// The marks take room on their side, which can make a line taller.
+    /// Marks take room on their side, which can make a line taller.
     pub marks: bool,
     /// `text-emphasis-position`.
     pub position: EmphasisPosition,

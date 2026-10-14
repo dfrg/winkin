@@ -40,15 +40,15 @@ fn math_auto_first_letter_uses_the_source_node_length() {
     assert_eq!(shown(&layout), "[h]i");
 }
 
-/// The computed font size `node`'s own text is set in.
+/// Returns the font size of `node`'s own text.
 fn font_size(content: &Content, node: NodeId) -> f32 {
     node_request(content, node, FirstLineVariant::Standard)
         .font
         .size
 }
 
-/// Returns the content of `text_`, written as one text node under the initial
-/// style, with `::first-letter` asked for in `letter` before it.
+/// Returns the content shown for `text_` as one text node, with a
+/// `::first-letter` in `letter` set before it.
 fn lettered(letter: &ComputedStyle<'_>, text_: &str) -> String {
     let layout = build(|b| {
         b.set_first_letter(LETTER, letter, None);
@@ -58,9 +58,8 @@ fn lettered(letter: &ComputedStyle<'_>, text_: &str) -> String {
 }
 
 /// The first letter takes the punctuation before it, one grapheme cluster,
-/// and the punctuation after it but for opening marks and dashes. This is
-/// CSS Pseudo-Elements 4, section 2.2.1, as Blink's `FirstLetterLength`
-/// reads it.
+/// and the punctuation after it except opening marks and dashes (CSS
+/// Pseudo-Elements 4, section 2.2.1, as Blink's `FirstLetterLength` reads it).
 #[test]
 fn the_first_letter_takes_its_punctuation() {
     let plain = ComputedStyle::initial();
@@ -86,11 +85,10 @@ fn the_first_letter_takes_its_punctuation() {
     }
 }
 
-/// Space between the punctuation and the letter goes with the letter. It is
-/// a space separator other than U+3000. After the letter it goes only where
-/// punctuation follows, and a word separator never goes. Chrome 153 reads
-/// CSS 2.1's older rule and takes no space at all (`“ Once` has no first
-/// letter there).
+/// A space separator other than U+3000 between punctuation and the letter
+/// goes with the letter. After the letter it goes only if punctuation
+/// follows; a word separator never goes. Chrome 153 follows CSS 2.1 and takes
+/// no space (`“ Once` has no first letter there).
 #[test]
 fn space_goes_with_the_first_letter_between_punctuation() {
     let plain = ComputedStyle::initial();
@@ -101,7 +99,7 @@ fn space_goes_with_the_first_letter_between_punctuation() {
         ("A\u{2009}x", "[A]\u{2009}x"),
         ("A \u{201D} said", "[A] \u{201D} said"),
         ("A\u{A0}\u{201D} said", "[A]\u{A0}\u{201D} said"),
-        // U+3000 may stand beside neither: there is no first letter.
+        // U+3000 between them: no first letter.
         ("\u{201C}\u{3000}Once", "\u{201C}\u{3000}Once"),
     ];
     for (written, expected) in cases {
@@ -109,11 +107,10 @@ fn space_goes_with_the_first_letter_between_punctuation() {
     }
 }
 
-/// White space before the first letter that collapses away at the block's
-/// start is not part of it. Kept white space is, as Blink's
-/// `FirstLetterLength` counts it. White space alone leaves the letter to
-/// the next text. A kept segment break ends the first line first, so no
-/// letter follows it.
+/// Collapsed white space before the first letter is not part of it; kept
+/// white space is, as Blink's `FirstLetterLength` counts it. A text of white
+/// space alone leaves the letter to the next text. A kept segment break ends
+/// the first line, so no letter follows it.
 #[test]
 fn kept_white_space_before_the_first_letter_is_part_of_it() {
     let plain = ComputedStyle::initial();
@@ -147,8 +144,9 @@ fn kept_white_space_before_the_first_letter_is_part_of_it() {
     assert_eq!(shown(&layout), "[O]nce");
 }
 
-/// The letter is its box's own text and answers to the box's key. What
-/// follows it is a new node of the text's, so the tree stays a tree.
+/// The letter is the first-letter box's own text, under the box's key. The
+/// rest of the text is a new node under the text's key, so the tree stays a
+/// tree.
 #[test]
 fn the_first_letter_is_its_boxs_own_text() {
     let plain = ComputedStyle::initial();
@@ -183,9 +181,9 @@ fn the_first_letter_is_its_boxs_own_text() {
     assert_eq!(nodes.parent(NodeId::new(3)), NodeId::new(1));
 }
 
-/// Punctuation ending a text leaves the letter to the next text. The box
-/// holds the first text's part alone, as Chrome's does. Where no letter
-/// comes, the box is made plain, as the punctuation would have been.
+/// Punctuation ending a text leaves the letter to the next text, and the box
+/// holds only the first text's part, as in Chrome. If no letter follows, the
+/// box keeps the punctuation in the plain style.
 #[test]
 fn a_first_letter_across_texts_is_boxed_in_the_first() {
     let big = styled(|style| style.font.size = 48.0);
@@ -214,9 +212,9 @@ fn a_first_letter_across_texts_is_boxed_in_the_first() {
     assert_eq!(font_size(content, NodeId::new(1)), 16.0);
 }
 
-/// The first letter comes first or not at all. After an atomic inline or a
-/// forced break there is none. A request once the block holds text is
-/// ignored. A request repeated before a letter comes takes the later styles.
+/// The first letter comes first or not at all: none follows an atomic inline
+/// or a forced break, and a request after text is ignored. A request repeated
+/// before the letter takes the later style.
 #[test]
 fn the_first_letter_comes_first() {
     let plain = ComputedStyle::initial();
@@ -257,7 +255,7 @@ fn the_first_letter_comes_first() {
     assert_eq!(font_size(layout.content(), letter), 48.0);
 }
 
-/// The split is made in the caller's text, as Chrome's is. Each side is
+/// The split is made in the source text, as in Chrome, and each side is
 /// transformed in its own style:
 /// - the letter in the pseudo-element's `text-transform`;
 /// - `ß` as two capitals in its box;
@@ -280,8 +278,8 @@ fn each_side_of_the_first_letter_is_transformed_in_its_own_style() {
     assert_eq!(shown(&layout), "[O]nce Upon");
 }
 
-/// Under `::first-line`, the letter takes its own first-line style on the
-/// first line. Its first-line transform makes the first line's text.
+/// Under `::first-line`, the letter takes its own first-line style, whose
+/// transform makes the first line's text.
 #[test]
 fn the_first_letter_takes_its_first_line_style() {
     use crate::style::TextCase::Uppercase;
@@ -305,12 +303,12 @@ fn the_first_letter_takes_its_first_line_style() {
     let content = layout.content();
     let letter = NodeId::new(1);
     assert_eq!(content.nodes.kind(letter), Some(NodeKind::FirstLetter));
-    // The block's first line restyles nothing, the letter's does.
+    // The block's first line restyles nothing; the letter's does.
     assert!(content.flags.contains(ContentFlags::FIRST_LINE_RESTYLE));
 }
 
-/// Returns each node's kind in pre-order, and whether the font request the
-/// builder lowered its style into sets `initial-letter`.
+/// Returns each node's kind in pre-order, and whether its font request sets
+/// `initial-letter`.
 fn initial_letters(layout: &Layout) -> Vec<(NodeKind, bool)> {
     let content = layout.content();
     content
@@ -333,8 +331,8 @@ fn initial_letter_on_first_line(layout: &Layout, node: NodeId) -> bool {
         .is_set()
 }
 
-/// A dropped initial letter three lines tall, which also sets a
-/// `vertical-align` no initial letter takes.
+/// Returns a dropped initial letter three lines tall, with a
+/// `vertical-align` that no initial letter uses.
 fn dropped() -> ComputedStyle<'static> {
     styled(|style| {
         style.line.initial_letter = InitialLetter {
@@ -347,17 +345,17 @@ fn dropped() -> ComputedStyle<'static> {
 }
 
 /// The block has one initial letter: the inline box at its start that sets
-/// `initial-letter` (CSS Inline 3, section 7.3.1). Its `vertical-align` is
-/// `baseline`. Everywhere else the builder interns the property's used value,
-/// `normal`, so a style that sets it belongs to the initial letter.
+/// `initial-letter` (CSS Inline 3, section 7.3.1), with `vertical-align:
+/// baseline`. Elsewhere the builder interns the used value `normal`, so only
+/// the initial letter's facts set it.
 #[test]
 fn only_the_box_at_the_blocks_start_is_its_initial_letter() {
     use NodeKind::{Block, Box as InlineBox, Text};
     let letter = dropped();
     let plain = ComputedStyle::initial();
-    // The first box to set it takes it, after collapsible white space that
-    // leaves its node empty, and inside a box that opens first. The box
-    // inside it and the box after it do not.
+    // The first box to set it is the initial letter, even after collapsed
+    // white space and inside a box that opens first. The box inside it and
+    // the box after it are not.
     let layout = build(|b| {
         b.text(key(1), "  ");
         b.open_box(key(2), &plain, None);
@@ -392,7 +390,7 @@ fn only_the_box_at_the_blocks_start_is_its_initial_letter() {
         content.facts.box_facts(taken).align,
         VerticalAlign::Baseline
     );
-    // After text, and after white space that is kept, no box is one.
+    // After text or kept white space, no box is one.
     let pre = white_space(WhiteSpaceCollapse::Preserve);
     for (root, before) in [(&plain, "Once "), (&pre, " ")] {
         let (layout, _) = build_with(
@@ -408,7 +406,7 @@ fn only_the_box_at_the_blocks_start_is_its_initial_letter() {
         let letters = initial_letters(&layout);
         assert!(letters.iter().all(|&(_, set)| !set), "{before:?}");
     }
-    // Nor is the block, which is no inline box.
+    // Nor is the block, which is not an inline box.
     let (layout, _) = build_with(
         &ComputedBlockStyle::new(&letter),
         BuildOptions::default(),
@@ -419,9 +417,9 @@ fn only_the_box_at_the_blocks_start_is_its_initial_letter() {
     assert!(initial_letters(&layout).iter().all(|&(_, set)| !set));
 }
 
-/// `::first-letter` is the initial letter where it opens the block, in its
-/// first-line style too. White space kept before the letter is in its box,
-/// so the box still opens the block.
+/// `::first-letter` opening the block is the initial letter, in its
+/// first-line style too. Kept white space before the letter is inside its
+/// box, so the box still opens the block.
 #[test]
 fn a_first_letter_is_the_initial_letter_where_it_opens_the_block() {
     use NodeKind::{Block, FirstLetter, Text};
@@ -456,13 +454,12 @@ fn a_first_letter_is_the_initial_letter_where_it_opens_the_block() {
     }
 }
 
-/// The first letter's box and the first line as they are set: the box's
-/// ends along the line and across it, where the text keyed 1 after it
-/// starts, and the first line's height.
+/// The first letter's box edges (inline, then block), the inline start of
+/// the text keyed 1, and the first line's height.
 type LetterSet = (Option<((f32, f32), (f32, f32))>, Option<f32>, Option<f32>);
 
-/// Returns how the first letter and the first line are set, built in Ahem
-/// at 10 px and broken at 100 px.
+/// Returns how the first letter and first line are set in Ahem at 10 px,
+/// broken at 100 px.
 fn letter_set(
     root: &ComputedStyle<'_>,
     letter: &ComputedStyle<'_>,
@@ -493,16 +490,16 @@ fn letter_set(
     (piece, after, height)
 }
 
-/// A `::first-letter` that sets `initial-letter` is the block's initial
-/// letter after an empty box, as at the block's start, and its
-/// `vertical-align` does not apply. After kept white space in a box of its
-/// own it is no initial letter, and its `vertical-align` applies.
+/// A `::first-letter` that sets `initial-letter` is the initial letter after
+/// an empty box, as at the block's start, and ignores its `vertical-align`.
+/// After kept white space in a box it is not an initial letter, and its
+/// `vertical-align` applies.
 ///
 /// Chrome 153 on Windows sets the letter after an empty box as at the
 /// block's start, in Ahem at 10 px on 10 px lines: the box 37 px wide
 /// (DirectWrite's hinted ink; 35 unhinted) and the text after it at 36
 /// (35). Chrome also makes the letter after a kept space an initial letter,
-/// its box from 10 to 47, which the lines here do not set.
+/// its box from 10 to 47; this crate does not.
 #[test]
 fn a_first_letter_after_an_empty_box_is_the_initial_letter() {
     let root = ComputedStyle {
@@ -539,7 +536,7 @@ fn a_first_letter_after_an_empty_box_is_the_initial_letter() {
         b.close_box();
         b.text(key(1), text_);
     });
-    // The letter's own 10 px, raised 10 px, which makes the line 20 tall.
+    // The letter's own 10 px, raised 10 px, makes the line 20 px tall.
     assert_eq!(
         after_space,
         (Some(((10.0, 20.0), (0.0, 10.0))), Some(20.0), Some(20.0))

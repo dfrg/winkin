@@ -15,11 +15,11 @@
 //!   generated text;
 //! - `positions`: `font-variant-position`;
 //! - `vertical`: line metrics in vertical lines;
-//! - `walk`: choosing for many clusters at once against asking each one.
+//! - `walk`: choosing for many clusters at once against asking each one;
 //! - `shared`: fonts shared between contexts.
 //!
-//! Every layout here is built through [`Fixture::build`], which runs
-//! [`check`] each time.
+//! The fixtures from [`fixture_with`] and [`fixture_over`] run [`check`] on
+//! each build. A test that drives a builder itself calls [`check`] after.
 
 use alloc::string::String;
 
@@ -67,8 +67,8 @@ use crate::{BoxSize, BuildOptions, ComputedBlockStyle, Context, Layout, LayoutBu
 
 // Fonts --------------------------------------------------------------------
 
-/// A Han font: CJK ideographs and punctuation, and digits, spaces and a
-/// combining acute besides, which it must not take from the fonts before it.
+/// A Han font with CJK ideographs and punctuation, plus digits, a space and
+/// a combining acute, which it must not take from the fonts before it.
 fn han() -> TestFont {
     let mut font = TestFont::new(
         "Test Han Acute",
@@ -85,13 +85,14 @@ fn han() -> TestFont {
     font
 }
 
-/// ASCII, the breaking hyphen, and nothing else: not a no-break space, an em
-/// space, a non-breaking hyphen or a joiner.
+/// A font with ASCII and the breaking hyphen only: no no-break space, em
+/// space, non-breaking hyphen or joiner.
 fn plain() -> TestFont {
     TestFont::new("Test Plain Hyphen", &[(0x20, 0x7E), (0x2010, 0x2010)])
 }
 
-/// A space, `e`, `a` and the combining acute, and no precomposed letter.
+/// A font with a space, `e`, `a` and the combining acute, and no
+/// precomposed letter.
 fn marks() -> TestFont {
     TestFont::new(
         "Test Acute Marks",
@@ -99,7 +100,7 @@ fn marks() -> TestFont {
     )
 }
 
-/// Combining marks and nothing to put them on.
+/// A font with two combining marks and no base letters.
 fn only_marks() -> TestFont {
     TestFont::new("Test Only Marks", &[(0x301, 0x302)])
 }
@@ -116,8 +117,8 @@ fn emoji() -> TestFont {
     font
 }
 
-/// A color font with the keycap bases and ❤ U+2764, as an emoji font has
-/// them: `#`, `*`, the digits.
+/// A color font with the keycap bases (`#`, `*`, the digits) and ❤ U+2764,
+/// as an emoji font has them.
 fn keycaps() -> TestFont {
     let mut font = TestFont::new(
         "Test Keycaps",
@@ -136,9 +137,11 @@ fn pages() -> TestFont {
     )
 }
 
-/// A variable font over ASCII: a weight axis from 100 to 900 about 400, a
-/// width axis from 50 to 100, and an optical size axis from 6 to 72 about
-/// 12, each moving every advance.
+/// A variable font over ASCII with three axes: weight from 100 to 900,
+/// default 400; width from 50 to 100, default 100; optical size from 6 to
+/// 72, default 12.
+///
+/// The weight and optical size axes move every advance.
 fn variable() -> TestFont {
     let mut font = TestFont::new("Test Three Axes", &[(0x20, 0x7E)]);
     font.axes = vec![
@@ -167,9 +170,9 @@ fn variable() -> TestFont {
     font
 }
 
-/// ASCII with small capitals, `smcp`, for the lowercase letters, a quarter
-/// of an em narrower than the letters; `c2sc` for the capitals; and
-/// superscript figures, `sups`.
+/// A font over ASCII and `ß` with small capitals for the lowercase letters
+/// (`smcp`, a quarter of an em wide), small capitals for the capitals
+/// (`c2sc`), and superscript figures (`sups`).
 fn capitals() -> TestFont {
     let mut font = TestFont::new("Test Capitals", &[(0x20, 0x7E), (0xDF, 0xDF)]);
     font.alternates = vec![
@@ -180,9 +183,8 @@ fn capitals() -> TestFont {
     font
 }
 
-/// ASCII and U+00B2 ², with superscript and subscript figures of their own,
-/// `sups` and `subs`, and nothing else of either: the shape of most fonts
-/// that have the features.
+/// A font over ASCII and U+00B2 ² whose `sups` and `subs` cover the figures
+/// and nothing else, as in most fonts that have the features.
 fn superscripts() -> TestFont {
     let mut font = TestFont::new("Test Superscripts", &[(0x20, 0x7E), (0xB2, 0xB2)]);
     font.alternates = vec![
@@ -192,8 +194,8 @@ fn superscripts() -> TestFont {
     font
 }
 
-/// As [`superscripts`], but its superscript figures reached only through a
-/// contextual lookup, whose context is the figure alone.
+/// A font over ASCII whose superscript figures are reached only through a
+/// contextual `sups` lookup, whose context is the figure alone.
 fn contextual_superscripts() -> TestFont {
     let mut font = TestFont::new("Test Contextual Superscripts", &[(0x20, 0x7E)]);
     font.contextual = vec![(*b"sups", ('0'..='9').map(|ch| (ch, 300)).collect())];
@@ -212,8 +214,8 @@ fn capitals_variable() -> TestFont {
 
 /// Returns a fixture over an application layer of Ahem and then `fonts`.
 ///
-/// Its fallback puts Ahem at the head of every chain and Test Han Acute among
-/// Han's script fonts. It runs [`check`] on each build.
+/// Its fallback puts Ahem at the head of every chain and Test Han Acute
+/// among Han's script fonts. It runs [`check`] on each build.
 fn fixture_with(fonts: &[TestFont]) -> Fixture {
     Fixture::new(
         fonts,
@@ -230,8 +232,8 @@ fn fixture_over(collection: Collection, families: &[String]) -> Fixture {
 }
 
 impl Fixture {
-    /// The family `font` is an instance of, or `"none"` for a used font with
-    /// no instance.
+    /// Returns the family of used font `font`, or `"none"` for a used font
+    /// with no instance.
     fn family(&self, layout: &Layout, font: UsedFontId) -> &str {
         let used = used_font(layout, font);
         let Some(drawn) = used.instance.as_ref() else {
@@ -240,7 +242,7 @@ impl Fixture {
         self.family_name(drawn.key()).unwrap_or("unknown")
     }
 
-    /// The family each cluster is set in.
+    /// Returns the family each cluster is set in.
     fn families(&self, layout: &Layout) -> Vec<&str> {
         (0..layout.analysis().clusters.len())
             .map(|at| {
@@ -250,37 +252,39 @@ impl Fixture {
             .collect()
     }
 
-    /// The primary font of the block's own text.
+    /// Returns the primary font of the block's own text.
     fn primary(&self, layout: &Layout) -> UsedFontId {
         let block = layout.content().nodes.text_facts(NodeId::BLOCK, Standard);
         primary_id(layout, block).expect("a font request")
     }
 }
 
-/// The text's font runs: every line's but a first one restyled.
+/// Returns the text's font runs: those of every line but a restyled first
+/// line.
 fn text_runs(layout: &Layout) -> &FontRuns {
     layout.fonts().runs(Standard)
 }
 
-/// The used font the text's `cluster` is set in, by search, or `None` where
-/// no run reaches it.
+/// Returns the used font of the text's `cluster`, or `None` where no run
+/// reaches it.
 fn cluster_font(layout: &Layout, cluster: usize) -> Option<UsedFontId> {
     let runs = text_runs(layout);
     runs.get(runs.containing(ClusterId::new(cluster))?)
         .map(|run| run.font)
 }
 
-/// The text's font runs, in order, for a test to index and pair.
+/// Returns the text's font runs in order.
 fn ordered_runs(layout: &Layout) -> Vec<FontRun> {
     text_runs(layout).iter().map(|(_, run)| *run).collect()
 }
 
-/// The used font `font` of `layout`, which it has.
+/// Returns used font `font` of `layout`, which must exist.
 fn used_font(layout: &Layout, font: UsedFontId) -> &UsedFont {
     layout.fonts().used.get(font).expect("a used font")
 }
 
-/// The coordinates the used font of `cluster` is at, as 2.14 bits.
+/// Returns the normalized coordinates of the used font of `cluster`, as
+/// 2.14 bits.
 fn cluster_coords(layout: &Layout, cluster: usize) -> Vec<i16> {
     let font = cluster_font(layout, cluster).expect("a run");
     let drawn = used_font(layout, font)
@@ -290,9 +294,11 @@ fn cluster_coords(layout: &Layout, cluster: usize) -> Vec<i16> {
     drawn.coords.to_vec()
 }
 
-/// The features the used font of `cluster` shapes with, as tags and values,
-/// but the `chws` every style asks for under `text-spacing-trim: normal`,
-/// which [`chws_is_on_unless_trimming_is_off_or_the_settings_say`] pins.
+/// Returns the features the used font of `cluster` shapes with, as names
+/// and values, without the `chws` that `text-spacing-trim: normal` turns on.
+///
+/// `full::chws_is_on_unless_trimming_is_off_or_the_settings_say` pins that
+/// `chws`.
 fn cluster_features(layout: &Layout, cluster: usize) -> Vec<(&'static str, u16)> {
     cluster_all_features(layout, cluster)
         .into_iter()
@@ -300,7 +306,8 @@ fn cluster_features(layout: &Layout, cluster: usize) -> Vec<(&'static str, u16)>
         .collect()
 }
 
-/// The features the used font of `cluster` shapes with, every one.
+/// Returns every feature the used font of `cluster` shapes with, as names
+/// and values; an unlisted tag reads `"other"`.
 fn cluster_all_features(layout: &Layout, cluster: usize) -> Vec<(&'static str, u16)> {
     let font = cluster_font(layout, cluster).expect("a run");
     let drawn = used_font(layout, font)
@@ -337,14 +344,14 @@ fn cluster_all_features(layout: &Layout, cluster: usize) -> Vec<(&'static str, u
         .collect()
 }
 
-/// The used font `cluster` is set in.
+/// Returns the used font `cluster` is set in.
 fn cluster_used_font(layout: &Layout, cluster: usize) -> &UsedFont {
     let font = cluster_font(layout, cluster).expect("a run");
     used_font(layout, font)
 }
 
-/// A normalized coordinate for `value` on an axis from `default` to `max`,
-/// as 2.14 bits, within a unit of how `fvar` rounds it.
+/// Asserts that `bits`, a 2.14 normalized coordinate, is `fraction` of the
+/// way from the axis default to its end, within one unit of rounding.
 fn near(bits: i16, fraction: f32) {
     let expected = (fraction * 16384.0) as i32;
     assert!(
@@ -361,7 +368,7 @@ fn near(bits: i16, fraction: f32) {
 /// - There are no first-line runs, since the content checked here never asks
 ///   for them.
 /// - A hyphen or an ellipsis is generated only where the content may draw
-///   one.
+///   one, in style order, and its runs tile its string.
 fn check(layout: &Layout, cx: &Context) {
     let fonts = layout.fonts();
     let used = fonts.used.len();
@@ -393,7 +400,7 @@ fn check(layout: &Layout, cx: &Context) {
     }
     assert!(!fonts.has_first_line_runs());
     // Generated text appears only where the content may need it, in style
-    // order. Each text's runs reach its end one after the other.
+    // order. Each text's runs end in order at its string's end.
     let soft_hyphens = layout
         .analysis()
         .flags
@@ -420,11 +427,11 @@ fn check(layout: &Layout, cx: &Context) {
     }
 }
 
-/// Font selection keeps nothing per cluster and 8 bytes a run.
+/// Font selection keeps nothing per cluster and 8 bytes per run.
 ///
 /// A font request's resolution takes 12 bytes. A used font is mostly its
-/// line metrics and how it is shaped and drawn. The optional shaping part
-/// is no larger for being optional. A feature it shapes with takes 6 bytes.
+/// line metrics and its shared instance, whose `Option` costs nothing
+/// extra. A feature it shapes with takes 6 bytes.
 #[test]
 fn records_keep_their_sizes() {
     use core::mem::size_of;

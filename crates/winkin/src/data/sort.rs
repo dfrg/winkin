@@ -1,27 +1,25 @@
-//! The crate's in-place sorts: an insertion sort for a few items and a
-//! heapsort for more.
+//! The crate's in-place sorts: insertion sort for a few items, heapsort for
+//! more.
 //!
-//! [`sort_by`] and [`sort_by_key`] return at once where the items are in
-//! order already, and are not stable. [`stable_sort_by_key`] is the
-//! insertion sort alone, for the few lists whose equal keys keep their
-//! order. The crate sorts a line's shifted boxes, the segments of a line
-//! that bidi reorders, a paragraph's bracket pairs, a line's ruby columns
-//! by their ends, and a font's feature settings. These come a few at a time.
+//! [`sort_by`] and [`sort_by_key`] are unstable and return at once on sorted
+//! input. [`stable_sort_by_key`] is insertion sort alone. The crate sorts
+//! short lists: a line's shifted boxes, a reordered line's box parts, bracket
+//! pairs, ruby columns, feature settings and hyphenated texts.
 //!
-//! `core`'s sort is about 4 KB of code for each type it sorts. These are a
-//! few hundred bytes and allocate nothing. They are as quick for a few
-//! items, and the heapsort takes n log n steps for any input. `core`'s is
-//! two or three times quicker on hundreds of items.
+//! `core`'s sort is about 4 KB of code per type; these are a few hundred
+//! bytes and allocate nothing. They match it on a few items and take
+//! n log n steps on any input, but `core`'s is two to three times faster on
+//! hundreds of items.
 
 use core::cmp::Ordering;
 
-/// How many items are few enough to sort by insertion, which is quickest
-/// for so few, as `core`'s sort finds.
+/// The most items sorted by insertion, which is fastest for so few, as in
+/// `core`'s sort.
 const FEW: usize = 20;
 
 /// Sorts `items` by `compare`, smallest first.
 ///
-/// Not stable: items that compare equal come out in no order promised.
+/// Not stable: equal items come out in no promised order.
 pub(crate) fn sort_by<T>(items: &mut [T], mut compare: impl FnMut(&T, &T) -> Ordering) {
     if items.is_sorted_by(|a, b| compare(a, b) != Ordering::Greater) {
         return;
@@ -30,8 +28,8 @@ pub(crate) fn sort_by<T>(items: &mut [T], mut compare: impl FnMut(&T, &T) -> Ord
         insert_each(items, &mut compare);
         return;
     }
-    // A heap of them all, the largest on top; then the top swapped to the
-    // end, and the heap before it made whole again, until one is left.
+    // Heapsort: build a max-heap, then swap the top to the end and restore
+    // the heap before it until one item is left.
     for node in (0..items.len() / 2).rev() {
         sift_down(items, node, &mut compare);
     }
@@ -45,22 +43,19 @@ pub(crate) fn sort_by<T>(items: &mut [T], mut compare: impl FnMut(&T, &T) -> Ord
 
 /// Sorts `items` by `key`, smallest first, as [`sort_by`] does.
 ///
-/// Not stable: items whose keys are equal come out in no order promised.
+/// Not stable: items with equal keys come out in no promised order.
 pub(crate) fn sort_by_key<T, K: Ord>(items: &mut [T], mut key: impl FnMut(&T) -> K) {
     sort_by(items, |a, b| key(a).cmp(&key(b)));
 }
 
-/// Sorts `items` by `key`, smallest first, keeping items with equal keys in
-/// the order they came.
+/// Sorts `items` by `key`, smallest first, keeping equal keys in order.
 ///
-/// Moves each item back past those before it with a greater key: n² steps
-/// at worst, so it is for short lists.
+/// Insertion sort: n² steps at worst, so only for short lists.
 pub(crate) fn stable_sort_by_key<T, K: Ord>(items: &mut [T], mut key: impl FnMut(&T) -> K) {
     insert_each(items, &mut |a, b| key(a).cmp(&key(b)));
 }
 
-/// Sorts `items` by moving each back past those before it that compare
-/// greater, which keeps equal items in order.
+/// Sorts `items` by insertion, which keeps equal items in order.
 fn insert_each<T>(items: &mut [T], compare: &mut impl FnMut(&T, &T) -> Ordering) {
     for at in 1..items.len() {
         let mut to = at;
@@ -76,8 +71,7 @@ fn insert_each<T>(items: &mut [T], compare: &mut impl FnMut(&T, &T) -> Ordering)
     }
 }
 
-/// Moves the item at `node` of `heap` down until neither of the items below
-/// it is larger.
+/// Moves the item at `node` down `heap` until neither child is larger.
 fn sift_down<T>(heap: &mut [T], mut node: usize, compare: &mut impl FnMut(&T, &T) -> Ordering) {
     loop {
         let left = node.saturating_mul(2).saturating_add(1);

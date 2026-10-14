@@ -21,13 +21,13 @@ fn collection() -> Collection {
     test_fonts::collection(&[latin], ahem_fallback())
 }
 
-/// Paragraphs of ruby, `repeat` times over: columns with annotations on
-/// both sides and levels stacked, spread every `ruby-align`, reaching
-/// over their neighbours every `ruby-overhang`, a ruby in a base, a
-/// forced break in one, emphasis marks over and under bases and over an
-/// annotation's text, in a justified block: so the measure stage sizes
-/// columns and levels, the breaker makes each line's room, and line
-/// layout writes annotation lines.
+/// Builds paragraphs of ruby `repeat` times in a justified block.
+///
+/// Columns have annotations on both sides and stacked levels, under every
+/// `ruby-align` and `ruby-overhang`, with a ruby in a base, a forced break
+/// in one, and emphasis marks over and under bases and over annotation
+/// text. Measurement sizes columns and levels, the breaker makes each
+/// line's room, and line layout writes annotation lines.
 fn document(layout: &mut Layout, cx: &mut Context, repeat: usize) {
     let families = [
         FontFamilyName::named("Test Latin"),
@@ -169,13 +169,12 @@ fn read(layout: &Layout) -> f32 {
     sum
 }
 
-/// A warm rebuild of ruby and emphasis marks allocates nothing, under
-/// Chrome's rules and the alternatives (`Config::ruby_overhang`,
-/// `Config::emphasis_room`); nor does breaking it again at any width
-/// broken at before, nor reading it back: the columns and their levels
-/// are ranges of one table each, the breaker's level bands and line
-/// layout's annotation pieces keep their capacity, and the readers walk
-/// what is there.
+/// A warm rebuild of ruby and emphasis marks allocates nothing, under each
+/// `Config::ruby_overhang` and `Config::emphasis_room`.
+///
+/// Nor does breaking it again at any width used before, or reading it
+/// back. Columns and levels are ranges of one table each, and the breaker's
+/// level bands and line layout's annotation pieces keep their capacity.
 #[test]
 fn ruby_and_emphasis_allocate_nothing_warm() {
     let widths = [45.0, 120.0, 333.3, 900.0, 4.0];

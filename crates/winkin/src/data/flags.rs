@@ -1,8 +1,7 @@
 //! Sets of flags, one bit or more each, over an unsigned integer.
 
-/// Defines a set of flags over an unsigned integer: its flags, each a
-/// constant of one bit or more, and what every set of flags is asked, which
-/// [`NONE`] and four methods answer.
+/// Defines a set of flags over an unsigned integer, with [`NONE`],
+/// `contains`, `union`, `insert` and `set`.
 ///
 /// ```ignore
 /// define_flags! {
@@ -14,8 +13,8 @@
 /// }
 /// ```
 ///
-/// A type's own questions of its flags go in an `impl` of its own beside
-/// it. What a type does not ask of its flags is not reported unused.
+/// Type-specific queries go in a separate `impl`. Unused generated methods
+/// are not reported as dead code.
 ///
 /// [`NONE`]: #associatedconstant.NONE
 macro_rules! define_flags {
@@ -63,8 +62,7 @@ macro_rules! define_flags {
                 self.0 |= other.0;
             }
 
-            /// Sets the flags in `other` where `on`, and clears them
-            /// otherwise.
+            /// Sets the flags in `other` if `on`, and clears them otherwise.
             #[allow(dead_code)]
             #[inline]
             pub(crate) fn set(&mut self, other: Self, on: bool) {

@@ -1,47 +1,39 @@
-//! Where `::first-letter` ends.
+//! Finds the extent of `::first-letter` text.
 //!
-//! The first letter's text follows CSS Pseudo-Elements 4, section 2.2.1, as
-//! Blink's `FirstLetterPseudoElement::FirstLetterLength` finds it:
+//! The rules are CSS Pseudo-Elements 4, section 2.2.1, as in Blink's
+//! `FirstLetterPseudoElement::FirstLetterLength`:
 //!
-//! - **White space before it** that collapsing removes at the block's start
-//!   is passed over. Kept white space, a tab or a no-break space among it,
-//!   is part of it, as Blink counts leading spaces into the letter's length
-//!   (`IsSpaceForFirstLetter`).
-//! - **Punctuation before the letter** (any General_Category P) is part of
-//!   it. Once some has come, so is the typographic space between it and the
-//!   letter: Zs, except U+3000 IDEOGRAPHIC SPACE.
-//! - **The letter** is one grapheme cluster, whatever it is: a digit or a
-//!   symbol as much as a letter. UAX #29's rules find it, as the analysis
-//!   finds its clusters, never a list of combining marks.
-//! - **Punctuation after it** is part of it, except opening punctuation and
-//!   dashes (Ps, Pd). So is the space between the two, except the word
-//!   separators U+0020 and U+00A0, and U+3000. That space belongs to the
-//!   letter only where punctuation follows it.
+//! - **Leading white space** is skipped where it collapses and included
+//!   where it is kept, tabs and no-break spaces too (Blink's
+//!   `IsSpaceForFirstLetter`).
+//! - **Punctuation before the letter** (General_Category P) is included,
+//!   and after it any Zs space except U+3000.
+//! - **The letter** is one grapheme cluster of any kind (letter, digit,
+//!   symbol), found by UAX #29 as the analysis finds clusters.
+//! - **Punctuation after it** is included except Ps and Pd. A space between
+//!   them is included only when punctuation follows it, and never U+0020,
+//!   U+00A0 or U+3000.
 //!
-//! Each grapheme is classed by its first character, as Blink tests the code
-//! point at a grapheme's start. The text is read as white space collapsing
-//! leaves it:
-//! - A collapsible space, tab or segment break is a space between words.
-//! - A kept segment break, or a character that forces a break in every
-//!   mode, ends the first line and with it the search.
-//! - White space `discard` removes is not there at all.
+//! Each grapheme is classed by its first character, as in Blink. The text
+//! is read as collapsing leaves it:
+//! - a collapsible space, tab or segment break is a word space;
+//! - a kept segment break or a character that always forces a break ends
+//!   the first line and the search;
+//! - white space `discard` removes is skipped.
 //!
-//! Chrome reads the text as the caller wrote it and simulates collapsing.
-//! So in Chrome a segment break after an opening quotation mark ends the
-//! search where a space would not. CSS reads the text as drawn, and so does
-//! this.
+//! Chrome instead reads the source text and simulates collapsing, so a
+//! segment break after an opening quote ends its search where a space
+//! would not. CSS reads the text as drawn, as this does.
 //!
-//! **Across texts.** Punctuation that ends a text leaves the letter to be
-//! found in the next, as Blink's `LeadingPunctuationState` does. The box
-//! then holds only the first text's part, as Chrome's does, which CSS allows
-//! where the first-letter text spans elements. A text of white space alone
-//! leaves the search where it was.
+//! **Across texts.** Punctuation ending a text leaves the letter to the
+//! next text, as Blink's `LeadingPunctuationState` does. The box then holds
+//! only the first text's part, as in Chrome; CSS allows this when the text
+//! spans elements. A text of only white space leaves the search unchanged.
 //!
-//! **Chrome 153** reads CSS 2.1's older rule: the punctuation classes Ps,
-//! Pe, Pi, Pf and Po on both sides, and no space between the punctuation
-//! and the letter. So `“ Once` has no first letter there, and a leading dash
-//! is taken for the letter. Blink's current code follows CSS
-//! Pseudo-Elements 4, and so does this.
+//! **Chrome 153** follows CSS 2.1 instead: Ps, Pe, Pi, Pf and Po on both
+//! sides and no space after leading punctuation, so `“ Once` has no first
+//! letter and a leading dash counts as the letter. Blink's source follows
+//! CSS Pseudo-Elements 4, as this does.
 
 use icu_segmenter::GraphemeClusterSegmenter;
 
@@ -49,20 +41,18 @@ use crate::style::WhiteSpaceCollapse;
 use crate::unicode::{self, FirstLetterClass};
 use crate::work;
 
-/// What one text holds of the first letter, in its own bytes.
+/// The part of the first letter in one text, in that text's bytes.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub(super) enum FirstLetterScan {
-    /// White space alone. The search goes on in the next text.
+    /// Only white space; the search continues in the next text.
     Nothing,
-    /// Something that cannot be first-letter text came before any letter:
-    /// a forced break, or a space that no punctuation or letter may stand
-    /// beside. There is no first letter.
+    /// A forced break or a disallowed space came before any letter; there
+    /// is no first letter.
     Ends,
-    /// The first letter's text starts at `start` and ends at `end`.
+    /// First-letter text in `start..end`.
     ///
-    /// `found` says whether the letter itself is in it. Where it is not,
-    /// the text ended in punctuation before one, and the search goes on in
-    /// the next text.
+    /// `found` is false when the text ended in leading punctuation, so the
+    /// search continues in the next text.
     Text {
         start: usize,
         end: usize,
@@ -70,19 +60,18 @@ pub(super) enum FirstLetterScan {
     },
 }
 
-/// A grapheme as the search reads it.
+/// A grapheme as the search classes it.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 enum Seen {
-    /// White space `discard` removes, which is not there at all.
+    /// White space `discard` removes.
     Nothing,
-    /// A space, a tab or a segment break that collapses, which reads as a
-    /// space between words, U+0020.
+    /// A collapsible space, tab or segment break, read as U+0020.
     Collapsible,
-    /// A kept segment break, or a character that forces a line break in
-    /// every mode. The first line ends here.
+    /// A kept segment break or a character that always forces a break; the
+    /// first line ends here.
     Break,
-    /// A character that is drawn, with its class, whether it is White_Space,
-    /// and whether it is a word separator, U+0020 or U+00A0.
+    /// A drawn character: its class, whether it is White_Space, and whether
+    /// it is a word separator (U+0020 or U+00A0).
     Drawn {
         class: FirstLetterClass,
         white: bool,
@@ -91,8 +80,7 @@ enum Seen {
 }
 
 impl Seen {
-    /// Classes the grapheme `grapheme`, in text whose white space collapses
-    /// as `mode` says.
+    /// Classes `grapheme` in text with white space mode `mode`.
     fn new(grapheme: &str, mode: WhiteSpaceCollapse) -> Self {
         use WhiteSpaceCollapse as Ws;
         let Some(first) = grapheme.chars().next() else {
@@ -105,8 +93,8 @@ impl Seen {
             separator: true,
         };
         match first {
-            // A CRLF reads as its LF. A lone CR is a space in all respects,
-            // as white space collapsing treats it.
+            // A CRLF reads as its LF. A lone CR is a space, as collapsing
+            // treats it.
             '\r' if grapheme.contains('\n') => Self::new("\n", mode),
             ' ' | '\t' | '\r' => match mode {
                 Ws::Discard => Self::Nothing,
@@ -138,28 +126,20 @@ impl Seen {
 }
 
 impl FirstLetterScan {
-    /// Finds the first letter's text in `text`, whose white space collapses
-    /// as `mode` says.
+    /// Finds the first-letter text in `text`, read a grapheme at a time.
     ///
-    /// Without `after_punctuation`, nothing of it was found before. White
-    /// space before it is passed over where it collapses, and taken where
-    /// it is kept. With it, the punctuation
-    /// before the letter came in an earlier text whose part the box holds,
-    /// and the letter is still to be found.
-    ///
-    /// The text is read a grapheme at a time. A text ending in punctuation
-    /// before the letter gives `Text { found: false, .. }`, and the search
-    /// goes on after punctuation. Space after the letter that no
-    /// punctuation follows before the text ends is left out. The next text
-    /// is another node's, and Blink ignores punctuation after the letter in
-    /// the text nodes that follow.
+    /// `after_punctuation` means an earlier text ended in leading
+    /// punctuation and the letter is still to be found. A text ending in
+    /// leading punctuation gives `Text { found: false, .. }`. A space after
+    /// the letter with no punctuation following it in this text is left
+    /// out, since Blink ignores trailing punctuation in later text nodes.
     pub(super) fn new(text: &str, mode: WhiteSpaceCollapse, after_punctuation: bool) -> Self {
-        /// Where the scan is inside the text.
+        /// The scan's position relative to the letter.
         #[derive(Copy, Clone)]
         enum Phase {
             Leading,
             Punctuation,
-            /// After the letter, with where the text taken so far ends.
+            /// After the letter; holds the end of the text taken so far.
             Trailing(usize),
         }
         let mut phase = if after_punctuation {
@@ -169,7 +149,7 @@ impl FirstLetterScan {
         };
         let mut start = 0;
         let mut boundaries = GraphemeClusterSegmenter::new().segment_str(text);
-        // The segmenter says 0 first.
+        // The segmenter yields 0 first.
         let mut at = boundaries.next().unwrap_or(0);
         for next in boundaries {
             work::step();
@@ -211,8 +191,8 @@ impl FirstLetterScan {
                         ..
                     },
                 ) => Phase::Trailing(next),
-                // The letter takes this space only where punctuation follows
-                // it, so `phase` still ends before it.
+                // The space joins only if punctuation follows, so the end
+                // stays before it.
                 (
                     Phase::Trailing(_),
                     Seen::Drawn {

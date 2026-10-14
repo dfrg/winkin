@@ -338,7 +338,8 @@ impl<'a> Placer<'a> {
         None
     }
 
-    /// Whether `node` is the block's initial letter's box or inside it.
+    /// Returns whether `node` is the block's initial letter's box or inside
+    /// it.
     fn within_initial_letter(&self, node: NodeId) -> bool {
         self.stages
             .measured
@@ -349,7 +350,7 @@ impl<'a> Placer<'a> {
     /// Returns the part of `piece` that fits in `room` from its start-side
     /// edge, as Chrome's `ShapeResult::OffsetToFit` finds it.
     ///
-    /// It keeps whole clusters from the line's start side, each as wide as
+    /// Keeps whole clusters from the line's start side, each as wide as
     /// drawn: reshaped edges and justification room included. Trailing white
     /// space drops where the config hides it (`EllipsisSpace::Hidden`).
     ///

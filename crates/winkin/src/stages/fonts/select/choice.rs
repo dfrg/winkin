@@ -1,5 +1,5 @@
 //! Makes a candidate's choice: the used fonts it sets a span's text in,
-//! kept per request, script and candidate for the build.
+//! kept per request, script and candidate for one build.
 
 use fontwich::{Charset, Family, Font};
 use hashbrown::HashTable;
@@ -18,30 +18,30 @@ use crate::stages::fonts::{CaseMap, FontResolution, UsedFontId, UsedSynthesis};
 use crate::style::{FontVariantCaps, FontVariantPosition};
 use crate::unit::{self, LayoutUnit};
 
-/// The choices a build has made.
+/// The choices made in the current build.
 pub(super) struct Choices {
     table: HashTable<(u64, ChoiceKey, Choice)>,
 }
 
 impl Choices {
-    /// None, allocating nothing.
+    /// Returns an empty table, allocating nothing.
     pub(super) const fn new() -> Self {
         Self {
             table: HashTable::new(),
         }
     }
 
-    /// Forgets them all, keeping the capacity.
+    /// Clears the choices, keeping the capacity.
     pub(super) fn clear(&mut self) {
         self.table.clear();
     }
 
-    /// Returns the choice made for `key` this build, or makes it with
+    /// Returns the choice made for `key` in this build, or makes it with
     /// `choose` and keeps it.
     ///
-    /// If `choose` fails because the candidate's bytes are gone, returns the
-    /// change that marks it unusable. The walk and generated text both make
-    /// choices here.
+    /// Where `choose` fails because the candidate's bytes are gone, returns
+    /// the change that marks the candidate unusable. The walk and generated
+    /// text both make choices here.
     pub(super) fn find_or_choose(
         &mut self,
         key: ChoiceKey,
@@ -61,8 +61,8 @@ impl Choices {
     }
 }
 
-/// What a [`Choice`] is made for: a font request's text, under a script,
-/// in a candidate of a list.
+/// The key of a [`Choice`]: a font request, a script, and a candidate of a
+/// list.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub(super) struct ChoiceKey {
     request: FontRequestId,
@@ -83,12 +83,14 @@ pub(super) struct ResolvedRequest<'a> {
     /// chooses, and its id.
     pub(super) request: &'a FontRequest,
     pub(super) request_id: FontRequestId,
-    /// What it resolves to: its sizes, whether it is set upright, and its
-    /// primary font, which draws what no font covers, and stands in where
-    /// the used fonts fill.
+    /// The request's resolution: its sizes, whether it is set upright, and
+    /// its primary font.
+    ///
+    /// The primary font draws what no font covers, and stands in where the
+    /// table of used fonts is full.
     pub(super) resolution: FontResolution,
-    /// The OpenType script its fonts' capitals and positions are asked for
-    /// under.
+    /// The OpenType script under which the fonts' capitals and position
+    /// features are looked up.
     pub(super) script: [u8; 4],
 }
 
@@ -104,16 +106,19 @@ impl ResolvedRequest<'_> {
     }
 }
 
-/// The used fonts a candidate sets a span's text in: one, or, where its
-/// capitals are synthesized, one for each side of a change of case; and,
-/// where a position run decides, the synthesized pair besides.
+/// The used fonts a candidate sets a span's text in.
+///
+/// That is one font, or one for each side of a change of case where its
+/// capitals are synthesized. Where a position run decides, a synthesized
+/// pair comes besides.
 #[derive(Copy, Clone, Debug)]
 pub(super) struct Choice {
-    /// For text that does not change when uppercased.
+    /// The font for text that does not change when uppercased.
     pub(super) same: UsedFontId,
-    /// For text that does: `same` where the two are set alike.
+    /// The font for text that does, equal to `same` where the two are set
+    /// alike.
     pub(super) upper: UsedFontId,
-    /// How the candidate sets text in a `font-variant-position`.
+    /// How the candidate sets text under `font-variant-position`.
     pub(super) position: PositionPlan,
 }
 
@@ -121,14 +126,14 @@ pub(super) struct Choice {
 /// may be synthesized.
 #[derive(Copy, Clone, Debug)]
 pub(super) enum PositionPlan {
-    /// There is nothing to decide: `same` and `upper` set the text, with the
-    /// feature the style asks for, if any, as Chrome sets it.
+    /// Nothing to decide: `same` and `upper` set the text, with the feature
+    /// the style asks for, if any, as Chrome sets it.
     Settled,
-    /// The font lacks the feature under the script: `same` and `upper` are
-    /// synthesized, and so is every run that holds text in the font.
+    /// A font that lacks the feature under the script: `same` and `upper`
+    /// are synthesized, and so is every run with text in the font.
     Lacking,
-    /// The font has the feature: `same` and `upper` shape with it, for a run
-    /// it covers whole, and these are synthesized, for any other.
+    /// A font that has the feature: `same` and `upper` shape with it for a
+    /// run it covers whole, and these synthesized fonts set any other run.
     Covering {
         /// `sups` or `subs`.
         feature: [u8; 4],
@@ -137,12 +142,12 @@ pub(super) enum PositionPlan {
     },
 }
 
-/// Returns what the position feature of `choice`, made for `key` in `font`,
-/// covers, where a position run decides on it.
+/// Returns the charset of the position feature of `choice`, made for `key`
+/// in `font`, where a position run decides on it.
 ///
-/// What the feature covers is read once per font, script and feature, the
-/// first time a run asks. Returns the change that reads it where it is not
-/// read yet. `None` where nothing decides, or where the font has no key.
+/// The charset is read once per font, script and feature, the first time a
+/// run asks. Returns the change that reads it where it is not read yet.
+/// `None` where nothing decides, or where the font has no key.
 pub(super) fn feature_coverage<'c>(
     coverages: &'c FeatureCoverages,
     choice: Choice,
@@ -166,13 +171,14 @@ pub(super) fn feature_coverage<'c>(
     }
 }
 
-/// Returns the used fonts that `font`, a candidate of `family`, sets the
-/// text `resolved` describes in. `None` where its bytes are gone.
+/// Returns the used fonts that `font`, a font of `family`, sets the text
+/// `resolved` describes in.
 ///
-/// Makes the instances and used fonts in `fonts` and `used` the first time
-/// a build asks. The font's offered features under the script decide how it
-/// sets capitals ([`CapsPlan`]) and whether it has the position feature. The
-/// style and the `@font-face` descriptors decide its size and instance.
+/// `None` where the font's bytes are gone. Makes the instances in `fonts`
+/// and the used fonts in `used` the first time a build asks. The font's
+/// offered features under the script decide how it sets capitals
+/// ([`CapsPlan`]) and whether it has the position feature. The style and the
+/// `@font-face` descriptors decide its size and instance.
 ///
 /// Where a position run decides and the font has the feature, both versions
 /// are made, since only the run's end says which one is used. The
@@ -209,8 +215,8 @@ pub(super) fn choose(
     let lists = stage.lists;
     let variations = lists.variation_settings().get(request.font.variations);
     let settings = lists.feature_settings().get(request.font.features);
-    // The used font setting `side`: with the position's feature, or
-    // synthesized without it.
+    // The used font for `side`: with the position's feature, or synthesized
+    // without it.
     let mut used_for = |side: CaseSide, synthesized: bool| -> Option<UsedFontId> {
         let instance_request = InstanceRequest {
             font_request: request,
@@ -283,12 +289,13 @@ pub(super) fn choose(
 ///
 /// `position` is a synthesized position's glyph size in pixels and raise,
 /// if any. `computed` is the style's computed size and `px` the font's used
-/// size.
+/// size, both in pixels.
 ///
 /// Synthesized small capitals are uppercase at 0.7 of the computed size,
 /// rounded to a whole pixel, whatever `font-size-adjust` did. This matches
-/// Blink's `SimpleFontData::SmallCapsFontData` (`kSmallCapsFontSizeMultiplier`,
-/// `lroundf`). With a synthesized position too, they are 0.7 of its size.
+/// Blink's `SimpleFontData::SmallCapsFontData`
+/// (`kSmallCapsFontSizeMultiplier`, `lroundf`). With a synthesized position
+/// too, they are 0.7 of the position's glyph size, unrounded.
 fn side_synthesis(
     side: CaseSide,
     position: Option<(f32, LayoutUnit)>,
@@ -312,6 +319,6 @@ fn side_synthesis(
     }
 }
 
-/// How much smaller than the size synthesized small capitals are drawn:
-/// Blink's `kSmallCapsFontSizeMultiplier`.
+/// The scale of synthesized small capitals to the size: Blink's
+/// `kSmallCapsFontSizeMultiplier`.
 const SMALL_CAPS: f32 = 0.7;

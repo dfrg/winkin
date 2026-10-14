@@ -8,7 +8,7 @@
 //!   reordering, box fragments and ruby, then writes its items once.
 //! - `pieces` makes a line's pieces from its items, in logical order.
 //! - `justify` spreads a justified line's room over its opportunities.
-//! - `boxes` finds a line's box parts and links them in paint order.
+//! - `boxes` finds a line's box parts and links them in box order.
 //! - `cut` truncates a line for an ellipsis and writes generated text.
 //! - `ruby` places a line's ruby columns among its pieces.
 //! - `annotations` sets and writes a line's ruby annotation lines.
@@ -17,9 +17,9 @@
 //!   into its static position.
 //!
 //! Each line is a `Line` item heading the items on it, in visual order, as
-//! Blink's `FragmentItems`. Inline positions are exact 48.16 offsets from the
-//! line box's left. A box gets an item only where measurement kept it. The
-//! lines already written stay whole when a table fills.
+//! in Blink's `FragmentItems`. Inline positions are exact 48.16 offsets from
+//! the line box's left. A box gets an item only where measurement kept it.
+//! The lines already written stay whole when a table fills.
 
 mod anchors;
 mod annotations;
@@ -74,8 +74,8 @@ pub(crate) use place::PlaceScratch;
 // What a line's views read a text item through.
 pub(crate) use read::{ClusterWalk, ExactGlyph, GlyphWalk, ReadInput};
 
-/// What line layout reads: the prepared tables, the lines, the area and the
-/// config choices it makes at every relayout.
+/// Line layout's input: the prepared tables, the lines, the area and the
+/// config choices read at every relayout.
 pub(crate) struct PlaceInput<'a> {
     pub(crate) stages: Stages<'a>,
     pub(crate) lines: &'a Lines,
@@ -93,9 +93,10 @@ pub(crate) struct PlaceInput<'a> {
 
 /// Lays out every line of `input` into `out`, one line at a time.
 ///
-/// Uses the block's trim, end and baselines that breaking finished, and
-/// works in `scratch`. Fills `out`, which starts empty; nothing else fills
-/// it.
+/// Uses the block's trim, end and baselines from breaking, and works in
+/// `scratch`. Fills `out`, which starts empty; nothing else writes it.
+/// Where `out` has no capacity, the items are written in the scratch's
+/// staging room and copied to their exact length.
 pub(crate) fn place_fragments(
     input: &PlaceInput<'_>,
     scratch: &mut PlaceScratch,
@@ -115,7 +116,7 @@ define_id! {
     pub(crate) struct FragmentItemId(u32);
 }
 
-/// What a fragment item is.
+/// The kind of a fragment item.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 #[repr(u8)]
 pub(crate) enum FragmentItemKind {
@@ -128,7 +129,7 @@ pub(crate) enum FragmentItemKind {
     /// preserved white space hanging past the line's end
     /// ([`FragmentItemFlags::HANGS`]).
     Text,
-    /// Text the layout made: a hyphen or an ellipsis.
+    /// Text the layout generates: a hyphen or an ellipsis.
     Generated,
     /// An atomic inline: its margin box.
     Atomic,
@@ -136,6 +137,7 @@ pub(crate) enum FragmentItemKind {
     /// box, heading the items inside it.
     Box,
     /// A ruby annotation line, heading its boxes' items and its text items.
+    ///
     /// It follows its line's own items.
     AnnotationLine,
 }
@@ -158,7 +160,7 @@ impl FragmentItemKind {
 }
 
 define_flags! {
-    /// What else is true of a fragment item: 1 byte.
+    /// A fragment item's flags: 1 byte.
     ///
     /// No flag marks right-to-left: an item's odd level says it.
     pub(crate) struct FragmentItemFlags(u8) {
@@ -214,15 +216,16 @@ impl FragmentItemFlags {
 ///
 /// | Kind | `a` | `b` | `c` | `d` |
 /// |---|---|---|---|---|
-/// | `Line` | the items after it that are the line's | the first box item to paint, its [`FragmentItemId`]; 0 where the line has none | its justification row, a [`JustifiedLineId`], where it is justified | none |
+/// | `Line` | the items after it that are the line's | the first box item in box order, its [`FragmentItemId`]; 0 where the line has none | its justification row, a [`JustifiedLineId`], where it is justified | none |
 /// | `Text` | its first cluster | one past its last | its shaping run, a [`ShapedRunId`] | the content item holding its first cluster, an [`ItemId`] |
 /// | `Atomic` | its first cluster | one past its last | none | none |
-/// | `Box` | the items after it inside it; none for a box inside an annotation, whose text is the annotation's | the next box item to paint, its [`FragmentItemId`]; 0 for the last, and for a box inside an annotation, which its annotation paints | its kept box, a [`KeptBoxId`] | none |
+/// | `Box` | the items after it inside it; none for a box inside an annotation, whose text is the annotation's | the next box item in box order, its [`FragmentItemId`]; 0 for the last, and for a box inside an annotation | its kept box, a [`KeptBoxId`] | none |
 /// | `AnnotationLine` | the items after it that are its own: its boxes that keep a fragment, then its text | its [`RubyLevelId`] | its element's kept box, a [`KeptBoxId`], where it keeps one | none |
 /// | `Generated` | the boundary it stands at | its generated text, its [`ShapedGeneratedId`] | none | none |
 ///
-/// The links cost 8 bytes an item, 4 of them alignment, and save a search
-/// per text item and box part read.
+/// Box order is by box in tree order, then by part left to right. The links
+/// cost 8 bytes an item, 4 of them alignment, and save a search per text
+/// item and box part read.
 ///
 /// **Positions.**
 /// - A `Line` item's `inline` is its line box's left edge after alignment,
@@ -296,9 +299,10 @@ impl FragmentItem {
         (kind as u16) | (short << 3)
     }
 
-    /// Makes a line's item, heading `descendants` items. `first` is the
-    /// first box item to paint, where the line has one, and `justified` its
-    /// justification row, where it is justified.
+    /// Makes a line's item, heading `descendants` items.
+    ///
+    /// `first` is the first box item in box order, where the line has one,
+    /// and `justified` its justification row, where it is justified.
     #[allow(clippy::too_many_arguments)]
     fn from_line(
         level: BidiLevel,
@@ -359,7 +363,8 @@ impl FragmentItem {
 
     /// Makes a box part of the box `node`, heading `descendants` items.
     ///
-    /// It paints before the box item `next`, or last where `next` is `None`.
+    /// It links to the box item `next` in box order, or ends the chain where
+    /// `next` is `None`.
     #[allow(clippy::too_many_arguments)]
     fn from_box_part(
         node: NodeId,
@@ -463,8 +468,9 @@ impl FragmentItem {
             .then(|| RubyLevelId::new(u32_to_index(self.b)))
     }
 
-    /// Whether it is text that carries emphasis marks. A tab draws nothing,
-    /// so it carries none.
+    /// Returns whether it is text that carries emphasis marks.
+    ///
+    /// A tab draws nothing, so it carries none.
     #[inline]
     pub(crate) fn is_marked(&self) -> bool {
         self.kind() == FragmentItemKind::Text
@@ -509,15 +515,16 @@ impl FragmentItem {
         }
     }
 
-    /// Returns the next box item to paint after this one, if any.
+    /// Returns the next box item in box order after this one, if any.
     ///
-    /// From a line's item it is the line's first box item. From a box item
-    /// it is the next on the line. Either is among the line's own items
+    /// From a line's item it is the line's first box item; from a box item,
+    /// the next on the line. Either is among the line's own items
     /// ([`Fragments::line_item_ids`]).
     ///
-    /// Box items paint by box in tree order, and a box's parts left to
-    /// right. Line layout links them as it writes them, so a painter follows
-    /// the links instead of searching the line.
+    /// Box order is by box in tree order, then a box's parts left to right.
+    /// Line layout links the items as it writes them, so
+    /// [`Fragments::culled_baseline`] visits every box item without
+    /// searching the line.
     pub(crate) fn painted_next(&self) -> Option<FragmentItemId> {
         (matches!(self.kind(), FragmentItemKind::Line | FragmentItemKind::Box) && self.b > 0)
             .then(|| FragmentItemId::new(u32_to_index(self.b)))
@@ -542,8 +549,8 @@ impl FragmentItem {
             .then(|| ItemId::new(u32_to_index(self.d)))
     }
 
-    /// Whether `ruby-align` spread room into this text item, which the
-    /// fragments' spread rows say how much of.
+    /// Returns whether `ruby-align` spread room into this text item; the
+    /// spread rows hold how much.
     #[inline]
     pub(crate) fn is_spread(&self) -> bool {
         self.kind_short & Self::SPREAD != 0
@@ -635,11 +642,11 @@ pub(crate) struct Fragments {
     pub(crate) items: Table<FragmentItemId, FragmentItem>,
     /// Each line's `Line` item.
     pub(crate) line_heads: Table<LineId, FragmentItemId>,
-    /// The tables only some content fills: the justified lines and the
-    /// static positions.
+    /// The tables only some content fills: the justified lines, the spread
+    /// text and the static positions.
     ///
-    /// The box is made the first time line layout writes either, and kept
-    /// after. Most layouts hold only the empty pointer.
+    /// The box is made the first time line layout writes any of them, and
+    /// kept after. Most layouts hold only the empty pointer.
     rare: Option<Box<RareFragments>>,
 }
 
@@ -650,8 +657,9 @@ struct SpreadText {
     line: LineId,
     /// The item's first cluster, which names it among its line's items.
     cluster: ClusterId,
-    /// The room on its left and on its right.
+    /// The room on its left.
     left: InlineLayoutUnit,
+    /// The room on its right.
     right: InlineLayoutUnit,
 }
 
@@ -718,14 +726,14 @@ impl Fragments {
             .map_or(none, |row| (row.left, row.right))
     }
 
-    /// Returns where the spread rows stand, which the line being written
-    /// sorts its own rows from.
+    /// Returns the spread rows' length, from which the line being written
+    /// sorts its own rows.
     fn spread_mark(&self) -> usize {
         self.rare.as_ref().map_or(0, |rare| rare.spread.len())
     }
 
     /// Writes the spread row of `piece`, text of line `line` that took room
-    /// in, in any order: [`settle_spread`](Self::settle_spread) sorts them.
+    /// in, unsorted; [`settle_spread`](Self::settle_spread) sorts them.
     #[cold]
     #[inline(never)]
     fn push_spread(
@@ -876,7 +884,7 @@ impl Fragments {
     /// there holds it, and the box stands on the line's baseline.
     ///
     /// A culled box has no shift of its own, so it stands on its parent's
-    /// baseline. Among the line's own items, the painted links from the
+    /// baseline. Among the line's own items, the box-order links from the
     /// line's item visit every box item. Inside a ruby annotation,
     /// `annotated`, the line's annotation items are searched.
     pub(crate) fn culled_baseline(
@@ -925,11 +933,11 @@ heap_bytes! {
     Fragments { items, line_heads, rare }
 }
 
-// The placer and the pieces its files share: `place` builds and drives
-// them, and `pieces`, `justify`, `boxes`, `cut`, `ruby`, `annotations` and
-// `anchors` each add to `Placer`'s `impl`.
+// The placer and the pieces the child files share: `place` builds and
+// drives them, and `pieces`, `justify`, `boxes`, `cut`, `ruby`,
+// `annotations` and `anchors` each add to `Placer`'s `impl`.
 
-/// What a piece is.
+/// The kind of a piece.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 enum PieceKind {
     /// Clusters of one node, one used font and one level.
@@ -982,14 +990,16 @@ enum PieceKind {
 }
 
 impl PieceKind {
-    /// Whether the piece is an item of its own.
+    /// Returns whether the piece is an item of its own.
     #[inline]
     fn is_leaf(self) -> bool {
         self.item_kind().is_some()
     }
 
-    /// Whether the piece has no level of its own. Reordering gives it the
-    /// next piece's level, as Blink's opaque items take theirs.
+    /// Returns whether the piece has no level of its own.
+    ///
+    /// Reordering gives it the next piece's level, as Blink's opaque items
+    /// take theirs.
     fn is_opaque(self) -> bool {
         matches!(self, Self::Place | Self::Room)
     }
@@ -1094,8 +1104,8 @@ impl Piece {
         }
     }
 
-    /// Whether it is content text set on the line: not a tab, and not
-    /// hanging.
+    /// Returns whether it is content text set on the line: not a tab, and
+    /// not hanging.
     #[inline]
     fn is_text(&self) -> bool {
         self.kind == PieceKind::Text
@@ -1133,7 +1143,7 @@ impl Piece {
         }
     }
 
-    /// Whether a cut keeps its logically first clusters.
+    /// Returns whether a cut keeps its logically first clusters.
     ///
     /// A cut keeps the clusters on the line's start side. Those are the first
     /// where the piece reads the same way as the paragraph at `level`.
@@ -1262,7 +1272,7 @@ struct Gates {
     has_anchors: bool,
 }
 
-// What the views of a laid-out layout read of an item.
+// What the views read of a placed item.
 impl FragmentItem {
     /// Returns the text a leaf holds, in the text `clusters` divides.
     ///
@@ -1295,11 +1305,13 @@ impl FragmentItem {
 /// One constructor writes it whole as each line starts. The ruby state is
 /// apart, in [`LineRuby`].
 struct LineState {
-    /// The line's paragraph, and its level.
+    /// The line's paragraph.
     paragraph: ParagraphId,
+    /// The paragraph's level.
     level: BidiLevel,
-    /// Its band, narrowed by `text-group-align`, and its alignment.
+    /// The line's band, narrowed by `text-group-align`.
     band: LineBand,
+    /// The line's alignment.
     align: TextAlign,
     /// The line's tabs.
     tab_line: TabLine,
@@ -1336,8 +1348,8 @@ struct LineRuby<'a> {
     base_spaces: Option<ClusterId>,
 }
 
-/// Whether `ruby-align` places room among a base's or an annotation's
-/// justification opportunities, so that their count matters.
+/// Returns whether `ruby-align` places room among a base's or an
+/// annotation's justification opportunities, so that their count matters.
 fn spreads_inside(align: RubyAlign) -> bool {
     matches!(align, RubyAlign::SpaceAround | RubyAlign::SpaceBetween)
 }

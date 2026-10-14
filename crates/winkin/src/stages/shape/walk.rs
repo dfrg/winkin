@@ -1,6 +1,6 @@
 //! The walk over the clusters that finds the shaping runs and shapes each one.
 //!
-//! `shape_text` shapes one variant's clusters. A walk finds where each
+//! `shape_text` shapes one variant's clusters. The walk finds where each
 //! shaping run ends, and each run goes through the one shaping call,
 //! [`shape_range`]. Combined units are fitted to their ems as the walk
 //! reaches each one's end.
@@ -24,10 +24,11 @@ use crate::style::{FirstLineVariant, UnicodeBidi};
 use crate::unit::{InlineLayoutUnit, LayoutUnit, TextUnit};
 use crate::work;
 
-/// Shapes the clusters before `end` in `variant`'s styles, fonts and text
-/// into `out` and `advances`.
+/// Shapes the clusters before `end` in the styles, fonts and text of
+/// `variant` into `out`: its glyphs, runs, combined fits and advances.
 ///
-/// Returns how many glyphs were left out, and the flags the glyphs give.
+/// Returns how many glyphs were left out, and `HAS_UNSAFE` where some
+/// cluster is unsafe to break before.
 pub(super) fn shape_text<'f>(
     input: &ShapeInput<'f>,
     variant: FirstLineVariant,
@@ -52,15 +53,16 @@ pub(super) fn shape_text<'f>(
     glyphs.words.reserve(end.get());
     runs.reserve(end.get(), script_runs);
     // A layout with no allocation for the advances writes them in the
-    // context's room, which `Shaped::settle_advances` takes back.
+    // context's room, which `Shaped::settle_advances` takes back after
+    // measurement.
     cx.advance_rooms().lend(variant, advances);
     make_room(advances, end.get());
     // A cluster of one expanded glyph points at the entry already holding
-    // it. Upright text draws a few hundred glyphs thousands of times.
+    // it, since upright text draws a few hundred glyphs thousands of times.
     let mut shared = cx.take_shared_glyphs();
     let mut sink =
         GlyphSink::new(&mut glyphs.words, &mut glyphs.sidecar, advances).with_shared(&mut shared);
-    // One source for the walk, so the runs read the text in order.
+    // One source for the walk, so the runs map offsets in order.
     let source = ShapingSource::new(input.content, analysis, variant);
     let paragraphs = &analysis.paragraphs;
     let mut paragraph = paragraphs.cursor(ParagraphId::new(0));
@@ -71,7 +73,7 @@ pub(super) fn shape_text<'f>(
         .contains(ParagraphFlags::HAS_COMBINED)
         .then(|| CombinedUnits::new(input, &source));
     let mut walk = Walk::new(input, variant, end);
-    // The font of the run before, which the text before a run is in.
+    // The font of the run before, which the text before a run is shaped in.
     let mut before = None;
     loop {
         // Open the run where the walk is, find its end, record it, and shape
@@ -123,22 +125,21 @@ pub(super) fn shape_text<'f>(
     (dropped, flags)
 }
 
-/// What the walk reads of the paragraph it is in, read once as it enters
-/// the paragraph.
+/// What the walk reads of the paragraph it is in, once as it enters it.
 struct ParagraphFacts {
     id: ParagraphId,
     /// Its text, its separator included ([`paragraph_text`]).
     text: Range<TextOffset>,
     flags: ParagraphFlags,
     /// Where the fast path stops finding runs by their boundaries: the
-    /// paragraph's end, or the walk's where that is sooner, less a final
-    /// separator, which gets a run of its own.
+    /// paragraph's end, or the walk's where sooner, less a final separator,
+    /// which gets a run of its own.
     plain_end: ClusterId,
 }
 
 impl ParagraphFacts {
-    /// Reads `paragraph` of `analysis`, which ends at cluster `end`, for a
-    /// walk ending at `walk_end`.
+    /// Returns the facts of `paragraph` of `analysis`, which ends at cluster
+    /// `end`, for a walk ending at `walk_end`.
     fn new(
         analysis: &Analysis,
         paragraph: ParagraphId,
@@ -182,13 +183,14 @@ struct Walk<'a> {
     /// The first of the three cursors' ends: where the walk steps one next.
     next: ClusterId,
     /// The shaping facts of the item holding the cluster the walk is at,
-    /// which a run starting there links.
+    /// which a run starting there records.
     shaping: ShapingFactsId,
-    /// Those of the last text item with text, whose text a shaping run may
+    /// The shaping facts of the last text item, whose text a shaping run may
     /// continue.
     text: Option<ShapingFactsId>,
-    /// That item is a ruby annotation's text. A shaping run never holds
-    /// both annotation and base text, since an annotation's edges end runs.
+    /// Whether that item is a ruby annotation's text. A shaping run never
+    /// holds both annotation and base text, since an annotation's edges end
+    /// runs.
     annotation: bool,
     /// The last cluster that an edge of a box whose `unicode-bidi` is not
     /// `normal` stands before. Blink's text holds a bidi control there. The
@@ -242,10 +244,12 @@ impl<'a> Walk<'a> {
             .map_or(UsedFontId::new(0), |run| run.font)
     }
 
-    /// Finds the run's end by the carried script, font and item boundaries
-    /// where analysis found no internal shaping stops. The paragraph's final
-    /// undrawn separator still gets its own run. Exceptional paragraphs use
-    /// the cluster scan, including explicit stops and shaped-class changes.
+    /// Moves the walk to the end of the run it is at, and returns that end.
+    ///
+    /// In a paragraph where analysis found no shaping stops, the run ends at
+    /// the next script, font or item boundary that ends one, and the
+    /// paragraph's final separator gets its own run. Other paragraphs take
+    /// [`scan_run_end`](Self::scan_run_end).
     // Keep both discovery loops out of the shaping loop: inlining them slows
     // preparation in the article benchmarks.
     #[inline(never)]
@@ -268,8 +272,11 @@ impl<'a> Walk<'a> {
         self.scan_run_end()
     }
 
-    /// The general path: a comparison per cluster for shaping stops and
-    /// shaped-class transitions, stepping cursors where their runs end.
+    /// Moves the walk to the end of the run it is at by testing every
+    /// cluster, and returns that end.
+    ///
+    /// A run ends after a shaping stop, where a shaped cluster meets an
+    /// unshaped one, and where [`step_to`](Self::step_to) says.
     fn scan_run_end(&mut self) -> ClusterId {
         let clusters = &self.input.analysis.clusters;
         let shaped = |attrs: Option<ClusterAttrs>| attrs.is_some_and(|a| a.class().is_shaped());
@@ -299,8 +306,7 @@ impl<'a> Walk<'a> {
     /// and returns whether a shaping run ends there.
     ///
     /// A shaping run always ends where the script run or the font run does.
-    /// It also ends where the item is text that does not shape like the
-    /// text item before it.
+    /// It also ends where [`items_to`](Self::items_to) says.
     fn step_to(&mut self, cluster: ClusterId) -> bool {
         let mut ends = false;
         if cluster >= self.script.end() {
@@ -319,7 +325,7 @@ impl<'a> Walk<'a> {
         ends
     }
 
-    /// Where the first of the runs the walk holds ends.
+    /// Returns where the first of the runs the walk holds ends.
     fn next_end(&self) -> ClusterId {
         self.script.end().min(self.font.end()).min(self.item.end())
     }
@@ -328,10 +334,14 @@ impl<'a> Walk<'a> {
     /// there, and reads it.
     ///
     /// It skips the items ending at or before `cluster`, empty ones
-    /// included. Returns whether an item it skips stops shaping, as the
-    /// edges of ruby, annotations and some boxes (`BoxFacts::breaks_shaping`)
-    /// and floats do, or the item is text that does not shape like the text
-    /// item before it.
+    /// included. Returns whether a shaping run ends there:
+    /// - an item it skips stops shaping, as the edges of ruby, annotations,
+    ///   some boxes (`BoxFacts::breaks_shaping`), floats and absolutely
+    ///   positioned boxes do;
+    /// - or the item is text that does not shape like the text item before
+    ///   it.
+    ///
+    /// A box edge whose `unicode-bidi` is not `normal` also sets `cut`.
     fn items_to(&mut self, cluster: ClusterId) -> bool {
         let content = self.input.content;
         let item_clusters = &self.input.analysis.item_clusters;
@@ -377,11 +387,12 @@ impl<'a> Walk<'a> {
 /// Shapes `run`, whose clusters are `range`, in its paragraph's text
 /// `paragraph`, into `sink`.
 ///
-/// Where the run is not shaped, or its font has nothing to draw with, it
-/// writes its clusters with no glyphs. `annotation` marks a ruby
-/// annotation's text. `neighbours` names the fonts of the runs either side,
-/// and `cuts` whether a bidi control stands before and after the run.
-/// `narrow` names the form combined text is shaped in, if any.
+/// Where the run is not shaped, or its font has nothing to draw with, its
+/// clusters are written with no glyphs.
+/// - `annotation` marks a ruby annotation's text.
+/// - `neighbours` names the fonts of the runs either side.
+/// - `cuts` says whether a bidi control stands before and after the run.
+/// - `narrow` names the form combined text is shaped in, if any.
 #[allow(clippy::too_many_arguments)]
 fn shape_run<'f>(
     input: &ShapeInput<'f>,
@@ -420,8 +431,8 @@ fn shape_run<'f>(
     // the prefix sums do not hold them. So does combined text, whose glyphs
     // are set across its em by them.
     sink.keep_advances(annotation || key.is_combined());
-    // Combined text's glyphs are moved into its em once written, each its
-    // own.
+    // Combined text's glyphs are moved into its em once written, so each
+    // cluster writes its own.
     sink.share(!key.is_combined());
     // A run that starts its paragraph starts a line. Under `trim-start` an
     // opening mark there gives its blank back, as Blink's `ShapeText` asks
@@ -448,8 +459,8 @@ fn shape_run<'f>(
 /// A combined unit being shaped.
 ///
 /// It records the unit's script run, its first shaping run, that run's
-/// shaping facts and paragraph, and where the tables stood before it. That
-/// lets the unit be shaped again in a narrower form.
+/// shaping facts and paragraph, and where the tables stood before it, so the
+/// unit can be shaped again in a narrower form.
 #[derive(Copy, Clone, Debug)]
 struct OpenUnit {
     script_run: ScriptRunId,
@@ -463,12 +474,12 @@ struct OpenUnit {
 /// each one's end.
 ///
 /// This is shaping's part of `text-combine-upright`. Only text where
-/// analysis found combined units pays for it.
+/// analysis found combined units makes one.
 struct CombinedUnits<'a, 'f> {
     input: &'a ShapeInput<'f>,
     /// The walk's text, which a unit is shaped again from.
     source: &'a ShapingSource<'a>,
-    /// The unit being shaped, until its last shaping run is.
+    /// The unit being shaped, until its last shaping run is shaped.
     open: Option<OpenUnit>,
 }
 
@@ -483,8 +494,8 @@ impl<'a, 'f> CombinedUnits<'a, 'f> {
 
     /// Updates the open unit before `run`, in `paragraph`, is recorded.
     ///
-    /// It fits the open unit where the run is past it, and opens a unit
-    /// where the run starts one.
+    /// It fits the open unit where the run lies in another script run, and
+    /// opens a unit where the run starts one.
     fn before(
         &mut self,
         cx: &mut ShapeSession<'_, 'f>,

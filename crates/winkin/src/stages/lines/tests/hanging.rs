@@ -2,7 +2,7 @@
 //! - forced breaks ending lines and starting paragraphs;
 //! - control characters and every BK and NL character, as CSS Text 3 has
 //!   them;
-//! - trailing white space hanging, and a box's edge among it staying content;
+//! - trailing white space hanging, and a box edge among it staying content;
 //! - a cloned box paying for its edges on every line;
 //! - intrinsic sizes the text fits.
 
@@ -12,9 +12,8 @@ use crate::style::FirstLineVariant;
 /// A forced break ends its line, with the separator on it, and starts a
 /// paragraph.
 ///
-/// The text's end ends the last paragraph. A text ending at a forced break
-/// has no empty line after it, as Chrome draws none. Two breaks in a row
-/// make a line of the second alone.
+/// A text ending at a forced break has no empty line after it, as in
+/// Chrome. Of two breaks in a row, the second makes a line alone.
 #[test]
 fn forced_breaks_end_lines_and_start_paragraphs() {
     let mut fixture = fixture();
@@ -45,7 +44,7 @@ fn forced_breaks_end_lines_and_start_paragraphs() {
     fixture.text(&mut layout, &ahem(20.0), "XX");
     fixture.lay_out(&mut layout, 60.0);
     assert_eq!(end_kinds(&layout)[0], EndKind::TextEnd);
-    // Nothing draws no line at all; a lone break draws one.
+    // An empty text has no lines; a lone break has one.
     fixture.text(&mut layout, &ahem(20.0), "");
     fixture.lay_out(&mut layout, 60.0);
     assert_eq!(layout.lines().len(), 0);
@@ -58,12 +57,11 @@ fn forced_breaks_end_lines_and_start_paragraphs() {
 
 // Hanging --------------------------------------------------------------------
 
-/// Trailing white space hangs and does not count toward the fit, collapsible
-/// or preserved.
+/// Trailing white space hangs and does not count toward the fit, whether
+/// collapsible or preserved.
 ///
-/// `XX ` fits 40 px, and so does a preserved `XX   `, its spaces hanging
-/// 60 px past its end. Before a forced break, preserved spaces hang only
-/// where they overflow, which the line records for alignment.
+/// Before a forced break, preserved spaces hang only where they overflow,
+/// and the line flags this for alignment.
 #[test]
 fn trailing_white_space_hangs() {
     let mut fixture = fixture();
@@ -100,14 +98,13 @@ fn trailing_white_space_hangs() {
     assert!(first.flags.contains(LineFlags::CONDITIONAL_HANG));
 }
 
-/// Control characters break as CSS Text 3 says, in the rows of the probe
-/// `cases.py controls`: `XX`, the character, `XX`, in Ahem.
+/// Control characters break as CSS Text 3 says.
 ///
-/// - A lone CR is a space, which hangs and breaks as one where it is kept:
-///   `XX_` over `XX` in 60 px under `pre-wrap`. Chrome drops it.
-/// - VT, FF, NEL, U+2028 and U+2029 force a break, under `normal` too,
-///   where Chrome breaks at none. The space after one does not start the
-///   next line: `XX` over `XX`.
+/// Each case is `XX`, the character, then `XX`, in Ahem.
+/// - A preserved lone CR is a space, which hangs and breaks as one: `XX_`
+///   over `XX` in 60 px under `pre-wrap`. Chrome drops it.
+/// - VT, FF, NEL, U+2028 and U+2029 force a break, under `normal` too.
+///   Chrome breaks at none. Spaces around one collapse: `XX` over `XX`.
 /// - VT, FF and NEL are drawn, so they take room at their line's end.
 ///   U+2028 and U+2029 draw nothing and hang, as a `<br>` does.
 #[test]
@@ -158,11 +155,10 @@ fn control_characters_break_and_draw_as_css_has_them() {
     }
 }
 
-/// WPT `line-breaking-022`: every character of line-breaking class BK or NL
-/// forces a break whatever the white space.
+/// Every character of line-breaking class BK or NL forces a break, whatever
+/// the white space (WPT `line-breaking-022`).
 ///
-/// Its six digits, each in a span and parted by FF, VT, U+2028, U+2029 and
-/// NEL, lie one to a line. Chrome fails it, breaking at none of them.
+/// Chrome fails it, breaking at none of them.
 #[test]
 fn every_bk_and_nl_character_forces_a_break() {
     let mut fixture = fixture();
@@ -195,10 +191,7 @@ fn every_bk_and_nl_character_forces_a_break() {
 /// A cloned box pays both its edges on every line it reaches, and a sliced
 /// one only where it opens and closes.
 ///
-/// `XX XX XX XX` sits in a box with 10 px of padding either side, at 20 px
-/// in 115 px. Sliced, it holds two pairs a line, each line one padding
-/// wider than its text. Cloned, it holds one pair a line, two ems and both
-/// paddings wide, as Chrome's breaker charges `cloned_box_decorations_*`.
+/// Chrome's breaker charges the cloned edges as `cloned_box_decorations_*`.
 #[test]
 fn a_cloned_box_pays_for_its_edges_on_every_line() {
     let mut fixture = fixture();
@@ -244,9 +237,7 @@ fn a_cloned_box_pays_for_its_edges_on_every_line() {
 /// A box closing after a hanging space keeps its edge on the line as
 /// content, and the space still hangs.
 ///
-/// The line is its text and the box's two borders wide, as the intrinsic
-/// sizes measure it. So max-content fits its own line and min-content
-/// overflows none.
+/// The intrinsic sizes measure the borders too.
 #[test]
 fn a_box_edge_among_what_hangs_stays_content() {
     let mut fixture = fixture();
@@ -284,8 +275,6 @@ fn a_box_edge_among_what_hangs_stays_content() {
     );
 }
 
-/// The breaker agrees with the intrinsic sizes on prose.
-///
 /// At max-content every paragraph is one line, and at min-content no line
 /// overflows.
 #[test]

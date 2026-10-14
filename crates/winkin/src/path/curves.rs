@@ -12,8 +12,7 @@ use super::{PagePoint, PathPoint, TextPath};
 use crate::data::index_to_u32;
 use crate::unit::{hypot, whole_to_f32};
 
-/// The way a path with no length runs: to the right, as a line of text
-/// does.
+/// The tangent of a zero-length path: rightward, as horizontal text runs.
 const RIGHTWARD: (f32, f32) = (1.0, 0.0);
 
 /// A path through points, straight from each to the next.
@@ -35,8 +34,8 @@ const RIGHTWARD: (f32, f32) = (1.0, 0.0);
 #[derive(Copy, Clone, Debug)]
 pub struct Polyline<'a> {
     points: &'a [PagePoint],
-    /// How far along the path each point is: the first nothing, and the
-    /// last the path's length.
+    /// Arc length at each point: zero at the first, the path length at the
+    /// last.
     ends: &'a [f32],
 }
 
@@ -139,10 +138,10 @@ impl TextPath for Polyline<'_> {
 #[derive(Copy, Clone, Debug)]
 pub struct BezierPath<'a> {
     points: &'a [PagePoint],
-    /// How far along the path each sample is: the first nothing, and the
-    /// last the path's length.
+    /// Arc length at each sample: zero at the first, the path length at the
+    /// last.
     table: &'a [f32],
-    /// How many samples each segment is measured at, from its start.
+    /// Samples per segment, counted from its start.
     per: usize,
 }
 
@@ -186,8 +185,8 @@ impl<'a> BezierPath<'a> {
         }
     }
 
-    /// Segment `segment`'s four points: its start, its two control points
-    /// and its end.
+    /// Returns the start, control points and end of `segment`, or `None` past
+    /// the last whole segment.
     fn segment(&self, segment: usize) -> Option<[PagePoint; 4]> {
         let first = segment * 3;
         match self.points.get(first..first + 4)? {
@@ -196,7 +195,7 @@ impl<'a> BezierPath<'a> {
         }
     }
 
-    /// Which segment sample `sample` is on, and where along its parameter.
+    /// Returns the segment `sample` lies on and its parameter there.
     fn parameter(&self, sample: usize) -> (usize, f32) {
         let per = self.per.max(1);
         let (segment, step) = (sample / per, sample % per);
@@ -207,7 +206,7 @@ impl<'a> BezierPath<'a> {
         (segment, fraction(step, per))
     }
 
-    /// The point sample `sample` is at.
+    /// Returns the point at `sample`.
     fn sample(&self, sample: usize) -> PagePoint {
         let (segment, t) = self.parameter(sample);
         self.segment(segment)
@@ -230,8 +229,7 @@ impl TextPath for BezierPath<'_> {
         let (Some(&from), Some(&to)) = (self.table.get(sample - 1), self.table.get(sample)) else {
             return still(0.0, 0.0);
         };
-        // In proportion between the two samples, along the segment's
-        // parameter.
+        // Interpolates the parameter between the two samples.
         let (segment, t0) = self.parameter(sample - 1);
         let (_, t1) = self.parameter(sample);
         let t1 = if t1 <= t0 { 1.0 } else { t1 };
@@ -241,8 +239,8 @@ impl TextPath for BezierPath<'_> {
             return still(0.0, 0.0);
         };
         let PagePoint { x, y } = cubic(points, t);
-        // The curve's own direction, or where it has none -- a cusp, or a
-        // control point on its end -- the chord's between the samples.
+        // Uses the derivative, or the chord between the samples where the
+        // derivative vanishes (a cusp, or a control point on an endpoint).
         let (mut dx, mut dy) = derivative(points, t);
         let mut length = hypot(dx, dy);
         if !(length > 0.0 && length.is_finite()) {
@@ -258,8 +256,11 @@ impl TextPath for BezierPath<'_> {
     }
 }
 
-/// How many whole segments `points` points make, and how many samples each
-/// takes of a table `table` long, one at the path's start aside.
+/// Returns how many whole segments `points` points make and how many
+/// samples each gets from a `table`-entry table, after the start sample.
+///
+/// A table too short for one sample per segment measures as many segments
+/// as fit, one sample (the chord) each.
 fn sampling(points: usize, table: usize) -> (usize, usize) {
     let segments = points.saturating_sub(1) / 3;
     let room = table.saturating_sub(1);
@@ -270,30 +271,32 @@ fn sampling(points: usize, table: usize) -> (usize, usize) {
     }
 }
 
-/// Returns the entry that ends the piece of path reaching `distance`.
+/// Returns the index in `ends` that ends the piece of path reaching
+/// `distance`.
 ///
-/// `ends` holds how far along the path each point is. The entry found is the
-/// first at or past `distance`, never the first point, and ends a piece with
-/// some length. `None` where no piece has any length.
+/// `ends` holds the arc length at each point. The index is the first entry
+/// at or past `distance`, never 0, moved to a piece with nonzero length.
+/// Returns `None` where no piece has length.
 #[inline]
 fn reaching(ends: &[f32], distance: f32) -> Option<usize> {
     let last = ends.len().checked_sub(1).filter(|&last| last > 0)?;
     let found = ends.partition_point(|&end| end < distance).clamp(1, last);
     let long = |at: &usize| matches!((ends.get(at - 1), ends.get(*at)), (Some(from), Some(to)) if to > from);
-    // Where points coincide the piece has no length and no direction:
-    // the next that has one, or the last before.
+    // Coincident points make a piece with no length or direction: take the
+    // next piece with length, else the last one before.
     (found..=last)
         .find(long)
         .or_else(|| (1..found).rev().find(long))
 }
 
-/// A step's length as a path is measured: nothing where it is not a finite
-/// number, so a point that is not one takes no length.
+/// Returns `length`, or zero where it is not finite, so a nonfinite point
+/// adds no length.
 fn step(length: f32) -> f32 {
     if length.is_finite() { length } else { 0.0 }
 }
 
-/// A path with no length: a point at `(x, y)`, running to the right.
+/// Returns the point of a zero-length path at `(x, y)`, with a rightward
+/// tangent.
 #[inline]
 fn still(x: f32, y: f32) -> PathPoint {
     PathPoint {
@@ -304,12 +307,12 @@ fn still(x: f32, y: f32) -> PathPoint {
     }
 }
 
-/// `step` over `of`, as a fraction of the parameter.
+/// Returns `step / of` as a parameter.
 fn fraction(step: usize, of: usize) -> f32 {
     whole_to_f32(index_to_u32(step)) / whole_to_f32(index_to_u32(of.max(1)))
 }
 
-/// The cubic Bézier curve through `points` at `t`.
+/// Evaluates the cubic Bézier `points` at `t`.
 fn cubic([p0, c1, c2, p1]: [PagePoint; 4], t: f32) -> PagePoint {
     let s = 1.0 - t;
     let (a, b, c, d) = (s * s * s, 3.0 * s * s * t, 3.0 * s * t * t, t * t * t);
@@ -319,8 +322,7 @@ fn cubic([p0, c1, c2, p1]: [PagePoint; 4], t: f32) -> PagePoint {
     }
 }
 
-/// The cubic Bézier curve's derivative at `t`: the way it runs, not of unit
-/// length, as `(dx, dy)`.
+/// Returns the derivative of the cubic Bézier `points` at `t`, unnormalized.
 fn derivative([p0, c1, c2, p1]: [PagePoint; 4], t: f32) -> (f32, f32) {
     let s = 1.0 - t;
     let (a, b, c) = (3.0 * s * s, 6.0 * s * t, 3.0 * t * t);

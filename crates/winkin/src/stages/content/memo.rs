@@ -1,28 +1,22 @@
-//! The builder's memo: the facts each style in a build was lowered into.
+//! The builder's memo of lowered styles, and the style keys it uses.
 //!
-//! Most styles are given again, box after box, and the memo keeps them from
-//! being lowered again.
+//! Most styles repeat box after box; the memo maps each to the facts it
+//! lowered into, so it is lowered once per build.
 //!
-//! **Keyed by the style's bits.** A [`StyleKey`] is the caller's
-//! [`ComputedStyle`](crate::ComputedStyle) with its lists interned and named
-//! by id ([`Lists::key`](super::Lists::key)). A [`FontKey`] and a
-//! [`TextKey`] stand for the two groups that borrow lists. The key is
-//! compared and hashed by its bits (`style::same`), so the memo compares
-//! list ids, never list contents. Only the builder holds keys: while a
-//! style is lowered, in a `::first-letter` waiting for its letter, and
-//! here. The content never holds one; its stages read the facts.
-//!
-//! **In the builder's scratch, bounded.** The memo lives in the content
-//! scratch that the context keeps for the builder, not in the content. It
-//! is cleared at each build, since it maps to that build's ids. It is also
-//! cleared once it holds [`MOST`] styles, since past that a document's
-//! styles are not the few that repeat. Clearing keeps its capacity, so a
-//! warm build allocates nothing.
-//!
-//! A box's facts also depend on its node's kind, so an entry holds those
-//! of the last kind lowered in its style, and a node of another kind
-//! lowers them again. The block's own styles are lowered once per build
-//! and are not held.
+//! - **Keys.** A [`StyleKey`] is a [`ComputedStyle`](crate::ComputedStyle)
+//!   with its lists interned and named by id
+//!   ([`Lists::key`](super::Lists::key)). [`FontKey`] and [`TextKey`] are
+//!   the two groups that borrow lists. Keys compare and hash by their bits
+//!   (`style::same`), so the memo compares list ids, never list contents.
+//!   Only the builder holds keys; the content keeps the facts.
+//! - **Lifetime.** The memo lives in the context's content scratch. It is
+//!   cleared at each build, since it maps to that build's ids, and once it
+//!   holds [`MOST`] styles. Clearing keeps its capacity, so a warm build
+//!   allocates nothing.
+//! - **Node kind.** Box facts also depend on the node's kind. An entry
+//!   holds those for the last kind lowered; a node of another kind lowers
+//!   them again. The block's styles are lowered once per build and are not
+//!   held.
 
 use super::NodeKind;
 use super::facts::{BoxFactsId, TextFactsId};
@@ -43,8 +37,8 @@ use crate::style::{
 style_struct! {
     /// A [`FontGroup`] with its lists named by id.
     ///
-    /// It holds the group's values as given. The memo keys a style by it,
-    /// and a font request holds it.
+    /// It holds the group's values as given. It is part of a style's memo
+    /// key, and a [`FontRequest`](super::FontRequest) holds it.
     pub(crate) struct FontKey {
         /// `font-family`.
         pub(crate) families: NamedListId,
@@ -77,14 +71,16 @@ impl FontKey {
         VariationSettingsId::EMPTY,
     );
 
-    /// Keys `group`, whose lists the content's tables gave these ids.
+    /// Creates the key of `group`, whose lists the build's tables interned
+    /// as these ids.
     pub(super) const fn new(
         group: &FontGroup<'_>,
         families: NamedListId,
         features: FeatureSettingsId,
         variations: VariationSettingsId,
     ) -> Self {
-        // Every field is named, so a field added to the group fails here.
+        // Every field is named, so a field added to the group fails to
+        // compile here.
         let FontGroup {
             families: _,
             size,
@@ -126,8 +122,9 @@ impl FontKey {
     /// Returns the computed `font-size` in pixels, sanitized by
     /// [`sanitized_font_size`].
     ///
-    /// A numeric `line-height` multiplies it. Synthesized small capitals are
-    /// drawn at 0.7 of it. Font selection works the used size out from it.
+    /// A numeric `line-height` multiplies it, synthesized small capitals
+    /// are drawn at 0.7 of it, and font selection derives the used size
+    /// from it.
     pub(crate) fn computed_size(&self) -> f32 {
         sanitized_font_size(self.size)
     }
@@ -136,9 +133,10 @@ impl FontKey {
 style_struct! {
     /// A [`TextGroup`] with its language and hyphenation string named by id.
     ///
-    /// It holds the group's values as given. The memo keys a style by it.
+    /// It holds the group's values as given. It is part of a style's memo
+    /// key.
     pub(super) struct TextKey {
-        /// The content language; `und` where the caller gave none.
+        /// The content language; `und` where the style sets none.
         pub(super) language: LanguageId,
         pub(super) white_space_collapse: WhiteSpaceCollapse,
         pub(super) wrap_mode: TextWrapMode,
@@ -166,14 +164,15 @@ impl TextKey {
     /// Every text property at its initial value, naming the initial language.
     pub(super) const INITIAL: Self = Self::new(&TextGroup::INITIAL, LanguageId::UNDETERMINED, None);
 
-    /// Keys `group`, whose language and hyphenation string the content's
-    /// tables gave these ids.
+    /// Creates the key of `group`, whose language and hyphenation string
+    /// the build's tables interned as these ids.
     pub(super) const fn new(
         group: &TextGroup<'_>,
         language: LanguageId,
         hyphenate_character: Option<HyphenStringId>,
     ) -> Self {
-        // Every field is named, so a field added to the group fails here.
+        // Every field is named, so a field added to the group fails to
+        // compile here.
         let TextGroup {
             language: _,
             white_space_collapse,
@@ -218,14 +217,13 @@ impl TextKey {
         }
     }
 
-    /// Whether spaces, tabs and other space separators ending a line hang past it.
+    /// Whether spaces, tabs and other space separators ending a line hang.
     ///
     /// They hang where white space collapses, and where it is kept and wraps
-    /// (`pre-wrap`). They don't hang under `break-spaces`, where they are
-    /// content that wraps. They don't hang where white space is kept and
-    /// doesn't wrap (`pre`), where they are content that overflows. Blink's
-    /// `ComputeTrailingSpaceWidth` hangs nothing there either. Chrome doesn't
-    /// parse `preserve-spaces`, so it counts as `preserve`.
+    /// (`pre-wrap`). Under `break-spaces` they wrap as content. Where white
+    /// space is kept and doesn't wrap (`pre`) they overflow as content, as
+    /// in Blink's `ComputeTrailingSpaceWidth`. Chrome doesn't parse
+    /// `preserve-spaces`, so it counts as `preserve`.
     pub(super) fn white_space_hangs(&self) -> bool {
         match self.white_space_collapse {
             WhiteSpaceCollapse::BreakSpaces => false,
@@ -240,22 +238,21 @@ impl TextKey {
 
     /// Whether white space ending a paragraph hangs only where it overflows.
     ///
-    /// This holds for kept white space that wraps (`pre-wrap`), before a
-    /// forced break or at the block's end. Such white space counts in
-    /// max-content and not in min-content, as CSS Text 3 says. Where white
-    /// space collapses, the space separators left there hang whole, as at any
-    /// line's end.
+    /// True for kept white space that wraps (`pre-wrap`), before a forced
+    /// break or at the block's end. Such white space counts in max-content
+    /// but not min-content, per CSS Text 3. Collapsible white space there
+    /// hangs unconditionally, as at any line's end.
     pub(super) fn white_space_hangs_conditionally(&self) -> bool {
         self.white_space_collapse.keeps_spaces() && self.white_space_hangs()
     }
 }
 
 style_struct! {
-    /// A caller's style as the writer lowers it.
+    /// A style as the writer lowers it, and the memo's key.
     ///
-    /// It holds the style's groups as given, the font and text groups with
-    /// their lists named by the ids the content's tables gave them. It is
-    /// compared and hashed by its bits, as the memo keys it.
+    /// It holds the style's groups as given, with the font and text groups'
+    /// lists named by their interned ids. It compares and hashes by its
+    /// bits.
     pub(super) struct StyleKey {
         pub(super) font: FontKey,
         pub(super) text: TextKey,
@@ -265,6 +262,7 @@ style_struct! {
         pub(super) edges: EdgesGroup,
         pub(super) ruby: RubyGroup,
         pub(super) paints: bool,
+        pub(super) outlines: bool,
         pub(super) decorates: bool,
     }
 }
@@ -280,22 +278,23 @@ impl StyleKey {
         edges: EdgesGroup::INITIAL,
         ruby: RubyGroup::INITIAL,
         paints: false,
+        outlines: false,
         decorates: false,
     };
 }
 
-/// How many styles the memo holds before it starts again.
+/// How many styles the memo holds before it clears.
 ///
-/// It is more than any bench document gives (1 to 6), and few enough that
-/// the memo stays small in a document whose styles do not repeat.
+/// It is more than any bench document uses (1 to 6), and few enough that
+/// the memo stays small where styles do not repeat.
 const MOST: usize = 128;
 
 define_id! {
-    /// The id of a style the memo holds.
+    /// Indexes the memo's entries.
     struct MemoId(u16);
 }
 
-/// One style the memo holds, and the facts it was lowered into.
+/// One style the memo holds, and the facts it lowered into.
 struct MemoEntry {
     key: StyleKey,
     text: TextFactsId,
@@ -308,8 +307,7 @@ struct MemoEntry {
 /// The builder's memo of lowered styles (see the module documentation).
 pub(super) struct StyleMemo {
     entries: Table<MemoId, MemoEntry>,
-    /// How a held style is found. It is the memo's own lookup, apart from
-    /// the content's.
+    /// The hash lookup over `entries`, separate from the lists' lookup.
     lookup: Lookup,
 }
 
@@ -323,20 +321,19 @@ impl StyleMemo {
     }
 
     /// Forgets every style, keeping the capacity. Each build calls it,
-    /// since each build has its own text facts.
+    /// since each build has its own fact ids.
     pub(super) fn clear(&mut self) {
         self.entries.clear();
         self.lookup.clear();
     }
 
-    /// Returns the facts `key` was lowered into in this build for a node of
-    /// `kind`: its text facts, and its box facts. Each is `None` where its
-    /// table was full.
+    /// Returns the text and box facts `key` lowers into for a node of
+    /// `kind`. Each is `None` where its table was full.
     ///
-    /// Otherwise it calls `lower_text` and `lower_box` with `cx`, and holds
-    /// what they give for the next time; a style whose text facts did not
-    /// fit is not held. A style held for another kind calls `lower_box`
-    /// only, and holds its box facts in place of the other kind's.
+    /// A new style calls `lower_text` and `lower_box` with `cx` and is held
+    /// for next time, unless its text facts did not fit. A style held for
+    /// another kind calls only `lower_box`, and holds the new box facts in
+    /// place of the old.
     pub(super) fn facts<C>(
         &mut self,
         cx: &mut C,

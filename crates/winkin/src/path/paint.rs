@@ -1,32 +1,22 @@
 //! A line's paint placed along a path.
 //!
-//! Each thing [`Line::paints`] yields, in Chrome's order, turns to the path
-//! where its character's middle falls.
+//! Each [`Paint`] that [`Line::paints`] yields turns to the path at its
+//! character's middle.
 //!
-//! **Read, not recomputed.** A run's start along the line is its own
-//! [`inline`](TextRun::inline), and a glyph's place is its own `x` and `y`.
-//! Marks and decorations go where the paint puts them. The only thing worked
-//! out here is each character's middle, from its glyphs' advances, since that
-//! is where it turns.
-//!
-//! **A character turns as one** (SVG 2, section 11.8.3, and Blink's
-//! `SvgTextLayoutAlgorithm::PositionOnPath`). A cluster's glyphs share a text
-//! offset and turn about the cluster's middle, so a mark keeps its offset from
-//! its base across a bend. A ligature is one character. Combined text is one
-//! character, turning about its em's middle.
-//!
-//! **Read once, nothing held.** Each glyph comes with where its cluster
-//! starts along the line and how far it reaches, which the run's glyph
-//! walk knows exactly as it places the glyph, so a character's middle is
-//! found at its first glyph, with no look ahead, and a cluster that takes
-//! room and draws nothing still moves the characters after it.
-//!
-//! **Each run a walk of its own.** A text run is handed out as a view
-//! ([`PathTextRun`]) whose [`glyphs`](PathTextRun::glyphs) walk its placed
-//! glyphs, as [`TextRun::glyphs`] walks them along a straight line, so a
-//! renderer takes the run's font once and walks its glyphs in a loop of its
-//! own; and a decoration as a view ([`PathDecoration`]) whose
-//! [`pieces`](PathDecoration::pieces) walk it.
+//! - Positions come from the straight-line paint: a run's
+//!   [`inline`](TextRun::inline) extent, a glyph's `x` and `y`, and the
+//!   places of marks and decorations. Only each character's middle is
+//!   computed here, from its cluster's advance.
+//! - A character turns as one (SVG 2, section 11.8.3, and Blink's
+//!   `SvgTextLayoutAlgorithm::PositionOnPath`). A cluster's glyphs turn about
+//!   the cluster's middle, so a mark keeps its offset from its base across a
+//!   bend. A ligature is one character. Combined text is one character,
+//!   turning about its em's middle.
+//! - Nothing is buffered. The glyph walk gives each glyph its cluster's start
+//!   and advance, so a character's middle is known at its first glyph. A
+//!   cluster that draws nothing still advances the characters after it.
+//! - [`PathTextRun::glyphs`] walks one run, so a renderer selects the font
+//!   once per run. [`PathDecoration::pieces`] walks one decoration.
 
 use core::fmt;
 
@@ -83,14 +73,14 @@ impl Placement {
 /// [`PathDecoration::pieces`] for individual placements.
 #[non_exhaustive]
 pub enum PathPaint<'a, P: ?Sized> {
-    /// A decoration line painted before the text, in pieces.
+    /// An underline or overline painted before the text.
     ///
-    /// Under (or over) a run of it, one piece a character, as SVG and Chrome
-    /// draw a decoration along a path.
+    /// Covers one text run, split into one piece per character, matching SVG
+    /// and Chrome.
     DecorationBeforeText(PathDecoration<'a, P>),
-    /// A run of a ruby annotation's text, on its annotation's baseline.
+    /// A run of ruby annotation text, on the annotation's baseline.
     ///
-    /// Over (or under) its base.
+    /// Annotations paint after the rest of the line.
     Annotation(PathTextRun<'a, P>),
     /// A run of text.
     Text(PathTextRun<'a, P>),
@@ -114,14 +104,12 @@ pub enum PathPaint<'a, P: ?Sized> {
         /// The position of the margin-box corner on the path, and its rotation.
         place: Placement,
     },
-    /// Text the layout made: a hyphen or an ellipsis.
-    ///
-    /// A hyphen or an ellipsis follows the text of its line.
+    /// Text the layout generates: a hyphen or an ellipsis, where it stands on
+    /// the line.
     Generated(PathTextRun<'a, P>),
-    /// A decoration line painted after the text, in pieces.
+    /// A line through the text, painted after it.
     ///
-    /// Through a run of it, as
-    /// [`DecorationBeforeText`](Self::DecorationBeforeText) is.
+    /// Covers one text run, split into one piece per character.
     DecorationAfterText(PathDecoration<'a, P>),
 }
 
@@ -161,15 +149,16 @@ impl<P: ?Sized> fmt::Debug for PathPaint<'_, P> {
     }
 }
 
-/// What a line's items are placed from along a path.
+/// A path and where one line lies on it.
 struct OnPath<'a, P: ?Sized> {
     path: &'a P,
     length: f32,
     ends: PastEnds,
-    /// Where the line box's left is along the path, which the room it was
-    /// broken in, and its alignment in that room, put it at.
+    /// The distance along the path of the line box's left edge, including
+    /// the start offset and alignment.
     left: f32,
-    /// Where its baseline is, from its top: what sits on the path.
+    /// The baseline's distance below the line box's top. The baseline lies
+    /// on the path.
     baseline: f32,
 }
 
@@ -182,17 +171,18 @@ impl<P: ?Sized> Clone for OnPath<'_, P> {
 impl<P: ?Sized> Copy for OnPath<'_, P> {}
 
 impl<P: TextPath + ?Sized> OnPath<'_, P> {
-    /// The path where something whose middle is `middle` along the line
-    /// goes, and the way it runs there; `None` where it is not drawn.
+    /// Returns the path point and tangent for something centred `middle`
+    /// along the line, or `None` where it is not drawn.
     #[inline]
     fn frame(&self, middle: f32) -> Option<PathPoint> {
         self.ends.frame(self.path, self.length, self.left + middle)
     }
 
-    /// Where the point `(x, y)` of the line, along it and down from its
-    /// top, goes when what it belongs to has its middle `middle` along the
-    /// line and is turned to `frame`: standing across the path where
-    /// `standing`, narrowed by `scale`.
+    /// Places the line point `(x, y)`, along the line and down from its top,
+    /// of something centred `middle` along the line and turned to `frame`.
+    ///
+    /// `standing` turns it to stand across the path; `scale` narrows its x
+    /// axis.
     #[inline]
     fn place(
         &self,
@@ -203,8 +193,8 @@ impl<P: TextPath + ?Sized> OnPath<'_, P> {
         scale: f32,
     ) -> Placement {
         let PagePoint { x, y } = frame.offset(x - middle, self.baseline - y);
-        // Along the path, its x axis is the path's way; standing, its x
-        // axis is up from the path, and its y axis the path's way.
+        // The local x axis follows the tangent. Standing, it points up from
+        // the path and the local y axis follows the tangent.
         let (cos, sin) = if standing {
             (frame.dy, -frame.dx)
         } else {
@@ -220,29 +210,26 @@ impl<P: TextPath + ?Sized> OnPath<'_, P> {
     }
 }
 
-/// A line's paint along a path, in Chrome's order: what
-/// [`paints`](super::paints) walks.
+/// The iterator behind [`paints`](super::paints).
 ///
-/// Every glyph, emphasis mark, atomic inline and piece of a decoration it
-/// paints, each placed where its character's middle falls on the path and
-/// turned to the way the path runs there. The line starts along the path
-/// where its box's left is, [`LineMetrics::left`](crate::LineMetrics::left);
-/// its baseline sits on the path, and whatever stands off its baseline
-/// stands as far off the path.
+/// Places each glyph, emphasis mark, atomic inline and decoration piece at
+/// its character's middle on the path, turned to the tangent there. The line
+/// starts at [`LineMetrics::left`](crate::LineMetrics::left) along the path.
+/// Its baseline lies on the path, and offsets from the baseline become
+/// offsets from the path.
 pub(super) struct PathWalk<'a, P: ?Sized, I> {
-    /// The line's paint along a straight line.
+    /// The line's straight-line paint.
     paint: I,
     line: Line<'a>,
     on: OnPath<'a, P>,
-    /// Whether the glyphs of the run handed out last stand across the path,
-    /// as its marks, painted after it, then do.
+    /// Whether the last run's glyphs stand across the path. Its emphasis
+    /// marks, which follow it, stand too.
     standing: bool,
 }
 
 impl<'a, P: TextPath + ?Sized, I> PathWalk<'a, P, I> {
-    /// `line`'s paint along `path`, from `paint`, its paint along a
-    /// straight line, with what is past the path's ends drawn as `ends`
-    /// says.
+    /// Creates the walk of `line` along `path` from its straight-line
+    /// `paint`.
     pub(super) fn new(line: &Line<'a>, path: &'a P, ends: PastEnds, paint: I) -> Self {
         let metrics = line.metrics();
         Self {
@@ -259,13 +246,13 @@ impl<'a, P: TextPath + ?Sized, I> PathWalk<'a, P, I> {
         }
     }
 
-    /// `run` along the path, whose marks come next.
+    /// Wraps `run` and records whether its marks stand.
     fn run(&mut self, run: TextRun<'a>) -> PathTextRun<'a, P> {
         self.standing = stands(&run);
         PathTextRun { run, on: self.on }
     }
 
-    /// `decoration`'s bar along the path.
+    /// Wraps `decoration` for placement along the path.
     fn decoration(&self, decoration: Decoration) -> PathDecoration<'a, P> {
         PathDecoration {
             decoration,
@@ -312,17 +299,16 @@ where
                     let place = self.on.place(frame, middle, at, false, 1.0);
                     PathPaint::Atomic { atomic, place }
                 }
-                // SVG paints no background behind text, and Chrome's
-                // `textPath` none: the block's background and the boxes'
-                // are not placed.
+                // SVG paints no backgrounds behind text, nor does Chrome on a
+                // `textPath`.
                 Paint::Background(_) | Paint::Box(_) => continue,
             });
         }
     }
 }
 
-/// Whether `run`'s glyphs stand across a path: upright or combined in a
-/// vertical line.
+/// Returns whether `run`'s glyphs stand across a path: upright or combined
+/// in a vertical line.
 fn stands(run: &TextRun<'_>) -> bool {
     matches!(
         run.orientation(),
@@ -339,7 +325,7 @@ fn stands(run: &TextRun<'_>) -> bool {
 /// Horizontal and sideways glyphs follow the path tangent. Upright and
 /// combined vertical glyphs rotate a quarter turn clockwise, with their
 /// top toward the path start. Characters with midpoints outside the
-/// path are omitted when configured.
+/// path are omitted under [`PastEnds::Hidden`].
 pub struct PathTextRun<'a, P: ?Sized> {
     run: TextRun<'a>,
     on: OnPath<'a, P>,
@@ -359,7 +345,9 @@ impl<'a, P: TextPath + ?Sized> PathTextRun<'a, P> {
         self.run
     }
 
-    /// Returns glyphs and path placements in drawing order without allocating.
+    /// Returns the glyphs with their path placements, in drawing order.
+    ///
+    /// Does not allocate.
     pub fn glyphs(&self) -> impl Iterator<Item = PathGlyph> + use<'a, P> {
         PathGlyphs::new(self.run, self.on)
     }
@@ -372,16 +360,16 @@ impl<'a, P: TextPath + ?Sized> PathTextRun<'a, P> {
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[non_exhaustive]
 pub struct PathGlyph {
-    /// The glyph with its original straight-line position.
+    /// The glyph, with its straight-line position.
     ///
-    /// Use its identifier, advance and text offset for rendering. `place`
-    /// provides the transformed position.
+    /// Its id, advance and text offset are unchanged; `place` gives its
+    /// position on the path.
     pub glyph: Glyph,
     /// The path placement.
     pub place: Placement,
 }
 
-/// The portion of a decoration line for one character on a path.
+/// The part of a decoration line under one character on a path.
 ///
 /// Yielded by [`PathDecoration::pieces`]. Draw the bar from the placement
 /// origin across the inline extent, at its straight-line baseline offset,
@@ -389,9 +377,10 @@ pub struct PathGlyph {
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[non_exhaustive]
 pub struct PathPiece {
-    /// The inline extents relative to line-box left.
+    /// The extent along the line, from the line box's left edge.
     pub inline: InlineExtents,
-    /// The path placement, with its origin at the piece start on the decoration baseline.
+    /// The path placement, with its origin at the piece start on the
+    /// decoration's baseline.
     pub place: Placement,
 }
 
@@ -403,38 +392,37 @@ impl<P: ?Sized> fmt::Debug for PathTextRun<'_, P> {
     }
 }
 
-/// A text run's glyphs placed along a path, in drawing order, each with
-/// where it is drawn: what [`PathTextRun::glyphs`] walks.
+/// The iterator behind [`PathTextRun::glyphs`].
 struct PathGlyphs<'a, P: ?Sized> {
     on: OnPath<'a, P>,
-    /// The run's glyphs, each with where its character is along the line.
+    /// The run's glyphs, each with its cluster's start and advance.
     glyphs: RunGlyphs<'a>,
-    /// Whether the run is combined text, one character whatever it holds,
-    /// which turns about its em's middle.
+    /// Whether the run is combined text, which turns as one character about
+    /// its em's middle.
     combined: bool,
-    /// The text offset the glyphs of the character being handed out share.
+    /// The text offset of the character being placed.
     character: Option<usize>,
-    /// Where its middle is along the line, and the path there, `None` where
-    /// it is not drawn.
+    /// The character's middle along the line.
     middle: f32,
+    /// The path point at `middle`, or `None` where the character is not
+    /// drawn.
     frame: Option<PathPoint>,
-    /// Whether its glyphs stand across the path, and how much they are
-    /// narrowed.
+    /// Whether the glyphs stand across the path.
     standing: bool,
+    /// The narrowing of combined text; `1.0` for other runs.
     scale: f32,
 }
 
 impl<'a, P: TextPath + ?Sized> PathGlyphs<'a, P> {
-    /// `run`'s glyphs, to be placed as `on` places them.
+    /// Creates the walk of `run`'s glyphs, placed by `on`.
     fn new(run: TextRun<'a>, on: OnPath<'a, P>) -> Self {
         let combined = run.orientation() == RunOrientation::Combined;
         let InlineExtents {
             left: start,
             right: end,
         } = run.inline();
-        // Combined text is one character, its em's: every glyph of it turns
-        // about the em's middle, found now. Any other run's characters are
-        // found as its glyphs are read.
+        // Combined text is one character turning about its em's middle.
+        // Other runs find each character's middle as its glyphs arrive.
         let middle = (start + end) / 2.0;
         Self {
             on,
@@ -450,24 +438,23 @@ impl<'a, P: TextPath + ?Sized> PathGlyphs<'a, P> {
 }
 
 impl<P: TextPath + ?Sized> Iterator for PathGlyphs<'_, P> {
-    /// A glyph, and where it is drawn.
     type Item = PathGlyph;
 
     #[inline]
     fn next(&mut self) -> Option<PathGlyph> {
         loop {
             if self.combined {
-                // One character: all of it on the path, or none.
+                // Combined text is drawn whole or not at all.
                 self.frame?;
             }
             let (glyph, left, advance) = self.glyphs.next_placed()?;
             if !self.combined && self.character != Some(glyph.text_offset) {
-                // A character's first glyph: its middle is its cluster's.
+                // A character's first glyph sets its middle from the cluster.
                 self.character = Some(glyph.text_offset);
                 self.middle = left + advance / 2.0;
                 self.frame = self.on.frame(self.middle);
             }
-            // Off the path, the whole character is left out.
+            // A character off the path is dropped whole.
             let Some(frame) = self.frame else {
                 continue;
             };
@@ -487,10 +474,11 @@ impl<P: TextPath + ?Sized> Iterator for PathGlyphs<'_, P> {
 /// matching SVG and Chrome. Draw it from the placement origin at the
 /// straight-line baseline offset, then apply the transform.
 ///
-/// Characters with midpoints outside the path are omitted when configured.
+/// Characters with midpoints outside the path are omitted under
+/// [`PastEnds::Hidden`].
 pub struct PathDecoration<'a, P: ?Sized> {
     decoration: Decoration,
-    /// The line whose items the bar's text is among.
+    /// The line holding the decorated text.
     line: Line<'a>,
     on: OnPath<'a, P>,
 }
@@ -509,9 +497,10 @@ impl<'a, P: TextPath + ?Sized> PathDecoration<'a, P> {
         self.decoration
     }
 
-    /// Returns character pieces in visual order without allocating.
+    /// Returns the per-character pieces in visual order.
     ///
-    /// Each piece includes straight-line extents and a path placement.
+    /// Each piece has its straight-line extent and a path placement. Does not
+    /// allocate.
     pub fn pieces(&self) -> impl Iterator<Item = PathPiece> + use<'a, P> {
         PathPieces {
             decoration: self.decoration,
@@ -531,22 +520,22 @@ impl<P: ?Sized> fmt::Debug for PathDecoration<'_, P> {
     }
 }
 
-/// A decoration line's pieces along a path, one a character it runs under
-/// (or through): what [`PathDecoration::pieces`] walks.
+/// The iterator behind [`PathDecoration::pieces`]: one piece per character
+/// under the bar.
 struct PathPieces<'a, P: ?Sized> {
     decoration: Decoration,
     on: OnPath<'a, P>,
-    /// The text runs the bar was found over.
+    /// The text runs under the bar.
     runs: DecorationRuns<'a>,
-    /// The clusters of the run being cut, and the extent of combined text,
-    /// one piece whatever it holds.
+    /// The clusters of the run being split.
     clusters: Option<RunClusters<'a>>,
+    /// The extent of a combined run, which makes one piece.
     combined: Option<InlineExtents>,
 }
 
 impl<P: TextPath + ?Sized> PathPieces<'_, P> {
-    /// The next character with an advance among the text runs the bar
-    /// reaches: where it starts and ends along the line.
+    /// Returns the extent along the line of the next character with an
+    /// advance, among the runs the bar overlaps.
     fn next_character(&mut self) -> Option<InlineExtents> {
         let bar = self.decoration.inline();
         loop {
@@ -580,7 +569,6 @@ impl<P: TextPath + ?Sized> PathPieces<'_, P> {
 }
 
 impl<P: TextPath + ?Sized> Iterator for PathPieces<'_, P> {
-    /// A piece's start and end along the line, and where it is drawn.
     type Item = PathPiece;
 
     fn next(&mut self) -> Option<PathPiece> {

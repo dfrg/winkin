@@ -1,4 +1,4 @@
-//! The writer's bookkeeping: the container stack, nodes, items and room.
+//! The container stack, nodes, items and room checks.
 
 use core::{iter, mem};
 
@@ -14,12 +14,11 @@ use crate::style::WhiteSpaceTrim;
 use crate::work;
 
 impl ContentWriter<'_> {
-    /// Pushes `open` on the stack, linking a ruby container or annotation to
-    /// the next one out.
+    /// Pushes `open` on the stack, linking a ruby entry to the next one out.
     ///
-    /// The stack holds as many containers as an `OpenId` names. No caller can
-    /// reach that in memory. One past it would be left off, and the container
-    /// outside it would take its close.
+    /// The stack is bounded by `OpenId` (2^32 entries), which memory cannot
+    /// reach. An entry past it would be left off, and the container outside
+    /// would take its close.
     pub(super) fn push_open(&mut self, mut open: Open) {
         let links = open.kind.is_ruby();
         if links {
@@ -32,11 +31,10 @@ impl ContentWriter<'_> {
         }
     }
 
-    /// Returns the open ruby containers and annotations, innermost first,
-    /// with where each is on the stack.
+    /// Returns the open ruby entries with their stack ids, innermost first.
     ///
-    /// The ruby calls follow this chain of links and never look at the boxes
-    /// between.
+    /// The chain skips the boxes between, so ruby calls cost the same at
+    /// any box depth.
     pub(super) fn ruby_chain(&self) -> impl Iterator<Item = (OpenId, Open)> + '_ {
         let mut at = self.ruby.innermost;
         iter::from_fn(move || {
@@ -73,7 +71,7 @@ impl ContentWriter<'_> {
         if close.is_none() {
             debug_assert!(false, "a close has its item reserved");
         }
-        // The container's next annotation flags this one's close.
+        // The ruby container's next annotation flags this close.
         if open.kind == ContainerKind::Annotation
             && let Some(ruby) = open
                 .outer
@@ -91,14 +89,14 @@ impl ContentWriter<'_> {
         self.end_leaf(node);
     }
 
-    /// Returns the current text node, if it is the caller's text node `key`.
+    /// Returns the current text node if its key is `key`.
     pub(super) fn text_node_keyed(&self, key: NodeKey) -> Option<NodeId> {
         self.text_node
             .node
             .filter(|&node| self.content.nodes.key(node) == key)
     }
 
-    /// Ends the current text node, if any: it takes no more text.
+    /// Ends the current text node, if any, so it takes no more text.
     pub(super) fn end_text(&mut self) {
         self.end_math_text();
         if let Some(node) = self.text_node.node.take() {
@@ -107,8 +105,8 @@ impl ContentWriter<'_> {
         self.text_node.item = None;
     }
 
-    /// Ends the source text node `math-auto` measures: a held character is
-    /// written as the whole of it.
+    /// Ends the source text node `math-auto` is measuring, writing a held
+    /// character as the whole node.
     pub(super) fn end_math_text(&mut self) {
         if let MathText::Held(key, ch) = mem::replace(&mut self.text_node.math, MathText::None) {
             self.split_first_letter(key, ch.encode_utf8(&mut [0; 4]), true);
@@ -126,8 +124,8 @@ impl ContentWriter<'_> {
 
     /// Returns the innermost open container's node, or the block's.
     ///
-    /// Each stack entry keeps it, so containers dropped at a limit cost
-    /// nothing to look past.
+    /// Each stack entry caches it, so dropped containers cost nothing to
+    /// look past.
     pub(super) fn container(&self) -> NodeId {
         self.scratch
             .open
@@ -135,8 +133,8 @@ impl ContentWriter<'_> {
             .map_or(NodeId::BLOCK, |open| open.container)
     }
 
-    /// Appends a node of `kind` with the facts its styles were lowered into
-    /// (`lowered`). Returns `None` if the node table is full.
+    /// Appends a node of `kind` with facts `lowered`. Returns `None` if the
+    /// node table is full.
     pub(super) fn push_node(
         &mut self,
         kind: NodeKind,
@@ -167,14 +165,13 @@ impl ContentWriter<'_> {
             kind,
         })?;
         self.note_first_line(own, first, lowered.restyles);
-        // A box query by key answers it.
+        // Box queries by key find it.
         if kind.is_inline_box() || matches!(kind, NodeKind::Annotation | NodeKind::Ruby) {
             (self.content.keyed_boxes_mut()).push_unsorted(KeyedBox { key, node: id });
         }
         if kind.is_inline_box() {
             self.content.flags.insert(ContentFlags::INLINE_BOXES);
-            // The one box that keeps `initial-letter` is the block's
-            // initial letter.
+            // The one box that keeps `initial-letter` is the initial letter.
             let Content { block, facts, .. } = &mut *self.content;
             if block.initial_letter.is_none()
                 && facts.box_facts(own.box_).has(BoxFlags::INITIAL_LETTER)
@@ -187,12 +184,11 @@ impl ContentWriter<'_> {
         Some(id)
     }
 
-    /// Opens a container of kind `container` for `key`, as a node of `kind`
-    /// with the facts `lowered`, trimming white space as `trim` says.
+    /// Opens a container: pushes its node, opening item and stack entry, and
+    /// reserves its close item.
     ///
-    /// It pushes the node, its opening item and its entry on the stack, and
-    /// reserves its close. An `anonymous` ruby container closes with its
-    /// annotation. Returns the node, or `None` where it did not fit.
+    /// An `anonymous` ruby container closes with its annotation. Returns the
+    /// node, or `None` if it does not fit.
     pub(super) fn push_container(
         &mut self,
         container: ContainerKind,
@@ -204,7 +200,7 @@ impl ContentWriter<'_> {
     ) -> Option<NodeId> {
         self.collapser.step(Event::Open { trim });
         let node = self.push_node(kind, lowered, key)?;
-        // Counted before its opening item, which an annotation flags.
+        // Counted before the opening item, so an annotation's is flagged.
         if container == ContainerKind::Annotation {
             self.ruby.annotations += 1;
         } else if container == ContainerKind::Ruby {
@@ -229,12 +225,12 @@ impl ContentWriter<'_> {
         Some(node)
     }
 
-    /// Flags the items an annotation that just opened follows: its ruby
-    /// container's opening item, and the closing item of the container's
-    /// annotation before it.
+    /// Flags `ANNOTATION_FOLLOWS` on the ruby container's opening item and
+    /// on the close of its previous annotation, for the annotation that just
+    /// opened.
     ///
-    /// The annotation opens in the innermost ruby container, everything
-    /// inside it closed, so its link out names that container.
+    /// Everything inside the ruby container was closed first, so the
+    /// annotation's outer link names it.
     fn flag_annotation_follows(&mut self) {
         let Some(ruby) = self.scratch.open.last().and_then(|open| open.outer) else {
             return;
@@ -255,12 +251,10 @@ impl ContentWriter<'_> {
         }
     }
 
-    /// Writes a leaf: a node of `kind` for `key` with the facts `lowered`,
-    /// and its one item, of `item`.
+    /// Writes a leaf node with its one item of kind `item`.
     ///
-    /// `write` fills the item where it fits: its text and its row in the
-    /// extras. Returns whether the node fits; where it does not, nothing is
-    /// written.
+    /// `write` fills the item, if it fits, with its text and extras row.
+    /// Returns whether the node fits; if not, nothing is written.
     pub(super) fn push_leaf(
         &mut self,
         kind: NodeKind,
@@ -279,8 +273,8 @@ impl ContentWriter<'_> {
         true
     }
 
-    /// Appends an empty item at the end of the text, leaving room for the
-    /// closes owed. Returns `None` if no item fits.
+    /// Appends an empty item at the end of the text. Only a close item may
+    /// use the reserved room. Returns `None` if the item doesn't fit.
     pub(super) fn push_item(
         &mut self,
         kind: ItemKind,
@@ -293,8 +287,8 @@ impl ContentWriter<'_> {
         if kind != ItemKind::Text || flags.contains(ItemFlags::GENERATED) {
             self.text_node.item = None;
         }
-        // Text is looked for in the text itself: an item that holds none
-        // yet may stay empty.
+        // Text items don't count: a text item may stay empty, and written
+        // text is checked directly.
         if !matches!(
             kind,
             ItemKind::Open | ItemKind::Float | ItemKind::Absolute | ItemKind::Text

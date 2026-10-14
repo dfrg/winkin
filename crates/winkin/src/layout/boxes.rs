@@ -5,7 +5,7 @@
 //! `getClientRects`. On each line it reaches, it yields one part per group of
 //! its descendants' items that no other leaf splits: the union of their
 //! rectangles. Every span is fully measured, so the query needs no relayout.
-//! It walks only the lines the box's clusters reach, holds a few words of
+//! It walks only the lines the box's clusters reach, keeps a few words of
 //! state and allocates nothing.
 
 use core::fmt;
@@ -37,7 +37,7 @@ pub struct Atomic<'a> {
 }
 
 impl<'a> Atomic<'a> {
-    /// The atomic inline item `item` of `line` is.
+    /// Returns atomic inline item `item` of `line`.
     #[inline]
     pub(super) fn new(line: Line<'a>, item: &'a FragmentItem) -> Self {
         Self { line, item }
@@ -53,7 +53,8 @@ impl<'a> Atomic<'a> {
         self.item.level
     }
 
-    /// Returns the byte range of the U+FFFC placeholder in [`Layout::text`](crate::Layout::text).
+    /// Returns the byte range of the U+FFFC placeholder in
+    /// [`Layout::text`](crate::Layout::text).
     ///
     /// The range endpoints are the caret positions before and after the inline.
     pub fn text_range(&self) -> Range<usize> {
@@ -68,19 +69,21 @@ impl<'a> Atomic<'a> {
         self.item.advance().to_px()
     }
 
-    /// Returns margin-box extents along the line, relative to line-box left.
+    /// Returns the margin-box extents along the line, relative to the line
+    /// box's left edge.
     pub fn inline(&self) -> InlineExtents {
         self.item.inline_extents()
     }
 
-    /// Returns the baseline offset from line-box top.
+    /// Returns the baseline's offset from the line box's top.
     ///
     /// Uses the margin-box bottom if the inline has no baseline.
     pub fn baseline(&self) -> f32 {
         self.item.block.to_px()
     }
 
-    /// Returns margin-box extents across the line, relative to the line-over edge.
+    /// Returns the margin-box extents across the line, relative to the
+    /// line-over edge.
     pub fn block(&self) -> CrossExtents {
         let (over, under) = self.block_extent();
         CrossExtents {
@@ -89,7 +92,7 @@ impl<'a> Atomic<'a> {
         }
     }
 
-    /// The same, on layout's grid.
+    /// Returns the margin-box extents across the line, on the 26.6 grid.
     fn block_extent(&self) -> (LayoutUnit, LayoutUnit) {
         let layout = self.line.layout();
         let content = layout.content();
@@ -134,34 +137,32 @@ impl fmt::Debug for Atomic<'_> {
 #[derive(Copy, Clone)]
 pub struct BoxFragment<'a> {
     content: &'a Content,
-    /// The kept boxes' extents in its line's variant, which its own is
-    /// read from.
+    /// The kept boxes in the line's variant, which hold its extent.
     kept: &'a KeptBoxes,
-    /// Its row among them, where its item names one.
+    /// Its row there, or `None` for a culled box.
     kept_box: Option<KeptBoxId>,
-    /// Its extent with its font's ascent and descent scaled, on a line
+    /// Its extent with the font's ascent and descent scaled, on a line
     /// `text-fit` scales.
     fitted: Option<Extent>,
     node: NodeId,
     line: LineId,
     level: BidiLevel,
-    /// Its border box's left and right along the line, from the line box's
-    /// left: a kept box's left exactly, its right on layout's grid, rounded
-    /// up as Chrome snaps it.
+    /// The border box's left along the line, exactly, from the line box's
+    /// left.
     left: InlineLayoutUnit,
+    /// The border box's right: its left plus its width on the 26.6 grid,
+    /// rounded up as Chrome snaps it.
     right: InlineLayoutUnit,
     baseline: LayoutUnit,
-    /// Its border box's top and bottom from the line box's top, where the
-    /// query worked them out; a kept box's are its extent's, looked up when
-    /// asked.
+    /// A culled box's top and bottom from the line box's top, found by the
+    /// query; `None` for a kept box, whose extent is looked up when asked.
     across: Option<(LayoutUnit, LayoutUnit)>,
     flags: FragmentItemFlags,
     descendants: usize,
 }
 
 impl<'a> BoxFragment<'a> {
-    /// Returns the part that box item `item` of `line` is, for a box that
-    /// keeps its fragment.
+    /// Returns box item `item` of `line`, for a box that keeps its fragment.
     #[inline]
     pub(super) fn from_item(line: Line<'a>, item: &'a FragmentItem) -> Self {
         let left = item.inline;
@@ -219,12 +220,14 @@ impl<'a> BoxFragment<'a> {
         self.level
     }
 
-    /// Returns border-box extents along the line, relative to line-box left.
+    /// Returns the border-box extents along the line, relative to the line
+    /// box's left edge.
     pub fn inline(&self) -> InlineExtents {
         InlineExtents::from_exact(self.left, self.right)
     }
 
-    /// Returns border-box extents across the line, relative to the line-over edge.
+    /// Returns the border-box extents across the line, relative to the
+    /// line-over edge.
     ///
     /// Retained fragments use font ascent and descent around the baseline,
     /// plus block-axis padding and borders. Culled fragments use the union
@@ -237,7 +240,7 @@ impl<'a> BoxFragment<'a> {
         }
     }
 
-    /// The same, on layout's grid.
+    /// Returns the border-box extents across the line, on the 26.6 grid.
     ///
     /// A kept box's extent is its row's.
     fn block_extent(&self) -> (LayoutUnit, LayoutUnit) {
@@ -248,7 +251,7 @@ impl<'a> BoxFragment<'a> {
         })
     }
 
-    /// Returns the baseline offset from line-box top.
+    /// Returns the baseline's offset from the line box's top.
     pub fn baseline(&self) -> f32 {
         self.baseline.to_px()
     }
@@ -266,7 +269,8 @@ impl<'a> BoxFragment<'a> {
         self.flags.contains(FragmentItemFlags::OPEN_RIGHT)
     }
 
-    /// Returns `true` if this fragment was derived from a culled box.
+    /// Returns `true` if this fragment is derived from a culled box's
+    /// descendants.
     pub fn is_culled(&self) -> bool {
         self.across.is_some()
     }
@@ -291,7 +295,8 @@ impl<'a> BoxFragment<'a> {
 
     /// Returns the number of following line items in this fragment.
     ///
-    /// Includes the tail hidden by an ellipsis; see [`Line::all_items`](super::Line::all_items).
+    /// Includes the tail hidden by an ellipsis; see
+    /// [`Line::all_items`](super::Line::all_items).
     /// Returns zero for culled boxes and annotation boxes. Annotation text
     /// is accessed through [`Annotation::runs`](super::Annotation::runs).
     pub fn descendants(&self) -> usize {
@@ -303,7 +308,8 @@ impl<'a> BoxFragment<'a> {
 ///
 /// Returned by [`BoxFragment::edges`]. Values use the layout grid.
 /// Open sides have zero width, including continuations across line breaks
-/// or bidi reordering. These are widths; [`InlineExtents`] describes positions.
+/// or bidi reordering. These are widths; [`InlineExtents`] describes
+/// positions.
 #[derive(Copy, Clone, PartialEq, Debug, Default)]
 pub struct InlineEdges {
     /// The line-left edge width.
@@ -333,12 +339,13 @@ pub(super) struct BoxFragments<'a> {
     layout: &'a Layout,
     /// The boxes of the key not yet answered, in tree order.
     boxes: slice::Iter<'a, KeyedBox>,
-    /// The box being answered, and where.
+    /// The box being answered, and the query's position in it.
     at: Option<Answering>,
 }
 
 impl<'a> BoxFragments<'a> {
-    /// Every part of every inline box `key` names in `layout`.
+    /// Creates the walk of every part of every inline box `key` names in
+    /// `layout`.
     pub(super) fn new(layout: &'a Layout, key: NodeKey) -> Self {
         Self {
             layout,
@@ -348,35 +355,36 @@ impl<'a> BoxFragments<'a> {
     }
 }
 
-/// Where a query has got to in one box.
+/// A query's position in one box.
 #[derive(Copy, Clone, Debug)]
 struct Answering {
     node: NodeId,
-    /// Whether it keeps a fragment on lines in the ordinary styles, and on
-    /// the block's first line where that has styles of its own. A
-    /// `::first-line` style may keep a box the other lines cull.
+    /// Whether it keeps a fragment on lines in the ordinary styles.
     kept_in_text: bool,
+    /// Whether it keeps a fragment on the block's first line, where that has
+    /// styles of its own. A `::first-line` style may keep a box the other
+    /// lines cull.
     kept_in_first_line: bool,
-    /// Whether it is inside a ruby annotation. Its items are then among the
-    /// annotation items, which follow its line's own.
+    /// Whether it is inside a ruby annotation, whose items follow the line's
+    /// own.
     annotated: bool,
-    /// The first cluster at or after its opening item, and the first at or
-    /// after its closing one: the clusters its lines hold.
+    /// The first cluster at or after its opening item.
     first: ClusterId,
+    /// The first cluster at or after its closing item.
     last: ClusterId,
-    /// The line being looked at, and the next of its items.
+    /// The line being read.
     line: LineId,
+    /// The next item to read on that line.
     item: FragmentItemId,
-    /// Whether a part of it was handed out on the line already.
+    /// Whether a part of it has been returned on this line.
     begun: bool,
-    /// A culled box's baseline on the line being looked at, once a part
-    /// of it is found there: every part of it there stands on it, so it
-    /// is found once a line and not once a part.
+    /// A culled box's baseline on the current line, found with its first part
+    /// there. Every part on the line shares it.
     baseline: Option<LayoutUnit>,
 }
 
 impl Answering {
-    /// Whether the box keeps a fragment on a line set in `variant`'s
+    /// Returns whether the box keeps a fragment on a line set in `variant`'s
     /// styles.
     fn keeps(&self, variant: FirstLineVariant) -> bool {
         match variant {
@@ -385,8 +393,8 @@ impl Answering {
         }
     }
 
-    /// The items of `line` among `fragments` the box is among: its
-    /// annotations' where it is inside one, the line's own otherwise.
+    /// Returns the items of `line` the box is among: the annotations' where
+    /// it is inside one, the line's own otherwise.
     fn items(&self, fragments: &Fragments, line: LineId) -> Range<FragmentItemId> {
         if self.annotated {
             fragments.annotation_ids(line)
@@ -397,8 +405,8 @@ impl Answering {
 }
 
 impl<'a> BoxFragments<'a> {
-    /// Where answering box `node` begins: the first line whose clusters
-    /// reach its first, at its first item.
+    /// Returns where answering box `node` begins: the first line whose
+    /// clusters reach its first cluster, at that line's first item.
     fn begin(&self, node: NodeId) -> Answering {
         let layout = self.layout;
         let items = layout.content().nodes.items(node);
@@ -413,7 +421,8 @@ impl<'a> BoxFragments<'a> {
             .get(items.start)
             .is_some_and(|open| open.flags.contains(ItemFlags::ANNOTATION));
         // An annotation of a column split across lines is set on the lines
-        // of the column's pieces, which hold its base and not its clusters.
+        // of the column's pieces, which hold the base, not the annotation's
+        // clusters.
         let lines = layout.line_records();
         let columns = measured.text(FirstLineVariant::Standard).ruby_columns();
         let line = lines
@@ -446,7 +455,7 @@ impl<'a> BoxFragments<'a> {
         at
     }
 
-    /// The next part of the box `at` answers, moving `at` past it, or
+    /// Returns the next part of the box `at` answers, moving `at` past it, or
     /// `None` once its lines are done.
     fn answer(layout: &'a Layout, at: &mut Answering) -> Option<BoxFragment<'a>> {
         let fragments = layout.fragments();
@@ -458,8 +467,8 @@ impl<'a> BoxFragments<'a> {
                 return None;
             }
             let items = at.items(fragments, line.id());
-            // Kept or culled on the line as the line is set: the block's
-            // first line in its own styles, where it has them.
+            // Kept or culled by the line's own styles: the block's first line
+            // uses its first-line styles, where it has them.
             let found = if at.keeps(line.variant()) {
                 next_kept(line, items, at)
             } else {
@@ -478,7 +487,8 @@ impl<'a> BoxFragments<'a> {
     }
 }
 
-/// The next of `line`'s items, `items`, that is the kept box `at` answers.
+/// Returns the next of `line`'s items, `items`, that is the kept box `at`
+/// answers.
 fn next_kept<'a>(
     line: Line<'a>,
     items: Range<FragmentItemId>,
@@ -502,9 +512,9 @@ fn next_kept<'a>(
     None
 }
 
-/// The next part of the culled box `at` answers among `line`'s items,
-/// `items`: the union of a group of its descendants' items that no other
-/// leaf splits.
+/// Returns the next part of the culled box `at` answers among `line`'s
+/// items, `items`: the union of a group of its descendants' items that no
+/// other leaf splits.
 fn next_culled<'a>(
     line: Line<'a>,
     items: Range<FragmentItemId>,
@@ -587,12 +597,11 @@ fn culled_part(
 /// Moves `at` to where the box's next part on the line starts, and returns
 /// whether the part just found is its rightmost there.
 ///
-/// The part is the rightmost where no leaf of the box's follows it on the
-/// line. That is looked for from where the part ended to the box's next
-/// leaf. The next part is looked for from the first of the box's items on
-/// the way, which it starts at. So each of the line's items is looked at
-/// twice at most, however often the reordering splits the box. Where the
-/// box holds one part, nothing more is looked at at all.
+/// The part is the rightmost where no leaf of the box follows it on the
+/// line. The scan runs from the part's end to the box's next leaf, and the
+/// next part starts at the first of the box's items on the way. So each of
+/// the line's items is read at most twice, however often reordering splits
+/// the box. A box with one part reads nothing more.
 #[inline]
 fn pass_to_next_part(
     line: Line<'_>,
@@ -648,10 +657,10 @@ fn culled_sides(line: Line<'_>, at: &Answering, rightmost: bool) -> FragmentItem
     flags
 }
 
-/// Whether `item` is one of `node`'s that its culled box's parts are
-/// made of, laid out and painted: a leaf of its, or where `boxes`, a kept
-/// box inside it too. The part holding its last leaf on a line is its
-/// rightmost there.
+/// Returns whether `item` is one of `node`'s painted items that its culled
+/// parts are made of: a leaf, or, where `boxes`, also a kept box inside it.
+///
+/// The part holding the box's last leaf on a line is its rightmost there.
 fn is_counted(nodes: &Nodes, node: NodeId, item: &FragmentItem, boxes: bool) -> bool {
     let counted = item.is_painted_leaf()
         || (boxes
@@ -660,7 +669,7 @@ fn is_counted(nodes: &Nodes, node: NodeId, item: &FragmentItem, boxes: bool) -> 
     counted && nodes.contains(node, item.node)
 }
 
-/// A culled box's part as far as it has been found.
+/// A culled box's part, as far as found.
 #[derive(Copy, Clone, Debug)]
 struct CulledPart {
     left: InlineLayoutUnit,
@@ -670,10 +679,12 @@ struct CulledPart {
     level: BidiLevel,
 }
 
-/// Where `item`, one of `line`'s, is: its left and right along the line,
-/// its right on layout's grid as a box's is, and its top and bottom across
-/// it -- a text's font's ascent and descent, an atomic's margin box, a kept
-/// box's border box.
+/// Returns `item`'s rectangle on `line`: its left and right along the line,
+/// the right on the 26.6 grid as a box's is, and its top and bottom across
+/// it.
+///
+/// Across the line, a text run spans its font's ascent and descent, an
+/// atomic inline its margin box, and a kept box its border box.
 fn rectangle(
     line: Line<'_>,
     item: &FragmentItem,

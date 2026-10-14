@@ -1,8 +1,8 @@
 //! Tab tests. They pin:
 //! - a tab measured where it lands, before the break is chosen;
 //! - tab stops at the content edges, beside floats too;
-//! - stops counted in the block container's spaces, or the space a space
-//!   falls back to where its primary font maps none;
+//! - stops counted in the block container's spaces, or in the fallback
+//!   font's space where its primary font maps none;
 //! - any `tab-size` giving valid lines;
 //! - an annotation's tab taking no room on the base line;
 //! - tabbed intrinsic sizes the text fits.
@@ -11,12 +11,11 @@ use super::*;
 use crate::style::LengthPercentage;
 use crate::tests::ahem_fallback;
 
-/// A tab is measured where it lands while the break is chosen, not after.
+/// A tab is measured where it lands while the break is chosen.
 ///
-/// In Ahem at 10 px with stops 40 apart, `XX` reaches 20 and its tab 40.
-/// The next `XX` reaches 60 and its tab 80. At 90 the second tab hangs at a
-/// soft wrap and the line fits but for it. At 59 the first tab hangs, and
-/// each line starts its stops again.
+/// With stops 40 apart, the tabs in `XX\tXX\tXX` end at 40 and 80. At 90
+/// and 79 the line breaks after the second, which hangs. Each line starts
+/// its stops again.
 #[test]
 fn a_tab_is_measured_where_it_lands_before_the_break_is_chosen() {
     let mut fixture = fixture();
@@ -43,14 +42,14 @@ fn a_tab_is_measured_where_it_lands_before_the_break_is_chosen() {
     assert_eq!(only.width, LayoutUnit::from_px(30.0));
     assert_eq!(only.hang.space, LayoutUnit::from_px(10.0));
     assert!(only.flags.contains(LineFlags::CONDITIONAL_HANG));
-    // Under `break-spaces` a tab is content, with an opportunity after it.
+    // Under `break-spaces` a tab is content with an opportunity after it.
     let mut spaces = tabbed(10.0, 4.0);
     spaces.text.white_space_collapse = WhiteSpaceCollapse::BreakSpaces;
     fixture.text(&mut layout, &spaces, "XX\tXX\tXX");
     fixture.lay_out(&mut layout, 90.0);
     assert_eq!(texts(&layout), ["XX\tXX\t", "XX"]);
     assert_eq!(widths(&layout), [80.0, 20.0]);
-    // No width lets a line's content past its band.
+    // At no width does a line's content overflow its band.
     fixture.text(
         &mut layout,
         &tabbed(20.0, 8.0),
@@ -69,10 +68,8 @@ fn a_tab_is_measured_where_it_lands_before_the_break_is_chosen() {
 
 /// Tab stops count from the block's content edge, not the band's.
 ///
-/// A line a float pushes in 15 px keeps the block's stops, so a tab
-/// starting it reaches only 25 px to the first. The same holds on the start
-/// side of a right-to-left paragraph. An area away from zero is its own
-/// content edge.
+/// A line a float pushes in 15 px keeps the block's stops, in either
+/// direction. An area offset from zero starts its stops at its left edge.
 #[test]
 fn tab_stops_are_the_content_edges() {
     let mut fixture = fixture();
@@ -116,12 +113,11 @@ fn tab_stops_are_the_content_edges() {
 }
 
 /// A `tab-size` in spaces counts the block container's space, with its
-/// letter-spacing and word-spacing, not the tab's own font's, as Chrome
-/// sizes a tab in `InlineNode::FontForTab`. The count is the tab's own.
+/// letter-spacing and word-spacing, as Chrome's `InlineNode::FontForTab`
+/// does.
 ///
-/// The block is Ahem at 10 px with 1 px of letter-spacing and 2 of
-/// word-spacing: a space of 13. A 40 px span with `tab-size: 2` stops at 26,
-/// not at the 80 its own space would give.
+/// A 40 px span with `tab-size: 2` in a block whose spaced space is 13 px
+/// stops at 26, not 80.
 #[test]
 fn tab_stops_count_the_block_containers_spaces() {
     let mut fixture = fixture();
@@ -143,16 +139,12 @@ fn tab_stops_count_the_block_containers_spaces() {
 }
 
 /// Where the block's primary font maps no space, a `tab-size` in spaces
-/// counts the space of the first listed font that maps one, as Chrome sizes
-/// such a tab by the font a space falls back to (WPT
-/// `tab-size-integer-005`).
+/// counts the space of the first listed font that maps one.
 ///
-/// Chrome 155, over a primary with no space and a 1 em `.notdef` at 40 px,
-/// puts a `tab-size: 8` tab's stop at 70.47 with Gentium Plus next in the
-/// list, eight of its spaces, and at 192 with Courier New next.
-///
-/// Here the primary's `.notdef` is 5 px at 10 px, and the next font's space
-/// 3 px: four of those put the stop at 12, not 20.
+/// Chrome sizes such a tab by the font a space falls back to (WPT
+/// `tab-size-integer-005`). Chrome 155, with a 40 px spaceless primary,
+/// puts a `tab-size: 8` stop at 70.47 with Gentium Plus next in the list,
+/// and at 192 with Courier New. Here four 3 px spaces put the stop at 12.
 #[test]
 fn tab_stops_count_the_space_a_space_falls_back_to() {
     let spaceless = TestFont::new("Test Spaceless", &[(0x58, 0x58)]);
@@ -184,8 +176,8 @@ fn tab_stops_count_the_space_a_space_falls_back_to() {
     assert_eq!(widths(&layout), [17.0]);
 }
 
-/// Every `tab-size` breaks into valid lines, even those no computed value
-/// has.
+/// Every `tab-size` gives valid lines, including values no computed style
+/// produces.
 ///
 /// So does a tab so far along its line that its stop is at the grid's end.
 #[test]
@@ -224,9 +216,8 @@ fn any_tab_size_gives_valid_lines() {
 
 /// A tab in ruby annotation text takes no room.
 ///
-/// The annotation `\t\tz\t` is as narrow as its `z`, so its column is its
-/// base's width. The breaker, line layout and the intrinsic sizes all agree.
-/// A tab in the base is sized where it lands.
+/// The breaker, line layout and the intrinsic sizes agree. A tab in the
+/// base is sized where it lands.
 #[test]
 fn an_annotations_tab_takes_no_room_on_the_base_line() {
     let mut fixture = fixture();
@@ -250,7 +241,7 @@ fn an_annotations_tab_takes_no_room_on_the_base_line() {
 
 /// With tabs, the intrinsic sizes are widths the text fits.
 ///
-/// At max-content every paragraph is one line, and at min-content none
+/// At max-content every paragraph is one line, and at min-content no line
 /// overflows.
 #[test]
 fn tabbed_intrinsic_sizes_are_widths_the_text_fits() {

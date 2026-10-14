@@ -34,9 +34,9 @@ fn math_auto_allocates_nothing_warm() {
     }
 }
 
-/// A masked field rebuilt keystroke by keystroke, as an editor rebuilds it,
-/// and its lines broken and its carets walked, allocates nothing warm: with
-/// and without the offset map, and under a case transform.
+/// A masked field rebuilt keystroke by keystroke, as an editor does, with
+/// its lines broken and its carets walked, allocates nothing warm, with and
+/// without the offset map and under a case transform.
 #[test]
 fn masked_text_allocates_nothing_warm() {
     use super::test_fonts::{self, TestFont, ahem_fallback};
@@ -89,8 +89,8 @@ fn masked_text_allocates_nothing_warm() {
     }
 }
 
-/// The styles a document is set in, with lists the way an engine holds
-/// them: its own, lent for each call.
+/// The styles a document is set in, holding its lists as an engine does and
+/// lending them for each call.
 struct Styles {
     families: Vec<FontFamilyName<'static>>,
     code: Vec<FontFamilyName<'static>>,
@@ -300,9 +300,9 @@ fn document(layout: &mut winkin::Layout, cx: &mut Context, styles: &Styles, word
     assert!(built.is_complete());
 }
 
-/// A warm rebuild allocates nothing, of the same content or of similar
-/// content no larger: every table, the style arenas and their hash
-/// tables keep their capacity.
+/// A warm rebuild of the same content, or of similar content no larger,
+/// allocates nothing: every table, the style arenas and their hash tables
+/// keep their capacity.
 #[test]
 fn a_rebuild_allocates_nothing_warm() {
     let styles = Styles::new();

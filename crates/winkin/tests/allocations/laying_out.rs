@@ -25,21 +25,19 @@ fn collection() -> Collection {
     test_fonts::collection(&[latin, arabic()], ahem_fallback())
 }
 
-/// How a document is set: its family, its block's direction, and its
-/// alignment and its last lines'.
+/// How a document is set: its family, its block's direction, its alignment
+/// and its last lines' alignment.
 type How = (&'static str, BaseDirection, TextAlign, TextAlignLast);
 
-/// `text` in paragraphs, set as `how` says, inside a box with room,
-/// its last grapheme divided by a bare span holding a mark, shaped with
-/// the text before it: each paragraph again in a box that paints and
-/// breaks between any two letters, so lines end and start inside kerned
-/// pairs and ligatures and a kept box's parts open and close across
-/// lines; in a box that paints nothing, which is culled; an empty box
-/// that paints; an atomic inline; and preserved white space and a tab,
-/// which hang. So every path of line layout is taken: pieces of text,
-/// a divided grapheme's in each part's item, tabs, what hangs, atomics
-/// and edges, alignment of every kind, a line read either way, boxes
-/// kept, culled and empty, and the items written.
+/// Builds `text` in paragraphs, set as `how` says, to take every path of
+/// line layout.
+///
+/// The text sits in a box with edges, its last grapheme divided by a bare
+/// span holding a mark. Each paragraph comes again in a box that paints and
+/// breaks between any two letters, so lines end inside kerned pairs and
+/// ligatures and a kept box spans lines; in a box that paints nothing,
+/// which is culled; then an empty box that paints, an atomic inline, and
+/// preserved white space and a tab, which hang.
 fn prose(layout: &mut Layout, cx: &mut Context, how: How, text: &str) {
     let (family, direction, align, last) = how;
     let families = [FontFamilyName::named(family)];
@@ -114,12 +112,12 @@ fn prose(layout: &mut Layout, cx: &mut Context, how: How, text: &str) {
     assert!(b.finish().is_complete());
 }
 
-/// Reads `layout` back as a host does, every part of it:
-/// each line's metrics and items; each text run's key, text, place,
-/// font, glyphs and clusters; each atomic inline and box part; every
-/// part of every box by key, culled ones found from what they hold;
-/// and the block's metrics. Returns a sum of what was read, so none of
-/// it is left unread.
+/// Reads all of `layout` back as a host does.
+///
+/// Reads each line's metrics and items; each text run's key, text, place,
+/// font, glyphs and clusters; each atomic inline and box part; every part
+/// of every box by key, culled ones included; and the block's metrics.
+/// Returns a sum of what was read, so nothing is optimized away.
 fn read(layout: &Layout, keys: u64) -> f32 {
     let mut sum = 0.0;
     for line in layout.lines() {
@@ -164,12 +162,13 @@ fn read(layout: &Layout, keys: u64) -> f32 {
     sum + block.block_end + block.last_baseline.unwrap_or(0.0)
 }
 
-/// Reading a layout back allocates nothing, the first time as every
-/// time: every line, item, glyph and cluster is a view of the stages,
-/// every walk holds a few words, and a culled box is answered by a walk
-/// over the lines it reaches. So for Latin with ligatures and kerning
-/// broken inside them, Arabic read right to left, kept, culled and empty
-/// boxes, atomics and what hangs, at widths from one letter to one line.
+/// Reading a layout back allocates nothing, the first time included.
+///
+/// Every line, item, glyph and cluster is a view of the stages, every walk
+/// holds a few words, and a culled box is found by a walk over its lines.
+/// Covers Latin with ligatures and kerning broken inside, right-to-left
+/// Arabic, kept, culled and empty boxes, atomics and hanging content, at
+/// widths from one letter to one line.
 #[test]
 fn reading_back_allocates_nothing() {
     let arabic =
@@ -206,7 +205,7 @@ fn reading_back_allocates_nothing() {
             assert!(sum != 0.0, "{how:?} at {width}: something was read");
             assert_eq!(read, 0, "{how:?} at {width}: reading back allocated");
             // The divided grapheme's mark is an item of its own, so its
-            // span was answered.
+            // span was found.
             assert!(
                 layout.box_fragments(NodeKey(11)).next().is_some(),
                 "{how:?} at {width}: the mark's span"
@@ -215,11 +214,11 @@ fn reading_back_allocates_nothing() {
     }
 }
 
-/// Selection reads the stages as the output does, and allocates nothing
-/// from its first call: carets, hits, every motion, word
-/// motion segmenting in place and stopping as either platform does,
-/// rectangles and copy, over prose in either direction with boxes, an
-/// atomic inline and hanging white space in it.
+/// Selection allocates nothing from its first call.
+///
+/// Covers carets, hits, every motion, word motion on either platform's
+/// stops, rectangles and copy, over prose in either direction with boxes,
+/// an atomic inline and hanging white space.
 #[test]
 fn selecting_allocates_nothing() {
     use winkin::selection::{
@@ -301,16 +300,15 @@ fn selecting_allocates_nothing() {
     }
 }
 
-/// The one exception: a word motion through Thai, Lao, Khmer or
-/// Myanmar, and with the `dictionaries` feature through ideographs and
-/// hiragana, meets runs ICU's word segmenter hands its dictionaries or
-/// its LSTM, and its iterator copies each such run into a string of its
-/// own to do so (icu_segmenter 2.3, `handle_complex_utf8`), whether the
-/// run is segmented whole or its edge among the few clusters around a
-/// stop. Without dictionaries an ideograph or a hiragana is stood in for
-/// and segmented by UAX #29's rules, and a word motion through them
-/// allocates nothing. Every other query over the same text allocates
-/// nothing. Should ICU stop allocating, this fails.
+/// Word motion allocates only inside ICU.
+///
+/// ICU's word segmenter copies each run it hands its dictionaries or LSTM
+/// into a string (icu_segmenter 2.3, `handle_complex_utf8`). Motion through
+/// Thai, Lao, Khmer or Myanmar meets such runs, and so, with the
+/// `dictionaries` feature, does motion through ideographs and hiragana.
+/// Without that feature, UAX #29's rules segment ideographs and hiragana
+/// with no allocation. Every other query over the same text allocates
+/// nothing. If ICU stops allocating, this test fails.
 #[test]
 fn word_motion_allocates_inside_icu_and_only_there() {
     use winkin::selection::{Granularity, MotionDirection, Position, Selection};
@@ -380,12 +378,13 @@ fn word_motion_allocates_inside_icu_and_only_there() {
     }
 }
 
-/// Reading every run's font allocates nothing, and neither does keeping
-/// its bytes: a used font holds a count on its instance's bytes and its
-/// coordinates in the layout's own arena, so a run's font
-/// borrows the layout, and cloning the bytes counts a reference on their
-/// `Arc` and copies nothing. So for Latin and Arabic at two sizes, with
-/// the context they were built in gone.
+/// Reading every run's font allocates nothing, and neither does keeping its
+/// bytes.
+///
+/// A used font holds a reference to its instance's bytes and its
+/// coordinates in the layout's arena, so a run's font borrows the layout
+/// and cloning the bytes copies nothing. Covers Latin and Arabic at two
+/// sizes, with the building context dropped.
 
 #[test]
 fn reading_every_runs_font_allocates_nothing() {
@@ -445,10 +444,11 @@ fn reading_every_runs_font_allocates_nothing() {
 }
 
 /// Tabbed and preserved text, rebuilt, relaid and read back, allocates
-/// nothing once warm: tabs sized where they land in the intrinsic sizes,
-/// the breaker's walk and line layout, each from its style's space read
-/// off the font, under `pre-wrap`, `break-spaces` and `pre`, set at its
-/// start and at its end, in a band away from zero.
+/// nothing once warm.
+///
+/// Tabs are sized in the intrinsic sizes, the breaker and line layout,
+/// each from its style's space width, under `pre-wrap`, `break-spaces` and
+/// `pre`, aligned to start and end, in a band that does not start at zero.
 #[test]
 fn tabs_and_preserved_white_space_allocate_nothing_warm() {
     let text = "name\tvalue\tnote i i\t \n\ta much longer name\tv\t\ti\t  \nlast\t";
@@ -533,16 +533,19 @@ fn tabs_and_preserved_white_space_allocate_nothing_warm() {
 }
 
 /// Justified, spaced and indented text, rebuilt, relaid and read back,
-/// allocates nothing once warm: letter-spacing, which
-/// turns the common ligatures off in an instance of its own, and
-/// word-spacing of a length and a percentage of the space, in the
-/// prefix and on the edges a break inside a kerned pair reshapes, by
-/// Chrome's rule and by CSS's;
-/// `text-indent` of a length and a percentage, `hanging` and
-/// `each-line`; justification under each `text-justify`, a line's
-/// opportunities counted and read back per cluster, with tabs stretched
-/// and kept at their stops; `line-padding`; hanging punctuation at both
-/// ends; and `text-group-align`, in a block reading either way.
+/// allocates nothing once warm.
+///
+/// Covers, in a block of either direction:
+/// - letter-spacing, which turns the common ligatures off in an instance of
+///   its own;
+/// - word-spacing of a length plus a percentage of the font size, in the
+///   prefix sums and on edges reshaped at a break inside a kerned pair,
+///   under both word-spacing configs;
+/// - `text-indent` of a length and a percentage, `hanging` and `each-line`;
+/// - justification under each `text-justify`, with tabs stretched and kept
+///   at their stops;
+/// - `line-padding`, hanging punctuation at both ends, and
+///   `text-group-align`.
 #[test]
 fn justified_spaced_and_indented_text_allocates_nothing_warm() {
     use winkin::style::{
@@ -668,14 +671,13 @@ fn justified_spaced_and_indented_text_allocates_nothing_warm() {
     }
 }
 
-/// Laying out again allocates nothing, at any width laid out at before:
-/// the fragment items, each line's head and the justification table
-/// keep their capacity, and so does line layout's scratch in the
-/// context, its pieces, its order, its boxes' parts and the boxes
-/// open from line to line. So for Latin with kerning and ligatures set
-/// at its start, centered and at its right, and Arabic read right to
-/// left, with reshaped edges, kept, culled and empty boxes, atomics and
-/// hanging white space; and for a second layout in the same context.
+/// Laying out again at any width used before allocates nothing.
+///
+/// The fragment items, each line's head, the justification table and line
+/// layout's scratch keep their capacity. Covers Latin with kerning and
+/// ligatures aligned to start, center and right, right-to-left Arabic,
+/// reshaped edges, kept, culled and empty boxes, atomics and hanging white
+/// space, and a second layout in the same context.
 #[test]
 fn laying_out_allocates_nothing_warm() {
     let arabic =

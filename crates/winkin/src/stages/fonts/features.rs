@@ -1,11 +1,11 @@
 //! The OpenType features a style asks for, and how a font sets capitals.
 //!
-//! It also holds [`ScriptOffers`], the context's cache of which synthesized
-//! features a font offers under a script.
+//! [`ScriptOffers`] is the context's cache of which synthesized features a
+//! font offers under a script.
 //!
 //! **The order is Chrome's**, read from Blink's source, since the
 //! specification's list differs at the edges:
-//! 1. the `@font-face` descriptor's features and `font-variant-alternates`
+//! 1. `font-variant-alternates` and the `@font-face` descriptor's features
 //!    (`FontDescription::ResolveFontFeatures`);
 //! 2. the capitals `font-variant-caps` asks for, which the shaper prepends
 //!    (`CapsFeatureSettingsScopedOverlay`);
@@ -15,19 +15,18 @@
 //! 5. `font-variant-position`'s `sups` or `subs`
 //!    (`FontFeatureRange::FromFontDescription`).
 //!
-//! A later setting of a tag wins, as HarfBuzz merges global features. So an
+//! A later setting of a tag wins, as HarfBuzz merges global features. An
 //! instance keeps its list with each tag once, at its last value, in tag
-//! order. Any order that comes to the same settings gives one list.
+//! order, so any order that gives the same settings gives one list.
 //!
 //! **Capitals** follow Blink's `OpenTypeCapsSupport`. A font that has the
 //! asked feature draws it. One that lacks it may fall back to another it
-//! has: petite capitals to small ones, unicase to small capitals. One with
-//! nothing gets synthesized small capitals, where
-//! `font-synthesis-small-caps` allows. The letters that change when
-//! uppercased are then fed uppercased and drawn smaller, and the text is
-//! divided where that changes, as Blink's `SmallCapsIterator` divides it.
-//! Whether a font has a feature is read from its `GSUB` under the run's
-//! script, once per font and script.
+//! has: petite capitals to small ones, unicase to small capitals. Where it
+//! has neither and `font-synthesis-small-caps` allows, small capitals are
+//! synthesized: the letters that change when uppercased are fed uppercased
+//! and drawn smaller. The text is divided where that changes, as Blink's
+//! `SmallCapsIterator` divides it. Whether a font has a feature is read from
+//! its `GSUB` under the run's script, once per font and script.
 
 use alloc::vec::Vec;
 use core::hash::{Hash, Hasher};
@@ -74,7 +73,8 @@ impl OfferedFeatures {
         *b"smcp", *b"c2sc", *b"pcap", *b"c2pc", *b"unic", *b"titl", *b"sups", *b"subs",
     ];
 
-    /// Whether the feature `position` asks for, `sups` or `subs`, is offered.
+    /// Returns whether the feature `position` asks for, `sups` or `subs`, is
+    /// offered.
     ///
     /// Always false for `normal`, which asks for none.
     pub(super) const fn has_position(self, position: FontVariantPosition) -> bool {
@@ -116,10 +116,10 @@ struct ScriptOffer {
 /// Which synthesized-where-missing features each font offers under each
 /// script.
 ///
-/// Each offer is read from the font's `GSUB` once per font and script. This
-/// is a cache. It survives a change of collection, since a font's key is its
-/// bytes' id. It is trimmed between builds to the offers used last, since no
-/// layout holds an offer's id.
+/// It is a cache on the context. Each offer is read from the font's `GSUB`
+/// once per font and script. A change of collection keeps the offers, since
+/// a font's key is its bytes' id. No layout holds an offer's id, so each
+/// build's start trims the cache, dropping the offers used longest ago.
 pub(super) struct ScriptOffers {
     offers: LruCache<ScriptOfferId, ScriptOffer>,
 }
@@ -143,7 +143,7 @@ impl ScriptOffers {
         self.offers.trim(|_, _| {});
     }
 
-    /// How many offers are held, for tests to see them bounded.
+    /// Returns how many offers are held, for tests to see them bounded.
     #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.offers.len()
@@ -153,7 +153,8 @@ impl ScriptOffers {
     /// `script`.
     ///
     /// The first time a context asks, it reads the `GSUB` of the font's face
-    /// in `instances`. Returns nothing where the face cannot be had.
+    /// in `instances`. Returns no features where the font has no key or its
+    /// face cannot be had.
     pub(super) fn find_or_read(
         &mut self,
         family: &Family,
@@ -181,7 +182,8 @@ impl ScriptOffers {
             return OfferedFeatures::NONE;
         };
         let offered = OfferedFeatures::new(&face.font, script);
-        // Where every id is taken, the answer is not kept, and asked again.
+        // Where every id is taken, the answer is not kept and is read again
+        // next time.
         let _kept = self.offers.insert(
             hash,
             ScriptOffer {
@@ -200,17 +202,17 @@ heap_bytes! {
 
 /// Merges into `out` the features an instance of `font` shapes with.
 ///
-/// `settings` is the request's `font-feature-settings`. `upright` says its
-/// text is set upright in a vertical line. `caps` is the capitals feature
-/// and `position` the position whose feature applies.
+/// `settings` is the request's `font-feature-settings`. `upright` says the
+/// text is set upright or mixed in a vertical line. `caps` is the capitals
+/// feature and `position` the position whose feature applies.
 ///
-/// The features merge and settle in Blink's order:
-/// `font-variant-alternates` and the descriptor's features the alternates do
-/// not set, the capitals, the request's own ([`push_request_features`]),
-/// then the position's. Blink appends the position's after every other,
-/// `font-feature-settings` included. So it wins over a setting of its tag,
-/// as Chrome 153 draws superscripts under `'sups' 0`. The list is part of
-/// the instance's key, so equal lists share one instance.
+/// The features merge in Blink's order: `font-variant-alternates`, the
+/// descriptor's features the alternates do not set, the capitals, the
+/// request's own ([`push_request_features`]), then the position's. Blink
+/// appends the position's feature after every other, `font-feature-settings`
+/// included, so it wins over a setting of its tag: Chrome 153 draws
+/// superscripts under `'sups' 0`. The list is part of the instance's key, so
+/// equal lists share one instance.
 pub(super) fn merge_features(
     font: &Font,
     request: &FontRequest,
@@ -246,13 +248,12 @@ pub(super) fn merge_features(
 /// Calls `each` with every feature record of `gsub` that the OpenType
 /// script `script` turns on, and the feature list it is in.
 ///
-/// These are the script's default language system's features and its
-/// required one. The script falls back as HarfBuzz's
-/// `hb_ot_layout_table_select_script` does, to `DFLT`, `dflt` and `latn`.
-/// What a font offers and what an offered feature covers (see `positions`)
-/// are both read in this one language system, so the two agree. A record an
-/// index does not reach, or a table that cannot be read, is passed over. It
-/// never panics.
+/// These are the default language system's features and its required one.
+/// The script falls back to `DFLT`, `dflt` and `latn`, as HarfBuzz's
+/// `hb_ot_layout_table_select_script` does. The offers and the feature
+/// coverages (`positions`) both read this one language system, so they
+/// agree. A record an index does not reach, or a table that cannot be read,
+/// is passed over. It never panics.
 pub(super) fn script_features<'a>(
     gsub: &Gsub<'a>,
     script: [u8; 4],
@@ -296,10 +297,11 @@ pub(super) fn script_features<'a>(
 /// ISO 15924 script.
 ///
 /// It is the code lowercased, except for the scripts OpenType names
-/// otherwise. Common and inherited text asks for the default script.
-/// HarfBuzz tries the Indic scripts' second-generation tags first; this does
-/// not. Only capitals and positions are read here, and no Indic script has
-/// case.
+/// otherwise. Common, inherited and unknown text asks for the default
+/// script. HarfBuzz tries the Indic scripts' second-generation tags first;
+/// this does not. Only capitals and positions are read here. No Indic
+/// script has case, so only `sups` and `subs` can differ: a font that names
+/// only `dev2` is read through the fallbacks of [`script_features`].
 pub(super) fn opentype_script(script: parlance::Script) -> [u8; 4] {
     let code = script.to_bytes();
     match &code {
@@ -317,7 +319,7 @@ pub(super) fn opentype_script(script: parlance::Script) -> [u8; 4] {
 
 /// How a font sets a style's capitals, for each kind of letter.
 ///
-/// It is Blink's `OpenTypeCapsSupport`, answered once for a font.
+/// It follows Blink's `OpenTypeCapsSupport`.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub(super) struct CapsPlan {
     /// How text that does not change when uppercased is set.
@@ -350,8 +352,8 @@ impl CaseSide {
         self.caps
     }
 
-    /// Whether it is drawn as synthesized small capitals, smaller than its
-    /// font's size.
+    /// Returns whether it is drawn as synthesized small capitals, smaller
+    /// than its font's size.
     pub(super) fn is_synthetic(self) -> bool {
         self.synthetic
     }
@@ -395,21 +397,22 @@ impl CapsPlan {
         self.upper
     }
 
-    /// Whether the two kinds are set alike, so text need not be divided.
+    /// Returns whether the two kinds are set alike, so text need not be
+    /// divided.
     pub(super) fn is_uniform(&self) -> bool {
         self.same == self.upper
     }
 
     /// Plans how a font offering `offered` sets capitals of `caps`.
     ///
-    /// It synthesizes where `synthesize` (`font-synthesis-small-caps: auto`)
-    /// allows. Blink's `DetermineFontSupport` sorts the font into full
-    /// support (the feature is there), a fallback, or none. A fallback takes
-    /// petite capitals from small ones, and unicase from small capitals. It
-    /// also names what is synthesized: lowercase to small capitals, capitals
-    /// to small capitals, or both. The rest follows `FontFeatureToUse`,
-    /// `NeedsSyntheticFont` and `NeedsCaseChange`, for each kind of text.
-    /// Titling capitals are never synthesized.
+    /// Blink's `DetermineFontSupport` sorts the font into full support (the
+    /// feature is there), a fallback, or none. A fallback takes petite
+    /// capitals from small ones, and unicase from small capitals. It also
+    /// names what becomes small capitals: lowercase, capitals, or both. The
+    /// rest follows `FontFeatureToUse`, `NeedsSyntheticFont` and
+    /// `NeedsCaseChange` for each kind of text. Synthesis happens only where
+    /// `synthesize` (`font-synthesis-small-caps: auto`) allows. Titling
+    /// capitals are never synthesized.
     pub(super) fn new(caps: FontVariantCaps, offered: OfferedFeatures, synthesize: bool) -> Self {
         use FontVariantCaps as C;
         use OfferedFeatures as O;
@@ -476,10 +479,10 @@ impl CapsPlan {
     }
 }
 
-/// Whether small capitals are synthesized for `ch`.
+/// Returns whether small capitals are synthesized for `ch`.
 ///
-/// That holds for a letter that changes when uppercased, Unicode's
-/// `Changes_When_Uppercased`, as Blink's `SmallCapsIterator` asks ICU.
+/// They are for a character that changes when uppercased (Unicode's
+/// `Changes_When_Uppercased`), as Blink's `SmallCapsIterator` asks ICU.
 pub(super) fn changes_when_uppercased(ch: char) -> bool {
     let mut upper = ch.to_uppercase();
     !(upper.len() == 1 && upper.next() == Some(ch))
@@ -510,17 +513,17 @@ fn caps_features(caps: FontVariantCaps) -> &'static [FontFeature] {
 
 /// Appends to `out` the features the request asks for itself.
 ///
-/// They come after the `@font-face` descriptor's and the capitals', in
+/// They follow the `@font-face` descriptor's features and the capitals, in
 /// Blink's order (`FontFeatureRange::FromFontDescription`): `font-kerning`,
 /// the ligatures, `font-variant-east-asian` and `font-variant-numeric`, then
 /// `font-feature-settings` (`settings`). Blink appends
-/// `font-variant-position`'s feature after these, but it is not added here.
-/// It is asked for per font ([`merge_features`]), since a run the font's
-/// feature does not cover whole is synthesized without it.
+/// `font-variant-position`'s feature after these. [`merge_features`] adds it
+/// per font, since a run the font's feature does not cover whole is
+/// synthesized without it.
 ///
 /// Under a nonzero `letter-spacing`, the common ligatures and the contextual
-/// alternates are off, and the discretionary and historical ones stay off,
-/// as Blink has them. A ligature would otherwise take one gap for all the
+/// alternates are off, and the discretionary and historical ligatures stay
+/// off, as in Blink. A ligature would otherwise take one gap for all the
 /// letters it joins.
 ///
 /// Under any `text-spacing-trim` but `space-all`, `chws` is on, or `vchw`
@@ -612,9 +615,9 @@ pub(super) fn position_tag(position: FontVariantPosition) -> Option<[u8; 4]> {
 /// Keeps each tag of `settings` once, at the value set last, in tag order.
 ///
 /// `tag` reads a setting's tag. HarfBuzz merges global features this way,
-/// and font variations merge the same way (see `instance`). So the list
-/// shapes as the one given did, and every order that comes to the same
-/// settings gives one list.
+/// and font variations merge the same way (`instance`). So the list shapes
+/// as the given one did, and every order that gives the same settings gives
+/// one list.
 pub(super) fn settle<T: Copy>(settings: &mut Vec<T>, tag: impl Fn(&T) -> Tag) {
     // Stable, so the settings of one tag keep their order.
     stable_sort_by_key(settings, |setting| tag(setting).to_bytes());

@@ -1,6 +1,5 @@
 //! Ruby measurement tests. They pin:
-//! - how far a column reaches over the text beside it, as Chrome's
-//!   overhang does;
+//! - a column's overhang over the text beside it, as in Chrome;
 //! - split columns' min-content and max-content;
 //! - nested columns keeping their own bases and levels;
 //! - an empty inner annotation's width at its boundary.
@@ -8,9 +7,9 @@
 use super::*;
 use crate::style::FirstLineVariant;
 
-/// Builds `before`, a ruby of `base` under `annotation`, and `after` in
-/// 16px Ahem, the ruby's `ruby-overhang` `overhang`, and returns the
-/// column's record.
+/// Builds `before`, a ruby of `base` under `annotation` with
+/// `ruby-overhang: overhang`, and `after`, in 16 px Ahem, and returns the
+/// column.
 fn ruby_column(
     fixture: &mut Fixture,
     layout: &mut Layout,
@@ -39,16 +38,12 @@ fn ruby_column(
         .clone()
 }
 
-/// A column is as wide as the wider of its base and its annotation, the
-/// base centred in it, and under `auto` it reaches over the text either
-/// side by the base's inset or half the annotation's font size, whichever
-/// is less, as Chrome reaches (the web platform test `ruby-overhang-none`,
-/// with its annotation at 16px): `X` under `XXXX` between two `X`s is 64
-/// wide, reaches 8 over each, and takes 48 of the line, so the `X` after it
-/// starts at 64. The start's reach is read from the text before the column,
-/// not the base. `none` reaches over nothing, and the `X` after starts at
-/// 80; so does the JLREQ rule (`Config::ruby_overhang`), since an `X` is
-/// not kana.
+/// A column is as wide as its wider part, the base centred. Under `auto` it
+/// overhangs each side by the lesser of the base's inset and half the
+/// annotation's font size, as Chrome (WPT `ruby-overhang-none`): `X` under
+/// `XXXX` between two `X`s is 64 wide, overhangs 8 each side, and the next
+/// `X` starts at 64. `none`, and the JLREQ rule over non-kana, overhang
+/// nothing: the next `X` starts at 80.
 #[test]
 fn a_column_reaches_over_the_text_beside_it_as_chrome_does() {
     use crate::style::RubyOverhang;
@@ -76,7 +71,7 @@ fn a_column_reaches_over_the_text_beside_it_as_chrome_does() {
     fixture.cx.set_config(config);
     let column = ruby_column(&mut fixture, &mut layout, parts, RubyOverhang::Auto);
     assert_eq!(column.overhang, (LayoutUnit::ZERO, LayoutUnit::ZERO));
-    // Over kana it reaches one annotation em, within half the room.
+    // Over kana it overhangs one annotation em, within half the room.
     let column = ruby_column(
         &mut fixture,
         &mut layout,
@@ -89,10 +84,10 @@ fn a_column_reaches_over_the_text_beside_it_as_chrome_does() {
     );
 }
 
-/// Chrome 153 halves the annotation's font size as a whole number of
-/// pixels (`FontSize() / 2`): an `X` of 34px Ahem under six of 17px, a
-/// column 102 wide between two `X`s, reaches 8 over each, not 8.5, and
-/// under eight of 13px 6, not 6.5; the `X` after it starts at 120 and 126.
+/// Chrome 153 halves the annotation's font size in whole pixels
+/// (`FontSize() / 2`): a 34 px `X` under six 17 px `X`s overhangs 8, not
+/// 8.5, and under eight 13 px `X`s 6, not 6.5; the next `X` starts at 120
+/// and 126.
 #[test]
 fn a_column_reaches_half_its_annotation_size_in_whole_pixels() {
     let mut fixture = fixture();
@@ -124,11 +119,10 @@ fn a_column_reaches_half_its_annotation_size_in_whole_pixels() {
     }
 }
 
-/// A column reaches over no other column, a column of its own container
-/// among them, as Chrome's does not (`CommitPendingEndOverhang`): in
-/// `X<ruby>X<rt>XXXX</rt>X<rt>X</rt></ruby>X` in 16px Ahem, the first
-/// column reaches 8 over the `X` before it and nothing over the second
-/// column's base, and the second, no wider than its base, nothing.
+/// A column never overhangs another column, even in its own container, as
+/// in Chrome (`CommitPendingEndOverhang`): in
+/// `X<ruby>X<rt>XXXX</rt>X<rt>X</rt></ruby>X` in 16 px Ahem, the first
+/// column overhangs only the `X` before it, by 8.
 #[test]
 fn a_column_reaches_over_no_other_column() {
     let mut fixture = fixture();
@@ -170,11 +164,9 @@ fn a_column_reaches_over_no_other_column() {
     );
 }
 
-/// Under `ruby-overhang: spaces` a column reaches only into the blank
-/// beside it, within its inset, and not bounded by half the text there as
-/// under `auto` (Blink's `GetOverhang` and `CommitPendingEndOverhang`): a
-/// space each side of `X` under `XXXXXX` gives 16 each, of an inset of 40;
-/// letters give nothing.
+/// Under `ruby-overhang: spaces` a column overhangs only adjacent spaces,
+/// within its inset (Blink's `GetOverhang`, `CommitPendingEndOverhang`): a
+/// space each side of `X` under `XXXXXX` gives 16 each; letters give none.
 #[test]
 fn under_spaces_a_column_reaches_into_blank_alone() {
     use crate::style::RubyOverhang;
@@ -200,11 +192,10 @@ fn under_spaces_a_column_reaches_into_blank_alone() {
     assert_eq!(column.overhang, (LayoutUnit::ZERO, LayoutUnit::ZERO));
 }
 
-/// Under `ruby-overhang: spaces` a column reaches over a quarter of a
-/// middle dot beside it however narrow its glyph, as Chrome's
-/// `MaybeHanKerningMiddle` reads only the character
-/// (`css-ruby/ruby-overhang-spaces-019`): `・` set half an em wide either
-/// side of `X` under `XXXXXX` in 16px gives 4 each.
+/// Under `ruby-overhang: spaces` a column overhangs a quarter em of an
+/// adjacent middle dot whatever its glyph width, as Chrome's
+/// `MaybeHanKerningMiddle` reads only the character (WPT
+/// `ruby-overhang-spaces-019`): half-em `・` each side gives 4 at 16 px.
 #[test]
 fn under_spaces_a_column_reaches_over_a_narrow_middle_dot() {
     use crate::style::RubyOverhang;
@@ -222,12 +213,10 @@ fn under_spaces_a_column_reaches_over_a_narrow_middle_dot() {
     );
 }
 
-/// Under `ruby-overhang: spaces` two columns never reach into the same
-/// blank, as Chrome's `GetOverhang` takes the last column's end overhang off
-/// the text between them: in 10px Ahem, two 40px `X`s under `XXXX` at 20px
-/// with one preserved space between, the first reaches 10 into the space and the
-/// second nothing, so the second starts at 80, as in Chrome. With two
-/// spaces between, the first takes both.
+/// Under `ruby-overhang: spaces` two columns never share a space, as
+/// Chrome's `GetOverhang` subtracts the earlier column's end overhang: with
+/// one preserved space between two columns, the first takes it and the
+/// second starts at 80; with two, the first takes both.
 #[test]
 fn under_spaces_two_columns_share_no_blank() {
     use crate::style::RubyOverhang;
@@ -265,8 +254,8 @@ fn under_spaces_two_columns_share_no_blank() {
     }
 }
 
-/// Splitting lowers min-content while keeping whole-column max-content
-/// and avoiding cloned edges and hyphen debt on outer lines.
+/// A breakable base lowers min-content but keeps the whole column's
+/// max-content, without cloned edges or hyphen costs on the outer line.
 #[test]
 fn inner_ruby_stops_only_change_split_column_min_content() {
     let mut fixture = fixture();
@@ -323,8 +312,8 @@ fn inner_ruby_stops_only_change_split_column_min_content() {
     }
 }
 
-/// Inner columns occupy their full width in the outer base. Their annotation
-/// rows stay separate from the outer annotation and never overhang siblings.
+/// Inner columns take their full width in the outer base, keep their own
+/// annotation levels, and never overhang siblings.
 #[test]
 fn nested_columns_keep_their_own_bases_and_levels() {
     let mut fixture = fixture();
@@ -381,8 +370,7 @@ fn nested_columns_keep_their_own_bases_and_levels() {
         rubies.outermost_annotation(ClusterId::new(2), RubySide::Over),
         None
     );
-    // A carried context agrees with isolated reads in either direction,
-    // including nested annotations and the parent's resumed base.
+    // A `ColumnWalk` agrees with random-access reads in either direction.
     let mut walk = super::ColumnWalk::from_column(rubies, RubyColumnId::new(0), ClusterId::new(0));
     let end = layout.analysis().clusters.end_id().get();
     for at in (0..end).chain((0..end).rev()).chain([1, 10, 2, 0]) {

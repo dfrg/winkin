@@ -1,13 +1,12 @@
 //! Emphasis marks: where each mark over or under a text run goes.
 //!
-//! - **A mark is placed, not drawn.** The caller draws its shape and colour,
-//!   looked up by the run's key, as Chrome draws the style's mark string in
-//!   the text's font at half its size (`Font::DrawEmphasisMarks`). The crate
-//!   gives the mark's middle along the line, its baseline across it, and its
-//!   size. The caller centres the mark glyph's ink bounds on that middle,
-//!   upright in vertical text too, as Blink centres the glyph's bounds
-//!   (`AddEmphasisMark`, `BoundsForGlyph`).
-//! - **Each grapheme cluster that takes a mark gets one.** Its middle is the
+//! - The crate places marks; the host draws them. The host draws the shape
+//!   and colour by the run's key, as Chrome draws the style's mark string in
+//!   the text's font at half its size (`Font::DrawEmphasisMarks`). Each mark
+//!   has its middle along the line, its baseline across it, and its size.
+//!   The host centres the glyph's ink bounds on that middle, upright in
+//!   vertical text too, as Blink does (`AddEmphasisMark`, `BoundsForGlyph`).
+//! - Each grapheme cluster that takes a mark gets one. Its middle is the
 //!   cluster's, less half the cluster's letter-spacing, as Blink centres a
 //!   mark (`AddEmphasisMark`). A ligature's advance is shared evenly among
 //!   the clusters it draws (`AddEmphasisMarkToBloberizer`).
@@ -15,19 +14,19 @@
 //!   character (`unicode::EmphasisClass`). Chrome reads no
 //!   `text-emphasis-skip` and always skips what its initial value,
 //!   `spaces punctuation`, skips.
-//! - **Combined text takes one mark,** in the middle of its em, whatever its
+//! - Combined text takes one mark, in the middle of its em, whatever its
 //!   characters. Blink's `TextCombinePainter::PaintEmphasisMark` marks a
 //!   `LayoutTextCombine` as a hiragana; CSS Writing Modes 3 marks it as a
 //!   U+FFFC.
-//! - **The baseline is Blink's** (`TextPainter::SetEmphasisMark`). The mark's
+//! - The baseline is Blink's (`TextPainter::SetEmphasisMark`). The mark's
 //!   em box sits against the text's em box on the mark's side, its offset
 //!   from the run's baseline floored over and ceiled under. In a ruby base
 //!   with an annotation on that side, it sits against the outermost such
 //!   annotation's em box (`SetTextEmphasisAnnotationMetrics`). Line layout
 //!   sets that box on the line, and the breaker makes room for it.
 //!
-//! Reading the marks allocates nothing: they come off the run's places, the
-//! walk its carets read too.
+//! Reading the marks allocates nothing: they come from the run's places,
+//! the walk carets read too.
 
 use crate::stages::analysis::{ClusterId, Clusters as ClusterTable, RunOrientation};
 use crate::stages::content::{NodeKey, TextFlags, VariantText};
@@ -54,18 +53,20 @@ pub struct EmphasisMark {
     ///
     /// Its style determines the mark shape and color.
     pub key: NodeKey,
-    /// The center of the mark's ink along the line, relative to line-box left.
+    /// The center of the mark's ink along the line, relative to the line
+    /// box's left edge.
     pub x: f32,
-    /// The baseline offset from line-box top.
+    /// The baseline's offset from the line box's top.
     pub baseline: f32,
     /// The font size in pixels: half the text size, rounded to a pixel.
     pub size: f32,
-    /// The cluster start as a byte offset into [`Layout::text`](crate::Layout::text).
+    /// The cluster start, as a byte offset into
+    /// [`Layout::text`](crate::Layout::text).
     pub text_offset: usize,
 }
 
 /// A text run's emphasis marks: what [`TextRun::emphasis_marks`] walks, and
-/// a line's paint after each run.
+/// what a line's paint yields after each run.
 pub(super) struct EmphasisMarks<'a> {
     /// The run's clusters where the marks go, `None` where it has no marks.
     places: Option<Places<'a>>,
@@ -77,16 +78,17 @@ pub(super) struct EmphasisMarks<'a> {
     /// The marks' baseline and size, in pixels.
     baseline: f32,
     size: f32,
-    /// Half the letter-spacing each cluster carries, which a mark is moved
-    /// back by.
+    /// Half the letter-spacing each cluster carries, by which a mark moves
+    /// back.
     half_spacing: InlineLayoutUnit,
-    /// Combined text's one mark, still to hand out: its middle along the
-    /// line, and where the run starts in the text.
+    /// Combined text's one mark, not yet returned: its middle along the line,
+    /// and the run's start in the text.
     combined: Option<(InlineLayoutUnit, usize)>,
 }
 
 impl<'a> EmphasisMarks<'a> {
-    /// `run`'s marks, in the logical order of its clusters.
+    /// Creates the walk of `run`'s marks, in the logical order of its
+    /// clusters.
     pub(super) fn new(run: &TextRun<'a>) -> Self {
         let line = run.line();
         let layout = line.layout();
@@ -98,7 +100,7 @@ impl<'a> EmphasisMarks<'a> {
         let facts = &content.facts;
         let id = content.nodes.text_facts(item.node, variant);
         let text = facts.text(id);
-        // The mark's em box: its text's metrics', where it sets marks.
+        // The mark's em box, from the text's metrics, where it sets marks.
         let mark = layout
             .measured()
             .text_metrics(id)
@@ -145,8 +147,8 @@ impl<'a> EmphasisMarks<'a> {
         }
     }
 
-    /// Whether `cluster` takes a mark under the run's `text-emphasis-skip`,
-    /// by its first character.
+    /// Returns whether `cluster` takes a mark under the run's
+    /// `text-emphasis-skip`, by its first character.
     fn takes(&self, cluster: ClusterId) -> bool {
         let Some(ch) = self.clusters.first_char(self.text, cluster) else {
             return false;
@@ -173,8 +175,8 @@ impl Iterator for EmphasisMarks<'_> {
         }
         loop {
             work::step();
-            // Where the cluster is: its own place, or its share of the
-            // ligature it is drawn in.
+            // The cluster's own place, or its share of the ligature it is
+            // drawn in.
             let (cluster, from, to) = self.places.as_mut()?.next()?;
             if !self.takes(cluster) {
                 continue;
@@ -191,10 +193,12 @@ impl Iterator for EmphasisMarks<'_> {
     }
 }
 
-/// How far a mark's baseline is from its text's, the text being `item` on
-/// `line` and the mark's em box `mark`, set on `side`: past the text's em
-/// box, or the outermost annotation on that side of the ruby column whose
-/// base holds the text, whole pixels out.
+/// Returns the offset of a mark's baseline from the baseline of text `item`
+/// on `line`, for a mark with em box `mark` on `side`.
+///
+/// The mark sits past the text's em box, or past the outermost annotation on
+/// that side of the ruby column whose base holds the text, rounded out to
+/// whole pixels.
 fn mark_offset(
     line: Line<'_>,
     item: &FragmentItem,
@@ -203,8 +207,8 @@ fn mark_offset(
 ) -> LayoutUnit {
     let layout = line.layout();
     let (content, fonts, variant) = (layout.content(), layout.fonts(), line.variant());
-    // Its item's em box, where the item's fonts share one, which is then
-    // every part's. Otherwise its font runs, sought.
+    // The item's kept em box, where its fonts share one; otherwise the em
+    // box of its font runs, found by search.
     let kept = item
         .text_item()
         .and_then(|at| line.stages().measured().em_boxes().get(at));
@@ -227,8 +231,7 @@ fn mark_offset(
     } else {
         (over.times_truncated(scale), under.times_truncated(scale))
     };
-    // Past an annotation of its column on its side, where there is one:
-    // how far its em box reaches from the text's baseline.
+    // Past an annotation of its column on that side, where there is one.
     let past = annotation_reach(line, item, RubySide::from(side));
     match side {
         EmphasisSide::Over => -(past.unwrap_or(over) + mark.descent()).ceil_px(),
@@ -236,9 +239,11 @@ fn mark_offset(
     }
 }
 
-/// How far from `item`'s baseline the outermost annotation on `side` of the
-/// ruby column whose base holds it reaches, on `line`: its annotation line's
-/// baseline, less its em box, where the column has one there.
+/// Returns how far the outermost annotation on `side` of the ruby column
+/// whose base holds `item` reaches from `item`'s baseline on `line`.
+///
+/// The reach runs to the far edge of the annotation's em box. Returns `None`
+/// where the column has no annotation on that side there.
 fn annotation_reach(line: Line<'_>, item: &FragmentItem, side: RubySide) -> Option<LayoutUnit> {
     let layout = line.layout();
     let rubies = line.stages().measured().ruby_columns();

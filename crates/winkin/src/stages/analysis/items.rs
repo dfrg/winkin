@@ -1,4 +1,4 @@
-//! Stored items from text analysis.
+//! The clusters of each content item.
 
 use core::ops::Range;
 
@@ -8,27 +8,26 @@ use crate::work;
 
 use super::ClusterId;
 
-/// Where each item's clusters are: the clusters an item holds, and the
-/// items at a cluster or a boundary.
+/// The clusters each item holds, and the items at a cluster or boundary.
 ///
-/// Later stages walk items and clusters together through this, without
-/// searching the text. Each item keeps its first cluster, and its clusters
-/// end where the next item's begin. An item that holds none sits at the
-/// boundary its first cluster names.
+/// Each item keeps its first cluster; its clusters end where the next
+/// item's begin. An item with no clusters sits at the boundary before its
+/// first cluster. Later stages walk items and clusters together through
+/// this table.
 #[derive(Debug)]
 pub(crate) struct ItemClusters {
-    /// Per item: its first cluster, or for an item with no text, the cluster
-    /// after the boundary it sits at.
+    /// Each item's first cluster, or for an empty item, the cluster after
+    /// its boundary.
     pub(super) firsts: Runs<ItemId, ClusterId>,
-    /// Where the last item's clusters end: the text's end, which the writer
-    /// writes when it has written every cluster.
+    /// The end of the last item's clusters: the text's end, written after
+    /// the last cluster.
     pub(super) end: ClusterId,
 }
 
 impl Run for ClusterId {
     type Position = ClusterId;
 
-    /// Itself: an item's first cluster, where its clusters start.
+    /// Returns the cluster itself, an item's first.
     #[inline]
     fn start(&self) -> ClusterId {
         *self
@@ -48,63 +47,61 @@ impl ItemClusters {
         self.end = ClusterId(0);
     }
 
-    /// Makes room for `count` items, the content's.
+    /// Makes room for `count` items.
     pub(super) fn reserve(&mut self, count: usize) {
         self.firsts.reserve(count);
     }
 
-    /// Appends the next item, whose first cluster is `first`; `None` past
-    /// what an `ItemId` names, which the content's items never reach.
+    /// Appends the next item, whose first cluster is `first`.
+    ///
+    /// Returns `None` past the last `ItemId`, which a content never reaches.
     pub(super) fn push(&mut self, first: ClusterId) -> Option<ItemId> {
         self.firsts.push(first)
     }
 
-    /// How many items there are, for tests to count.
+    /// Returns the number of items.
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.firsts.len()
     }
 
-    /// `item`'s first cluster, or the cluster after the boundary it sits at
-    /// where it holds none; `None` past the last item.
+    /// Returns `item`'s first cluster, or for an empty item the cluster
+    /// after its boundary. Returns `None` past the last item.
     pub(crate) fn get(&self, item: ItemId) -> Option<ClusterId> {
         self.firsts.get(item).copied()
     }
 
-    /// Where `item`'s clusters start: its first cluster, or the cluster
-    /// after the boundary it sits at where it holds none; the text's end past
-    /// the last item.
+    /// Returns where `item`'s clusters start, as [`get`](Self::get) does,
+    /// or the text's end past the last item.
     #[inline]
     pub(crate) fn start(&self, item: ItemId) -> ClusterId {
         self.firsts.start(item, self.end)
     }
 
-    /// `item`'s clusters: from its first to the next item's first, or the
-    /// text's end. Empty where it holds none, at the boundary it sits at;
-    /// the text's end, empty, past the last item.
+    /// Returns `item`'s clusters, up to the next item's first.
+    ///
+    /// The range is empty, at its boundary, for an empty item, and empty at
+    /// the text's end past the last item.
     #[inline]
     pub(crate) fn range(&self, item: ItemId) -> Range<ClusterId> {
         self.range_to(item, self.end)
     }
 
-    /// `item`'s clusters, where the clusters written so far end at `end`:
-    /// what the writer reads while it runs, before the text's end is known.
+    /// Returns `item`'s clusters while the writer runs, with `end` standing
+    /// for the text's end.
     #[inline]
     pub(super) fn range_to(&self, item: ItemId, end: ClusterId) -> Range<ClusterId> {
         self.firsts.span(item, end)
     }
 
-    /// The clusters of the consecutive `items`, from the first's first
-    /// cluster to the last's end. Past the last item, each end is the
-    /// text's end.
+    /// Returns the clusters of the consecutive `items`. An end past the last
+    /// item is the text's end.
     pub(crate) fn span(&self, items: Range<ItemId>) -> Range<ClusterId> {
         self.start(items.start)..self.start(items.end)
     }
 
-    /// The items at boundary `at` that hold no cluster, in order, by search.
-    ///
-    /// They are the box edges, floats and ruby marks there. The walk starts
-    /// at the first item whose first cluster is not before `at`.
+    /// Returns the empty items at boundary `at`, in order: box edges,
+    /// floats and ruby marks. Searches for the first.
     pub(crate) fn empty_items(&self, at: ClusterId) -> impl Iterator<Item = ItemId> + '_ {
         let from = self.firsts.first_from(at);
         let end = ItemId::new(self.firsts.len());
@@ -115,29 +112,29 @@ impl ItemClusters {
     }
 }
 
-/// The cursor a walk over the items holds ([`Segments`]): an item holding
-/// no cluster is a run of none, which the cursor stands on as on any other.
+/// Cursors for walks over the items ([`Segments`]). An empty item is a run
+/// of no clusters, and a cursor stands on it like any other.
 ///
 /// [`Segments`]: crate::stages::Segments
 impl ItemClusters {
-    /// A cursor at `item`, from a link to it: a line's first item.
+    /// Returns a cursor at `item`, such as a line's first item.
     #[inline]
     pub(crate) fn cursor(&self, item: ItemId) -> RunCursor<ItemId, ClusterId> {
         self.firsts.cursor(item, self.end)
     }
 
-    /// The cursor a walk from boundary `at` starts at, by search.
+    /// Returns the cursor a walk from boundary `at` starts at, by search.
     ///
-    /// It is the first item sitting at `at` or starting there, with items
-    /// holding no cluster first. Otherwise it is the item holding the
-    /// cluster across `at`. At the text's end it is past the last item.
+    /// That is the first item starting at `at`, empty items first, or else
+    /// the item holding the cluster across `at`. At the text's end the cursor
+    /// is past the last item.
     pub(crate) fn cursor_containing(&self, at: ClusterId) -> RunCursor<ItemId, ClusterId> {
         let from = self.firsts.first_from(at);
         if self.firsts.get(from).is_some_and(|&first| first == at) {
             return self.firsts.cursor(from, self.end);
         }
-        // None starts there: the item before the first starting past it
-        // holds it, unless it ends there, at the text's end.
+        // No item starts at `at`, so the item before `from` holds it, unless
+        // that item ends there at the text's end.
         let before = from
             .get()
             .checked_sub(1)
@@ -146,23 +143,23 @@ impl ItemClusters {
         before.unwrap_or_else(|| self.firsts.cursor(from, self.end))
     }
 
-    /// Moves `cursor` to the next item, whether or not it holds a cluster:
-    /// past the last, it stands at the text's end.
+    /// Moves `cursor` to the next item, empty or not. Past the last item it
+    /// stands at the text's end.
     #[inline]
     pub(crate) fn step(&self, cursor: &mut RunCursor<ItemId, ClusterId>) {
         self.firsts.step(cursor, self.end);
     }
 
     /// Returns the item a walk from boundary `at` starts at, as
-    /// [`cursor_containing`](Self::cursor_containing) decides it, walked to
-    /// from `from` an item at a time, forward or back.
+    /// [`cursor_containing`](Self::cursor_containing) finds it, by stepping
+    /// from `from` forward or back.
     ///
-    /// A walk that holds the item at a boundary near `at` uses it. It costs
-    /// a step per item between, and no search.
+    /// Costs one step per item between, and no search, so a walk near `at`
+    /// uses it.
     pub(crate) fn walk_to(&self, from: ItemId, at: ClusterId) -> ItemId {
-        // The items from the one a walk from `at` starts at: those sitting
-        // at `at` or after it, and the one holding the cluster across it.
-        // Past the last item, the start is the text's end, which reaches.
+        // An item reaches `at` if it starts at or after it, or holds the
+        // cluster across it. Past the last item, the start is the text's end,
+        // which reaches.
         let reaches = |item: ItemId| self.start(item) >= at || self.range(item).end > at;
         let mut item = from;
         while !reaches(item) {
@@ -178,11 +175,10 @@ impl ItemClusters {
         item
     }
 
-    /// Returns the item holding `cluster`, walked to from `from` an item at a
-    /// time: the item [`walk_to`](Self::walk_to) finds, stepped past those
-    /// at the cluster's start that hold none.
+    /// Returns the item holding `cluster`, stepping from `from` as
+    /// [`walk_to`](Self::walk_to) does and then past empty items.
     ///
-    /// Past the last item's clusters, it is the last item.
+    /// Past the last item's clusters, returns the last item.
     pub(crate) fn walk_to_cluster(&self, from: ItemId, cluster: ClusterId) -> ItemId {
         let last = self.firsts.len().saturating_sub(1);
         let mut item = self.walk_to(from, cluster);

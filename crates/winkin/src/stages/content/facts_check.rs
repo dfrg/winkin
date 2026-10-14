@@ -1,19 +1,17 @@
-//! The oracle for the facts: it checks every fact row the writer hands a
-//! node against an independent projection of the node's style.
+//! The debug oracle for the facts: it checks each fact row the writer gives
+//! a node against an independent projection of the node's style.
 //!
-//! - As the writer takes each style, [`lowered`] derives each field again
-//!   from the style, as a stage that read the style would. It checks the
-//!   row whether the writer lowered it now or found it in the builder's
-//!   memo. It also checks that the content's flags hold what the style
-//!   says.
-//! - When the build finishes, [`check`] holds what the writer gives a node
-//!   beside its own styles to the content. A text node's and a break's
-//!   facts are their container's. The block's initial letter is the one
-//!   box that keeps `initial-letter`.
+//! - [`lowered`] runs as the writer takes each style. It derives each field
+//!   again from the style, as a stage reading the style would, whether the
+//!   row is new or from the memo. It also checks the content's flags.
+//! - [`check`] runs when the build finishes. It checks what a node gets
+//!   beyond its own style: a text node, break or absolutely positioned box
+//!   takes its container's text facts, and the block's initial letter is
+//!   the one box that keeps `initial-letter`.
 //!
-//! It runs in debug builds, and the tests run it in release too, over
-//! random content (`src/tests/facts.rs`). A stand-in, taken where a fact
-//! table is full, is no projection, so it is not compared.
+//! It runs in debug builds, and in release under the random-content tests
+//! (`src/tests/facts.rs`). A stand-in row, used where a fact table is full,
+//! is not compared.
 
 use super::facts::{
     BlockFacts, BoxFacts, BoxFactsId, BoxFlags, TextFacts, TextFactsId, TextFlags, TextLineHeight,
@@ -31,12 +29,11 @@ use crate::style::{
 };
 use crate::unit::{LayoutUnit, TextUnit};
 
-/// Checks the facts the writer lowered `style` into for a node of `kind`.
+/// Checks the facts the writer lowered `style` into for a node of `kind`,
+/// and the content's flags.
 ///
-/// `text` and `box_` are `None` where they are a stand-in. It checks them
-/// against the style's projection (see the module documentation), and the
-/// content's flags against what the style says. It panics on a mismatch,
-/// which is a bug in the writer.
+/// `text` and `box_` are `None` where they are stand-ins. Panics on a
+/// mismatch, which is a writer bug.
 pub(crate) fn lowered(
     content: &Content,
     style: &StyleKey,
@@ -61,10 +58,9 @@ pub(crate) fn lowered(
         );
         noted_box(&mut wanted, style, kind);
     }
-    // Checks the flags the style says the content holds. `LINE_PADDING`,
-    // `NONZERO_SPACING` and `AUTOSPACE` are left out: a row sets them only
-    // where its value is not zero on its grid or reaches a seam, so they may
-    // be missing. The others never are.
+    // `LINE_PADDING`, `NONZERO_SPACING` and `AUTOSPACE` are left out: a row
+    // sets them only where its value is nonzero on its grid or applies at
+    // some boundary, so they may be missing. The others never are.
     let flags = content.flags;
     for flag in [
         ContentFlags::BOXES_WITH_EDGES,
@@ -88,17 +84,16 @@ pub(crate) fn lowered(
     }
 }
 
-/// Checks what the writer gave each node of `content` beside its own
-/// styles (see the module documentation).
-///
-/// It panics on a mismatch, which is a bug in the writer.
+/// Checks what the writer gave each node of `content` beyond its own style
+/// (see the module documentation). Panics on a mismatch, which is a writer
+/// bug.
 pub(crate) fn check(content: &Content) {
     let facts = &content.facts;
     let nodes = &content.nodes;
     let mut reshapes = false;
     for (node, row) in nodes.nodes.iter() {
-        // A text node's, a break's and an absolutely positioned box's text
-        // are their container's.
+        // A text node, a break and an absolutely positioned box take their
+        // container's text facts.
         if matches!(
             row.kind,
             NodeKind::Text | NodeKind::LineBreak | NodeKind::Absolute
@@ -125,7 +120,7 @@ pub(crate) fn check(content: &Content) {
             "a node's first line shapes otherwise, unflagged"
         );
     }
-    // The block's initial letter is the one inline box that keeps
+    // The block's initial letter is the only inline box that keeps
     // `initial-letter`.
     let letter = (NodeId::new(1)..NodeId::new(nodes.len()))
         .ids()
@@ -141,8 +136,8 @@ pub(crate) fn check(content: &Content) {
     );
 }
 
-/// Notes in `flags` what a node of `kind` set in `style` says the content
-/// holds as a box, read from the style directly.
+/// Adds to `flags` the box flags a node of `kind` in `style` implies, read
+/// from the style directly.
 fn noted_box(flags: &mut ContentFlags, style: &StyleKey, kind: NodeKind) {
     if kind.is_container() {
         if style.edges.any() || style.line.initial_letter.is_set() {
@@ -161,7 +156,7 @@ fn noted_box(flags: &mut ContentFlags, style: &StyleKey, kind: NodeKind) {
     }
 }
 
-/// Notes in `flags` what text set in `style` says the content holds.
+/// Sets in `flags` the text flags `style` implies.
 fn noted_text(flags: &mut ContentFlags, style: &StyleKey) {
     flags.set(ContentFlags::EMPHASIS, style.text.emphasis.marks);
     flags.set(
@@ -210,7 +205,7 @@ fn noted_text(flags: &mut ContentFlags, style: &StyleKey) {
 }
 
 /// Checks `text`, and the shaping facts and font request it names, against
-/// `style`'s projection, for a node of `at`.
+/// `style`'s projection, for a node of kind `at`.
 fn text_is(
     content: &Content,
     text: &TextFacts,
@@ -222,7 +217,7 @@ fn text_is(
     let shaping = facts.shaping(text.shaping);
     let request = facts.request(shaping.font);
     let text_group = &style.text;
-    // Letter spacing on glyph geometry's grid.
+    // Letter spacing in `TextUnit`.
     let letter = TextUnit::from_px(
         text_group
             .letter_spacing
@@ -244,9 +239,8 @@ fn text_is(
             && request.trims_punctuation == text_group.spacing_trim.trims_punctuation(),
         "{at:?}: {request:?}"
     );
-    // The shaping properties besides the request, which the shaping walk
-    // compares by id, and the measurements' spacing
-    // (`LetterWordSpacing::new`).
+    // The shaping properties beyond the request, which the shaping walk
+    // compares by id, and measuring's spacing (`LetterWordSpacing::new`).
     assert!(
         shaping.letter == letter
             && shaping.word
@@ -255,8 +249,8 @@ fn text_is(
             && shaping.orientation == style.orientation,
         "{at:?}: {shaping:?}"
     );
-    // What the analysis reads: an item's facts, how text stands, and the
-    // bidi levels' upright test.
+    // What analysis reads: an item's facts, text orientation, and the bidi
+    // levels' upright test.
     let wraps = text_group.wrap_mode == TextWrapMode::Wrap;
     let vertical = matches!(
         writing_mode,
@@ -301,8 +295,8 @@ fn text_is(
                         || style.orientation.text_combine_upright == TextCombineUpright::All)),
         "{at:?}: the analysis facts of {text:?}"
     );
-    // What font selection's generated text reads, and what the
-    // measurements, the breaker, line layout and the readers read.
+    // What font selection's generated text, measuring, the breaker, line
+    // layout and the readers read.
     let upright_in_vertical =
         vertical && style.orientation.text_orientation == TextOrientation::Upright;
     // `line-padding` truncated onto the grid.
@@ -333,17 +327,18 @@ fn text_is(
     line_height_is(text.line_height, style, at);
 }
 
-/// Whether `text`'s `tab-size` is `style`'s, by its bits.
+/// Whether `text`'s `tab-size` equals `style`'s, by bits.
 fn same_tab_size(text: &TextFacts, style: &StyleKey) -> bool {
     text.tab_size == style.text.tab_size
 }
 
-/// Checks `height` against `style`'s line height, for a node of `at`.
+/// Checks `height` against `style`'s line height, for a node of kind `at`.
 ///
-/// It compares two readings. The measurements round a length onto the grid
-/// (`heights.rs`' `line_height`). The initial letter reads the height
-/// through `TextLineHeight::px`, as Chrome's `ComputedLineHeight` gives it:
-/// a length as it is, and `normal` as the primary font's line spacing.
+/// It compares two readings. Measuring rounds a length onto the grid
+/// (`line_height` in `stages/measure/metrics.rs`). The initial letter reads
+/// the height through `TextLineHeight::px`, as Chrome's
+/// `ComputedLineHeight` gives it: a length as is, and `normal` as the
+/// primary font's line spacing.
 fn line_height_is(height: TextLineHeight, style: &StyleKey, at: NodeKind) {
     let measured = match style.line.height {
         LineHeight::Normal => None,
@@ -368,8 +363,8 @@ fn line_height_is(height: TextLineHeight, style: &StyleKey, at: NodeKind) {
 
 /// Returns `style`'s line height in pixels, read from the style directly.
 ///
-/// `normal` gives `normal`, and a factor is taken of the computed size
-/// truncated onto the grid. A length stays as it is, or zero where it is
+/// `normal` returns the `normal` argument. A factor multiplies the computed
+/// size truncated onto the grid. A length stays as is, or zero where it is
 /// not finite.
 fn computed_line_height(style: &StyleKey, normal: LayoutUnit) -> f32 {
     match style.line.height {
@@ -383,7 +378,7 @@ fn computed_line_height(style: &StyleKey, normal: LayoutUnit) -> f32 {
     }
 }
 
-/// Checks `facts` against what a node of `kind` set in `style` is as a box.
+/// Checks `facts` against the box a node of `kind` in `style` is.
 fn box_is(
     facts: &BoxFacts,
     style: &StyleKey,
@@ -431,6 +426,7 @@ fn box_is(
             && facts.bidi == style.bidi.unicode_bidi
             && facts.ruby == style.ruby
             && flag(BoxFlags::PAINTS) == style.paints
+            && flag(BoxFlags::OUTLINES) == style.outlines
             && flag(BoxFlags::DECORATES) == style.decorates
             && flag(BoxFlags::HAS_EDGES) == style.edges.any()
             && flag(BoxFlags::CLONES)
@@ -444,8 +440,8 @@ fn box_is(
     );
 }
 
-/// Whether a box's trims and edges, `(over, under, edge)`, are the ones
-/// `trim` and `edge` set, read from the style directly.
+/// Whether a box's trims and edges, `(over, under, edge)`, match `trim`
+/// and `edge`, read from the style directly.
 fn trims_text_box(facts: (bool, bool, TextBoxEdge), trim: TextBoxTrim, edge: TextBoxEdge) -> bool {
     let (over, under) = trim.sides();
     if !over && !under {
@@ -464,8 +460,8 @@ fn trims_text_box(facts: (bool, bool, TextBoxEdge), trim: TextBoxTrim, edge: Tex
     facts == (over, under, kept)
 }
 
-/// Whether a box's opening (`opens`) or closing edge stops shaping, read
-/// from the style directly.
+/// Whether a box's opening edge (if `opens`) or closing edge stops shaping,
+/// read from the style directly.
 fn edge_breaks_shaping(style: &StyleKey, writing_mode: WritingMode, opens: bool) -> bool {
     if !matches!(style.line.vertical_align, VerticalAlign::Baseline)
         || style.bidi.unicode_bidi != UnicodeBidi::Normal
@@ -493,11 +489,11 @@ fn edge_breaks_shaping(style: &StyleKey, writing_mode: WritingMode, opens: bool)
     side(set(edges.margin)) || side(border) || side(set(edges.padding))
 }
 
-/// Checks `block`, the block's facts, against `root`, its own style.
+/// Checks `block`, the block's facts, against `root`, its style.
 ///
-/// It checks the base direction and override that bidi reads, the baseline
-/// that font selection reads, and the Chinese rule of `text-autospace`. The
-/// initial letter is checked when the build finishes (see [`check`]).
+/// It checks the base direction and override bidi reads, the baseline font
+/// selection reads, and the Chinese rule of `text-autospace`. [`check`]
+/// checks the initial letter when the build finishes.
 pub(super) fn block_is(block: &BlockFacts, root: &ComputedStyle<'_>) {
     if root.bidi.unicode_bidi == UnicodeBidi::Plaintext {
         assert_eq!(block.direction, BaseDirection::Auto);

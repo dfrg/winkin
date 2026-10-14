@@ -1,16 +1,15 @@
 //! Intrinsic size and tab tests. They pin:
-//! - min-content as the widest run no line may break inside, and max-content
-//!   as the widest paragraph;
-//! - tabs reaching the next stop past where they land, on and off the grid;
-//! - white space that hangs conditionally counted in max-content;
-//! - hanging punctuation left out, `allow-end` from min-content alone.
+//! - min-content as the widest unbreakable run, max-content as the widest
+//!   paragraph;
+//! - tab widths, on and off the grid;
+//! - conditionally hanging white space counted in max-content;
+//! - hanging punctuation left out, `allow-end` from min-content only.
 
 use super::*;
 use crate::style::FirstLineVariant;
 
-/// On Ahem at 10 px: min-content is the widest run no line may break
-/// inside, and max-content the widest paragraph, each without the spaces
-/// that hang at its end.
+/// Min-content is the widest unbreakable run and max-content the widest
+/// paragraph, both without trailing hanging spaces. Ahem at 10 px.
 #[test]
 fn intrinsic_sizes_are_the_widest_unbreakable_run_and_paragraph() {
     let mut fixture = fixture();
@@ -20,7 +19,6 @@ fn intrinsic_sizes_are_the_widest_unbreakable_run_and_paragraph() {
     let sizes = layout.intrinsic_sizes();
     assert_eq!((sizes.min_content, sizes.max_content), (40.0, 110.0));
 
-    // The widest paragraph, and the widest word in any.
     fixture.build(&mut layout, &ComputedBlockStyle::new(&ahem), |b| {
         b.text(NodeKey(1), "XXX XX");
         b.line_break(NodeKey(2));
@@ -31,9 +29,8 @@ fn intrinsic_sizes_are_the_widest_unbreakable_run_and_paragraph() {
     let sizes = layout.intrinsic_sizes();
     assert_eq!((sizes.min_content, sizes.max_content), (50.0, 130.0));
 
-    // `overflow-wrap: anywhere` lowers min-content to the widest cluster,
-    // and `break-word` does not; `nowrap` offers no
-    // opportunity at all.
+    // `overflow-wrap: anywhere` lowers min-content to the widest cluster;
+    // `break-word` doesn't, and `nowrap` allows no break.
     for (wrap, mode, min) in [
         (OverflowWrap::Anywhere, TextWrapMode::Wrap, 10.0),
         (OverflowWrap::BreakWord, TextWrapMode::Wrap, 40.0),
@@ -51,9 +48,8 @@ fn intrinsic_sizes_are_the_widest_unbreakable_run_and_paragraph() {
         );
     }
 
-    // A box closing after a hanging space: the space hangs and the edge
-    // counts; an atomic inline is as wide as its
-    // margin box.
+    // A box closing after a hanging space: the space hangs, the edge
+    // counts. An atomic inline counts its margin box.
     let padded = edged(&ahem, [0.0; 3], [0.0, 0.0, 5.0]);
     fixture.build(&mut layout, &ComputedBlockStyle::new(&ahem), |b| {
         b.text(NodeKey(1), "XX");
@@ -74,12 +70,9 @@ fn intrinsic_sizes_are_the_widest_unbreakable_run_and_paragraph() {
 
 // Tabs ---------------------------------------------------------------------
 
-/// A tab reaches the first stop past where it lands, stops being multiples
-/// of `tab-size` from the content edge: from the edge, a whole interval; on
-/// a stop, on to the next; nearer the next than half a space, on to the one
-/// after, as Chrome's `Font::TabWidth` has it; its width rounded up onto the
-/// grid. A length is the interval itself. Stops nothing apart make nothing,
-/// and a `tab-size` no computed value has is taken as none.
+/// A tab reaches the first stop past its start, or the one after where that
+/// is nearer than half a space, as Chrome's `Font::TabWidth`; the width
+/// rounds up to the grid. A zero or invalid interval gives zero width.
 #[test]
 fn a_tab_reaches_the_next_stop_past_where_it_lands() {
     let space = px(10.0);
@@ -99,11 +92,11 @@ fn a_tab_reaches_the_next_stop_past_where_it_lands() {
     assert_eq!(tab(0.0, px(150.0), eight), 10.0);
     assert_eq!(tab(0.0, px(75.0), eight), 5.0, "half a space is enough");
     assert_eq!(tab(0.0, px(76.0), eight), 84.0, "less goes on to the next");
-    // The stops are the content edge's, wherever the line starts.
+    // Stops count from the content edge, wherever the line starts.
     assert_eq!(tab(15.0, px(0.0), eight), 65.0);
     assert_eq!(tab(15.0, px(65.0), eight), 80.0);
-    // Where it lands between the grid's points, it ends at the stop rounded
-    // up: 13.3203125 from the edge reaches 46.6875.
+    // Off the grid, it ends at the stop rounded up: 13.3203125 from the edge
+    // reaches 46.6875.
     let off_grid = InlineLayoutUnit::from_raw(872_960);
     assert_eq!(
         tab(
@@ -118,10 +111,9 @@ fn a_tab_reaches_the_next_stop_past_where_it_lands() {
         ),
         46.6875
     );
-    // Before the content edge it reaches the stop past it, as Chrome 155
-    // ends a tab starting 10 px before the edge at the edge, and one
-    // starting 110 px before at 100 px before, under 100 px stops (WPT's
-    // `text-indent-tab-positions-001`).
+    // Before the content edge, with 100 px stops, Chrome 155 ends a tab
+    // starting 10 px before the edge at the edge, and one starting 110 px
+    // before at 100 px before (WPT `text-indent-tab-positions-001`).
     assert_eq!(tab(0.0, px(-10.0), eight), 10.0);
     assert_eq!(tab(0.0, px(-90.0), eight), 10.0);
     assert_eq!(tab(0.0, px(-2.0), eight), 82.0, "less than half a space");
@@ -146,7 +138,7 @@ fn a_tab_reaches_the_next_stop_past_where_it_lands() {
         assert_eq!(stops.interval(), InlineLayoutUnit::ZERO, "{none:?}");
         assert_eq!(tab(0.0, px(15.0), stops), 0.0, "{none:?}");
     }
-    // In a font with no space, stops of spaces are nothing apart.
+    // In a font with no space, a `tab-size` in spaces is zero.
     let spaceless = TabStops::new(
         TabSize::Spaces(8.0),
         InlineLayoutUnit::ZERO,
@@ -156,8 +148,7 @@ fn a_tab_reaches_the_next_stop_past_where_it_lands() {
     assert_eq!(tab(0.0, px(15.0), spaceless), 0.0);
 }
 
-/// Stops and positions at the ends of the grid give a width, saturating
-/// where they must, and never panic.
+/// Stops and positions at the grid's ends saturate and don't panic.
 #[test]
 fn a_tab_at_the_ends_of_the_grid_is_still_a_width() {
     let space = px(10.0);
@@ -212,9 +203,8 @@ fn a_tab_at_the_ends_of_the_grid_is_still_a_width() {
     );
 }
 
-/// A tab's stops count in its style's space: its primary font's U+0020 at
-/// the used size, a whole em in Ahem and a third of one in the narrow font.
-/// Where there is no font to read, a quarter of an em.
+/// The space is the primary font's U+0020 advance: an em in Ahem, a third
+/// of one in the narrow font.
 #[test]
 fn a_space_is_its_primary_fonts_advance() {
     let space_of = |layout: &Layout| {
@@ -254,14 +244,11 @@ fn a_space_is_its_primary_fonts_advance() {
     assert_eq!(space.to_px(), 5.0);
 }
 
-/// The intrinsic sizes size each tab where it lands: from the paragraph's
-/// start for max-content, and from its min-content line's for min-content,
-/// where every opportunity ends a line. A tab that hangs, as under
-/// `pre-wrap`, counts in no min-content line, and ending a paragraph, where
-/// it hangs only where
-/// it overflows, counts in max-content; under `break-spaces` it is content;
-/// under `pre` it is content and nothing breaks, so the two are one. In
-/// Ahem at 10 px with stops 40 apart, as Chrome 153 sizes them.
+/// Intrinsic sizes size each tab from its line's start: the paragraph's for
+/// max-content, each min-content line's for min-content. Under `pre-wrap` a
+/// hanging tab counts in no min-content line, but one ending a paragraph
+/// counts in max-content. Under `break-spaces` and `pre` a tab is content.
+/// Chrome 153's widths, Ahem at 10 px with 40 px stops.
 #[test]
 fn intrinsic_sizes_count_each_tab_where_it_lands() {
     let mut fixture = fixture();
@@ -274,27 +261,25 @@ fn intrinsic_sizes_count_each_tab_where_it_lands() {
         let sizes = layout.intrinsic_sizes();
         (sizes.min_content, sizes.max_content)
     };
-    // `X` to 10, a tab to 40, `XX` to 60, a tab to 80, `X` to 90; the
-    // widest min-content line is `XX` and its tab, which hangs.
+    // `X` 10, tab 40, `XX` 60, tab 80, `X` 90. The widest min-content line
+    // is `XX` with its hanging tab.
     assert_eq!(
         sizes(&mut fixture, &mut layout, &style, "X\tXX\tX"),
         (20.0, 90.0)
     );
-    // A tab ending the paragraph hangs where it overflows, which a line of
-    // max-content has room for, and one ending a min-content line hangs.
+    // A final tab hangs only where it overflows, so max-content counts it.
     assert_eq!(
         sizes(&mut fixture, &mut layout, &style, "XXX\t"),
         (30.0, 40.0)
     );
-    // A paragraph's whole trailing run hangs so, though an opportunity
-    // after its space parts it: max-content is what the breaker measures
-    // of the line, `XX`, its space and its tab.
+    // So does the whole trailing space-and-tab run, as the breaker measures
+    // it.
     assert_eq!(
         sizes(&mut fixture, &mut layout, &style, "XX \t"),
         (20.0, 40.0)
     );
-    // Each min-content line starts the tab stops again: `XXXXX ` ends at 60,
-    // its space hanging, and on the next line `X` reaches 10 and its tab 40.
+    // Each min-content line restarts the stops: `X` then reaches 10 and its
+    // tab 40.
     assert_eq!(
         sizes(&mut fixture, &mut layout, &style, "XXXXX X\tX"),
         (50.0, 90.0)
@@ -315,7 +300,7 @@ fn intrinsic_sizes_count_each_tab_where_it_lands() {
         sizes(&mut fixture, &mut layout, &pre, "XXX\t"),
         (40.0, 40.0)
     );
-    // Each paragraph's tabs from its own start.
+    // Each paragraph's tabs count from its own start.
     fixture.build(&mut layout, &ComputedBlockStyle::new(&style), |b| {
         b.text(NodeKey(1), "XXXXX\tX");
         b.line_break(NodeKey(2));
@@ -325,13 +310,11 @@ fn intrinsic_sizes_count_each_tab_where_it_lands() {
     assert_eq!((sizes.min_content, sizes.max_content), (50.0, 90.0));
 }
 
-/// White space ending a paragraph counts in max-content where it hangs only
-/// conditionally, kept and wrapping (`pre-wrap`), and in neither size where
-/// it hangs whole, as other space separators do under `normal`; kept and not
-/// wrapping (`pre`) it does not hang, and counts in both; min-content leaves
-/// out all that hangs (CSS Text 3, "trimming and positioning"). These are
-/// Chrome 153's widths in Ahem at 20 px, but for an ideographic space, which
-/// Chrome counts in both where it hangs, and which hangs here as CSS says.
+/// Trailing white space counts in max-content where it hangs conditionally
+/// (`pre-wrap`), in neither size where it always hangs (`normal`), and in
+/// both under `pre`; min-content leaves out all that hangs (CSS Text 3,
+/// "trimming and positioning"). Chrome 153's widths in Ahem at 20 px,
+/// except that U+3000 hangs here as CSS says, where Chrome counts it.
 #[test]
 fn trailing_white_space_counts_in_max_content_where_it_hangs_conditionally() {
     let mut fixture = fixture();
@@ -374,11 +357,9 @@ fn trailing_white_space_counts_in_max_content_where_it_hangs_conditionally() {
     }
 }
 
-/// A punctuation mark that hangs is left out of the intrinsic sizes, as
-/// CSS Text 4 says: under `first`, `last` and `force-end` from both, under
-/// `allow-end`, which hangs only where the line would not fit, from
-/// min-content alone. A mark smaller than its text gives back its own
-/// advance. On Ahem at 10 px.
+/// A hanging mark is left out of both intrinsic sizes, or of min-content
+/// only under `allow-end`, as CSS Text 4 says. A smaller mark gives back
+/// its own advance. Ahem at 10 px.
 #[test]
 fn a_hanging_mark_is_left_out_of_the_intrinsic_sizes() {
     let mut fixture = fixture();
@@ -424,7 +405,6 @@ fn a_hanging_mark_is_left_out_of_the_intrinsic_sizes() {
             style.text.hanging_punctuation
         );
     }
-    // A mark at half the text's size hangs by its own advance.
     let big = hanging(true, true, HangEnd::None);
     let mut small = sized(&AHEM_FAMILY, 5.0);
     small.text.hanging_punctuation = big.text.hanging_punctuation;
@@ -447,8 +427,8 @@ fn a_hanging_mark_is_left_out_of_the_intrinsic_sizes() {
     }
 }
 
-/// Nothing built, or a builder dropped without finishing, asks for nothing,
-/// and holds no measurements of content it no longer has.
+/// An unbuilt layout, or one whose builder was dropped unfinished, has zero
+/// intrinsic sizes and no stale measurements.
 #[test]
 fn a_layout_with_no_content_asks_for_nothing() {
     let layout = Layout::new();

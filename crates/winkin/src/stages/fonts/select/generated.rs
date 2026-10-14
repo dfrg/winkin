@@ -30,10 +30,11 @@ use crate::{unicode, work};
 /// - ellipsis: U+2026 if the primary maps it, else three full stops.
 ///
 /// A string the primary maps whole, nearly every one, is one run in it.
-/// Otherwise each grapheme ([`generated_graphemes`]) is set in the primary if it
-/// covers it. If not, it takes the first candidate the text's walk would try
-/// that covers it, then the best partial cover, then the primary. Pending
-/// faces a grapheme wants go in the wanted faces.
+/// Otherwise each grapheme ([`generated_graphemes`]) is set in the primary
+/// where it covers the grapheme. Elsewhere the grapheme takes the first
+/// candidate the text's walk would try that covers it, then the best partial
+/// cover, then the primary. Pending faces a grapheme wants go in the wanted
+/// faces.
 ///
 /// Blink shapes a hyphen and an ellipsis in the style's `Font`, whose
 /// fallback covers what the primary lacks (`HyphenResult::Shape`,
@@ -71,8 +72,8 @@ pub(crate) fn select_generated(
         let generated = GeneratedRequest::new(input, request_id, request, list, language, said);
         for (end, grapheme) in generated_graphemes(said) {
             work::step();
-            // As the text's walk asks: covered, and with every variation
-            // sequence cluster matching asks for.
+            // The primary must cover the grapheme with every variation
+            // sequence cluster matching asks for, as in the text's walk.
             let covered = font.is_some_and(|font| {
                 coverage::covers(font, grapheme, &mut None)
                     && coverage::has_sequences(font, grapheme)
@@ -87,21 +88,22 @@ pub(crate) fn select_generated(
     }
 }
 
-/// What choosing a font for a grapheme of a generated text asks with.
+/// The request that chooses fonts for the graphemes of a generated text.
 ///
-/// It holds what the request asks of a font, and what its candidate list for
-/// text is keyed by.
+/// It holds what the request asks of a font, and the key of its candidate
+/// list for text.
 struct GeneratedRequest<'a> {
     resolved: ResolvedRequest<'a>,
     key: ListKey,
 }
 
 impl<'a> GeneratedRequest<'a> {
-    /// Returns what choosing a font for the graphemes of `said` asks with, under
-    /// `request` and its family list and language.
+    /// Returns the request that chooses fonts for the graphemes of `said`
+    /// under `request`, its family list and its language.
     ///
-    /// Every request has its resolution. One that had none returns `None`,
-    /// and its text is set in its primary alone.
+    /// Returns `None` for a request with no resolution, whose text is then
+    /// set in its primary alone. Every request has a resolution, so this
+    /// does not happen.
     fn new(
         input: &Input<'_>,
         request_id: FontRequestId,
@@ -129,8 +131,9 @@ impl<'a> GeneratedRequest<'a> {
         })
     }
 
-    /// The used font `grapheme`, which the primary font does not cover, is set
-    /// in: the first candidate covering it, as the text's walk takes one.
+    /// Returns the used font for `grapheme`, which the primary font does not
+    /// cover: the first candidate that covers it, as the text's walk takes
+    /// one.
     fn fallback(&self, input: &Input<'_>, grapheme: &str, sel: &mut Selecting<'_>) -> UsedFontId {
         for _ in 0..MAX_STOPS {
             match self.pick(input, grapheme, sel) {
@@ -145,9 +148,10 @@ impl<'a> GeneratedRequest<'a> {
         self.resolved.resolution.primary
     }
 
-    /// Asks the candidate lists once for `grapheme`: the font, `None` where
-    /// there is nothing to set it in but the primary, or the change to make
-    /// before asking again.
+    /// Asks the candidate lists once for a font for `grapheme`.
+    ///
+    /// Returns the font, `None` where only the primary can set it, or the
+    /// change to make before asking again.
     fn pick(
         &self,
         input: &Input<'_>,
@@ -160,8 +164,8 @@ impl<'a> GeneratedRequest<'a> {
             used,
             wanted,
         } = sel;
-        // Whether the grapheme holds a selector is read from it, which has no
-        // clusters to say so.
+        // The grapheme has no clusters to flag a selector, so `true` makes
+        // `GraphemeNeeds` scan its text for sequences.
         let variant = self.resolved.request.font.variant_emoji;
         let needs = GraphemeNeeds::new(generated_class(grapheme), grapheme, true, variant);
         let key = ListKey {
@@ -191,7 +195,7 @@ impl<'a> GeneratedRequest<'a> {
     }
 }
 
-/// Returns the string a generated text of `kind` says.
+/// Returns the string of a generated text of `kind`.
 ///
 /// `hyphen` is the text's `hyphenate-character`, if it names one, and `maps`
 /// says whether the primary font maps a character.
@@ -211,12 +215,12 @@ fn generated_string(
     }
 }
 
-/// Tries `list` for a grapheme of a generated text, as the walk's pick does but
-/// with no memo, since the grapheme has no neighbours.
+/// Tries `list` for a grapheme of a generated text, as the walk's pick does
+/// but with no memo, since the grapheme has no neighbours.
 ///
 /// Finds the first candidate that accepts the presentation and covers the
 /// grapheme with every variation sequence it asks for, else the first that
-/// covers it. A pending face that wants the grapheme goes in `wanted`.
+/// covers its base. A pending face that wants the grapheme goes in `wanted`.
 fn pick_grapheme(
     list: &CandidateList,
     wanted: &mut WantedFaces,
@@ -254,9 +258,11 @@ fn generated_class(grapheme: &str) -> ClusterClass {
     }
 }
 
-/// The script a generated text's fonts are chosen for: that of its first
-/// character with one of its own, or Common where none has, as Blink's
-/// shaper resolves a string shaped alone.
+/// Returns the script a generated text's fonts are chosen for.
+///
+/// That is the script of its first character with a script of its own, or
+/// Common where none has one, as Blink's shaper resolves a string shaped
+/// alone.
 fn generated_script(string: &str) -> Script {
     let script = string
         .chars()
@@ -270,12 +276,13 @@ fn generated_script(string: &str) -> Script {
     Script::from_bytes(script.tag())
 }
 
-/// The graphemes of a generated text, each with where it ends: its grapheme
-/// clusters, as UAX #29 finds them with ICU's segmenter, whose data is
-/// compiled in, and which allocates nothing.
+/// Returns the graphemes of a generated text, each with its end offset.
+///
+/// The graphemes are UAX #29 grapheme clusters, found with ICU's segmenter,
+/// whose data is compiled in and which allocates nothing.
 fn generated_graphemes(string: &str) -> impl Iterator<Item = (usize, &str)> {
     let mut start = 0;
-    // The segmenter says 0 first, which ends no grapheme.
+    // The segmenter yields 0 first, which ends no grapheme.
     GraphemeClusterSegmenter::new()
         .segment_str(string)
         .filter(|&end| end > 0)

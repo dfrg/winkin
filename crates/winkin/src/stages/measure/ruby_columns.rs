@@ -1,4 +1,5 @@
-//! The ruby columns and their levels, as the measure stage stores them.
+//! The ruby columns and their annotation levels, kept in the measure
+//! stage's rare tables, and the walks that read them.
 
 use crate::config::RubyBreakWithin;
 use crate::data::IdRange;
@@ -20,58 +21,55 @@ use super::{Extent, RubyColumnId, RubyLevelId, ScanPrefix, TabReach};
 define_id! { pub(super) struct ColumnRoomId(u32); }
 
 define_id! {
-    /// Names a level's cumulative width at one of its boundaries, and the
-    /// floor there, in [`RubyColumns`]' tables of them.
+    /// Indexes [`RubyColumns`]' tables of steps and floors: a level's
+    /// cumulative width at one of its boundaries, and its floor there.
     pub(super) struct StepId(u32);
 }
 
-/// A descendant's measured contribution at its closing boundary. An entirely
-/// empty descendant contributes opening room instead of a glyph advance.
+/// The room past its base that a nested column, or one with no clusters,
+/// takes. One with no clusters opens the line after; another closes the
+/// line before.
 #[derive(Copy, Clone, Debug)]
 pub(super) struct ColumnRoom {
+    /// The boundary where the column ends.
     pub(super) at: ClusterId,
+    /// Its width less its base's.
     pub(super) extra: LayoutUnit,
+    /// The column has no clusters.
     pub(super) empty: bool,
 }
 
-/// A ruby column's base em box less the collapsible spaces that end its
+/// A ruby column's base em box without the collapsible spaces ending its
 /// base, which a line the column ends removes.
 #[derive(Copy, Clone, Debug)]
 pub(super) struct TrimmedEm {
-    /// The column.
     pub(super) column: RubyColumnId,
-    /// Where the column ends: its closing item's boundary.
+    /// The boundary where the column ends.
     pub(super) end: ClusterId,
     /// The em box of what its base keeps.
     pub(super) em: Extent,
 }
 
-/// The ruby columns, in text order, and their annotation levels, each
-/// column's together: what the breaker makes room for, line
-/// layout places, and justification reads of a base, each asking of one
-/// cluster or one line.
+/// The ruby columns, in text order, and their annotation levels.
 ///
-/// Columns are in preorder with nondecreasing base starts. Parent bases
-/// include descendants, so a seek finds the nearest column and follows its
-/// parent chain to resolve ownership or the scope of an opportunity query.
-/// Each column's own levels are contiguous, in closing order.
+/// Columns are in preorder with nondecreasing base starts, and a parent's
+/// base holds its descendants. Each column's levels are contiguous, in
+/// closing order.
 pub(crate) struct RubyColumns {
     pub(super) columns: Table<RubyColumnId, RubyColumn>,
     pub(super) levels: Table<RubyLevelId, RubyLevel>,
     /// Each level's cumulative width at each of its boundaries, from its
     /// start to its end, where its column may split.
     pub(super) steps: Table<StepId, InlineLayoutUnit>,
-    /// The least of each level's cumulative widths from each of its
-    /// boundaries to its end, beside `steps`: written whole as the level
-    /// closes.
+    /// Beside `steps`, the least width from each boundary to the level's
+    /// end, written whole as the level closes.
     pub(super) floors: Table<StepId, InlineLayoutUnit>,
-    /// The rooms of nested columns, in text order: each column's goes at its
-    /// end once its descendants', which end no later, are in.
+    /// The rooms of nested columns and of columns with no clusters, in text
+    /// order. A column's room follows its descendants', which end no later.
     pub(super) rooms: Table<ColumnRoomId, ColumnRoom>,
     /// The tabs the columns' overhang reaches into, in text order.
     pub(super) tab_reaches: Vec<TabReach>,
-    /// The em boxes of bases ending in collapsible spaces, without them,
-    /// by column: rare, so kept apart from the columns.
+    /// The trimmed base em boxes, sorted by column: rare, so kept apart.
     pub(super) trimmed_ems: Vec<TrimmedEm>,
 }
 
@@ -99,12 +97,9 @@ impl RubyColumns {
         self.trimmed_ems.clear();
     }
 
-    /// Returns the em box of column `id`'s base, `column`, on a line whose
-    /// in-flow content ends at `end`.
-    ///
-    /// Where the column ends the line, the collapsible spaces ending its
-    /// base are left out, as Chrome's `RemoveTrailingCollapsibleSpace`
-    /// removes them before the annotations are stacked.
+    /// Returns the em box of `column`'s base on a line whose in-flow content
+    /// ends at `end`: without its trailing collapsible spaces where the
+    /// column ends the line, as Chrome's `RemoveTrailingCollapsibleSpace`.
     pub(crate) fn line_base_em(
         &self,
         id: RubyColumnId,
@@ -124,8 +119,8 @@ impl RubyColumns {
         }
     }
 
-    /// Returns how far a column's overhang reaches into the tab at `tab`, if
-    /// it does.
+    /// Returns how far a column's overhang reaches into the tab at `tab`, or
+    /// `None` where none does.
     pub(crate) fn tab_reach(&self, tab: ClusterId) -> Option<TabReach> {
         if self.tab_reaches.is_empty() {
             return None;
@@ -138,8 +133,8 @@ impl RubyColumns {
     }
 
     /// Returns `table`'s entries from `level`'s first on: its entry at each
-    /// of its boundaries, then the next levels'. Empty where its column
-    /// may not split.
+    /// of its boundaries, then the later levels'. Empty where its column may
+    /// not split.
     fn level_steps<'t>(
         level: &RubyLevel,
         table: &'t Table<StepId, InlineLayoutUnit>,
@@ -150,18 +145,17 @@ impl RubyColumns {
             .unwrap_or_default()
     }
 
-    /// A level's exact cumulative width at a boundary, including its box edges.
+    /// Returns `level`'s cumulative width at boundary `at`, its box edges
+    /// included. Zero where its column may not split.
     pub(crate) fn level_position(&self, level: &RubyLevel, at: ClusterId) -> InlineLayoutUnit {
         let offset = at.get().saturating_sub(level.clusters.start.get());
         let steps = Self::level_steps(level, &self.steps);
         steps.get(offset).copied().unwrap_or_default()
     }
 
-    /// Returns the least of a level's cumulative widths at the boundaries
-    /// from `from` to its end, both included.
-    ///
-    /// A cut at or past `from` is never narrower than this from any start.
-    /// The floors never fall from one boundary to the next.
+    /// Returns the least of `level`'s cumulative widths from boundary `from`
+    /// to its end, both included. Floors never fall from one boundary to the
+    /// next. Zero past the level's end or where its column may not split.
     pub(crate) fn level_floor(&self, level: &RubyLevel, from: ClusterId) -> InlineLayoutUnit {
         if from > level.clusters.end {
             return InlineLayoutUnit::ZERO;
@@ -172,8 +166,7 @@ impl RubyColumns {
     }
 
     /// Returns the first boundary of `level` from `from` on whose floor is
-    /// over `limit`, by halving: no cut ending there or past it is within
-    /// `limit`. The boundary past the level's end where none is.
+    /// over `limit`, by halving, or one past the level's end.
     pub(crate) fn floor_above(
         &self,
         level: &RubyLevel,
@@ -193,8 +186,8 @@ impl RubyColumns {
         ClusterId::new(start + offset + floors.partition_point(|&floor| floor <= limit))
     }
 
-    /// Writes the floors of the level whose steps end the table: from the
-    /// end of the floors written so far.
+    /// Writes the floors of the last level's steps: those past the floors
+    /// written so far.
     pub(super) fn close_floors(&mut self) {
         let from = self.floors.len();
         let steps = self.steps.as_slice().get(from..).unwrap_or_default();
@@ -211,9 +204,10 @@ impl RubyColumns {
         }
     }
 
-    /// The zero-room first, last and widest pieces for intrinsic sizing.
-    /// Each annotation cursor advances once per piece. The measurement
-    /// walk reuses the cursor scratch across columns.
+    /// Returns the widths of the first, last and widest pieces of column
+    /// `id` cut at each opportunity in its base, with no room spread, for
+    /// the min-content sizes. `None` where it stays one piece. `starts` is
+    /// scratch.
     pub(super) fn min_pieces(
         &self,
         id: RubyColumnId,
@@ -312,18 +306,19 @@ impl RubyColumns {
         (ordinal > 0).then_some((first, last, widest))
     }
 
-    /// Column `id`, or `None` past the last.
+    /// Returns column `id`, or `None` past the last.
     #[inline]
     pub(crate) fn get(&self, id: RubyColumnId) -> Option<&RubyColumn> {
         self.columns.get(id)
     }
 
-    /// Annotation level `id`, or `None` past the last.
+    /// Returns annotation level `id`, or `None` past the last.
     pub(crate) fn level(&self, id: RubyLevelId) -> Option<&RubyLevel> {
         self.levels.get(id)
     }
 
-    /// The levels of `column`, in order: the innermost first on each side.
+    /// Returns the levels of `column`, in closing order: the innermost first
+    /// on each side.
     pub(crate) fn levels(&self, column: &RubyColumn) -> &[RubyLevel] {
         self.levels
             .get_slice(column.levels.clone())
@@ -338,18 +333,18 @@ impl RubyColumns {
             .map_or(column.base.end, |level| level.clusters.end)
     }
 
-    /// Whether the content has no column.
+    /// Returns whether the content has no column.
     pub(crate) fn is_empty(&self) -> bool {
         self.columns.is_empty()
     }
 
-    /// How many levels the columns have together.
+    /// Returns how many levels the columns have together.
     #[cfg(test)]
     pub(super) fn level_count(&self) -> usize {
         self.levels.len()
     }
 
-    /// Every column with its id, in text order, which the tests check.
+    /// Returns every column with its id, in text order, for the tests.
     #[cfg(test)]
     pub(super) fn iter(
         &self,
@@ -357,11 +352,8 @@ impl RubyColumns {
         self.columns.iter()
     }
 
-    /// The columns whose bases start among `clusters`, a line's: the columns
-    /// of the line, walked to from column `near`.
-    ///
-    /// `near` is any column, or one past the last. A walk that holds a
-    /// column near the line passes it, and pays a step a column between.
+    /// Returns the columns whose bases start among `clusters`, a line's,
+    /// walked to from `near`, any column or one past the last.
     pub(crate) fn line_columns(
         &self,
         near: RubyColumnId,
@@ -391,18 +383,14 @@ impl RubyColumns {
         RubyColumnId::new(at)
     }
 
-    /// The last column whose base starts at or before `cluster`, walked to
-    /// from column `near`: what [`nearest`](Self::nearest) finds, with no
-    /// search.
+    /// Returns what [`nearest`](Self::nearest) does, walked to from `near`.
     fn nearest_from(&self, near: RubyColumnId, cluster: ClusterId) -> Option<RubyColumnId> {
         let past = self.walk_to(near, ClusterId::new(cluster.get() + 1));
         past.get().checked_sub(1).map(RubyColumnId::new)
     }
 
-    /// The last column whose base starts at or before `cluster`, by halving:
-    /// the nearest descendant candidate, whose parent chain resolves ownership.
-    ///
-    /// Content with no ruby has no column, and asks without a search.
+    /// Returns the last column whose base starts at or before `cluster`, by
+    /// halving. Every column around `cluster` is it or one of its ancestors.
     fn nearest(&self, cluster: ClusterId) -> Option<RubyColumnId> {
         if self.columns.is_empty() {
             return None;
@@ -412,10 +400,7 @@ impl RubyColumns {
     }
 
     /// Returns the base start of the outermost column around `cluster`, by
-    /// halving: `cluster` itself where no column starts at or before it.
-    ///
-    /// Every column whose base or levels hold `cluster` is the nearest
-    /// column or one of its ancestors, so none starts before this.
+    /// halving, or `cluster` where none is.
     pub(crate) fn outermost_start(&self, cluster: ClusterId) -> ClusterId {
         let mut id = self.nearest(cluster);
         let mut start = cluster;
@@ -426,8 +411,8 @@ impl RubyColumns {
         start
     }
 
-    /// The column whose base holds `cluster`, by halving, or `None` where no
-    /// base does, which the tests check a walk's answers against.
+    /// Returns the column whose base holds `cluster`, by halving, or `None`
+    /// where no base does. The tests check walks against it.
     #[cfg(test)]
     pub(super) fn base_containing(&self, cluster: ClusterId) -> Option<RubyColumnId> {
         let mut id = self.nearest(cluster)?;
@@ -440,12 +425,8 @@ impl RubyColumns {
         }
     }
 
-    /// Returns the span of the whole column that `boundary` is strictly
-    /// inside.
-    ///
-    /// Column edges stay eligible, also where a query starts or ends inside
-    /// a column. The column is walked to from `near`, which is left at the
-    /// column found, for the next query to start from.
+    /// Returns the span of the outermost column that `boundary` is strictly
+    /// inside, walked to from `near`, which is left at the nearest column.
     pub(crate) fn interior(
         &self,
         boundary: ClusterId,
@@ -454,11 +435,8 @@ impl RubyColumns {
         self.interior_span(boundary, None, near)
     }
 
-    /// Returns the span of the column whose parent is `parent` that
-    /// `boundary` is strictly inside: the columns `parent`'s base holds, or
-    /// the outermost where `parent` is `None`.
-    ///
-    /// The nearest column is walked to from `near`, and left there.
+    /// Returns the span of the child of `parent` (a top-level column where
+    /// `None`) that `boundary` is strictly inside, walked to from `near`.
     fn interior_span(
         &self,
         boundary: ClusterId,
@@ -475,13 +453,9 @@ impl RubyColumns {
         (column.base.start < boundary && boundary < end).then_some(column.base.start..end)
     }
 
-    /// Finds the first opportunity in `range`, or the last where `back`,
-    /// stepping over the columns `parent`'s base holds as indivisible.
-    ///
-    /// It jumps across such a column in one step rather than visiting its
-    /// inner opportunities. `back` searches backwards, and `emergency` the
-    /// emergency opportunities. The columns are walked to from `near`, a
-    /// column near `range`, which is left near the last boundary found.
+    /// Returns the first break opportunity in `range`, or the last where
+    /// `back`, or an emergency one where `emergency`. Each child of `parent`
+    /// is stepped over whole. The columns are walked to from `near`.
     pub(crate) fn opportunity(
         &self,
         clusters: &Clusters,
@@ -511,17 +485,14 @@ impl RubyColumns {
         None
     }
 
-    /// Returns whether column `id` has a column nested in its base: in
-    /// preorder, its first child follows it.
+    /// Returns whether column `id` has a column nested in its base.
     fn has_nested(&self, id: RubyColumnId) -> bool {
         self.get(RubyColumnId::new(id.get() + 1))
             .is_some_and(|next| next.parent == Some(id))
     }
 
-    /// Returns the room that nested columns with no clusters take at `at`.
-    ///
-    /// It is opening room at this boundary, or closing room at the text's
-    /// end. It is no part of the neighbouring glyph's advance.
+    /// Returns the room the columns with no clusters take at boundary `at`,
+    /// which is no part of a glyph's advance.
     pub(super) fn empty_room(&self, at: ClusterId) -> LayoutUnit {
         if self.rooms.is_empty() {
             return LayoutUnit::ZERO;
@@ -536,8 +507,8 @@ impl RubyColumns {
             .fold(LayoutUnit::ZERO, |sum, room| sum + room.extra)
     }
 
-    /// The annotation furthest out on this side over a base cluster,
-    /// including annotations belonging to its enclosing columns.
+    /// Returns the outermost level on `side` over base cluster `cluster`,
+    /// its enclosing columns' levels included, or `None`.
     pub(crate) fn outermost_annotation(
         &self,
         cluster: ClusterId,
@@ -546,9 +517,8 @@ impl RubyColumns {
         ColumnWalk::from_column(self, self.nearest(cluster)?, cluster).outermost(cluster, side)
     }
 
-    /// The outermost level of `column` on `side`, the last there; `None`
-    /// where it has none there. What an emphasis mark over its base is set
-    /// past, as Chrome sets it (`SetTextEmphasisAnnotationMetrics`).
+    /// Returns the outermost level of `column` on `side`, which an emphasis
+    /// mark over the base is set past (`SetTextEmphasisAnnotationMetrics`).
     fn outermost(&self, column: &RubyColumn, side: RubySide) -> Option<RubyLevelId> {
         let at = (self.levels(column).iter()).rposition(|level| {
             work::step();
@@ -569,10 +539,8 @@ const ANNOTATION_WHOLE_GLYPHS: usize = 8;
 /// Returns whether a ruby column, or its rest from a cut, stays whole on a
 /// line: its base holds four glyphs or fewer, and each level eight or fewer.
 ///
-/// `base` is the base's clusters, with an item at or before their start.
-/// Each of `levels` is a level's clusters, with an item at or before their
-/// start. The glyphs of `shaped` are counted, each part only as far as its
-/// limit. Inner annotations' glyphs are no glyphs of an enclosing base.
+/// `base` and each of `levels` pair an item at or before their clusters'
+/// start with the clusters. A nested annotation's glyphs are not the base's.
 pub(crate) fn is_monolithic(
     content: &Content,
     analysis: &Analysis,
@@ -589,10 +557,8 @@ pub(crate) fn is_monolithic(
         })
 }
 
-/// Counts the glyphs of `range` in annotations (`annotation`) or out of
-/// them, stopping at `limit`.
-///
-/// The items are walked from `from`, an item at or before `range`'s start.
+/// Counts the glyphs of `range` in annotations, or out of them, up to
+/// `limit`, walking the items from `from`.
 fn glyph_count(
     content: &Content,
     analysis: &Analysis,
@@ -626,8 +592,8 @@ fn glyph_count(
     count
 }
 
-/// A walk's column context. One initial seek; later clusters move the
-/// preorder cursor and rebuild ancestry only when crossing a column start.
+/// The ruby columns around a walk's cluster: the nearest column and its
+/// ancestry, rebuilt only where the nearest column changes.
 #[derive(Clone)]
 pub(crate) struct ColumnWalk<'a> {
     columns: &'a RubyColumns,
@@ -653,8 +619,7 @@ impl<'a> ColumnWalk<'a> {
         walk
     }
     /// Refills the ancestry stack from the nearest column, outermost first.
-    ///
-    /// Out of line: a walk rebuilds only where it meets another column.
+    /// Out of line, since it runs only where the column changes.
     #[inline(never)]
     fn rebuild(&mut self) {
         self.depth = 0;
@@ -723,9 +688,8 @@ impl<'a> ColumnWalk<'a> {
     }
 }
 
-/// A justification walk needs one column in its scope, rather than the
-/// full ancestry stack kept by annotation walks. The cached result remains
-/// valid between column boundaries, including backwards neighbour queries.
+/// The ruby column a justification walk reads at a cluster, cached up to
+/// the nearest column boundary either side.
 #[derive(Clone)]
 pub(super) struct ColumnScope<'a> {
     pub(super) columns: &'a RubyColumns,
@@ -758,9 +722,8 @@ impl<'a> ColumnScope<'a> {
         }
     }
 
-    /// Returns the column [`ColumnWalk::scope_column`] finds, refreshing the
-    /// cached answer only where `cluster` leaves its span or `parent`
-    /// changes.
+    /// Returns the column [`ColumnWalk::scope_column`] finds, from the cache
+    /// while `cluster` stays in its span and `parent` is unchanged.
     pub(super) fn scope_column(
         &mut self,
         cluster: ClusterId,
@@ -814,11 +777,9 @@ pub(crate) enum RubySide {
 }
 
 impl RubySide {
-    /// The side the annotation at `level` of its column, counting from
-    /// nought, is set on under `position`, the `ruby-position` of the ruby
-    /// container it is in, as Chrome reads it off the container.
-    /// `alternate`, which Chrome does not parse, starts on its side and
-    /// alternates, as CSS Ruby says.
+    /// Returns the side of annotation `level`, from zero, under its
+    /// container's `ruby-position`. `alternate`, which Chrome doesn't parse,
+    /// alternates as CSS Ruby says.
     pub(super) fn from_position(position: RubyPosition, level: usize) -> Self {
         let even = level.is_multiple_of(2);
         match position {
@@ -833,9 +794,8 @@ impl RubySide {
 }
 
 impl From<EmphasisSide> for RubySide {
-    /// The side of its text an emphasis mark is set on, as the side of a
-    /// base its annotations are: what a mark over text in a base is set
-    /// past, an annotation on that side.
+    /// Returns the annotation side that an emphasis mark on `side` of text
+    /// in a ruby base is set past.
     fn from(side: EmphasisSide) -> Self {
         match side {
             EmphasisSide::Over => Self::Over,
@@ -844,44 +804,36 @@ impl From<EmphasisSide> for RubySide {
     }
 }
 
-/// One annotation level of a ruby column: 36 bytes.
+/// One annotation level of a ruby column: 44 bytes.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct RubyLevel {
-    /// Its clusters, which are 0 in the prefix: line layout sets them as a
-    /// line of their own.
+    /// Its clusters, zero in the prefix: they are set as a line of their own.
     pub(crate) clusters: Range<ClusterId>,
-    /// Its annotation's opening item, whose node is its annotation's own
-    /// element.
+    /// Its annotation's opening item, whose node is the annotation element.
     pub(crate) open: ItemId,
     /// The side of its base it is set on.
     pub(crate) side: RubySide,
-    /// Its line's width at its max-content, on the grid: its clusters'
-    /// shaped advances and spacing, and the edges of the boxes in it.
+    /// Its max-content line width, box edges included, on the grid.
     pub(crate) width: LayoutUnit,
-    /// Its em box around its baseline, as Chrome's `ComputeEmHeight`
-    /// unites its text's: what the levels are stacked by.
+    /// Its em box, as Chrome's `ComputeEmHeight`, with its emphasis marks
+    /// and its box's margin, border and padding added: what the levels stack
+    /// by. [`Extent::NONE`] where it has no text.
     pub(crate) extent: Extent,
-    /// Its clusters' justification opportunities under its annotation's
-    /// `text-justify`, which `ruby-align` spreads the room of a column
-    /// wider than it over.
+    /// Its justification opportunities, over which `ruby-align` spreads a
+    /// wider column's room.
     pub(crate) opportunities: u32,
     /// Its band on this side, past the annotations nested in its base.
     pub(crate) depth: u32,
-    /// Its first cumulative width in the stage's table of them, absent for
-    /// an indivisible column.
+    /// Its first cumulative width in [`RubyColumns`]' steps, or `None` where
+    /// its column may not split or is nested.
     pub(super) steps: Option<StepId>,
 }
 
-/// A ruby column: a base and its annotations, sized once:
-/// 68 bytes, one a column.
-///
-/// Its levels are a range of the stage's one table of them, not a vector of
-/// its own, so a rebuild with many levels allocates nothing.
+/// A ruby column: a base and its annotations, sized once: 72 bytes.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct RubyColumn {
-    /// Its first item: the one after its container's opening item for the
-    /// container's first column, and after the column before's last
-    /// annotation for another.
+    /// Its first item: the one after its container's opening item, or after
+    /// the previous column's last annotation.
     pub(crate) open: ItemId,
     /// Its base's end: its first annotation's opening item, or the
     /// container's closing item where it has none.
@@ -893,44 +845,36 @@ pub(crate) struct RubyColumn {
     pub(crate) base: Range<ClusterId>,
     /// The containing column, whose base holds this column as one unit.
     pub(crate) parent: Option<RubyColumnId>,
-    /// Static eligibility for greedy fitting inside the base.
+    /// The column may split across lines at an opportunity in its base.
     pub(crate) may_break: bool,
-    /// Its levels, in the stage's table.
+    /// Its levels, in [`RubyColumns`]' table of them.
     pub(crate) levels: Range<RubyLevelId>,
-    /// The widest of the base and its annotations, on the grid.
+    /// Its width: the widest of its base and its levels, on the grid.
     pub(crate) width: LayoutUnit,
-    /// Its base's own width, on the grid: less than `width` where an
-    /// annotation is wider, which a justified line reads.
+    /// Its base's width, on the grid.
     pub(crate) base_width: LayoutUnit,
-    /// How `width` less the base's is placed by `ruby-align` (Chrome's
-    /// `ApplyRubyAlign`): this much before the base's first cluster, at its
-    /// logical start, from the column's own start; `room_inside` shared by
-    /// the base's justification opportunities; and what is left after its
-    /// last. Line layout places them.
+    /// The room `ruby-align` puts before the base (Chrome's `ApplyRubyAlign`)
+    /// and inside it. The rest of `width` less `base_width` goes after it.
     pub(crate) room_before: LayoutUnit,
     pub(crate) room_inside: LayoutUnit,
-    /// How far it reaches over the text before it and after it, where that
-    /// text is on its line: the prefix takes it off the column, and a line
-    /// the column starts or ends pays it back.
+    /// How far it reaches over the text before and after it. The prefix
+    /// takes it off; a line the column starts or ends pays it back.
     pub(crate) overhang: (LayoutUnit, LayoutUnit),
-    /// Its base's em box around the container's baseline: what the first of
-    /// its annotations on each side is set against, a line's columns
-    /// together.
+    /// Its base's em box around the container's baseline, which the first
+    /// level each side is set against. See [`RubyColumns::line_base_em`].
     pub(crate) base_em: Extent,
 }
 
 impl RubyColumn {
-    /// Whether an annotation is wider than its base: a justified line takes
-    /// the column as one object, as Chrome takes a base-shorter ruby
-    /// (`kBaseShorterRubyMarker`), and spreads nothing inside it.
+    /// Returns whether an annotation is wider than the base. A justified
+    /// line then takes the column as one object (`kBaseShorterRubyMarker`).
     pub(super) fn is_base_shorter(&self) -> bool {
         self.width > self.base_width
     }
 
-    /// The ruby container it is in, of `content`, whose items it is among:
-    /// its base's end's node where that is the container's closing item,
-    /// the parent of its first annotation's node otherwise, and the block
-    /// where the items do not say.
+    /// Returns the ruby container the column is in: `base_end`'s node where
+    /// that closes the container, else the parent of the first annotation's
+    /// node, else the block.
     pub(crate) fn container(&self, content: &Content) -> NodeId {
         match content.items.get(self.base_end) {
             Some(item) if item.kind == ItemKind::RubyClose => item.node,

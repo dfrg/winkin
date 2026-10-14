@@ -1,14 +1,16 @@
-//! Shaping run tests: where runs split, default ignorables and kerns,
-//! first letters, divided graphemes, Arabic joining across a split and not
-//! across an isolate, and the language and language system the shaping plan
-//! gets.
+//! Shaping run tests:
+//! - where runs split, and finding them by boundaries against the scan;
+//! - default ignorables and kerns;
+//! - first letters and divided graphemes;
+//! - Arabic joining across a split, and not across an isolate;
+//! - the language and language system the shaping plan gets.
 
 use super::*;
 use crate::style::LengthPercentage;
 
-/// Boundary discovery must produce exactly the cluster scan's runs and glyphs,
-/// including paragraph tails, transparent boxes, first-line variants and the
-/// exceptional paragraphs beside ordinary ones.
+/// Finding runs by their boundaries gives exactly the cluster scan's runs
+/// and glyphs, including paragraph tails, transparent boxes, first-line
+/// variants and paragraphs with shaping stops beside ordinary ones.
 #[test]
 fn finding_runs_at_boundaries_matches_scanning_every_cluster() {
     let mut fixture = Fixture::new(
@@ -127,12 +129,13 @@ fn finding_runs_at_boundaries_matches_scanning_every_cluster() {
     }
 }
 
-/// Tabs, separators, atomic inlines and a `<wbr>`'s U+200B are not shaped:
-/// each group of them is a run of its own, with no glyphs, and the text
-/// either side is shaped as runs of its own. A soft hyphen and a lone
-/// control are shaped with their text, hidden, as Blink shapes them: the
-/// LRI goes with the `f` before it and the `g` it isolates, all at level 0
-/// in a paragraph with nothing right to left.
+/// Tabs, separators, atomic inlines and a `<wbr>`'s U+200B are not shaped.
+/// Each group of them is a run of its own, with no glyphs, and the text
+/// either side is shaped as runs of its own.
+///
+/// A soft hyphen and a lone control are shaped with their text, hidden, as
+/// Blink shapes them. The LRI goes with the `f` before it and the `g` it
+/// isolates, all at level 0 in a paragraph with nothing right to left.
 #[test]
 fn clusters_not_shaped_are_runs_of_their_own() {
     let mut fixture = fixture();
@@ -180,12 +183,14 @@ fn clusters_not_shaped_are_runs_of_their_own() {
     assert_eq!(fixture.advances()[10], 0, "and hidden");
 }
 
-/// A default-ignorable the caller wrote is shaped with the text around it
-/// and hidden, as Blink keeps it in its text item: `AV` kerns across U+200B,
-/// U+2060, U+200E, U+FEFF, U+2061, U+034F, U+00AD and U+200D, under every
-/// `white-space-collapse`, as Chrome 153 kerns `AV` in Arial across each of
-/// them on the `shaping.html` probe page. A `<wbr>`'s U+200B, which Blink
-/// makes a control item, parts them, as it does in Chrome.
+/// A default-ignorable in the text is shaped with the text around it and
+/// hidden, as Blink keeps it in its text item.
+///
+/// `AV` kerns across U+200B, U+2060, U+200E, U+FEFF, U+2061, U+034F, U+00AD
+/// and U+200D under every `white-space-collapse`, as Chrome 153 kerns `AV`
+/// in Arial across each of them on the `shaping.html` probe page. A
+/// `<wbr>`'s U+200B, which Blink makes a control item, parts them, as it
+/// does in Chrome.
 #[test]
 fn a_kern_survives_a_default_ignorable_the_caller_wrote() {
     let mut fixture = fixture();
@@ -232,11 +237,13 @@ fn a_kern_survives_a_default_ignorable_the_caller_wrote() {
     assert_eq!(fixture.advances()[0], apart, "a <wbr> parts them");
 }
 
-/// A ZWNJ parts a kern only where its white space is kept: Chrome 153 kerns
-/// `AV` in Arial across one under `normal`, `nowrap` and `pre-line`, and not
-/// under `pre`, `pre-wrap` or `break-spaces`, whose ZWNJ Blink makes a
-/// control item, on the `shaping.html` probe page. A ligature stops at it
-/// everywhere, which is the shaper's own rule: GSUB does not skip a ZWNJ.
+/// A ZWNJ parts a kern only where its white space is kept.
+///
+/// On the `shaping.html` probe page, Chrome 153 kerns `AV` in Arial across
+/// one under `normal`, `nowrap` and `pre-line`. It does not under `pre`,
+/// `pre-wrap` or `break-spaces`, whose ZWNJ Blink makes a control item. A
+/// ligature stops at it everywhere, by the shaper's own rule: GSUB does not
+/// skip a ZWNJ.
 #[test]
 fn a_zero_width_non_joiner_parts_a_kern_only_where_white_space_is_kept() {
     let mut fixture = fixture();
@@ -265,8 +272,8 @@ fn a_zero_width_non_joiner_parts_a_kern_only_where_white_space_is_kept() {
 }
 
 /// A shaping run ends where the used font changes, and where analysis says
-/// shaping stops -- here, at a box with padding -- but not at a box that
-/// only paints, whose text is shaped across: the kern across it survives.
+/// shaping stops, here at a box with padding. It does not end at a box that
+/// only paints, whose text is shaped across, so the kern across it survives.
 #[test]
 fn runs_end_at_fonts_and_shaping_breaks() {
     let mut fixture = fixture();
@@ -320,11 +327,12 @@ fn runs_end_at_fonts_and_shaping_breaks() {
 }
 
 /// A `::first-letter` box is shaped across whatever its `unicode-bidi` and
-/// `direction`, which Blink's cascade drops for the pseudo: Arial's `AV`
-/// kern across a first letter set `isolate`, or `bidi-override` in `rtl`,
-/// survives in Chrome 154, and so does one set `rtl` with padding on its
-/// left, which is its start, before its letter, in its parent's direction
-/// (probe `firstletteredges`, rows k1, k2 and p1).
+/// `direction`, which Blink's cascade drops for the pseudo.
+///
+/// In Chrome 154, Arial's `AV` kern survives across a first letter set
+/// `isolate`, or `bidi-override` in `rtl`. So does one set `rtl` with
+/// padding on its left, which is its start, before its letter, in its
+/// parent's direction (probe `firstletteredges`, rows k1, k2 and p1).
 #[test]
 fn a_first_letter_is_shaped_across_whatever_its_bidi() {
     let mut fixture = fixture();
@@ -378,10 +386,12 @@ fn a_first_letter_is_shaped_across_whatever_its_bidi() {
 }
 
 /// A style boundary divides a grapheme where its later part is in a box of
-/// its own. Where the parts' styles shape alike -- a bare box, or one that
-/// only paints -- the grapheme is shaped whole, in one run; where a shaping
-/// property differs, the parts are separate runs, as in Chrome, even where
-/// they are set in the same font.
+/// its own.
+///
+/// Where the parts' styles shape alike, in a bare box or one that only
+/// paints, the grapheme is shaped whole, in one run. Where a shaping
+/// property differs, the parts are separate runs, as in Chrome, even in the
+/// same font.
 #[test]
 fn a_divided_grapheme_is_split_only_by_a_shaping_property() {
     let mut fixture = fixture();
@@ -439,7 +449,7 @@ fn a_divided_grapheme_is_split_only_by_a_shaping_property() {
     }
     // A heavier weight the font reaches without faking bold resolves to
     // the same font at the same size, so the runs are in one used font and
-    // still apart. (Bold would be faux bold here, an instance of its own.)
+    // still apart. Bold would be faux bold here, an instance of its own.
     let heavier = ComputedStyle {
         font: FontGroup {
             weight: FontWeight::new(500.0),
@@ -463,12 +473,12 @@ fn a_divided_grapheme_is_split_only_by_a_shaping_property() {
     assert_eq!(fonts[0], fonts[1]);
 }
 
-/// Arabic joins across a shaping-run split: letters either side of a box
-/// whose letter-spacing ends the run keep their joining forms, as the
-/// context either side carries the paragraph's letters, as Chrome gives
-/// HarfBuzz the whole text. Across a box that only paints there is no split
-/// at all. In a right-to-left paragraph, where the Arabic is at the
-/// paragraph's own level.
+/// Arabic joins across a shaping-run split in a right-to-left paragraph.
+///
+/// Letters either side of a box whose letter-spacing ends the run keep
+/// their joining forms, since the context either side carries the
+/// paragraph's letters, as Chrome gives HarfBuzz the whole text. Across a
+/// box that only paints there is no split at all.
 #[test]
 fn arabic_joins_across_a_run_split() {
     let mut fixture = fixture();
@@ -517,8 +527,8 @@ fn arabic_joins_across_a_run_split() {
         "letter-spacing splits"
     );
     assert_eq!(ids(&layout), joined, "and the letters still join");
-    // Without the context the split would break the join: each side alone
-    // takes its isolated, initial or final forms.
+    // Without the context, the split breaks the join: each side alone takes
+    // its isolated, initial or final forms.
     fixture.build_spans(&mut layout, &rtl, &[(&style, &head)]);
     assert_eq!(
         ids(&layout),
@@ -529,7 +539,8 @@ fn arabic_joins_across_a_run_split() {
     );
 }
 
-/// Arabic does not join across a box whose `unicode-bidi` is not `normal`:
+/// Arabic does not join across a box whose `unicode-bidi` is not `normal`.
+///
 /// Blink's text holds a bidi control at its edges, which ends the join, as
 /// WPT's `shaping-012` (`<bdi>`) and `shaping-013` (`dir=auto`) pin. Each
 /// side takes the forms it takes alone.
@@ -561,7 +572,7 @@ fn arabic_does_not_join_across_an_isolate() {
     );
 }
 
-/// The content language reaches the plan: Turkish text takes the font's
+/// The content language reaches the plan. Turkish text takes the font's
 /// Turkish `i`, and English its own.
 #[test]
 fn the_language_reaches_the_plan() {
@@ -581,11 +592,12 @@ fn the_language_reaches_the_plan() {
 }
 
 /// Text whose style names no language is planned for the config's default,
-/// as Chrome shapes in its default locale (`LocaleOrDefault`): under a
-/// Turkish default it takes the font's Turkish `i`, text that says it is
-/// English keeps its own, and under `und` nothing is localized. A line edge
-/// reshaped later is planned for the default the build took, whatever the
-/// config says by then, so it cannot disagree with the paragraph.
+/// as Chrome shapes in its default locale (`LocaleOrDefault`).
+/// - Under a Turkish default it takes the font's Turkish `i`.
+/// - Text that says it is English keeps its own.
+/// - Under `und` nothing is localized.
+/// - A line edge reshaped later is planned for the default the build took,
+///   whatever the config says by then, so it agrees with the paragraph.
 #[test]
 fn text_naming_no_language_is_planned_for_the_default() {
     let mut fixture = fixture();
@@ -625,7 +637,7 @@ fn text_naming_no_language_is_planned_for_the_default() {
 }
 
 /// `font-language-override` names the language system itself, whatever the
-/// content language: English text overridden to `TRK ` takes the Turkish
+/// content language. English text overridden to `TRK ` takes the Turkish
 /// `i`, and a run ends where the override changes, since it shapes
 /// differently.
 #[test]

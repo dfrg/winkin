@@ -57,13 +57,15 @@ fn collection() -> Collection {
     test_fonts::collection(&[variable, plain], ahem_fallback()).with_layer(document.snapshot())
 }
 
-/// `text` in paragraphs, each set eleven ways: the variable font at four
-/// weights and a size its optical axis follows, in small capitals of its
-/// own with figures and settings; the plain font in synthesized small
-/// capitals, all of them, and a synthesized superscript; the variable
-/// font's superscript, over text its `sups` does not cover, synthesized,
-/// and over figures alone, which take it; the document's face; and
-/// letter-spaced text under `font-size-adjust`.
+/// Builds `text` in paragraphs, each set eleven ways:
+/// - the variable font at four weights, at a size its optical axis follows,
+///   and in its own small capitals with figures and settings;
+/// - the plain font in synthesized small capitals, all small capitals, and
+///   a synthesized superscript;
+/// - the variable font's superscript over text its `sups` does not cover,
+///   synthesized, and over figures alone, which take it;
+/// - the document's face;
+/// - letter-spaced text under `font-size-adjust`.
 fn prose(layout: &mut Layout, cx: &mut Context, text: &str) {
     let variable = [FontFamilyName::named("Test Variable")];
     let plain = [FontFamilyName::named("Test Plain")];
@@ -179,15 +181,15 @@ fn prose(layout: &mut Layout, cx: &mut Context, text: &str) {
     assert!(b.finish().is_complete());
 }
 
-/// Building again, and breaking again, allocates nothing with variable
-/// fonts at several weights and optical sizes, features, small capitals
-/// the font has and ones synthesized (fed uppercased at shaping, `ß` as
-/// two glyphs), superscripts synthesized for a font without `sups` and
-/// for runs a font's `sups` does not cover, and taken from it for runs
-/// it does, a face's descriptors and `font-size-adjust`: the instances,
-/// their coordinates and features, each font's offer, what its
-/// `sups` covers, the position run's pieces and the used fonts' arenas
-/// keep their capacity, and nothing is made anew.
+/// Building and breaking again allocate nothing with the full range of font
+/// features.
+///
+/// Covers variable fonts at several weights and optical sizes, features,
+/// real and synthesized small capitals (uppercased at shaping, `ß` as two
+/// glyphs), synthesized and real superscripts, a face's descriptors and
+/// `font-size-adjust`. The instances, their coordinates and features, each
+/// font's coverage, the position runs and the used fonts' arenas keep
+/// their capacity.
 #[test]
 fn fonts_in_full_allocate_nothing_warm() {
     let line = "Small Caps AVAIL office 1,234 straße ffi";

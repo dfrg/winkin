@@ -6,8 +6,8 @@ Lays out styled text, inline boxes, atomic inlines, floats, absolutely
 positioned boxes, forced breaks and ruby. Provides positioned glyphs and
 boxes, paint order, carets, hit testing and selection geometry.
 
-`Config` holds the choices CSS leaves open or where implementations
-differ, with presets per platform; `Config::spec()` follows the CSS
+`Config` holds the choices CSS leaves open and those where implementations
+differ, with a preset per platform; `Config::spec()` follows the CSS
 specifications throughout. The host supplies computed styles, font loading,
 float placement, block layout and painting.
 
@@ -17,8 +17,8 @@ See [the CSS winkin supports](docs/css-support.md) and
 ## Usage
 
 Build content with `LayoutBuilder`, call `break_lines` for the available
-width, and read the results. Repeated line breaking reuses prepared content.
-Fonts come from [fontwich](../fontwich).
+width, and read the results. Breaking lines again reuses the prepared
+content. Fonts come from [fontwich](../fontwich).
 
 ```rust,ignore
 use fontwich::{Collection, LayerBuilder, Role};
@@ -56,12 +56,13 @@ for line in layout.lines() {
 }
 ```
 
-Use `open_box` and `close_box` for inline boxes, `text` for text nodes, and `atomic`
-and `float` for boxes already laid out by the host, and `absolute` for
-absolutely positioned boxes, which take no room. Break methods represent
-`<br>`, `<br clear>` and `<wbr>`. Ruby and first-letter methods supply
-annotations and pseudo-element styles. `BuildReport` records content dropped
-or replaced when layout limits are exceeded.
+The builder takes `text` for text nodes, `open_box` and `close_box` for
+inline boxes, `atomic` and `float` for boxes the host has laid out, and
+`absolute` for absolutely positioned boxes, which take no room.
+`line_break`, `line_break_clearing` and `break_opportunity` stand for
+`<br>`, `<br clear>` and `<wbr>`. The ruby methods add bases and
+annotations, and `set_first_letter` styles `::first-letter`. A build never
+fails: `BuildReport` counts content dropped or replaced at a layout limit.
 
 Additional APIs:
 
@@ -78,9 +79,11 @@ Additional APIs:
 - `Layout::floats` and `static_positions`: where floats went, and each
   absolutely positioned box's static position.
 - `selection`: carets, hit testing, motion, selection rectangles and copy.
-- `path`: text placement along curves, matching SVG `textPath`.
+- `path`: lines set along curves, as SVG `textPath` sets them.
 - `config`: platform presets and behavior beyond CSS properties.
 - `font::FontMetricsProvider`: optional host glyph metrics.
+- `SharedFonts` and `Context::with_shared_fonts`: contexts that parse each
+  font once between them.
 
 ## Examples
 
@@ -101,17 +104,17 @@ winkin is at 0.0.1 and not yet published to crates.io. The API may change.
 reads, how far each goes, and what the host does. On the web platform tests'
 inline-text suites (css-text, css-writing-modes, css-fonts, css-text-decor,
 css-inline, css-ruby, and CSS 2's text and line box tests), run through
-Blitz's WPT runner, winkin passes 3,548 of 5,078 tests; Chrome 153 passes
-4,396.
+Blitz's WPT runner, winkin passes 4,182 of 5,356 tests; Chrome 155 passes
+4,393.
 
 ## Features
 
 - `std` (default): passes `std` on to fontwich, read-fonts and harfrust.
   Without it the crate is `no_std` with `alloc`.
-- `dictionaries` (default): ICU's dictionaries segment Thai, Lao, Khmer,
-  Myanmar, Chinese and Japanese. Without it, an LSTM model
-  segments the Southeast Asian scripts and Unicode's word rules find Chinese
-  and Japanese words, and the binary is about 3.5 MB smaller.
+- `dictionaries` (default): ICU dictionaries segment Thai, Lao, Khmer,
+  Myanmar, Chinese and Japanese. Without it, an LSTM model segments the
+  Southeast Asian scripts, Unicode word rules find Chinese and Japanese
+  words, and the binary is about 3.5 MB smaller.
 
 ## Read next
 
@@ -122,9 +125,9 @@ Blitz's WPT runner, winkin passes 3,548 of 5,078 tests; Chrome 153 passes
 
 ## The name
 
-winkin pays its respects to Wynkyn de Worde, England's most prolific early
-printer, and to Minikin, Android's layout engine. Half typesetter, half
-robot. It also sounds like something you'd do at a well-justified paragraph.
+winkin is named for Wynkyn de Worde, England's most prolific early printer,
+and for Minikin, Android's layout engine. Half typesetter, half robot. It
+also sounds like something you'd do at a well-justified paragraph.
 
 ## Licence
 

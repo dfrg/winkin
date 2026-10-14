@@ -21,13 +21,13 @@ fn collection() -> Collection {
     test_fonts::collection(&[latin], ahem_fallback())
 }
 
-/// A block whose `::first-line` restyles its font, its spacing, its
-/// height and its transform, `words` long, opening with an initial
-/// letter: the block's own text, a span
-/// in capitals whose first line sets it as written, a span raised on
-/// the first line only, and text that breaks anywhere, so the first
-/// line ends inside ligatures and kerned pairs, whose edges are
-/// reshaped in its own shaping.
+/// Builds a block of `words` words whose `::first-line` restyles its font,
+/// spacing, height and transform, opening with an initial letter.
+///
+/// It holds the block's text, a span in capitals that the first line sets
+/// as written, a span raised on the first line only, and text that breaks
+/// anywhere, so the first line ends inside ligatures and kerned pairs and
+/// reshapes its edges.
 fn document(layout: &mut Layout, cx: &mut Context, words: usize) {
     let families = [FontFamilyName::named("Test Latin")];
     let root = ComputedStyle {
@@ -57,10 +57,9 @@ fn document(layout: &mut Layout, cx: &mut Context, words: usize) {
     raised_first.line.vertical_align = VerticalAlign::Super;
     let mut anywhere_first = first;
     anywhere_first.text.word_break = WordBreak::BreakAll;
-    // A first letter, larger on the first line, which it is on, dropped
-    // into three lines: sized to them, and fitted to the ink of its
-    // outline, in Ahem, which has one, hinted at each size it is used
-    // at, where the platform hints it.
+    // A first letter, larger on the first line, dropped into three lines:
+    // sized to them and fitted to its outline's ink, in Ahem, hinted at
+    // each size where the platform hints.
     let ahem = [FontFamilyName::named("Ahem")];
     let dropped = InitialLetter {
         size: 3.0,

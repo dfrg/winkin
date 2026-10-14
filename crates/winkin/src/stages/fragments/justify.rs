@@ -39,7 +39,9 @@ pub(super) struct LineJustification {
 
 impl LineJustification {
     /// Spreads `extra` over `count` opportunities, the last of them
-    /// `last`'s. Returns `None` when `count` is zero.
+    /// `last`'s.
+    ///
+    /// Returns `None` when `count` is zero.
     fn new(
         extra: InlineLayoutUnit,
         count: u32,

@@ -1,8 +1,8 @@
 //! Makes a line's pieces: its items walked in logical order, and the kept
 //! boxes and ruby columns met on the way.
 //!
-//! **Pieces.** A forward-only cursor walks the line's items, as the breaker
-//! did. It makes:
+//! A forward-only cursor walks the line's items, as the breaker does. It
+//! makes:
 //! - text, split where the used font or bidi level changes and around each
 //!   tab;
 //! - atomic inlines;
@@ -26,7 +26,7 @@
 //! each part's item, even when both parts share a shaping run, as Chrome
 //! gives a span's text its own item.
 //!
-//! **Advances are exact.** A text piece is as wide as the prefix sums say,
+//! Advances are exact. A text piece is as wide as the prefix sums say,
 //! from its first cluster's pen to its last's end (`MeasuredText::pen`,
 //! `pen_end`). Where reshaped line edges hold some of its clusters, the
 //! difference is added exactly. A box's edges take `measure::edge_room`, as
@@ -34,14 +34,14 @@
 //! pieces add up to the line's exact reach, and only the line's origin
 //! rounds.
 //!
-//! **A box covers what hangs inside it,** as in Chrome, where
+//! A box covers what hangs inside it, as in Chrome, where
 //! `ComputeInlinePositions` places hanging results inside their box. A box
 //! closing after the last word, before a space outside it, still ends at
 //! the word. Width and alignment leave hanging content out, so a box edge
 //! after it stands past it. A collapsible space is removed, and no box
 //! covers it.
 //!
-//! **Tabs.** Each tab is a piece of its own, an item flagged `TAB` whose
+//! Each tab is a piece of its own, an item flagged `TAB` whose
 //! size is its width to its stop. The width uses the same tab function the
 //! breaker fitted with, so the pieces add up to the measured width. A
 //! hanging tab is also flagged `HANGS`.
@@ -85,7 +85,7 @@ pub(super) struct TabLine {
 }
 
 impl TabLine {
-    /// Starts `line`'s tabs in `area`, with none placed yet.
+    /// Returns the start of `line`'s tabs in `area`, with none placed yet.
     #[inline(never)]
     pub(super) fn new(
         line: &LineView<'_>,
@@ -123,7 +123,7 @@ struct Boundary {
 impl<'a> Placer<'a> {
     /// Walks the items on `line` from the cursor into `pieces`.
     ///
-    /// It opens and closes kept boxes in `boxes` and ruby columns in `rubies`
+    /// Opens and closes kept boxes in `boxes` and ruby columns in `rubies`
     /// as it meets them.
     pub(super) fn pieces(
         &mut self,
@@ -439,7 +439,7 @@ impl<'a> Placer<'a> {
     /// white space keeps its level only where `trailing - 1` to `end`, both
     /// included, hold no tab and are at one level.
     ///
-    /// It walks a copy of the shaping run cursor forward, leaving the walk's
+    /// Walks a copy of the shaping run cursor forward, leaving the walk's
     /// own cursor where it is.
     #[cold]
     #[inline(never)]
@@ -502,8 +502,8 @@ impl<'a> Placer<'a> {
     /// end the line before a break there ([`BoundarySplit`]), which the
     /// prefix counts before `at`'s pen.
     ///
-    /// It is zero unless the text's piece ends at `at` (`y`). At the text's
-    /// end, when the last paragraph holds clusters, every item there counts.
+    /// Zero unless the text's piece ends at `at` (`y`). At the text's end,
+    /// when the last paragraph holds clusters, every item there counts.
     fn closes_after(&self, id: ItemId, at: ClusterId, y: ClusterId) -> InlineLayoutUnit {
         if !self.gates.has_box_edges || y != at {
             return InlineLayoutUnit::ZERO;
@@ -536,10 +536,10 @@ impl<'a> Placer<'a> {
     /// Returns the exact advance of clusters `u..v` of the item holding
     /// `bounds`, as the prefix sums measured them.
     ///
-    /// It leaves out the room before the item's first cluster (`rest`) and
-    /// the closing edges after its last (`closes`). No item takes room
-    /// inside an item's clusters. It leaves out an autospace seam's room at
-    /// `v` that the text after draws ([`seam_before`](Self::seam_before)).
+    /// Leaves out the room before the item's first cluster (`rest`), the
+    /// closing edges after its last (`closes`), and an autospace seam's room
+    /// at `v` that the text after draws ([`seam_before`](Self::seam_before)).
+    /// No item takes room inside an item's clusters.
     #[inline(always)]
     fn exact_advance(
         &self,
@@ -702,7 +702,7 @@ impl<'a> Placer<'a> {
         runs.get(self.run.id())
     }
 
-    /// Whether `cluster` is of `class`.
+    /// Returns whether `cluster` is of `class`.
     pub(super) fn is(&self, cluster: ClusterId, class: ClusterClass) -> bool {
         self.clusters.class(cluster) == Some(class)
     }
@@ -979,8 +979,10 @@ impl<'a> Placer<'a> {
         reshaped - prefix.advance(clusters.start, clusters.end)
     }
 
-    /// Whether the box `node` keeps a fragment, moving the kept-box cursor
-    /// to it. Boxes open in node order.
+    /// Returns whether the box `node` keeps a fragment, moving the kept-box
+    /// cursor to it.
+    ///
+    /// Boxes open in node order.
     fn keeps(&mut self, node: NodeId) -> bool {
         self.next_kept = self.kept_boxes.walk_to(self.next_kept, node);
         self.kept_boxes.node(self.next_kept) == Some(node)
@@ -989,7 +991,7 @@ impl<'a> Placer<'a> {
     /// Returns how far `node`'s baseline is raised from `line`'s, and the
     /// pinned shift for `top` or `bottom` boxes inside it.
     ///
-    /// Normally it is `parent` plus the node's measured shift and what the
+    /// The shift is `parent` plus the node's measured shift and what the
     /// line settled. A `top` or `bottom` box takes `pinned` plus what the
     /// line settled, whatever the boxes between do.
     pub(super) fn shift(

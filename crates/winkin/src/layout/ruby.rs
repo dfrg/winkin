@@ -1,15 +1,12 @@
 //! Ruby annotations read back: each annotation a line sets over or under
 //! its bases, and the text runs on it.
 //!
-//! **An annotation is a line of its own**: line layout
-//! writes each of a line's annotations after the line's own items, an
-//! `AnnotationLine` item over its ruby column's box heading the boxes in it
-//! that keep a fragment and its text, so a line's
-//! [`items`](super::Line::items) are its bases' and never an annotation's,
-//! and [`Line::annotations`] reads the rest. Its runs are [`TextRun`]s like
-//! any other: glyphs, clusters, fonts and emphasis marks read as a line's
-//! own do, placed from the same line box; its boxes are
-//! [`BoxFragment`]s, and its atomic inlines [`Atomic`]s.
+//! Line layout writes a line's annotations after its own items. Each is an
+//! `AnnotationLine` item over its ruby column, followed by the boxes in it
+//! that keep a fragment and its text. So [`items`](super::Line::items)
+//! yields only base content, and [`Line::annotations`] reads the rest.
+//! Annotation runs are ordinary [`TextRun`]s placed from the same line box;
+//! their boxes are [`BoxFragment`]s and their atomic inlines [`Atomic`]s.
 
 use super::{Atomic, BoxFragment, Line, TextRun};
 use crate::stages::content::NodeKey;
@@ -34,12 +31,12 @@ impl<'a> Line<'a> {
 #[derive(Clone)]
 pub(super) struct Annotations<'a> {
     line: Line<'a>,
-    /// The annotation lines not handed out yet, each heading its text.
+    /// The annotation lines not yet returned, each heading its text.
     items: &'a [FragmentItem],
 }
 
 impl<'a> Annotations<'a> {
-    /// The ruby annotations `line` sets.
+    /// Creates the walk of the ruby annotations `line` sets.
     pub(super) fn new(line: Line<'a>) -> Self {
         Self {
             line,
@@ -85,14 +82,15 @@ impl<'a> Annotation<'a> {
         self.line.layout().content().nodes.key(self.head.node)
     }
 
-    /// Returns column extents along the line, relative to line-box left.
+    /// Returns the column extents along the line, relative to the line box's
+    /// left edge.
     ///
     /// Uses the maximum width of the base and annotations, including overhang.
     pub fn inline(&self) -> InlineExtents {
         self.head.inline_extents()
     }
 
-    /// Returns the baseline offset from line-box top.
+    /// Returns the baseline's offset from the line box's top.
     pub fn baseline(&self) -> f32 {
         self.head.block.to_px()
     }
@@ -125,8 +123,9 @@ impl<'a> Annotation<'a> {
     /// Returns retained inline-box fragments, outermost first.
     ///
     /// Each fragment is a border box on the annotation line. Its edges occupy
-    /// inline space and are painted before text. [`Layout::box_fragments`](crate::Layout::box_fragments)
-    /// also returns these boxes and derives culled boxes from their text.
+    /// inline space and are painted before text.
+    /// [`Layout::box_fragments`](crate::Layout::box_fragments) also returns
+    /// these boxes and derives culled boxes from their text.
     /// [`descendants`](BoxFragment::descendants) returns zero; use
     /// [`runs`](Self::runs) to access annotation text.
     pub fn boxes(&self) -> impl Iterator<Item = BoxFragment<'a>> + Clone + use<'a> {

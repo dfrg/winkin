@@ -22,11 +22,9 @@ fn collection() -> Collection {
     test_fonts::collection(&fonts, han_fallback("Test Punct Plain"))
 }
 
-/// Japanese prose with Latin words and digits in it, pairs of marks,
-/// marks at every place a line may start or end, and a span of another
-/// size and another font: every seam `text-autospace` spaces, every pair
-/// `text-spacing-trim` collapses, `repeat` times over, under each
-/// `text-spacing-trim` and `line-break` in turn.
+/// Builds Japanese prose `repeat` times under each `text-spacing-trim` and
+/// `line-break`: Latin words and digits, pairs of marks, marks wherever a
+/// line may start or end, and a span in another size and font.
 fn document(layout: &mut Layout, cx: &mut Context, repeat: usize) {
     let punct = [FontFamilyName::named("Test Punct")];
     let plain = [FontFamilyName::named("Test Punct Plain")];
@@ -116,11 +114,11 @@ fn read(layout: &Layout) -> f32 {
 }
 
 /// A warm rebuild of Japanese with `text-autospace` and every
-/// `text-spacing-trim` allocates nothing, in fonts with `halt` and
-/// without, whether trimming halves advances where there is none or
-/// not, and small kana held or not; nor does breaking it again at any
-/// width broken at before, whose lines trim their edges and give seams'
-/// room back, nor reading it back.
+/// `text-spacing-trim` allocates nothing.
+///
+/// Covers fonts with and without `halt`, both `PunctuationTrim` rules and
+/// both `SmallKana` rules. Nor does breaking again at any width used
+/// before, or reading back.
 #[test]
 fn cjk_spacing_and_trimming_allocate_nothing_warm() {
     let widths = [60.0, 95.5, 180.0, 400.0, 1000.0, 7.0];

@@ -1,27 +1,27 @@
 # How winkin is built
 
-This overview is for contributors and for anyone deciding whether to adopt
-winkin. It describes the crate's structure. The crate docs describe the
-public API.
+This overview of the crate's structure is for contributors and for anyone
+deciding whether to adopt winkin. The crate docs describe the public API.
 
 ## The model
 
 winkin lays out one CSS inline formatting context: the lines of one block.
 
-A host builds the content once with [`LayoutBuilder`](../src/build.rs). The
-builder takes text, inline boxes, atomic inlines, floats, absolutely
-positioned boxes, forced breaks and ruby, in document order, each with its
-computed style. `LayoutBuilder::finish` prepares everything that does not
-depend on the available width. `Layout::break_lines` then breaks the content
-into lines for one width. Preparing runs once per content change; breaking
-runs once per width, and a second width repeats none of the preparation.
-`Layout::measure` gives the boxes new geometry without building again: new
-sizes for atomic inlines and floats, and a new width for percentage margins
-and padding. It keeps the analysis, fonts and shaping and measures again from
-the shaped advances, or, where only atomic inlines' block sizes and baselines
-change, measures again only their extents. `Layout::set_text_align` changes
-the block's alignment, which only breaking and placing read, so the next
-`break_lines` is all it costs.
+A host builds the content with [`LayoutBuilder`](../src/build.rs): text,
+inline boxes, atomic inlines, floats, absolutely positioned boxes, forced
+breaks and ruby, in document order, each with its computed style.
+`LayoutBuilder::finish` prepares everything that does not depend on the
+available width. `Layout::break_lines` breaks the content into lines for one
+width. Preparation runs once per content change; breaking runs once per
+width.
+
+Two changes skip the rebuild:
+- `Layout::measure` sets new sizes for atomic inlines and floats and a new
+  basis for percentage margins and padding. It keeps the analysis, fonts and
+  shaping and measures again from the shaped advances; where only atomic
+  inlines' block sizes and baselines change, it measures only their extents.
+- `Layout::set_text_align` sets the block's alignment, which only breaking
+  and placing read.
 
 The host reads the result through views on [`Layout`](../src/layout/mod.rs):
 lines and the items on them, paint operations, box fragments, floats and
@@ -31,10 +31,9 @@ allocate, and can happen on another thread.
 
 ## The pipeline
 
-The work runs as a series of stages. A stage is one step of the pipeline
-together with the tables it writes. Each stage writes only its own tables,
-and they are frozen once the stage returns. Later stages borrow them
-immutably, so the borrow checker enforces the order.
+A stage is one step of the pipeline together with the tables it writes.
+Each stage writes only its own tables, which are frozen once it returns.
+Later stages borrow them immutably, so the borrow checker enforces the order.
 
 ```text
 build    LayoutBuilder calls   -> content: text, nodes, items, style facts
@@ -65,19 +64,22 @@ in, what comes out and where to read next.
   used fonts with their line metrics. Start at `select_fonts`, then
   `select_runs` in [`select/mod.rs`](../src/stages/fonts/select/mod.rs).
 - **[shape](../src/stages/shape/mod.rs).** In: the content, analysis and
-  fonts. Out: `Shaped`, the glyphs of each shaping run, and the advances,
-  handed to measurement by value. Shaping calls
+  fonts. Out: `Shaped`, the glyphs of each shaping run and each cluster's
+  advance. The advances are kept after the build only where
+  `Layout::measure` can use them: content with atomic inlines, floats or
+  percentage edges. Shaping calls
   [harfrust](https://github.com/harfbuzz/harfrust). Start at `shape_runs`,
   then `shape_text` in [`walk.rs`](../src/stages/shape/walk.rs).
-- **[measure](../src/stages/measure/mod.rs).** In: everything before it, and
-  the advances. Out: `Measured`: advance prefix sums, intrinsic sizes, item
-  extents, line-edge costs and ruby columns. Start at `measure_text`, then
+- **[measure](../src/stages/measure/mod.rs).** In: everything before it.
+  Out: `Measured`: advance prefix sums, intrinsic sizes, item extents,
+  line-edge costs and ruby columns. Start at `measure_text`, then
   `Scan::walk` in [`scan/mod.rs`](../src/stages/measure/scan/mod.rs).
 - **[lines](../src/stages/lines/mod.rs).** In: every prepared table, the
   area and the host's exclusions. Out: `Lines`, each line written whole when
-  it is chosen, and the block's result. Edges that the font shaped across are
-  reshaped for the line, so a line's width is exact. Start at `break_lines`,
-  then `Breaker::lines` in [`fit.rs`](../src/stages/lines/fit.rs).
+  it is chosen, and the block's result. Edges the font shaped across are
+  reshaped for the line, so a line's width is exact. `text-fit` scales each
+  line after it is fitted. Start at `break_lines`, then `Breaker::lines` in
+  [`fit.rs`](../src/stages/lines/fit.rs).
 - **[fragments](../src/stages/fragments/mod.rs).** In: every prepared table
   and the lines. Out: `Fragments`, one flat table of positioned items per
   block, each line's items in visual order after alignment, justification
@@ -88,8 +90,8 @@ Both drivers are in [`layout/mod.rs`](../src/layout/mod.rs):
 `PreparedStages::prepare` runs analysis to measurement, and
 `Layout::break_lines` runs line breaking and then line layout.
 
-A block's first line can be restyled by `::first-line`. Where that changes
-shaping or measurement, the shape and measure stages also write a first-line
+`::first-line` can restyle a block's first line. Where that changes font
+selection, shaping or measurement, those stages also write a first-line
 version, and [`stages/mod.rs`](../src/stages/mod.rs) picks the version once
 per line.
 
@@ -120,9 +122,9 @@ read starts, such as a hit test or a caret.
 **Fixed-point units.** Lengths use the fixed-point types in
 [`unit.rs`](../src/unit.rs): `TextUnit` (16.16) for glyph geometry,
 `LayoutUnit` (26.6) for layout geometry, and `InlineLayoutUnit` (48.16) for
-running advances. These are the types Chrome uses, rounded where Chrome
-rounds. Values enter and leave as `f32` pixels, and every conversion between
-a float and an integer is in `unit.rs`.
+running advances. These are Chrome's types, rounded where Chrome rounds.
+Values enter and leave as `f32` CSS pixels, and every conversion between a
+float and an integer is in `unit.rs`.
 
 ## Context and Layout
 
@@ -130,8 +132,9 @@ A [`Context`](../src/context.rs) holds the font `Collection`, the `Config`,
 the caches shared across layouts, and the working memory of each stage. The
 caches are least-recently-used tables bounded by `CacheLimits`: family
 lists, fallback lists, font instances and shape plans. The context trims
-them at the start of every build and every line break, and releases scratch
-much larger than recent calls needed. Use one context per thread.
+them at the start of every build and line breaking, and releases scratch
+much larger than recent calls needed. Each thread uses its own context.
+`SharedFonts` lets contexts parse each font once between them.
 
 A `Layout` owns its content, its prepared stages, its lines and its
 fragments. Its used fonts hold `Arc`s to the font instances and their bytes,
@@ -151,23 +154,22 @@ between calls, and a layout stays valid, readable and breakable after
 - Block layout: the sizes of atomic inlines and floats, which the host lays
   out first, and the use of `Layout::metrics`, `intrinsic_sizes` and
   `static_positions`.
-- Painting. `Line::paints` yields operations in CSS paint order; the host
-  draws them.
+- Painting. `Line::paints` yields operations in paint order, item by item
+  as Chrome paints a line; the host draws them.
 - Optionally, hinted glyph metrics through
   [`FontMetricsProvider`](../src/font.rs), passed to
   `LayoutBuilder::finish_with_metrics` and `Layout::break_lines_with_metrics`.
 
 ## Behavior
 
-[`Config`](../src/config.rs) holds the choices that CSS properties do not
-decide, or where implementations differ, with presets for Windows, macOS
+[`Config`](../src/config.rs) holds the choices CSS properties leave open
+and those where implementations differ, with presets for Windows, macOS
 and Linux. `Config::spec()` follows the CSS specifications throughout. A
-choice that can vary from one call
-to the next is an argument to that call instead, such as `PastLines` for hit
-testing and `WordMotion` for word movement. [`css-support.md`](css-support.md)
-lists every property winkin reads.
+choice that can vary from call to call is an argument instead, such as
+`PastLines` for hit testing and `WordMotion` for word movement.
+[`css-support.md`](css-support.md) lists every property winkin reads.
 
-Building never panics and never fails. Content beyond a limit is dropped
+Building never panics and never fails. Content past a limit is dropped
 whole and counted in the `BuildReport`.
 
 ## Testing

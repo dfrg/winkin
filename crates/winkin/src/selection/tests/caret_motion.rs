@@ -1,5 +1,5 @@
 //! Motion tests. They pin:
-//! - character motion, one cluster or break opportunity a stop;
+//! - character motion, a stop per cluster or break opportunity;
 //! - left and right by the paragraph, as Chrome's arrows go;
 //! - line motion keeping its column, and Home and End at a line's logical
 //!   ends;
@@ -14,7 +14,8 @@ use crate::selection::words::Words;
 ///
 /// At a wrap after a space it stops before the space, then at the upper
 /// line's end past it, then at the next line's start. Chrome stops once
-/// after the space, at the next line's start. At the text's ends it stays.
+/// after the space, at the next line's start. At the text's ends the caret
+/// stays.
 #[test]
 fn a_character_motion_crosses_one_cluster() {
     let layout = laid("abcd efgh ijkl", 100.0);
@@ -60,9 +61,9 @@ fn a_character_motion_crosses_one_cluster() {
 
 /// The two sides of a `<wbr>` are one stop each way.
 ///
-/// Where the line wraps there, they are two places, and a motion stops at
-/// each: forward at the upper line's end, then the lower line's start, and
-/// backward the other way round. Chrome stops at one of them.
+/// Where the line wraps there, they are two places and a motion stops at
+/// each: forward at the upper line's end, then the lower line's start;
+/// backward in reverse. Chrome stops at one of them.
 #[test]
 fn a_break_opportunity_is_one_stop() {
     let layout = laid_with(&ComputedBlockStyle::new(&ahem()), 80.0, |b| {
@@ -100,13 +101,14 @@ fn a_break_opportunity_is_one_stop() {
     assert_eq!(forward[..3], [3, 4, 8]);
 }
 
-/// In bidi text, left and right go to the nearest caret on the screen, unlike Chrome's arrows.
+/// In bidi text, left and right go to the nearest caret on the screen,
+/// unlike Chrome's arrows.
 ///
-/// Chrome's arrows go through the text by the paragraph's direction, so the
+/// Chrome's arrows follow the paragraph's direction through the text, so the
 /// caret jumps where the direction changes; here right is forward. Forward
-/// stops at both places of each offset where the direction changes, where
-/// Chrome stops once. Left and right stop at every place on the screen,
-/// both edges of the right-to-left run included.
+/// stops at both places of each offset where the direction changes; Chrome
+/// stops once. Left and right stop at every place on the screen, including
+/// both edges of the right-to-left run.
 #[test]
 fn left_and_right_go_the_way_they_point_and_chromes_arrows_by_the_paragraph() {
     let layout = laid("abc \u{5D0}\u{5D1}\u{5D2} def", 400.0);
@@ -164,7 +166,7 @@ fn line_motion_keeps_its_column() {
     assert_eq!(moved(&layout, right, down).focus().offset, 20);
 }
 
-/// Home and End go to a line's logical ends, as Chrome's do (probe 16g).
+/// Home and End go to a line's logical ends, as Chrome's do.
 ///
 /// At a wrap, End goes past white space the wrap removed, upstream at the
 /// wrap, so text typed there follows the space. Chrome's End stops before
@@ -189,8 +191,8 @@ fn home_and_end_go_to_a_lines_logical_ends() {
     let at = moved(&layout, Selection::from(Position::from(1)), end);
     assert_eq!(at.focus(), Position::new(5, Affinity::Upstream));
     // A line starting in Hebrew: Home is its logical start, drawn at the
-    // Hebrew's right edge, and Chrome's left arrow goes there, by the
-    // paragraph's direction (probe 16g).
+    // Hebrew's right edge. Chrome's left arrow goes there, following the
+    // paragraph's direction.
     let layout = laid("\u{5D0}\u{5D1}\u{5D2} abc def", 400.0);
     let at = moved(&layout, Selection::from(Position::from(10)), home);
     assert_eq!(at.focus().offset, 0);
@@ -217,7 +219,8 @@ fn home_and_end_go_to_a_lines_logical_ends() {
     assert_eq!(at.focus(), Position::new(14, Affinity::Upstream));
 }
 
-/// An arrow collapses a selection to the end it points at, without moving further (`selection.png`).
+/// An arrow collapses a selection to the end it points at, without moving
+/// further.
 ///
 /// A word motion moves the focus, and extending moves only the focus. Left
 /// and right collapse to the end drawn further that way. Chrome's arrows
@@ -242,9 +245,8 @@ fn an_arrow_on_a_selection_collapses_it() {
         assert_eq!(left, Selection::from(Position::from(3)));
     }
     // In bidi text: inside the Hebrew, offset 6 is drawn at 120 and 8 at 100,
-    // so right collapses a selection of the two to 6 and left to 8, where
-    // Chrome's right arrow, on in the text, collapses it to 8, and its left
-    // to 6.
+    // so right collapses a selection of the two to 6 and left to 8. Chrome's
+    // right arrow, forward in the text, collapses it to 8, and its left to 6.
     let bidi = laid("abc \u{5D0}\u{5D1}\u{5D2} def", 400.0);
     let across = Selection::new(Position::from(6), Position::from(8));
     let collapsed = |motion: MotionDirection| {
@@ -285,12 +287,13 @@ fn an_arrow_on_a_selection_collapses_it() {
     assert_eq!(back.focus().offset, 3);
 }
 
-/// Paragraphs that read one way throughout: Latin in a left-to-right block
-/// and Hebrew and Arabic in a right-to-left one, with punctuation, spaces
-/// collapsed and kept, `<wbr>`s, an atomic inline, forced breaks, a soft
-/// hyphen and a ligature, on one line and wrapped, after a space, at a
-/// `<wbr>`, at a soft hyphen and inside a word. Each with whether it reads
-/// right to left.
+/// Returns paragraphs that read one way throughout, each with whether it
+/// reads right to left.
+///
+/// Latin in a left-to-right block and Hebrew and Arabic in a right-to-left
+/// one, with punctuation, collapsed and kept spaces, `<wbr>`s, an atomic
+/// inline, forced breaks, a soft hyphen and a ligature, on one line and
+/// wrapped after a space, at a `<wbr>`, at a soft hyphen and inside a word.
 fn one_way() -> Vec<(&'static str, bool, Layout)> {
     let plain = ahem();
     let preserved = styled(|style| style.text.white_space_collapse = WhiteSpaceCollapse::Preserve);
@@ -589,12 +592,13 @@ fn rtl_line_edges_cross_right_down_and_left_up() {
     assert_eq!(layout.caret(left.focus()).unwrap().line, 0);
 }
 
-/// Left and right by a word go on the screen, stopping in each run as a text-order word motion would.
+/// Left and right by a word move on the screen, stopping in each run as a
+/// text-order word motion would.
 ///
 /// Going the way a run reads, the motion's [`WordMotion`] decides; against
-/// it, the stop is a word's start. So a right-to-left run swaps a word's
-/// halves. The caret moves one way on the screen, where Chrome's arrows jump
-/// about.
+/// it, the stop is a word's start, so a right-to-left run swaps a word's
+/// halves. The caret moves steadily one way on the screen; Chrome's arrows
+/// jump about.
 #[test]
 fn a_word_on_the_screen_stops_as_each_run_reads() {
     let visited = |layout: &Layout, from: usize, direction: MotionDirection, stops| {
@@ -636,7 +640,7 @@ fn a_word_on_the_screen_stops_as_each_run_reads() {
         assert_eq!(offsets, expected, "{direction:?}, {stops:?}");
         assert!(one_way(&xs, direction == Right), "{direction:?}: {xs:?}");
     }
-    // Chrome's right arrow, on in the text: gimel-dalet before he-vav.
+    // Chrome's right arrow, forward in the text: gimel-dalet before he-vav.
     let chromes_right = chromes_arrow(&layout, Position::from(0), true);
     let (offsets, xs) = visited(&layout, 0, chromes_right, SkipSpaces);
     assert_eq!(offsets, [0, 4, 9, 14, 19, 22]);

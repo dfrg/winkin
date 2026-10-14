@@ -21,13 +21,14 @@ fn collection() -> Collection {
     test_fonts::collection(&[latin, arabic()], ahem_fallback())
 }
 
-/// Mixed-direction paragraphs in a block reading `direction`: Latin,
-/// Hebrew and Arabic with digits and brackets, in boxes with every
-/// `unicode-bidi` that nest three deep and have edges, some of them
-/// cloning their decoration, across forced breaks, `repeat` times over;
-/// so the resolver runs on synthesized controls, runs split at levels,
-/// shaping goes both ways, the breaker pays cloned edges, and line
-/// layout reorders pieces and splits boxes into parts.
+/// Builds mixed-direction paragraphs `repeat` times in a block reading
+/// `direction`.
+///
+/// Latin, Hebrew and Arabic with digits and brackets sit in boxes with
+/// edges and every `unicode-bidi`, nested three deep, some cloning their
+/// decoration, across forced breaks. The resolver runs on synthesized
+/// controls, runs split at levels, the breaker charges cloned edges, and
+/// line layout reorders pieces and splits boxes into parts.
 fn document(layout: &mut Layout, cx: &mut Context, direction: BaseDirection, repeat: usize) {
     let families = [
         FontFamilyName::named("Test Latin"),
@@ -62,8 +63,8 @@ fn document(layout: &mut Layout, cx: &mut Context, direction: BaseDirection, rep
         paints: true,
         ..root
     };
-    // Two of them neither paint nor take room, so are culled, and read
-    // back as parts of their descendants.
+    // Two of them neither paint nor take room, so they are culled and read
+    // back from their descendants.
     let culled = |unicode_bidi, rtl: bool| ComputedStyle {
         edges: EdgesGroup::INITIAL,
         paints: false,
@@ -111,9 +112,9 @@ fn document(layout: &mut Layout, cx: &mut Context, direction: BaseDirection, rep
     assert!(b.finish().is_complete());
 }
 
-/// Reads every line back as a host does: items, glyphs, clusters, the
-/// paint in Chrome's order with every box decorating, and every box's
-/// parts by key, culled or kept. Returns a sum of what was read.
+/// Reads every line back as a host does: items, glyphs, clusters, paints
+/// with every box decorating, and every box's parts by key, culled or kept.
+/// Returns a sum of what was read.
 fn read(layout: &Layout, keys: u64) -> f32 {
     let mut sum = 0.0;
     for line in layout.lines() {
@@ -153,11 +154,12 @@ fn read(layout: &Layout, keys: u64) -> f32 {
     sum
 }
 
-/// A warm rebuild of mixed-direction text with isolates, overrides,
-/// nested boxes and cloned ones allocates nothing, and nor does laying
-/// it out again at any width laid out at before, nor reading it back,
-/// paint and box queries included, in a block reading either way or
-/// taking each paragraph's direction from its text.
+/// A warm rebuild of mixed-direction text with isolates, overrides, nested
+/// and cloned boxes allocates nothing.
+///
+/// Nor does laying it out again at any width used before, or reading it
+/// back with paint and box queries. Covers both block directions and
+/// `auto`.
 #[test]
 fn mixed_directions_nested_boxes_and_clones_allocate_nothing_warm() {
     let widths = [37.0, 81.25, 150.0, 600.0, 3.0];
@@ -194,12 +196,13 @@ fn mixed_directions_nested_boxes_and_clones_allocate_nothing_warm() {
     }
 }
 
-/// Boxes nested `depth` deep, each inside the last, of every kind
-/// `document` sets and pinned to the line's top or its middle besides,
-/// each holding a word, and a forced break every seventeenth: so every
-/// line and paragraph starts inside hundreds of boxes, and line layout's
-/// parts, the breaker's record of the boxes open and the controls a
-/// paragraph re-opens all grow with the depth.
+/// Builds boxes nested `depth` deep, each holding a word, with a forced
+/// break every seventeenth.
+///
+/// The boxes take every kind `document` sets, and some align to the line's
+/// top or middle. Every line and paragraph starts inside hundreds of boxes,
+/// so line layout's parts, the breaker's open boxes and the controls a
+/// paragraph reopens all grow with the depth.
 fn nested(layout: &mut Layout, cx: &mut Context, depth: u64) {
     use winkin::style::{LineGroup, VerticalAlign};
     let families = [
@@ -275,11 +278,11 @@ fn nested(layout: &mut Layout, cx: &mut Context, depth: u64) {
     assert!(b.finish().is_complete());
 }
 
-/// A warm rebuild of boxes nested hundreds deep allocates nothing, nor
-/// laying them out again at any width laid out at before, nor reading
-/// them back, paint and box queries included: every walk the depth
-/// lengthens keeps its scratch in the context, cleared and never
-/// dropped.
+/// A warm rebuild of boxes nested hundreds deep allocates nothing.
+///
+/// Nor does laying them out again at any width used before, or reading
+/// them back with paint and box queries. Every walk the depth lengthens
+/// keeps its scratch in the context.
 #[test]
 fn a_deep_nesting_allocates_nothing_warm() {
     let widths = [3.0, 120.0, 800.0, 1e6];

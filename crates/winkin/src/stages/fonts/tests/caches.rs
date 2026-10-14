@@ -1,6 +1,8 @@
-//! Tests of web fonts and the context: pending web faces, what a used font
-//! keeps, caches across layouts and collections, rebuilds and dropped
-//! builders.
+//! Tests of web fonts and the context:
+//! - pending web faces;
+//! - what a used font keeps;
+//! - caches across layouts and collections;
+//! - rebuilds, dropped builders, and more family lists than the limit.
 
 use alloc::format;
 use core::iter;
@@ -9,10 +11,10 @@ use super::*;
 
 // Web fonts --------------------------------------------------------------------
 
-/// A face still downloading that a cluster wants is listed for the host to
-/// fetch, once, and the text is set meanwhile in what covers it; the
-/// primary font passes over it, as Chrome measures in the fallback while a
-/// face loads.
+/// A pending face that a cluster wants is listed once for the host to fetch.
+/// Meanwhile the text is set in a font that covers it. The primary font
+/// passes over the face, as Chrome measures in the fallback while a face
+/// loads.
 #[test]
 fn a_pending_face_is_wanted_and_the_text_falls_back_meanwhile() {
     let mut document = LayerBuilder::new(Role::Document);
@@ -39,10 +41,10 @@ fn a_pending_face_is_wanted_and_the_text_falls_back_meanwhile() {
 // The context ----------------------------------------------------------------
 
 /// A used font keeps what a reader draws it with: its instance's record,
-/// shared with the context's instance and not copied. That holds the font
-/// whole, its bytes, its index, its coordinates, its synthesis
-/// and its features. Each used font takes a count on the record, and gives
-/// it back when the layout is rebuilt.
+/// shared with the context's instance, not copied. The record holds the
+/// font, its bytes, its index, coordinates, synthesis and features. Each
+/// used font takes a count on the record and releases it when the layout
+/// is rebuilt.
 #[test]
 fn a_used_font_keeps_what_a_reader_draws_with() {
     let mut fixture = fixture_with(&[han()]);
@@ -78,10 +80,10 @@ fn a_used_font_keeps_what_a_reader_draws_with() {
     assert_eq!(Arc::strong_count(&record), held - 1);
 }
 
-/// A character no installed font maps has its miss walked once a context:
-/// the first list to meet it walks every family and notes it, and no list
-/// after it, of another `font-family`, walks it again. It is drawn in the
-/// primary font, whose `.notdef` is Chrome's missing-glyph box.
+/// A character no installed font maps has its miss walked once per context.
+/// The first list to meet it walks every family and notes it. No later list,
+/// even of another `font-family`, walks it again. It is drawn in the primary
+/// font, whose `.notdef` is Chrome's missing-glyph box.
 #[test]
 fn a_character_no_font_maps_is_walked_once_a_context() {
     let mut fixture = fixture_with(&[plain()]);
@@ -100,11 +102,11 @@ fn a_character_no_font_maps_is_walked_once_a_context() {
     );
 }
 
-/// A new collection of the same snapshots keeps the family lists the
-/// context holds; another stack drops them. The font instances of the fonts
-/// both collections have survive, so a rebuild in one reads nothing again,
-/// and those of fonts the new one lacks go with their faces. A layout built
-/// before names none of it.
+/// A new collection of the same snapshots keeps the context's candidate
+/// lists; another stack drops them. The instances of fonts both collections
+/// have survive, so a rebuild reads nothing again. Those of fonts the new
+/// collection lacks go with their faces. A layout built before keeps its own
+/// instances.
 #[test]
 fn a_changed_collection_drops_the_lists_and_the_instances_it_lacks() {
     let mut fixture = fixture_with(&[han()]);
@@ -119,7 +121,7 @@ fn a_changed_collection_drops_the_lists_and_the_instances_it_lacks() {
     fixture.cx.set_collection(same);
     assert_eq!(fixture.cx.font_context().candidate_lists().len(), lists);
 
-    // The same layers under one more: the lists go, the instances stay.
+    // The same layers under one more layer: the lists go, the instances stay.
     let more = fixture
         .cx
         .collection()
@@ -138,11 +140,10 @@ fn a_changed_collection_drops_the_lists_and_the_instances_it_lacks() {
     }
 }
 
-/// Every instance of a font is cut from the font's one face, which what it
-/// offers and what its `sups` covers are read from too: a font asked for
-/// small capitals and superscripts at two weights is one face, whose tables
-/// each of its instances shares, and whose bytes each instance's record
-/// takes a count on.
+/// Every instance of a font is cut from the font's one face. The font's
+/// offered features and its `sups` coverage are read from that face too. A
+/// font asked for small capitals and superscripts at two weights has one
+/// face; each instance shares its tables and takes a count on its bytes.
 #[test]
 fn every_instance_of_a_font_is_cut_from_its_one_face() {
     let mut fixture = fixture_with(&[capitals_variable()]);
@@ -174,13 +175,14 @@ fn every_instance_of_a_font_is_cut_from_its_one_face() {
     }
 }
 
-/// A cluster that starts with a mark takes the side of a change of case of
-/// the letter before it, as Blink's `SmallCapsIterator` passes over marks,
-/// in a cold build as in a warm one. The acute after the soft hyphen, which
-/// a grapheme boundary parts from the `a`, is a cluster of its own that
-/// Ahem lacks, so a cold walk stops there for Test Only Marks to be matched
-/// and starts again at it; neither font has `smcp`, so small capitals are
-/// synthesized in both, and the acute is fed uppercased, as the `a` is.
+/// A cluster that starts with a mark takes the case side of the letter
+/// before it, as Blink's `SmallCapsIterator` passes over marks, in a cold
+/// build as in a warm one.
+///
+/// The soft hyphen parts the acute from the `a`, so the acute is a cluster
+/// of its own. Ahem lacks it, so a cold walk stops there to match Test Only
+/// Marks and restarts at it. Neither font has `smcp`, so small capitals are
+/// synthesized, and the acute is fed uppercased, as the `a` is.
 #[test]
 fn a_mark_takes_the_side_of_case_before_it_cold_as_warm() {
     let mut fixture = fixture_with(&[only_marks()]);
@@ -226,8 +228,8 @@ fn a_rebuild_selects_what_a_fresh_build_does() {
     assert_eq!(fresh.families(&other).join(","), first);
 }
 
-/// A builder dropped without finishing leaves no fonts, rather than those of
-/// the content before.
+/// A builder dropped without finishing leaves no fonts, not those of the
+/// content before.
 #[test]
 fn a_dropped_builder_leaves_no_fonts() {
     let mut fixture = fixture_with(&[]);
@@ -247,8 +249,8 @@ fn a_dropped_builder_leaves_no_fonts() {
 }
 
 /// One build naming far more `font-family` lists than the context keeps sets
-/// each span in its own list's font: a build only adds lists, and the lists
-/// go back to their limit when the next build starts.
+/// each span in its own list's font. A build only adds lists, and the
+/// context trims them back to the limit when the next build starts.
 #[test]
 fn a_build_naming_more_family_lists_than_the_limit_sets_each_in_its_own() {
     const LISTS: usize = 100;

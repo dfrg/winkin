@@ -18,7 +18,7 @@ use crate::style::FontWeight;
 const U: Affinity = Affinity::Upstream;
 const D: Affinity = Affinity::Downstream;
 
-/// A caret stop: its offset, its affinity, its caret's x, and its node and offset there.
+/// A caret stop: its offset, affinity, caret x, and node position.
 type Stop = (usize, Affinity, f32, (u64, usize));
 
 /// Returns the bold Ahem style, which has no margin, border or padding.
@@ -49,7 +49,8 @@ fn stop(layout: &Layout, position: Position) -> Stop {
     )
 }
 
-/// Returns the stops a caret visits moving by `motion` from `from`, until it stops.
+/// Returns the stops a caret visits moving by `motion` from `from`, until
+/// it stops.
 fn steps(layout: &Layout, from: Position, motion: Motion) -> Vec<Stop> {
     let mut at = Selection::from(from);
     let mut visited = vec![stop(layout, from)];

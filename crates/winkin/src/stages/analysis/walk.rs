@@ -1,18 +1,15 @@
-//! The cluster writer: the one pass over the items and the text that writes
-//! the analysis.
+//! The cluster writer: one pass over the items and the text that writes the
+//! analysis.
 //!
 //! Start at: [`ClusterWriter::visit_item`], once per item in reading order,
 //! then [`ClusterWriter::finish`]. A text-bearing item's characters go
 //! through `ClusterWriter::text_item`, and each cluster through
 //! `ClusterWriter::start_cluster` and `ClusterWriter::finish_cluster`.
 //!
-//! `classify` holds the per-character classifiers: a cluster's class, the
-//! Latin-1 fast path, hanging, glue and vertical orientation.
-//!
-//! - **Each cluster is written once, whole,** when the next one starts. Its
-//!   end is known then: the line break answer at the boundary, the item and
-//!   character after it, and any zero-length items between (box edges,
-//!   floats, ruby marks) that stop shaping there.
+//! - **Each cluster is written once, whole,** when the next one starts. Only
+//!   then are its end facts known: the break at the boundary, the next item
+//!   and character, and any empty items between (box edges, floats, ruby
+//!   marks) that stop shaping there.
 //! - **A cluster starts** at every grapheme boundary, every text item's start
 //!   and after every U+FFFC.
 //! - **A paragraph ends** after a separator. Its line stream starts at its
@@ -43,12 +40,12 @@ use crate::unicode::{self, CoreProps, RareProps};
 use crate::unit::LayoutUnit;
 use crate::work;
 
-/// U+FFFC OBJECT REPLACEMENT CHARACTER. A cluster always ends after one, so a
-/// combining mark after an atomic inline does not join it.
+/// U+FFFC OBJECT REPLACEMENT CHARACTER. A cluster always ends after one, so
+/// a combining mark after an atomic inline does not join it.
 const OBJECT: char = '\u{FFFC}';
 
-/// What the writer knows of the text-bearing item a cluster is in: its node
-/// and what its style says about breaking.
+/// The node and break-related style of the text-bearing item a cluster is
+/// in.
 #[derive(Copy, Clone, Debug)]
 pub(super) struct ItemInfo {
     node: NodeId,
@@ -61,22 +58,21 @@ pub(super) struct ItemInfo {
     /// (`Text::white_space_hangs`).
     pub(super) white_space_hangs: bool,
     hyphens_none: bool,
-    /// `overflow-wrap: anywhere` or `break-word`, and the text wraps.
+    /// Whether `overflow-wrap` is `anywhere` or `break-word` and the text
+    /// wraps.
     emergency: bool,
-    /// Inside a ruby annotation.
+    /// Whether the item is inside a ruby annotation.
     annotation: bool,
-    /// A break opportunity the builder generated, whose U+200B is a class
-    /// of its own.
+    /// Whether the item is a generated break opportunity, whose U+200B has a
+    /// class of its own.
     pub(super) generated: bool,
-    /// How its text stands in the block's lines.
     setting: TextSetting,
-    /// What of its text `text-combine-upright` combines, in a vertical
-    /// line: nothing elsewhere.
+    /// What `text-combine-upright` combines; nothing outside a vertical line.
     combine: TextCombineUpright,
 }
 
 impl ItemInfo {
-    /// What the writer knows of `item`, a text-bearing item of `content`.
+    /// Returns the facts of `item`, a text-bearing item of `content`.
     fn new(content: &Content, item: &Item) -> Self {
         Self {
             kind: item.kind,
@@ -86,8 +82,8 @@ impl ItemInfo {
         }
     }
 
-    /// What the writer takes the block itself to be before any item: its own
-    /// style, for a content with no items at all.
+    /// Returns the facts of the block's own style, which stand before the
+    /// first item and for a content with no items.
     pub(super) fn from_block(content: &Content) -> Self {
         Self {
             emergency: false,
@@ -95,8 +91,7 @@ impl ItemInfo {
         }
     }
 
-    /// Text with `node`'s text facts: what [`new`](Self::new) and
-    /// [`from_block`](Self::from_block) share.
+    /// Returns the facts of a text item of `node`.
     fn from_node(content: &Content, node: NodeId) -> Self {
         let facts = &content.facts;
         let id = content.nodes.text_facts(node, FirstLineVariant::Standard);
@@ -123,9 +118,9 @@ impl ItemInfo {
         }
     }
 
-    /// Whether the item sets the options its text breaks under. Only text
-    /// does: an atomic inline's U+FFFC and a `<br>`'s `\n` break under the
-    /// options around them, so a stream does not resume at each.
+    /// Returns whether the item sets the break options. Only text does: an
+    /// atomic inline's U+FFFC and a `<br>`'s `\n` break under the options
+    /// around them, so the stream does not resume at each.
     fn sets_key(&self) -> bool {
         self.kind == ItemKind::Text
     }
@@ -148,46 +143,45 @@ define_flags! {
 }
 
 impl EmojiMarks {
-    /// What makes a cluster an emoji, whatever its first character: a
-    /// keycap, a modifier, a ZWJ sequence, a tag or a flag.
+    /// The marks that make a cluster an emoji whatever its first character:
+    /// a keycap, a modifier, a ZWJ sequence, a tag or a flag.
     const EMOJI: Self =
         Self(Self::KEYCAP.0 | Self::MODIFIER.0 | Self::SEQUENCE.0 | Self::TAG.0 | Self::FLAG.0);
 
-    /// Whether any flag in `other` is set, where `contains` asks for all.
+    /// Returns whether any flag in `other` is set.
     fn intersects(self, other: Self) -> bool {
         self.0 & other.0 != 0
     }
 }
 
-/// The cluster being gathered: finished when the next one starts.
+/// The cluster being gathered, written when the next one starts.
 #[derive(Copy, Clone, Debug)]
 struct Pending {
     start: usize,
     item: ItemInfo,
-    /// Its class from its first character.
+    /// The class from the first character alone; see [`Pending::class()`].
     class: ClusterClass,
-    /// Its first character's core word: its script and bidi class.
+    /// The first character's core word.
     props: CoreProps,
     first: char,
     last: char,
     marks: EmojiMarks,
-    /// It holds a U+200C ZERO WIDTH NON-JOINER, which Blink ends a shaping
-    /// run at where its white space is preserved.
+    /// Whether it holds a U+200C ZERO WIDTH NON-JOINER, where Blink ends a
+    /// shaping run if white space is preserved.
     zwnj: bool,
-    /// A character after its first is a variation selector, VS1 to VS256.
+    /// Whether a character after the first is a variation selector.
     selector: bool,
-    /// A zero-length item after it stops shaping at its end.
+    /// Whether an empty item after it stops shaping at its end.
     shape_break: bool,
-    /// It is the later part of a grapheme an item boundary divided.
+    /// Whether it is the later part of a grapheme split by an item boundary.
     continuation: bool,
-    /// The ruby column it is in, its base or an annotation: a number the
-    /// writer gives each column in turn, and 0 outside every column.
+    /// The ruby column, numbered in order from 1; 0 outside every column.
+    /// Covers the column's base and annotations.
     column: u32,
-    /// The annotation part within its column, or zero for its base. Distinct
-    /// annotations never share an inner wrap opportunity.
+    /// The annotation within the column, or 0 for the base. No inner wrap
+    /// opportunity is shared across parts.
     part: u32,
-    /// How it stands in its line, and the combined unit it is in: a number
-    /// the writer gives each unit in turn, and 0 outside every unit.
+    /// The orientation and combined unit (numbered from 1; 0 for none).
     setting: Setting,
 }
 
@@ -218,7 +212,7 @@ impl Pending {
         }
     }
 
-    /// A character after the first joins the cluster.
+    /// Adds `ch`, a character after the first, to the cluster.
     fn extend(&mut self, ch: char, props: CoreProps) {
         self.last = ch;
         let marks = &mut self.marks;
@@ -245,12 +239,10 @@ impl Pending {
         }
     }
 
-    /// Returns its class, with the characters after its first taken into
-    /// account.
+    /// Returns the class, adjusted for the characters after the first.
     ///
-    /// A keycap makes a digit an emoji. A text variation selector makes an
-    /// emoji a symbol. A variation selector 16, a modifier, a tag or a ZWJ
-    /// sequence makes a symbol an emoji.
+    /// A keycap makes a digit an emoji. VS15 makes an emoji a symbol. VS16, a
+    /// modifier, a tag or a ZWJ sequence makes a symbol an emoji.
     fn class(&self) -> ClusterClass {
         let marks = self.marks;
         match self.class {
@@ -268,8 +260,7 @@ impl Pending {
     }
 }
 
-/// The last cluster of a ruby base, as a break after the base reads it: its
-/// item, its last character, its class and where it ends.
+/// The last cluster of a ruby base, which a break after the base reads.
 #[derive(Copy, Clone, Debug)]
 struct BaseTail {
     item: ItemInfo,
@@ -288,22 +279,23 @@ impl BaseTail {
     }
 }
 
-/// A ruby base being gathered, which a break after it is decided by.
+/// A ruby base being gathered, which decides a break after it.
 #[derive(Copy, Clone, Debug, Default)]
 struct RubyBase {
-    /// Where it starts, and the item it starts in.
+    /// The base's start and the item it starts in.
     start: Option<(TextOffset, ItemId)>,
-    /// Its last cluster before an annotation or its container's close.
+    /// The last cluster before an annotation or the container's close.
     last: Option<BaseTail>,
-    /// An annotation ended since its text: base text after it starts again.
+    /// Whether an annotation ended since the base's text, so base text
+    /// after it starts the base again.
     after_annotation: bool,
-    /// An annotation of its container opens after the container's last
-    /// opening or annotation closing item, before the container closes.
+    /// Whether an annotation of the container opens after its last opening
+    /// or annotation-closing item, before the container closes.
     annotation_follows: bool,
 }
 
 impl RubyBase {
-    /// A base starting at `at`, in item `item`.
+    /// Returns a base starting at `at`, in item `item`.
     fn new(at: TextOffset, item: ItemId) -> Self {
         Self {
             start: Some((at, item)),
@@ -311,8 +303,8 @@ impl RubyBase {
         }
     }
 
-    /// Ends the base with `pending` at `end`, where `pending` is its text:
-    /// not an annotation's, and not before the base starts.
+    /// Ends the base with `pending` at `end`, if `pending` is base text that
+    /// starts within the base.
     fn end_with(&mut self, pending: Option<Pending>, end: TextOffset) {
         if let Some(pending) = pending
             && !pending.item.annotation
@@ -325,55 +317,54 @@ impl RubyBase {
     }
 }
 
-/// What decides a line break at a boundary between two clusters
+/// The rule that decides a line break between two clusters
 /// ([`ClusterWriter::boundary`]).
 #[derive(Copy, Clone, Debug)]
 enum Boundary {
-    /// Between clusters of the line's own text: the paragraph's line stream.
+    /// Line text, decided by the paragraph's line stream.
     Text,
-    /// Inside one part of a ruby column, its base or an annotation: the
-    /// part's own line stream.
+    /// Inside one part of a ruby column (its base or an annotation), decided
+    /// by the part's own line stream.
     InsidePart,
-    /// After a ruby column: its base and what follows.
+    /// After a ruby column, decided by its base and the text after it.
     AfterColumn,
-    /// After a nested ruby container's base, inside its parent's base: that
-    /// base and what follows.
+    /// After a nested container's base inside its parent's base, decided by
+    /// that base and the text after it.
     AfterNestedBase(RubyBase),
     /// Between two parts of one column, or inside a combined unit: no break.
     Held,
 }
 
-/// Where the writer is among the ruby columns, root and nested.
+/// The writer's position among the ruby columns, root and nested.
 ///
-/// One stack holds the base being gathered in each open container. A nested
-/// container hands its base's last cluster to its parent when it closes,
-/// and clusters update only the innermost base.
+/// A stack holds the base being gathered in each open container. Clusters
+/// update only the innermost base; a closing nested container hands its
+/// base's last cluster to its parent.
 #[derive(Copy, Clone, Debug, Default)]
 struct RubyState {
-    /// How many containers are open as columns. A root container is one
-    /// only where an annotation follows it.
+    /// The number of containers open as columns. A root container is a
+    /// column only if an annotation follows it.
     containers: u32,
     /// The base being gathered in each open container, outermost first.
     bases: [RubyBase; MAX_RUBY_DEPTH],
     /// The base of a nested container that ended since the last cluster
-    /// started, which decides the boundary after it
+    /// started; it decides the next boundary
     /// ([`Boundary::AfterNestedBase`]).
     inner_boundary: Option<RubyBase>,
-    /// How many annotations are open.
+    /// The number of open annotations.
     annotations: u32,
-    /// The number of the last annotation opened, which its clusters take as
-    /// their part.
+    /// The number of the last annotation opened, its clusters' part.
     part: u32,
-    /// The number the last root column was given.
+    /// The number given to the last root column.
     serial: u32,
-    /// The root column the next cluster is in, or 0 outside every column.
+    /// The root column of the next cluster, or 0 outside every column.
     column: u32,
     /// The column of the last cluster started.
     seen: u32,
 }
 
 impl RubyState {
-    /// The innermost open container's base, if a container is open.
+    /// Returns the innermost open container's base, if any.
     fn innermost(&mut self) -> Option<&mut RubyBase> {
         let depth = self.containers.checked_sub(1)?;
         self.bases.get_mut(depth as usize)
@@ -381,10 +372,11 @@ impl RubyState {
 
     /// Opens a container as a column, at `at` in item `item`.
     ///
-    /// A root container starts the next column. Its first cluster retires
-    /// the previous column's base after deciding its boundary
-    /// ([`enter_column`](Self::enter_column)), so opening it leaves that base
-    /// as it is. `annotation_follows` where an annotation of it follows.
+    /// A root container starts the next column but keeps the previous
+    /// column's base: the new column's first cluster still needs it to
+    /// decide the boundary, then resets it
+    /// ([`enter_column`](Self::enter_column)). `annotation_follows` is true
+    /// if an annotation of the container follows.
     fn open(&mut self, at: TextOffset, item: ItemId, annotation_follows: bool) {
         self.containers = self.containers.saturating_add(1);
         if self.containers == 1 {
@@ -399,11 +391,10 @@ impl RubyState {
         }
     }
 
-    /// Closes the innermost container at `at`, where `pending` is the
-    /// cluster before.
+    /// Closes the innermost container at `at`, after the cluster `pending`.
     ///
-    /// Its base ends, and a nested one hands its last cluster to its
-    /// parent's and decides the boundary after it.
+    /// Its base ends. A nested base hands its last cluster to its parent and
+    /// decides the next boundary.
     fn close(&mut self, pending: Option<Pending>, at: TextOffset) {
         if let Some(depth) = self.containers.checked_sub(1).map(|depth| depth as usize)
             && let Some(base) = self.bases.get_mut(depth)
@@ -428,8 +419,8 @@ impl RubyState {
         }
     }
 
-    /// Opens an annotation at `at`, where `pending` is the cluster before:
-    /// the innermost base ends with it.
+    /// Opens an annotation at `at`, ending the innermost base with the
+    /// cluster `pending`.
     fn annotation_open(&mut self, pending: Option<Pending>, at: TextOffset) {
         if let Some(base) = self.innermost() {
             base.end_with(pending, at);
@@ -439,8 +430,8 @@ impl RubyState {
     }
 
     /// Closes an annotation. Once none is open, base text after it starts
-    /// the base again, and a nested base's end decides the boundary after
-    /// it. `annotation_follows` where another annotation of its container
+    /// the base again, and a nested base decides the next boundary.
+    /// `annotation_follows` is true if another annotation of the container
     /// follows.
     fn annotation_close(&mut self, annotation_follows: bool) {
         self.annotations = self.annotations.saturating_sub(1);
@@ -459,16 +450,15 @@ impl RubyState {
         }
     }
 
-    /// Moves to a cluster starting at `at`, in item `item`, in `column`:
-    /// `first` where it is the column's first, and `annotation` where it is
-    /// an annotation's.
+    /// Enters a cluster starting at `at` in item `item` and `column`.
+    /// `first` is true for the column's first cluster, `annotation` for an
+    /// annotation's.
     ///
-    /// Here the bases start and restart:
-    /// - **The root base** restarts at a column's first cluster: what a
-    ///   break after the last column was decided by is done with. Its start
-    ///   is the column's first base cluster.
-    /// - **A nested base** restarts at its first base cluster after an
-    ///   annotation, and starts at its container's open.
+    /// - **The root base** resets at a column's first cluster, once the
+    ///   break after the previous column is decided. It starts at the
+    ///   column's first base cluster.
+    /// - **A nested base** starts at its container's open and restarts at
+    ///   its first base cluster after an annotation.
     fn enter_column(
         &mut self,
         column: u32,
@@ -500,90 +490,88 @@ impl RubyState {
     }
 }
 
-/// Where the writer is among the units `text-combine-upright` combines.
+/// The writer's position among the units `text-combine-upright` combines.
 ///
 /// Each unit is set as one character and one run, and no line breaks inside
 /// it.
 #[derive(Copy, Clone, Debug, Default)]
 struct CombineState {
-    /// The number the last unit was given.
+    /// The number given to the last unit.
     serial: u16,
-    /// Under `all`, the unit the next cluster of the text item being walked
-    /// joins: the text of one item, and of the text items straight after it,
-    /// as Blink combines a text node and its text siblings in one
-    /// `LayoutTextCombine`. 0 where the next cluster starts one.
+    /// Under `all`, the unit the next cluster joins, or 0 if it starts one.
+    /// A unit covers one text item and the text items straight after it, as
+    /// Blink combines a text node and its text siblings in one
+    /// `LayoutTextCombine`.
     all: u16,
-    /// Under `digits`, the unit the digits being walked are, and how many
-    /// clusters of it are still to come.
+    /// Under `digits`, the open unit and how many of its clusters remain.
     digits: Option<(u16, usize)>,
 }
 
 impl CombineState {
-    /// Returns a number for the next unit: the last one plus one.
+    /// Returns the number for the next unit.
     ///
-    /// It wraps past 0, which names no unit, so it never repeats the unit
-    /// before it (`Setting::unit`).
+    /// It skips 0, which names no unit, on wrapping, so it never repeats the
+    /// unit before (`Setting::unit`).
     fn next_unit(&mut self) -> u16 {
         self.serial = self.serial.checked_add(1).unwrap_or(1);
         self.serial
     }
 }
 
-/// How many characters past a ruby column decide a break after it.
+/// The number of characters after a ruby column read to decide a break
+/// after it.
 ///
-/// UAX #14 looks at a few characters after a boundary at most (LB25's
-/// numbers, LB28a's aksaras), so a few more are enough. A paragraph of
-/// columns then costs the same per column however long it is.
+/// UAX #14 reads at most a few characters past a boundary (LB25's numbers,
+/// LB28a's aksaras). The bound keeps the cost per column constant however
+/// long the paragraph.
 const COLUMN_LOOKAHEAD: usize = 8;
 
-/// The writer's state, over one content.
+/// The writer's state over one content.
 pub(super) struct ClusterWriter<'a> {
     content: &'a Content,
     text: &'a str,
     cx: &'a AnalysisContext,
     scratch: &'a mut AnalysisScratch,
     out: &'a mut Analysis,
-    /// Where the grapheme boundaries are, asked a character at a time.
     graphemes: GraphemeCursor<'a>,
+    /// The paragraph's line stream.
     stream: Option<LineStream<'a>>,
-    /// The current ruby part, bounded before the next part's text.
+    /// The current ruby part's line stream, over text that ends before the
+    /// next part.
     inner_stream: Option<LineStream<'a>>,
     inner_start: usize,
     pending: Option<Pending>,
-    /// The text-bearing item the characters are from.
+    /// The text-bearing item the characters come from.
     item: ItemInfo,
-    /// The item being walked, which holds a cluster starting now.
+    /// The item being walked.
     item_id: ItemId,
-    /// Where the text item being walked ends in the text.
+    /// The byte where the text item being walked ends.
     item_end: usize,
-    /// The last character was U+FFFC.
+    /// Whether the last character was U+FFFC.
     after_object: bool,
     paragraph: ParagraphState,
     script_runs: RunBuilder,
-    /// A box with `unicode-bidi`, or a ruby annotation, opened or closed
-    /// since the last cluster: the paragraph of the next has controls. Those
-    /// open are the bidi input's, which a paragraph starting inside one
-    /// re-opens after a forced break.
+    /// Whether a box with `unicode-bidi` or a ruby annotation opened or
+    /// closed since the last cluster, giving the next cluster's paragraph
+    /// controls. The bidi input tracks which are open, and a paragraph
+    /// starting inside one after a forced break reopens them.
     controls: bool,
-    /// The block overrides bidi, which every paragraph starts with.
+    /// Whether the block overrides bidi, which every paragraph starts with.
     block_overrides: bool,
-    /// The level the block's direction sets its paragraphs at
-    /// (`BlockFacts::direction`). It is `None` under `auto`, where each
-    /// paragraph's first strong character decides.
+    /// The paragraph level the block's direction sets, or `None` under
+    /// `auto`, where each paragraph's first strong character decides.
     requested: Option<BidiLevel>,
-    /// Some style is `nowrap`, so a break between two nodes asks whose style
-    /// decides it.
+    /// Whether some style is `nowrap`, so a break between two nodes must
+    /// find whose style decides it.
     any_nowrap: bool,
-    /// The content has atomic inlines, whose edges have an opportunity rule
-    /// of their own.
+    /// Whether the content has atomic inlines, whose edges have their own
+    /// opportunity rule.
     any_atomics: bool,
-    /// A small kana is held to what precedes it under `line-break: normal`,
-    /// as CSS Text now says, rather than starting a line, as in Chrome
-    /// (`Config::small_kana`).
+    /// Whether a small kana is held to what precedes it under
+    /// `line-break: normal`, as CSS Text says, instead of starting a line as
+    /// in Chrome (`Config::small_kana`).
     hold_small_kana: bool,
-    /// Where the writer is among the ruby columns.
     ruby: RubyState,
-    /// Where the writer is among the combined units.
     combine: CombineState,
 }
 
@@ -601,7 +589,7 @@ impl<'a> ClusterWriter<'a> {
         } = *input;
         let text = content.text.as_str();
         let flags = content.flags;
-        // Until the first text-bearing item, which comes before any cluster.
+        // Stands until the first text-bearing item, before any cluster.
         let item = ItemInfo::from_block(content);
         Self {
             content,
@@ -621,7 +609,7 @@ impl<'a> ClusterWriter<'a> {
             paragraph: ParagraphState::default(),
             script_runs: RunBuilder::new(),
             controls: false,
-            // A left-to-right override raises even levels over even ones,
+            // A left-to-right override only raises even levels to even ones,
             // which Blink leaves at 0 (`bidi::controls`).
             block_overrides: content.block.overrides == Some(Direction::Rtl),
             requested: BidiLevel::from_direction(content.block.direction),
@@ -633,9 +621,8 @@ impl<'a> ClusterWriter<'a> {
         }
     }
 
-    /// Moves the bidi input's open containers over `item`, an edge of a
-    /// box, a ruby container or an annotation, and returns its node's box
-    /// facts.
+    /// Updates the bidi input's open containers at `item`, the edge of a
+    /// box, ruby container or annotation, and returns its node's box facts.
     fn bidi_edge(&mut self, item: &Item) -> &'a BoxFacts {
         let content = self.content;
         let id = content
@@ -648,22 +635,21 @@ impl<'a> ClusterWriter<'a> {
 }
 
 impl ClusterWriter<'_> {
-    /// Returns the id the next cluster takes; the pending one is not yet
-    /// written.
+    /// Returns the id of the next cluster to start, counting the pending
+    /// one, which is not yet written.
     fn next_cluster(&self) -> ClusterId {
         ClusterId::new(self.out.clusters.len() + usize::from(self.pending.is_some()))
     }
 
-    /// Walks item `id`: records its first cluster, then walks its characters
-    /// or applies what it does to the clusters beside it.
+    /// Visits item `id`: records its first cluster, then walks its text or
+    /// applies its effect on the clusters beside it.
     pub(super) fn visit_item(&mut self, id: ItemId, item: &Item) {
         self.item_id = id;
         let first = self.next_cluster();
         if self.out.item_clusters.push(first).is_none() {
             debug_assert!(false, "one entry per item, which an ItemId names");
         }
-        // Only a text item's text goes on with a combined unit: an edge, an
-        // atomic inline or anything else between ends it.
+        // Any item other than text ends a combined unit.
         if item.kind != ItemKind::Text {
             self.combine.all = 0;
             self.combine.digits = None;
@@ -671,8 +657,8 @@ impl ClusterWriter<'_> {
         match item.kind {
             ItemKind::Text | ItemKind::Atomic | ItemKind::Break => self.text_item(item),
             ItemKind::Open | ItemKind::Close => self.edge(item),
-            // An annotation's content is an isolate of its own, so it adds
-            // controls, as a box's `unicode-bidi` does.
+            // An annotation is an isolate, so it adds controls like a box's
+            // `unicode-bidi`.
             ItemKind::AnnotationOpen => {
                 self.bidi_edge(item);
                 self.ruby.annotation_open(self.pending, item.start);
@@ -685,13 +671,12 @@ impl ClusterWriter<'_> {
                 self.stop_shaping();
             }
             ItemKind::RubyOpen => {
-                // The container's `unicode-bidi` adds controls, as a box's
-                // does.
+                // The container's `unicode-bidi` adds controls like a box's.
                 self.bidi_edge(item);
                 self.stop_shaping();
-                // A root container with no annotation is no column: its text
-                // is the line's, as a box's is. Its close finds no container
-                // open.
+                // A root container with no annotation is not a column: its
+                // text is line text, like a box's. Its close then finds no
+                // container open.
                 let follows = item.flags.contains(ItemFlags::ANNOTATION_FOLLOWS);
                 if self.ruby.containers == 0 && !follows {
                     return;
@@ -711,8 +696,8 @@ impl ClusterWriter<'_> {
     /// Returns the ruby column of a cluster starting now, and whether it is
     /// the column's first.
     ///
-    /// Base text after an annotation starts the container's next column,
-    /// where an annotation follows it. Without one it is the line's text.
+    /// Base text after an annotation starts the container's next column if
+    /// an annotation follows it, and is line text otherwise.
     fn next_column(&mut self) -> (u32, bool) {
         let ruby = &mut self.ruby;
         if ruby.containers == 0 {
@@ -730,8 +715,8 @@ impl ClusterWriter<'_> {
         (ruby.column, ruby.column != ruby.seen)
     }
 
-    /// Handles a box's opening or closing edge, which stops shaping where its
-    /// box facts say so (`BoxFacts::breaks_shaping`).
+    /// Handles a box's opening or closing edge, stopping shaping where
+    /// `BoxFacts::breaks_shaping` says so.
     fn edge(&mut self, item: &Item) {
         let facts = self.bidi_edge(item);
         let opens = item.kind == ItemKind::Open;
@@ -740,11 +725,11 @@ impl ClusterWriter<'_> {
         }
     }
 
-    /// Marks a shaping stop at the boundary here, on the cluster ending here.
+    /// Marks a shaping stop on the pending cluster's end.
     ///
-    /// A separator stops shaping anyway, and before the text's start there is
-    /// no cluster to mark. The paragraph's shaping gate stays shut: shaping's
-    /// fast path finds the stop at the item.
+    /// A separator stops shaping anyway, and before the first cluster there
+    /// is nothing to mark. `HAS_SHAPING_STOPS` stays unset, since shaping's
+    /// fast path already stops at item edges.
     fn stop_shaping(&mut self) {
         if let Some(pending) = &mut self.pending
             && !pending.class.is_forced_break()
@@ -766,31 +751,31 @@ impl ClusterWriter<'_> {
             debug_assert!(false, "items fall on character boundaries");
             return;
         };
-        // An atomic inline is a cluster of its own on both sides: never the
-        // rest of what comes before it, as a prepended mark would make it.
+        // An atomic inline is its own cluster on both sides, so it is never
+        // a continuation of what precedes it.
         let object = self.item.kind == ItemKind::Atomic;
-        // The Latin-1 fast path is open in text set across a horizontal line
-        // outside ruby.
+        // The Latin-1 fast path runs only in horizontal text outside ruby.
         let fast_path = work::fast_paths()
             && self.item.kind == ItemKind::Text
             && self.item.setting == TextSetting::Horizontal
             && self.ruby.containers == 0;
         let mut chars = text.char_indices();
-        // Where `chars` starts in the item's text: the fast path moves it on.
+        // The offset of `chars` in the item's text, which the fast path
+        // advances.
         let mut base = 0;
         while let Some((offset, ch)) = chars.next() {
             let offset = base + offset;
             let at = start + offset;
             let props = unicode::core_props(ch);
-            // The rare word, read once a character past Latin-1, where the
-            // grapheme step always asks it and a cluster's class and
-            // orientation may; Latin-1 reads none for either.
+            // The rare word is read once per character past Latin-1, for the
+            // grapheme step and possibly the class and orientation. Latin-1
+            // needs none.
             let rare = (ch >= '\u{100}').then(|| unicode::rare_props(ch));
             let grapheme = self.graphemes.boundary(at, ch, rare);
-            // Marks after a lone space start a cluster of their own. UAX #14
-            // sets no mark on a space (LB9) and breaks after it before them
-            // (LB10, LB18), as Chrome and Firefox do, inside the grapheme the
-            // two make. Carets keep to the grapheme
+            // Marks after a lone space start their own cluster. UAX #14 does
+            // not attach marks to a space (LB9) and allows a break between
+            // them (LB10, LB18), as Chrome and Firefox do, inside the
+            // grapheme. Carets keep to the grapheme
             // (`Clusters::continues_grapheme`).
             let after_space = !grapheme
                 && self
@@ -798,8 +783,8 @@ impl ClusterWriter<'_> {
                     .as_ref()
                     .is_some_and(|pending| pending.last == ' ' && pending.start + 1 == at);
             let starts = offset == 0 || grapheme || self.after_object || after_space;
-            // A cluster that starts only because an item does is the rest of
-            // a grapheme the item boundary divided.
+            // A cluster that starts only because an item does continues a
+            // grapheme split by the item boundary.
             let continuation = !grapheme && !self.after_object && !object && !after_space;
             if starts {
                 self.start_cluster(at, ch, props, rare, continuation);
@@ -810,9 +795,9 @@ impl ClusterWriter<'_> {
             paragraph.classes |= props.bidi_class().mask();
             paragraph.east_asian |= is_east_asian(ch);
             self.after_object = ch == OBJECT;
-            // A fast-path character that started a cluster of its own: the
-            // characters after it go by the fast path while they are
-            // fast-path characters, and the walk goes on where it stops.
+            // After a fast-path character that started its own cluster, the
+            // fast path takes the following fast-path characters, and this
+            // loop resumes where it stops.
             let from = offset + ch.len_utf8();
             if fast_path
                 && starts
@@ -826,31 +811,31 @@ impl ClusterWriter<'_> {
         }
     }
 
-    /// Walks fast-path characters fast, from byte `from` of `text`, while each is
-    /// one ([`latin1_fast_char`]). Returns where it stops, in `text`.
+    /// Writes clusters for the fast-path characters ([`latin1_fast_char`])
+    /// from byte `from` of `text`, and returns the offset in `text` where it
+    /// stops.
     ///
-    /// `text` is the item being walked and starts at byte `start` of the
-    /// whole text. `first` is the character at `from`. The pending cluster is
-    /// a fast-path character that started a cluster of its own, in this item.
+    /// `text` is the item being walked, starting at byte `start` of the whole
+    /// text, and `first` is the character at `from`. The pending cluster is a
+    /// fast-path character that started its own cluster in this item.
     ///
-    /// Each cluster the fast path finishes is one fast-path character, of its own class
-    /// ([`latin1_fast_class`]) with no marks. There is always a grapheme boundary
-    /// between two fast-path characters. The item is horizontal text outside ruby,
-    /// the paragraph is open, its line stream breaks under the item's key, and
-    /// no control is waiting.
-    ///
+    /// Each cluster is one character of its [`latin1_fast_class`], with no
+    /// marks; two fast-path characters always have a grapheme boundary
+    /// between them. The item is horizontal text outside ruby, the paragraph
+    /// is open, its stream uses the item's key, and no control is waiting.
     /// So each cluster is written as [`finish_cluster`](Self::finish_cluster)
-    /// writes it, minus the parts that come to nothing here:
+    /// would, without the parts that never apply here:
     /// - the ruby column, the combined unit and the stream's resume;
     /// - a ZWNJ, and a stop from an item between;
     /// - the held small kana (no Latin-1 character is one);
     /// - an atomic's edges and a separator;
-    /// - the paragraph flags but a soft hyphen's, and the East Asian gate.
+    /// - the paragraph flags other than a soft hyphen's, and the East Asian
+    ///   flag.
     ///
-    /// The runs are asked only where the cluster changes them
-    /// ([`RunBuilder::joins`]). The last character is left pending, as the general
-    /// walk leaves it, so a mark after it joins it and the grapheme step goes
-    /// on from it.
+    /// The runs are consulted only where the cluster changes them
+    /// ([`RunBuilder::joins`]). The last character is left pending, as in the
+    /// general walk, so a following mark joins it and the grapheme cursor
+    /// resumes from it.
     #[inline(never)]
     fn latin1_fast_path(
         &mut self,
@@ -876,7 +861,7 @@ impl ClusterWriter<'_> {
         loop {
             let at = start + offset;
             let props = unicode::core_props(ch);
-            // The character before the last, which a hyphen's rule reads.
+            // The character before `last`, which the hyphen rule reads.
             let before_last = || {
                 whole
                     .get(..at)
@@ -888,9 +873,8 @@ impl ClusterWriter<'_> {
             });
             let space = last_class == ClusterClass::Space;
             breaks |= break_spaces && space;
-            // Whether text wraps at a boundary inside one item is the item's
-            // own wrapping, after a space as after anything else: where
-            // `filter_break` reads no style, no style is `nowrap`.
+            // Inside one item, the item's own wrapping decides, after a space
+            // as elsewhere; this matches `filter_break` for one node.
             breaks &= item.wraps;
             let soft_hyphen = last_class == ClusterClass::SoftHyphen;
             breaks &= !(soft_hyphen && item.hyphens_none);
@@ -935,7 +919,7 @@ impl ClusterWriter<'_> {
                 None => break,
             }
         }
-        // The last character is pending, as the general walk leaves it.
+        // Leaves the last character pending, as the general walk does.
         self.pending = Some(Pending::new(
             last_start, item, last, last_props, None, false,
         ));
@@ -943,10 +927,10 @@ impl ClusterWriter<'_> {
         offset
     }
 
-    /// Marks the paragraph as holding a soft hyphen, the cluster `id` in
-    /// `node`'s text, and records the node where a line may break after it.
+    /// Flags the paragraph as holding a soft hyphen, cluster `id` of `node`,
+    /// and records the node if a line may break after it.
     ///
-    /// Kept out of line, so that the fast path's loop pays one test for it.
+    /// Out of line, so the fast path's loop pays one test for it.
     #[inline(never)]
     fn write_soft_hyphen(&mut self, node: NodeId, id: ClusterId, breaks: bool) {
         self.paragraph.flags.insert(ParagraphFlags::HAS_SOFT_HYPHEN);
@@ -955,23 +939,23 @@ impl ClusterWriter<'_> {
         }
     }
 
-    /// Returns how a cluster stands in its line and its combined unit, and
-    /// moves the writer among the units.
+    /// Returns a cluster's orientation and combined unit, and advances the
+    /// combined-unit state.
     ///
     /// The cluster starts at byte `at` with `first`, of class `class`, with
-    /// the words `props` and `rare` as the writer read them. It is a
-    /// `continuation` where an item boundary divided its grapheme.
+    /// the words `props` and `rare`. `continuation` is true if an item
+    /// boundary split its grapheme.
     ///
-    /// - **A continuation** stands as the part before it, since a grapheme
-    ///   stands as one.
-    /// - **Under `all`**, a forced break is no part of a unit, and the text
+    /// - **A continuation** takes the setting of the part before, since a
+    ///   grapheme is set as one.
+    /// - **Under `all`**, a forced break belongs to no unit, and the text
     ///   after it starts another.
-    /// - **Under `digits`**, a unit is a maximal run of ASCII digits, no
-    ///   longer than the style allows, all in the item. A longer run, or one
-    ///   an item boundary divides, is set as digits are anywhere else.
+    /// - **Under `digits`**, a unit is a maximal run of ASCII digits within
+    ///   the item, no longer than the style allows. A longer run, or one
+    ///   split by an item boundary, is set as ordinary digits.
     ///
-    /// The writer asks this only of text in a vertical line. It takes values,
-    /// not the pending cluster, which the cluster loop keeps out of memory.
+    /// Called only for text in a vertical line. It takes values instead of
+    /// the pending cluster so the cluster loop keeps that in registers.
     #[inline(never)]
     fn setting(
         &mut self,
@@ -1019,9 +1003,9 @@ impl ClusterWriter<'_> {
     }
 
     /// Returns the combined unit of an ASCII digit at byte `at`, where the
-    /// style combines runs of `most` digits or fewer.
+    /// style combines runs of at most `most` digits.
     ///
-    /// That is the open unit, or a new one where a run starts here, or 0.
+    /// Returns the open unit, a new unit if a run starts here, or 0.
     fn digits(&mut self, at: usize, most: usize) -> u16 {
         if let Some((unit, left)) = self.combine.digits
             && left > 0
@@ -1030,7 +1014,7 @@ impl ClusterWriter<'_> {
             return unit;
         }
         self.combine.digits = None;
-        // A digit after a digit is inside a run that did not combine.
+        // A digit after a digit is inside a run too long to combine.
         let before = self
             .text
             .get(..at)
@@ -1038,7 +1022,7 @@ impl ClusterWriter<'_> {
         if before.is_some_and(|ch| ch.is_ascii_digit()) {
             return 0;
         }
-        // At most one more than the style allows, to tell a run too long.
+        // Counts one past the limit to detect a run too long.
         let rest = self.text.get(at..).unwrap_or_default().as_bytes();
         let run = rest
             .iter()
@@ -1054,9 +1038,9 @@ impl ClusterWriter<'_> {
         unit
     }
 
-    /// Starts a cluster at `at` with `ch`, and finishes the one before.
+    /// Starts a cluster at `at` with `ch`, and writes the one before.
     ///
-    /// `props` and, past Latin-1, `rare` are `ch`'s words.
+    /// `props` and `rare` are `ch`'s words; `rare` is `None` for Latin-1.
     fn start_cluster(
         &mut self,
         at: usize,
@@ -1071,9 +1055,8 @@ impl ClusterWriter<'_> {
         if self.item.annotation {
             next.part = self.ruby.part;
         }
-        // Text across a horizontal line stands one way, and is in no unit:
-        // asked here, so that the cluster loop of nearly every layout pays
-        // one test for it.
+        // Horizontal text has one orientation and no unit; testing here
+        // costs nearly every layout one branch per cluster.
         if self.item.setting != TextSetting::Horizontal {
             next.setting = self.setting(at, ch, next.class, props, rare, continuation);
         }
@@ -1084,7 +1067,7 @@ impl ClusterWriter<'_> {
                 .is_none_or(|pending| pending.column != column || pending.part != next.part);
         if let Some(pending) = self.pending.take() {
             // The options after a seam decide the pair at it, so the stream
-            // resumes before it is asked about the boundary.
+            // resumes before the boundary is queried.
             if self.item.sets_key() {
                 if !pending.class.is_forced_break() {
                     self.resume_stream(false, at);
@@ -1117,9 +1100,8 @@ impl ClusterWriter<'_> {
         self.pending = Some(next);
     }
 
-    /// Resumes the paragraph's line stream, or where `inner` says so the
-    /// current ruby part's, under the item's options from the seam `at`,
-    /// where they differ from the stream's.
+    /// Resumes the paragraph's line stream, or the ruby part's if `inner`,
+    /// under the item's options from the seam `at`, if they differ.
     fn resume_stream(&mut self, inner: bool, at: usize) {
         let key = self.item.key;
         let stream = if inner {
@@ -1136,12 +1118,12 @@ impl ClusterWriter<'_> {
 
     /// Opens a paragraph at the next cluster, in the item being walked.
     ///
-    /// It has controls where boxes open across its start re-open them, or
-    /// where the block overrides bidi.
+    /// The paragraph has controls if boxes open across its start reopen
+    /// them, or if the block overrides bidi.
     ///
-    /// Kept out of line, as a paragraph's end and a ruby column's break are.
-    /// Each runs once per paragraph or column, and inlining them slows the
-    /// cluster loop by 2 to 3%.
+    /// Out of line, like `end_paragraph` and `breaks_after_base`. Each runs
+    /// once per paragraph or column, and inlining them slows the cluster loop
+    /// by 2 to 3%.
     #[inline(never)]
     fn open_paragraph(&mut self) {
         let reopens = self.scratch.bidi.begin_paragraph(self.content);
@@ -1154,23 +1136,22 @@ impl ClusterWriter<'_> {
         };
     }
 
-    /// Writes `pending`, which ends at `end`: where `next` starts, or at the
-    /// text's end where there is no `next`.
+    /// Writes `pending`, which ends at `end`, where `next` starts or at the
+    /// text's end if `next` is `None`.
     fn finish_cluster(&mut self, pending: Pending, next: Option<&Pending>, end: usize) {
         let class = pending.class();
         let mut attrs = ClusterAttrs::new(class);
-        // A paragraph's last cluster offers no opportunity: its end is the
-        // paragraph's. Nor does the one before a separator, which ends the
-        // line there anyway, taking nothing wider with it; a filter that
-        // adds opportunities (`break-spaces`, an atomic inline's) could
-        // otherwise leave the separator a line of its own.
+        // No opportunity at a paragraph's end, or before a separator, which
+        // ends the line anyway. A filter that adds opportunities
+        // (`break-spaces`, an atomic inline's) could otherwise leave the
+        // separator on a line of its own.
         if let Some(next) = next
             && !class.is_forced_break()
             && !next.class.is_forced_break()
         {
-            // An emergency break between two items opens where either allows
-            // one, as Chrome's retry breaks before the first character of
-            // text that allows `overflow-wrap`.
+            // An emergency break between two items is allowed if either
+            // allows one, as Chrome's retry breaks before the first character
+            // of text that allows `overflow-wrap`.
             let either = pending.item.emergency || next.item.emergency;
             let (breaks, emergency) = match self.boundary(&pending, next) {
                 Boundary::Text => (self.stream_breaks(false, &pending, class, next), either),
@@ -1187,11 +1168,10 @@ impl ClusterWriter<'_> {
                 emergency && !next.continuation,
             );
         }
-        // A ZWNJ stops shaping only where its white space is preserved, as
-        // Blink makes one a control item only under `preserve` and
-        // `break-spaces`. Elsewhere the shaper kerns past it and ligates up
-        // to it. The stop goes after it, at its cluster's end: a kern or a
-        // ligature cannot tell before from after.
+        // A ZWNJ stops shaping only where white space is preserved, as Blink
+        // makes it a control item only under `preserve` and `break-spaces`.
+        // Elsewhere the shaper kerns past it and ligates up to it. The stop
+        // goes at its cluster's end; a kern or ligature cannot tell the side.
         let zwnj_stops = pending.zwnj && pending.item.collapse.keeps_spaces();
         if zwnj_stops {
             self.paragraph
@@ -1199,9 +1179,8 @@ impl ClusterWriter<'_> {
                 .insert(ParagraphFlags::HAS_SHAPING_STOPS);
         }
         attrs = attrs
-            // An annotation's white space is on its own line, never at the
-            // end of the base's, and a combined unit's is inside its one
-            // character.
+            // An annotation's white space is never at the end of the base's
+            // line, and a combined unit's is inside its one character.
             .with(
                 ClusterAttrs::HANGS,
                 hangs(class, &pending.item)
@@ -1236,8 +1215,8 @@ impl ClusterWriter<'_> {
             id == self.paragraph.start,
         );
         self.paragraph.flags.insert(class.paragraph_flags());
-        // A run stands one way throughout, and starts in its paragraph: the
-        // paragraph learns how from each run's first cluster.
+        // A run has one orientation and lies in one paragraph, so its first
+        // cluster sets the paragraph's orientation flags.
         if let Some(orientation) = started {
             self.paragraph
                 .flags
@@ -1248,13 +1227,12 @@ impl ClusterWriter<'_> {
         }
     }
 
-    /// Classifies the boundary between `pending` and `next`, neither of them
-    /// a separator: what decides whether a line may break there.
+    /// Returns the rule for the boundary between `pending` and `next`,
+    /// neither of them a separator.
     ///
-    /// Each part of a ruby column breaks under its own style, and a part's
-    /// edges are no opportunities inside the column. A nested container's
-    /// base, once it ends, decides the boundary after it in its parent's
-    /// base.
+    /// Each part of a ruby column breaks under its own style, and part edges
+    /// inside a column are not opportunities. A nested container's ended
+    /// base decides the next boundary in its parent's base.
     fn boundary(&self, pending: &Pending, next: &Pending) -> Boundary {
         let unit = pending.setting.unit;
         let combined = unit != 0 && unit == next.setting.unit;
@@ -1276,14 +1254,14 @@ impl ClusterWriter<'_> {
         }
     }
 
-    /// Whether a line may break after the ruby base `base`, before `next`.
+    /// Returns whether a line may break after the ruby base `base`, before
+    /// `next`.
     ///
-    /// Chrome's `CanBreakAfterRubyColumn` decides it by the base and what
-    /// follows, the annotations between them left out, under the options of
-    /// what follows. Then the filters apply, with the base's last cluster
-    /// before the boundary. A column with no base has nothing to decide it
-    /// by, and no line breaks after it, as in Chrome. Out of line
-    /// ([`open_paragraph`](Self::open_paragraph)).
+    /// As Chrome's `CanBreakAfterRubyColumn` does, it segments the base text
+    /// (without annotations) and the text after it, under the options of the
+    /// text after. Then the filters apply, with the base's last cluster
+    /// before the boundary. No line breaks after a column with no base, as in
+    /// Chrome. Out of line ([`open_paragraph`](Self::open_paragraph)).
     #[inline(never)]
     fn breaks_after_base(&mut self, next: &Pending, base: RubyBase) -> bool {
         let (Some((start, first)), Some(last)) = (base.start, base.last) else {
@@ -1293,8 +1271,7 @@ impl ClusterWriter<'_> {
             return false;
         }
         let start = start.get();
-        // The logical base excludes every child's annotation. Keep this
-        // context in the existing scratch used for ruby-boundary segmentation.
+        // Gathers the base text, without any nested annotation, in scratch.
         let scratch = &mut self.scratch.column_text;
         scratch.clear();
         let base_end = last.end.get();
@@ -1311,7 +1288,8 @@ impl ClusterWriter<'_> {
         }
         let base = scratch.as_str();
         let following = self.text.get(next.start..).unwrap_or_default();
-        // A few characters of what follows, stopping at a paragraph's end.
+        // Reads a few characters of the following text, stopping at a
+        // paragraph's end.
         let mut reach = 0;
         for (count, (offset, ch)) in following.char_indices().enumerate() {
             work::step();
@@ -1320,8 +1298,8 @@ impl ClusterWriter<'_> {
             }
             reach = offset + ch.len_utf8();
         }
-        // Chrome's ASCII rules first, over the base and what follows, as
-        // Blink's `LazyLineBreakIterator` asks them before ICU.
+        // Chrome's ASCII rules go first, as Blink's `LazyLineBreakIterator`
+        // asks them before ICU.
         let mut base_chars = base.chars().rev();
         let (last_char, before) = (base_chars.next(), base_chars.next());
         let key = next.item.key;
@@ -1337,18 +1315,18 @@ impl ClusterWriter<'_> {
                     super::breaks::is_break_opportunity(segmenter, scratch, length)
                 },
             ),
-            // With no base, or nothing after it, there is no pair to break.
+            // With no base text or nothing after it, there is no pair.
             _ => false,
         };
         self.filter_break(&last.item, last.last, last.class, next, answer)
     }
 
-    /// Whether a line may break between `pending`, of `class`, and `next`.
+    /// Returns whether a line may break between `pending`, of `class`, and
+    /// `next`.
     ///
-    /// Chrome's own ASCII rules answer where they decide, and a line stream
-    /// answers where they do not: the paragraph's, or where `inner` says so,
-    /// the current ruby part's, over that part's own text. Then the filters
-    /// apply.
+    /// Chrome's ASCII rules answer where they decide; otherwise the
+    /// paragraph's line stream answers, or the ruby part's if `inner`. Then
+    /// the filters apply.
     fn stream_breaks(
         &mut self,
         inner: bool,
@@ -1356,7 +1334,7 @@ impl ClusterWriter<'_> {
         class: ClusterClass,
         next: &Pending,
     ) -> bool {
-        // Never inside a grapheme, even one an item boundary divided.
+        // Never inside a grapheme, even one split by an item boundary.
         if next.continuation {
             return false;
         }
@@ -1365,8 +1343,8 @@ impl ClusterWriter<'_> {
         } else {
             (0, &mut self.stream)
         };
-        // The character before the cluster's last, which a hyphen's rule
-        // reads, found only where it does.
+        // The character before the cluster's last, which the hyphen rule
+        // reads; found only when asked.
         let before = self.text.get(from..next.start).unwrap_or_default();
         let breaks = next.item.key.ascii_or(
             || before.chars().rev().nth(1),
@@ -1377,10 +1355,12 @@ impl ClusterWriter<'_> {
         self.filter_break(&pending.item, pending.last, class, next, breaks)
     }
 
-    /// Starts the independent stream for the base or annotation beginning
-    /// here. Each part's items are looked ahead once, so dictionary context
-    /// cannot extend into the next part. Style seams resume this stream as
-    /// they resume the ordinary paragraph stream.
+    /// Starts the line stream of the ruby part (base or annotation) that
+    /// begins at `at`.
+    ///
+    /// The stream's text ends where the part does, so dictionary context
+    /// never reaches the next part. Style seams resume it like the
+    /// paragraph's stream.
     #[inline(never)]
     fn begin_inner_part(&mut self, at: usize) {
         self.inner_start = at;
@@ -1406,9 +1386,8 @@ impl ClusterWriter<'_> {
         ));
     }
 
-    /// Applies the filters to `breaks`, the line segmenter's answer at the
-    /// boundary between a cluster of `class` in `item`, whose last character
-    /// is `last`, and `next`.
+    /// Applies the style filters to `breaks`, the segmenter's answer between
+    /// a cluster of `class` in `item` ending with `last`, and `next`.
     fn filter_break(
         &self,
         item: &ItemInfo,
@@ -1417,14 +1396,13 @@ impl ClusterWriter<'_> {
         next: &Pending,
         mut breaks: bool,
     ) -> bool {
-        // Where the config says so, a small kana or the prolonged sound mark
-        // is held to what precedes it under `line-break: normal`, as CSS
-        // Text 3 now has it (csswg-drafts#10363). Line_Break CJ is taken as
-        // NS, as `strict` takes it. UAX #14 still lets NS start a line after
-        // a space or a zero width space (LB18, LB8) and nowhere else; a tab
-        // and an ideographic space are BA. ICU, and Chrome with it, takes CJ
-        // as an ideograph under `normal`. This runs before `break-spaces`,
-        // which breaks after every space it keeps whatever follows.
+        // If configured, a small kana or the prolonged sound mark is held to
+        // what precedes it under `line-break: normal`, as CSS Text 3 says
+        // (csswg-drafts#10363). Line_Break CJ is read as NS, as under
+        // `strict`, so it starts a line only after a space or a zero width
+        // space (LB18, LB8); a tab and an ideographic space are BA. ICU, and
+        // Chrome, read CJ as an ideograph under `normal`. This runs before
+        // `break-spaces`, which breaks after every kept space regardless.
         if self.hold_small_kana
             && breaks
             && next.item.key.is_normal()
@@ -1436,10 +1414,10 @@ impl ClusterWriter<'_> {
         {
             breaks = false;
         }
-        // `break-spaces`: after every preserved space and tab, between two
-        // of them too; and after every other space separator that breaks,
-        // as Chrome breaks between two ideographic spaces there, where
-        // UAX #14 would not (WPT `break-spaces-with-ideographic-space-001`).
+        // `break-spaces` breaks after every preserved space and tab, even
+        // between two, and after every other breaking space separator. Chrome
+        // breaks between two ideographic spaces there, where UAX #14 does not
+        // (WPT `break-spaces-with-ideographic-space-001`).
         if item.collapse == WhiteSpaceCollapse::BreakSpaces && class.is_breaking_space() {
             breaks = true;
         }
@@ -1447,8 +1425,8 @@ impl ClusterWriter<'_> {
         if class == ClusterClass::SoftHyphen && item.hyphens_none {
             breaks = false;
         }
-        // An atomic inline has an opportunity on either side, even where the
-        // character beside it would suppress one. It has none beside GL other
+        // An atomic inline has an opportunity on each side, even where the
+        // neighbouring character would suppress one, except beside GL other
         // than U+00A0, WJ or ZWJ (CSS Text 3, section 5.1). Chrome's answer
         // there is unmeasured.
         if self.any_atomics {
@@ -1459,14 +1437,14 @@ impl ClusterWriter<'_> {
                 breaks = !glues(next.first);
             }
         }
-        // An opportunity a space or a tab makes, which disappears or hangs at
-        // the break, follows whether the box directly holding it wraps. One
-        // between two other characters follows their nearest common ancestor
-        // (CSS Text 3, section 5.1). Chrome decides a space's and a tab's so,
-        // and an other space separator's as any character's. A generated
-        // opportunity follows its own box too, as Chrome's line breaker reads
-        // its item's style: the one collapsing keeps, where white space that
-        // wraps joins a run begun in `nowrap`, and a `<wbr>`.
+        // An opportunity after a space or tab, which disappears or hangs at
+        // the break, follows whether its own box wraps. One between other
+        // characters follows their nearest common ancestor (CSS Text 3,
+        // section 5.1). Chrome treats spaces and tabs so, and other space
+        // separators like any character. A generated opportunity (a `<wbr>`,
+        // or one kept where wrapping white space joins a `nowrap` run)
+        // follows its own box, as Chrome's line breaker reads its item's
+        // style.
         let wraps = if class.is_space_or_tab() || class == ClusterClass::BreakOpportunity {
             item.wraps
         } else {
@@ -1475,8 +1453,8 @@ impl ClusterWriter<'_> {
         breaks && wraps
     }
 
-    /// Whether text wraps at a boundary between `before` and `after`, where
-    /// `before` is no space or tab.
+    /// Returns whether text wraps between `before`, not a space or tab, and
+    /// `after`.
     ///
     /// The `text-wrap-mode` of their nodes' nearest common ancestor decides
     /// (CSS Text 3, section 5.1).
@@ -1489,7 +1467,7 @@ impl ClusterWriter<'_> {
         }
         let nodes = &self.content.nodes;
         let mut node = before.node;
-        // At most one step per node, whatever the parents say.
+        // Bounded to one step per node, even if the parents form a cycle.
         for _ in 0..nodes.len() {
             if nodes.contains(node, after.node) {
                 break;
@@ -1504,7 +1482,7 @@ impl ClusterWriter<'_> {
         self.content.facts.text(text).has(TextFlags::WRAPS)
     }
 
-    /// Ends the paragraph after the last cluster written. Kept out of line
+    /// Ends the paragraph after the last cluster written. Out of line
     /// ([`open_paragraph`](Self::open_paragraph)).
     #[inline(never)]
     fn end_paragraph(&mut self) {
@@ -1513,9 +1491,9 @@ impl ClusterWriter<'_> {
         if paragraph.east_asian {
             flags.insert(ParagraphFlags::HAS_EAST_ASIAN);
         }
-        // Its base level, and where its clusters' levels change where some
-        // differ from it. Resolved only where something right to left or a
-        // control can raise a level, or the block reads right to left.
+        // Resolves the base level and any level changes. `bidi::resolve`
+        // skips the full resolution unless something right to left or a
+        // control can raise a level, or the block is right to left.
         let end = self.out.clusters.end_id();
         let (level, level_flags) = bidi::resolve(
             self.content,
@@ -1544,11 +1522,11 @@ impl ClusterWriter<'_> {
         if let Some(pending) = self.pending.take() {
             self.finish_cluster(pending, None, self.text.len());
         }
-        // Every cluster is written: the last item's end there.
+        // Every cluster is written, so the last item ends here.
         self.out.item_clusters.end = self.out.clusters.end_id();
-        // The paragraph still open ends. Where there is none -- the text is
-        // empty, or ends in a separator -- an empty one does, which is where
-        // the caret sits after a final `<br>`.
+        // Ends the open paragraph. If none is open (the text is empty or ends
+        // in a separator), ends an empty one, where the caret sits after a
+        // final `<br>`.
         if !self.paragraph.open {
             self.open_paragraph();
         }
@@ -1571,13 +1549,13 @@ impl ClusterWriter<'_> {
     }
 }
 
-/// Returns whether the text's end, where an empty last paragraph stands,
-/// opens a box with a margin, border or padding along the line.
+/// Returns whether the empty last paragraph opens a box with an inline
+/// margin, border or padding.
 ///
 /// Such a box makes a line where nothing else would, as Chrome's line
 /// breaker makes one for an open tag with an inline edge. A box closing
-/// there closes on the line before, after a forced break. Kept out of line:
-/// most texts end in a cluster.
+/// there closes on the line before, after the forced break. Cold: most
+/// texts end in a cluster.
 #[cold]
 #[inline(never)]
 fn end_opens_edged_box(content: &Content, analysis: &Analysis) -> bool {

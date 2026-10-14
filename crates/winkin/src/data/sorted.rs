@@ -1,5 +1,5 @@
-//! Sparse tables sorted by a key, the one search that finds an entry by its
-//! key, and the cursor a walk in key order moves instead of searching.
+//! Sparse tables sorted by key, the one search by key, and a cursor for
+//! walks in key order.
 
 use alloc::vec::Vec;
 use core::ops::RangeInclusive;
@@ -7,12 +7,12 @@ use core::ops::RangeInclusive;
 use super::{HeapBytes, sort_by_key};
 use crate::work;
 
-/// An entry a table is sorted by, and found by: its key, which it holds.
+/// An entry that holds the key its table is sorted and searched by.
 pub(crate) trait Keyed {
-    /// What the entries are sorted by.
+    /// The key type.
     type Key: Copy + Ord;
 
-    /// Its key.
+    /// The entry's key.
     fn key(&self) -> Self::Key;
 }
 
@@ -25,13 +25,11 @@ impl<K: Copy + Ord, V> Keyed for (K, V) {
     }
 }
 
-/// The entry of `entries` whose key is `key`, by halving, or `None` where
-/// none has it.
+/// Finds, by binary search, the entry whose key is `key`, or `None`.
 ///
-/// `entries` are sorted by their keys, each key once. This is the one search
-/// by key, whatever holds the entries: a [`SortedTable`], a
-/// [`Table`](super::Table) whose items are in key order, or a slice of one.
-/// A line's settled shifts, for example, are a slice of the whole table.
+/// `entries` are sorted by key, each key once. This is the one search by key
+/// for a [`SortedTable`], a [`Table`](super::Table) in key order, or a slice
+/// of either.
 #[inline]
 pub(crate) fn find_sorted<T: Keyed>(entries: &[T], key: T::Key) -> Option<&T> {
     work::seek();
@@ -39,14 +37,12 @@ pub(crate) fn find_sorted<T: Keyed>(entries: &[T], key: T::Key) -> Option<&T> {
     entries.get(found).filter(|entry| entry.key() == key)
 }
 
-/// A sparse table sorted by key: an entry for each key that has one, in the
-/// order of their keys, found by halving.
+/// A sparse table sorted by key, searched by binary search.
 ///
-/// A stage keeps one where only a few ids of an earlier stage's table have
-/// a value. Examples are the line-edge costs by boundary, the baseline shifts
-/// by node, the emphasis boxes by style, the fits of combined text by run,
-/// and the justified lines. The owner pushes the entries in key order as it
-/// walks them.
+/// Holds entries for the few keys that have a value, such as the content's
+/// keyed boxes and the texts ruby spreads room into. The owner pushes entries
+/// in key order, or pushes them unsorted and calls
+/// [`sort_from`](Self::sort_from).
 pub(crate) struct SortedTable<T> {
     entries: Vec<T>,
 }
@@ -81,20 +77,19 @@ impl<T: Keyed> SortedTable<T> {
         self.entries.push(entry);
     }
 
-    /// Appends `entry`, whose key may come before others pushed since the
-    /// last [`sort_from`](Self::sort_from).
+    /// Appends `entry` out of order, to be sorted by
+    /// [`sort_from`](Self::sort_from).
     pub(crate) fn push_unsorted(&mut self, entry: T) {
         self.entries.push(entry);
     }
 
-    /// How many entries it holds, which marks where [`sort_from`](Self::sort_from)
-    /// starts.
+    /// The number of entries, a mark for [`sort_from`](Self::sort_from).
     pub(crate) fn len(&self) -> usize {
         self.entries.len()
     }
 
-    /// Sorts the entries pushed from `mark` on by key. Their keys are past
-    /// every key before `mark`.
+    /// Sorts the entries from `mark` on by key. Their keys must be past every
+    /// key before `mark`.
     pub(crate) fn sort_from(&mut self, mark: usize) {
         if let Some(tail) = self.entries.get_mut(mark..) {
             sort_by_key(tail, Keyed::key);
@@ -108,28 +103,25 @@ impl<T: Keyed> SortedTable<T> {
         );
     }
 
-    /// The entry whose key is `key`, by halving, or `None` where none has
-    /// it.
+    /// The entry whose key is `key`, or `None`.
     #[inline]
     pub(crate) fn get(&self, key: T::Key) -> Option<&T> {
         find_sorted(&self.entries, key)
     }
 
-    /// Whether it holds no entry.
+    /// Whether the table holds no entry.
     #[inline]
     pub(crate) fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
-    /// A cursor at `key`, found by halving, for a walk that asks keys near
-    /// one another.
+    /// A cursor at `key`, for a walk that asks keys near one another.
     #[inline]
     pub(crate) fn cursor(&self, key: T::Key) -> SortedCursor<'_, T> {
         SortedCursor::new(&self.entries, key)
     }
 
-    /// Returns the entries whose keys run from the range's start to its
-    /// end, both included, by halving.
+    /// Returns the entries whose keys lie in `keys`, both ends included.
     pub(crate) fn range(&self, keys: RangeInclusive<T::Key>) -> &[T] {
         work::seek();
         let (first, last) = (*keys.start(), *keys.end());
@@ -139,26 +131,24 @@ impl<T: Keyed> SortedTable<T> {
         rest.get(..count).unwrap_or_default()
     }
 
-    /// Every entry, in the order of their keys, for the tests to check.
+    /// Every entry, in key order. Tests only.
     #[cfg(test)]
     pub(crate) fn as_slice(&self) -> &[T] {
         &self.entries
     }
 
-    /// Every entry, in the order of their keys, for the tests to check.
+    /// Every entry, in key order. Tests only.
     #[cfg(test)]
     pub(crate) fn iter(&self) -> impl DoubleEndedIterator<Item = &T> + ExactSizeIterator {
         self.entries.iter()
     }
 }
 
-/// Where a walk over a sorted table stands: the entries before the key it
-/// last asked, and those from it.
+/// A position in a walk over entries sorted by key.
 ///
-/// It is sought once by halving. Each later key moves it an entry at a time,
-/// forward or back, so a walk asking keys close together pays for the
-/// entries between them, not for a search. The breaker's line-edge costs
-/// move one with a line's candidates.
+/// It seeks once by binary search; each later key moves it one entry at a
+/// time in either direction, so nearby keys cost the entries between them.
+/// The line breaker walks its line-edge costs this way.
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct SortedCursor<'a, T> {
     entries: &'a [T],
@@ -167,7 +157,7 @@ pub(crate) struct SortedCursor<'a, T> {
 }
 
 impl<'a, T: Keyed> SortedCursor<'a, T> {
-    /// A cursor over `entries`, sorted by their keys, at `key`, by halving.
+    /// A cursor over `entries`, sorted by key, at `key`.
     pub(crate) fn new(entries: &'a [T], key: T::Key) -> Self {
         work::seek();
         let found = entries.partition_point(|entry| entry.key() < key);
@@ -177,9 +167,7 @@ impl<'a, T: Keyed> SortedCursor<'a, T> {
         }
     }
 
-    /// The entry whose key is `key`, or `None` where none has it.
-    ///
-    /// Moves the cursor to `key`, an entry at a time.
+    /// Moves the cursor to `key` and returns its entry, or `None`.
     #[inline]
     pub(crate) fn get(&mut self, key: T::Key) -> Option<&'a T> {
         while let Some((first, rest)) = self.rest.split_first()

@@ -1,4 +1,4 @@
-//! Tests of shaping down a vertical line:
+//! Vertical shaping tests:
 //! - the vertical advance and origin come from `VORG`, `vmtx` or the line,
 //!   as Blink reads them, once a glyph at a size;
 //! - text on its side is shaped across;
@@ -7,12 +7,13 @@
 use super::*;
 use crate::style::FirstLineVariant;
 
-/// A font with vertical metrics in a 1024-unit em, so that at 32 px a unit
-/// is exactly 1/32 px: every glyph 1024 units down the line with a top side
-/// bearing of 128, but 水, 896; and, where `origins`, a `VORG` whose default
-/// origin is 880 and 水's 704. Every glyph is 512 units across. The two
-/// variants have families of their own, [`VERTICAL`] and
-/// [`VERTICAL_ORIGINS`].
+/// Returns a font with vertical metrics in a 1024-unit em, so that at 32 px
+/// a unit is exactly 1/32 px.
+///
+/// Every glyph is 1024 units down the line with a top side bearing of 128,
+/// but 水 is 896. Where `origins`, a `VORG` gives a default origin of 880
+/// and 水's of 704. Every glyph is 512 units across. The two variants have
+/// families of their own, [`VERTICAL`] and [`VERTICAL_ORIGINS`].
 fn vertical_font(origins: bool) -> TestFont {
     let family = if origins {
         "Test Vertical Origins"
@@ -42,7 +43,8 @@ const VERTICAL_ORIGINS: [FontFamilyName<'static>; 1] = [FontFamilyName::Named(Co
     "Test Vertical Origins",
 ))];
 
-/// `families` at 32 px, set `orientation` in a `vertical-rl` block.
+/// Builds `text` into `layout` in `families` at 32 px, set `orientation` in a
+/// `vertical-rl` block.
 fn vertical_line_layout(
     fixture: &mut Fixture,
     layout: &mut Layout,
@@ -59,7 +61,7 @@ fn vertical_line_layout(
     fixture.build_spans(layout, &block, &[(&style, text)]);
 }
 
-/// Each cluster's glyphs as drawn, with the cluster's advance.
+/// Returns each cluster's glyphs as drawn, with the cluster's advance.
 fn drawn_clusters(fixture: &mut Fixture, layout: &Layout) -> Vec<Vec<Drawn>> {
     let advances = fixture.advances();
     let shaped = layout.shaped().text(FirstLineVariant::Standard);
@@ -70,18 +72,19 @@ fn drawn_clusters(fixture: &mut Fixture, layout: &Layout) -> Vec<Vec<Drawn>> {
         .collect()
 }
 
-/// 1/65536 px of `px`, which each value here is a whole number of.
+/// Returns `px` in 16.16; each value here is a whole number of 1/65536 px.
 fn units(px: f32) -> i32 {
     TextUnit::from_px_truncated(px).raw()
 }
 
 /// Upright text is shaped down the line with the font's vertical metrics as
-/// Blink reads them (`OpenTypeVerticalData`): each glyph's advance its
-/// `vmtx` advance, its origin half its width across and, with no `VORG`,
-/// its top side bearing above the top of its bounds -- this font's glyphs
-/// have none, so the bearing alone -- and each glyph's offsets kept along
-/// the line and over it: drawn 4 px along from its pen (128 units) and 8 px
-/// under the line's centre (half of 512 units across).
+/// Blink reads them (`OpenTypeVerticalData`):
+/// - each glyph's advance is its `vmtx` advance;
+/// - its origin is half its width across and, with no `VORG`, its top side
+///   bearing above the top of its bounds, which this font's glyphs lack;
+/// - its offsets are kept along the line and across it: drawn 4 px along
+///   from its pen (128 units) and 8 px under the line's centre (half of 512
+///   units across).
 #[test]
 fn upright_text_takes_the_fonts_vertical_advance_and_origin() {
     use TextOrientation::Upright;
@@ -189,10 +192,11 @@ fn vertical_metrics_are_read_once_a_glyph_at_a_size() {
     assert_eq!(fixture.cx.shaping().vertical_counts(), (1, 2));
 }
 
-/// A font with no vertical metrics -- Ahem has no `vhea` -- is set upright
-/// as Blink sets it: each glyph as tall as the font's line, its ascent and
-/// descent each a whole pixel, and its origin the ascent above its own.
-/// At 30 px Ahem is 24 over and 6 under: 30 a glyph, drawn 24 along.
+/// A font with no vertical metrics, such as Ahem with no `vhea`, is set
+/// upright as Blink sets it. Each glyph is as tall as the font's line, its
+/// ascent and descent each a whole pixel, and its origin is the ascent
+/// above its own. At 30 px Ahem is 24 over and 6 under: 30 a glyph, drawn
+/// 24 along.
 #[test]
 fn a_font_with_no_vertical_metrics_is_set_by_its_line() {
     use TextOrientation::Upright;
@@ -218,8 +222,9 @@ fn a_font_with_no_vertical_metrics_is_set_by_its_line() {
 }
 
 /// Under `mixed`, Latin is on its side, shaped across as horizontal text
-/// is, one compact glyph a cluster at its own advance; an ideograph beside
-/// it is shaped down the line. Under `sideways` nothing is.
+/// is, one compact glyph a cluster at its own advance, and an ideograph
+/// beside it is shaped down the line. Under `sideways` nothing is shaped
+/// down the line.
 #[test]
 fn text_on_its_side_is_shaped_across() {
     use TextOrientation::{Mixed, Sideways};
@@ -239,11 +244,12 @@ fn text_on_its_side_is_shaped_across() {
     );
 }
 
-/// A Japanese font with vertical metrics, every glyph an em down the line,
-/// and `vhal` where `vhal`, which sets each full-width mark in half its em
-/// down a vertical line: an opening mark moved up half and its advance
-/// halved, a closing one's advance halved. It has its horizontal `halt`
-/// too where `halt`.
+/// Returns a Japanese font with vertical metrics, every glyph an em down the
+/// line, with `vhal` where `vhal` and `halt` where `halt`.
+///
+/// `vhal` sets each full-width mark in half its em down a vertical line: an
+/// opening mark moved up half and its advance halved, a closing one's
+/// advance halved.
 fn vertical_punct(family: &str, halt: bool, vhal: bool) -> TestFont {
     let mut font = TestFont::cjk(family, halt);
     font.vertical = Some(TestVertical {
@@ -264,11 +270,12 @@ fn vertical_punct(family: &str, halt: bool, vhal: bool) -> TestFont {
 }
 
 /// Down a vertical line a mark gives its blank back in the font's `vhal`,
-/// found by the same rule as across one and applied where the text is
-/// upright, as Blink's `HanKerning` trims `!is_horizontal`; a font with only
-/// the horizontal `halt` trims nothing there, as its `halt` would move its
-/// marks across the line. Text set on its side is shaped across, and trims
-/// with `halt`.
+/// found by the same rule as across one, as Blink's `HanKerning` trims
+/// `!is_horizontal`.
+///
+/// A font with only the horizontal `halt` trims nothing upright, since its
+/// `halt` would move its marks across the line. Text set on its side is
+/// shaped across, and trims with `halt`.
 #[test]
 fn a_mark_gives_its_blank_back_down_a_vertical_line_in_the_fonts_vhal() {
     use TextOrientation::{Sideways, Upright};
@@ -306,7 +313,7 @@ fn a_mark_gives_its_blank_back_down_a_vertical_line_in_the_fonts_vhal() {
         );
     }
     // The second opening mark is drawn half an em up the line, into the
-    // half it keeps: its offset along the line less by half an em than an
+    // half it keeps: its offset along the line is half an em less than an
     // unmoved glyph's.
     let (_, layout) = set(&mut fixture, &VHAL, Upright, "漢「「漢");
     let shaped = layout.shaped().text(FirstLineVariant::Standard);

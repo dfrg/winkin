@@ -15,7 +15,7 @@ pub enum LineHeight {
     ///
     /// It inherits as the factor.
     Factor(f32),
-    /// A length in pixels.
+    /// A length in CSS pixels.
     Px(f32),
 }
 
@@ -36,7 +36,7 @@ impl Same for LineHeight {
     }
 }
 
-/// `vertical-align`. Not inherited, but shifts accumulate down the tree.
+/// `vertical-align`. Not inherited, but nested shifts add up.
 #[derive(Copy, Clone, Debug, Default)]
 pub enum VerticalAlign {
     /// Aligns with the parent baseline. The initial value.
@@ -56,7 +56,7 @@ pub enum VerticalAlign {
     Top,
     /// The bottom on the line box's bottom.
     Bottom,
-    /// Raised by this many pixels.
+    /// Raised by this many CSS pixels.
     Px(f32),
     /// Raised by this fraction of the element's line height.
     Fraction(f32),
@@ -81,7 +81,8 @@ impl Same for VerticalAlign {
 
 /// `dominant-baseline`: the baseline used for parent alignment.
 ///
-/// Chrome ignores it on inline boxes. winkin can apply it through configuration.
+/// Ignored on inline boxes unless
+/// [`Config::dominant_baseline`](crate::config::Config::dominant_baseline) applies it.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub enum DominantBaseline {
     /// Alphabetic, in horizontal text. The initial value.
@@ -114,8 +115,8 @@ pub enum InitialLetterAlign {
 style_struct! {
     /// `initial-letter` and `initial-letter-align`.
     ///
-    /// Applies only when `size > 1` and `sink >= 1`. Font metrics determine
-    /// the used letter size during layout.
+    /// Applies only where `size > 1` and `sink >= 1`. Layout works out the
+    /// letter's used size from font metrics.
     pub struct InitialLetter {
         /// Its height, in lines.
         pub size: f32,
@@ -155,7 +156,7 @@ pub enum TextBoxTrim {
 }
 
 impl TextBoxTrim {
-    /// Which ends of its block it trims: the start, and the end.
+    /// Returns which ends of its block it trims, as `(start, end)`.
     pub(crate) fn sides(self) -> (bool, bool) {
         match self {
             Self::None => (false, false),

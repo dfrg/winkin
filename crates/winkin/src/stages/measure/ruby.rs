@@ -1,27 +1,11 @@
-//! Ruby columns and emphasis marks: the parts that don't depend on the
-//! width.
+//! Ruby and emphasis-mark em boxes, and how `ruby-align` spreads a column's
+//! room.
 //!
-//! **A ruby column** is a base and the annotations set beside it, one level
-//! each. It is sized once, as Chrome's `HandleRuby` sizes a column while it
-//! breaks a line. It is as wide as the widest of its base and its levels,
-//! each measured as a line of its own at its max-content.
-//! - A wider annotation leaves room around and inside the base.
-//!   `ruby-align` places that room, as Chrome's `ApplyRubyAlign` does.
-//! - Some of the room may reach over the text beside the column, as
-//!   `ruby-overhang` and `Config::ruby_overhang` say.
-//! - The prefix holds what the column takes along the line. Line layout
-//!   spreads the room from the insets kept here. The breaker reads how far
-//!   the annotations reach across the line from the em boxes kept here.
-//!
-//! **An emphasis mark** is set like an annotation of its character, in the
-//! same font at half the size (CSS Text Decoration 4, "emphasis marks"). Its
-//! em box is the font's, normalized to half the computed size, and rounded
-//! as Chrome rounds the size of the font it draws marks in
-//! (`SimpleFontData::EmphasisMarkFontData`). Each row of text facts that
-//! sets marks has one, in `TextMetrics::mark`.
-//!
-//! Nothing here allocates: the columns and their levels go into the stage's
-//! tables, which keep their capacity.
+//! A ruby column is as wide as the widest of its base and its annotation
+//! levels, each measured at its max-content, as Chrome's `HandleRuby` sizes
+//! it. [`RubySpread`] places the room a narrower part leaves. An emphasis
+//! mark is set like an annotation of its character, at half the size (CSS
+//! Text Decoration 4, "emphasis marks"). Nothing here allocates.
 
 use core::ops::Range;
 
@@ -34,22 +18,16 @@ use crate::unit::LayoutUnit;
 use super::Extent;
 use crate::work;
 
-/// Returns the em box of the text of `clusters`, set for the font request
-/// `request`, around its baseline, as Chrome's `ComputeEmHeight` gives a
-/// text item's.
+/// Returns the em box of `clusters`' text in font request `request`, around
+/// its baseline, as Chrome's `ComputeEmHeight` gives a text item's.
 ///
-/// It is the union of the em boxes of the fonts its clusters are drawn in,
-/// each rounded up to a whole pixel, and no taller than its primary font's
-/// ascent and descent. A ruby annotation is set against it, and an emphasis
-/// mark is set on it. It is [`Extent::NONE`] for no clusters.
+/// The box unites the em boxes of the fonts the clusters are drawn in, each
+/// rounded up to a whole pixel, capped at the primary font's ascent and
+/// descent. The `variant`'s font runs are walked from `first`, the run
+/// holding the first cluster.
 ///
-/// The `variant`'s font runs are walked from `first`, the run holding the
-/// first of `clusters`. The caller's walk holds it, or a reader of one
-/// fragment seeks it.
-///
-/// Also returns whether every font the text is drawn in has that one em
-/// box. It is `false` where two fonts' em boxes differ, or where a run has
-/// no font.
+/// The `bool` says every font has the same em box. Returns
+/// `(Extent::NONE, false)` for no clusters or no primary font.
 pub(crate) fn em_box(
     fonts: &Fonts,
     request: FontRequestId,
@@ -86,11 +64,10 @@ pub(crate) fn em_box(
     (em, uniform)
 }
 
-/// Returns the em box of the primary font of the font request `request`,
-/// rounded up to whole pixels and no taller than its ascent and descent.
-///
-/// An empty ruby base stands for it, as Chrome's empty base line takes its
-/// ruby container's font.
+/// Returns the em box of `request`'s primary font, rounded up to whole
+/// pixels and capped at its ascent and descent, for an empty ruby base, as
+/// Chrome's empty base line takes its container's font. [`Extent::NONE`]
+/// without a primary font.
 pub(super) fn strut_em(fonts: &Fonts, request: FontRequestId) -> Extent {
     let Some(metrics) = fonts.primary_font(request).map(|used| &used.metrics) else {
         return Extent::NONE;
@@ -101,37 +78,26 @@ pub(super) fn strut_em(fonts: &Fonts, request: FontRequestId) -> Extent {
     )
 }
 
-/// Where a ruby column's room goes around and inside what it spreads, as
-/// `ruby-align` places it.
-///
-/// What it spreads is a base or an annotation. The room goes at its logical
-/// start, among its justification opportunities, and at its end. The end
-/// gets whatever the start and the inside leave.
+/// The placement of a ruby column's room around and inside a base or an
+/// annotation, as `ruby-align` sets it. The end takes what is left.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
 pub(crate) struct RubySpread {
-    /// The room before its first cluster, at its logical start.
+    /// The room before the first cluster, at the logical start.
     pub(crate) start: LayoutUnit,
-    /// The room its opportunities share, as Chrome's `JustifyResults`
+    /// The room the opportunities share, as Chrome's `JustifyResults`
     /// spreads it. The last takes what the division leaves.
     pub(crate) inside: LayoutUnit,
 }
 
 impl RubySpread {
-    /// Returns how `space`, the room a base narrower than its column has, is
-    /// placed around and inside it.
+    /// Returns the spread of `space` beside a base with `opportunities`, as
+    /// Chrome's `ApplyRubyAlign` places it on a justified base line.
     ///
-    /// `opportunities` counts its clusters' justification opportunities.
-    /// Chrome's `ApplyRubyAlign` places the room on a base line, whose
-    /// `text-align` is always `justify`:
-    ///
-    /// - `space-around`: a base with opportunities is inset each side by half
-    ///   of what one more opportunity would take. The rest goes to its
-    ///   opportunities (`ApplyJustification` for `kRubyBase`). A base with
-    ///   none is centred.
-    /// - `space-between`: all of it to the opportunities, or centred where
-    ///   there are none;
-    /// - `center`: half each side;
-    /// - `start`: all of it after the base.
+    /// - `space-around`: an inset each side of half what one more
+    ///   opportunity would take, the rest to the opportunities.
+    /// - `space-between`: all to the opportunities.
+    /// - `center`, or either of those without opportunities: centred.
+    /// - `start`: all after the base.
     pub(crate) fn from_base(align: RubyAlign, space: LayoutUnit, opportunities: u32) -> Self {
         if space <= LayoutUnit::ZERO {
             return Self::default();
@@ -152,19 +118,14 @@ impl RubySpread {
         }
     }
 
-    /// Returns how `space`, the room an annotation narrower than its column
-    /// has, is placed around and inside it.
+    /// Returns the spread of `space` beside an annotation, as Chrome's
+    /// `ApplyRubyAlign` places it on an annotation line.
     ///
-    /// Chrome's `ApplyRubyAlign` places it on an annotation line.
-    /// `opportunities` counts its justification opportunities, `font_size`
-    /// is its computed size, `text_align` is the block's, and `rtl` says it
-    /// reads right to left.
-    ///
-    /// Under `space-around`, it is justified where the block is set at its
-    /// start or justified. It is then inset by half what one more
-    /// opportunity would take, and never by more than one full-width
-    /// character either side (`kRubyText`). Otherwise it is set as the
-    /// block sets its lines.
+    /// Only `space-around` differs from [`from_base`](Self::from_base). In a
+    /// block set at its start or justified, the inset is at most one
+    /// full-width character (`font_size` pixels) each side, or the room is
+    /// centred without opportunities. Otherwise the block's `text-align`
+    /// sets it.
     pub(crate) fn from_annotation(
         align: RubyAlign,
         text_align: TextAlign,
@@ -176,8 +137,7 @@ impl RubySpread {
         if space <= LayoutUnit::ZERO || align != RubyAlign::SpaceAround {
             return Self::from_base(align, space, opportunities);
         }
-        // The spread that puts `left` of the room on the physical left,
-        // measured from the logical start.
+        // Puts `left` of the room on the physical left, as a logical start.
         let from_left = |left: LayoutUnit| Self {
             start: if rtl { space - left } else { left },
             inside: LayoutUnit::ZERO,
@@ -199,9 +159,8 @@ impl RubySpread {
         }
     }
 
-    /// Returns `space` spread under `space-around` over `opportunities`, one
-    /// or more: an inset each side of half what one more opportunity would
-    /// take, no more than `cap` in all, and the rest at the opportunities.
+    /// Returns `space` spread under `space-around` over one or more
+    /// `opportunities`, the inset capped at `cap`.
     fn from_space_around(space: LayoutUnit, opportunities: u32, cap: Option<LayoutUnit>) -> Self {
         let count = i32::try_from(opportunities.saturating_add(1)).unwrap_or(i32::MAX);
         let inset = space.divided(count);

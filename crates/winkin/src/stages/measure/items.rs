@@ -1,4 +1,4 @@
-//! Stored items measurements.
+//! Per-item tables: extents, em boxes, and the boxes that keep a fragment.
 
 use crate::data::{Id, Table, find_sorted};
 use crate::stages::content::{ItemId, NodeId};
@@ -6,14 +6,10 @@ use crate::work;
 
 use super::{EmBoxId, Extent, KeptBoxId};
 
-/// How far each item reaches either side of its baseline, and the strut.
-///
-/// A line box's extent is the union of the strut and its items' extents.
-/// Each item takes 8 bytes.
+/// Each item's extent around its baseline (8 bytes), and the strut.
 pub(crate) struct ItemExtents {
     pub(super) extents: Table<ItemId, Extent>,
-    /// The strut: the block's own font and line height, which every line
-    /// box starts from.
+    /// The block's strut, which every line box's extent includes.
     pub(crate) strut: Extent,
 }
 
@@ -30,55 +26,46 @@ impl ItemExtents {
         self.strut = Extent::NONE;
     }
 
-    /// Makes room for `count` items' extents.
+    /// Reserves room for `count` more items' extents.
     pub(super) fn reserve(&mut self, count: usize) {
         self.extents.reserve(count);
     }
 
-    /// Gives the next item `extent`.
+    /// Appends the next item's `extent`.
     pub(super) fn push(&mut self, extent: Extent) {
         self.extents
             .push_bounded(extent, "an extent an item, which an ItemId names");
     }
 
-    /// Gives `item` `extent` again, where it has one.
+    /// Replaces the extent of `item`; does nothing past the last item.
     pub(super) fn set(&mut self, item: ItemId, extent: Extent) {
         if let Some(kept) = self.extents.get_mut(item) {
             *kept = extent;
         }
     }
 
-    /// How far `item` reaches either side of its baseline, or
-    /// [`Extent::NONE`] past the last.
+    /// Returns the extent of `item`, or [`Extent::NONE`] past the last.
     #[inline]
     pub(crate) fn get(&self, item: ItemId) -> Extent {
         self.extents.get(item).copied().unwrap_or(Extent::NONE)
     }
 
-    /// How many items have an extent, which the tests check is every one.
+    /// Returns how many items have an extent.
     #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.extents.len()
     }
 }
 
-/// The em box of each text item's text, as [`em_box`](super::ruby::em_box)
-/// finds it.
+/// The em box of each text item, as [`em_box`](super::ruby::em_box) computes
+/// it, for placing ruby annotations and emphasis marks without per-line work.
 ///
-/// A line reckons the room for its ruby annotations and emphasis marks from
-/// these boxes. They depend on the text and its fonts, not the width, so they
-/// are worked out once here rather than for each line on every relayout.
-///
-/// The table is kept only where the content has ruby or emphasis marks, and
-/// only for items whose fonts all share one em box. A line holding part of
-/// an item drawn in two fonts asks [`em_box`](super::ruby::em_box) of its
-/// part. Items share a few distinct boxes, one per font and size, so each
-/// item names its box in a table of them: a byte per item and 8 per box.
+/// Filled only where the content has ruby or emphasis marks, and only for
+/// items whose fonts share one em box; other items fall back to `em_box`.
+/// Each item holds a one-byte [`EmBoxId`] into a table of distinct boxes.
 pub(crate) struct ItemEmBoxes {
-    /// Each item's em box in `boxes`.
     pub(super) items: Table<ItemId, EmBoxId>,
-    /// The distinct em boxes, the first [`Extent::NONE`], which an item
-    /// keeping none names and no text's em box is.
+    /// The distinct em boxes; the first is [`Extent::NONE`].
     pub(super) boxes: Table<EmBoxId, Extent>,
 }
 
@@ -95,9 +82,8 @@ impl ItemEmBoxes {
         self.boxes.clear();
     }
 
-    /// Gives the next item `em`, or none: none too where the text has more
-    /// distinct em boxes than an `EmBoxId` names, which a reader then asks
-    /// [`em_box`](super::ruby::em_box) of.
+    /// Appends the next item's em box, `em`. Past the [`EmBoxId`] limit the
+    /// item gets none.
     pub(super) fn push(&mut self, em: Option<Extent>) {
         let boxes = self.boxes.as_slice();
         let found = em.and_then(|em| boxes.iter().rposition(|&kept| kept == em));
@@ -110,16 +96,15 @@ impl ItemEmBoxes {
             .push_bounded(id, "an em box an item, which an ItemId names");
     }
 
-    /// Starts the table with none, which the items keeping none name.
+    /// Pushes [`Extent::NONE`] as the first box, the one
+    /// [`EmBoxId::NONE`] names.
     pub(super) fn start(&mut self) {
         if self.boxes.push(Extent::NONE) != Some(EmBoxId::NONE) {
             debug_assert!(false, "a table filled once a build, from empty");
         }
     }
 
-    /// The em box of whatever of `item`'s text a line holds, where it is
-    /// kept: `None` for an item that is not text, whose fonts' em boxes
-    /// differ, of content with neither ruby nor marks, or past the last.
+    /// Returns the em box of `item`, or `None` where none is stored.
     #[inline]
     pub(crate) fn get(&self, item: ItemId) -> Option<Extent> {
         let id = *self.items.get(item)?;
@@ -127,12 +112,8 @@ impl ItemEmBoxes {
     }
 }
 
-/// The inline boxes that keep a fragment of their own, each with its extent
-/// around its baseline.
-///
-/// The extent is the primary font's ascent and descent plus the padding and
-/// border across the line. Boxes are in node order, which is the order they
-/// open in. A box with no entry is culled.
+/// The inline boxes that keep a fragment, in node order, each with its
+/// extent around its baseline. A box with no entry is culled.
 pub(crate) struct KeptBoxes {
     pub(super) boxes: Table<KeptBoxId, (NodeId, Extent)>,
 }
@@ -148,36 +129,28 @@ impl KeptBoxes {
         self.boxes.clear();
     }
 
-    /// The extent of `node`'s box fragment around its baseline, by halving,
-    /// or `None` where the box is culled, or `node` is no inline box.
+    /// Returns the extent of `node`'s box fragment, or `None` where the box
+    /// is culled or `node` is not an inline box.
     pub(crate) fn get(&self, node: NodeId) -> Option<Extent> {
         find_sorted(self.boxes.as_slice(), node).map(|&(_, extent)| extent)
     }
 
-    /// The extent of kept box `at` around its baseline, or `None` past the
-    /// last.
+    /// Returns the extent of kept box `at`, or `None` past the last.
     #[inline]
     pub(crate) fn extent(&self, at: KeptBoxId) -> Option<Extent> {
         self.boxes.get(at).map(|&(_, extent)| extent)
     }
 
-    /// The first kept box at or after `node`, by halving: one past the last
-    /// where none is.
-    ///
-    /// A walk over boxes seeks this once, then moves with
-    /// [`walk_to`](Self::walk_to).
+    /// Returns the first kept box at or after `node`, or one past the last.
+    /// A walk calls this once, then [`walk_to`](Self::walk_to).
     pub(crate) fn first_from(&self, node: NodeId) -> KeptBoxId {
         work::seek();
         let boxes = self.boxes.as_slice();
         KeptBoxId::new(boxes.partition_point(|&(kept, _)| kept < node))
     }
 
-    /// The first kept box at or after `node`, walked to from `from` a row at
-    /// a time, forward or back.
-    ///
-    /// A reader meeting boxes near one another, as line layout opens them
-    /// in node order, passes each row once. Box `node` is kept where the
-    /// row found is its own.
+    /// Returns the first kept box at or after `node`, stepping from `from`
+    /// forward or back.
     #[inline]
     pub(crate) fn walk_to(&self, from: KeptBoxId, node: NodeId) -> KeptBoxId {
         let mut at = from;
@@ -194,14 +167,13 @@ impl KeptBoxes {
         at
     }
 
-    /// The node of kept box `at`, or `None` past the last.
+    /// Returns the node of kept box `at`, or `None` past the last.
     #[inline]
     pub(crate) fn node(&self, at: KeptBoxId) -> Option<NodeId> {
         self.boxes.get(at).map(|&(node, _)| node)
     }
 
-    /// Every kept box's node and extent, in node order, which the tests
-    /// check.
+    /// Returns every kept box's node and extent, in node order.
     #[cfg(test)]
     pub(super) fn iter(&self) -> impl ExactSizeIterator<Item = (NodeId, Extent)> {
         self.boxes.as_slice().iter().copied()

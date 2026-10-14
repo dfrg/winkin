@@ -1,16 +1,19 @@
-//! Coverage tests: charset pages, composed and decomposed forms, what
-//! the shaper substitutes, the best partial font, and clusters no font
-//! draws.
+//! Coverage tests:
+//! - charset pages;
+//! - composed and decomposed forms;
+//! - what the shaper substitutes;
+//! - the best partial font;
+//! - private-use characters and clusters no font draws.
 
 use super::*;
 
-/// Characters on three pages of one charset are covered by it, a character
-/// on a page it has none of is not, nor one it lacks on a page it has: the
-/// page kept answers only for its own characters.
+/// A charset covers characters on three of its pages. It does not cover a
+/// character on a page it lacks, or one it lacks on a page it has. The kept
+/// page answers only for its own characters.
 #[test]
 fn coverage_holds_across_charset_pages() {
     let font = fontwich::Font::from_data(pages().build(), 0);
-    // A cluster of each, as the run loop asks of a font, none of which has
+    // Each string is one cluster, as the run loop asks a font, and none has
     // another form to try.
     let covers = |text: &str| coverage::covers(&font, text, &mut None);
     assert!(covers("A\u{100}\u{4E00}B\u{17F}\u{4EFF}"));
@@ -31,9 +34,9 @@ fn coverage_holds_across_charset_pages() {
 }
 
 /// A cluster a font lacks as written is covered composed, where the font has
-/// the precomposed letter and not the mark, or decomposed, where it has the
-/// letter and the mark and not the precomposed one, as harfrust's
-/// normalizer draws them.
+/// the precomposed letter and not the mark. It is covered decomposed, where
+/// the font has the letter and the mark and not the precomposed one. Both
+/// follow harfrust's normalizer.
 #[test]
 fn a_cluster_is_covered_composed_or_decomposed() {
     let mut fixture = fixture_with(&[marks()]);
@@ -51,8 +54,8 @@ fn a_cluster_is_covered_composed_or_decomposed() {
     assert_eq!(fixture.families(&layout), ["Test Acute Marks"]);
 }
 
-/// The allowances mirror what the shaper draws: a space separator as the
-/// plain space, U+2011 as U+2010, and a missing joiner as nothing. A tab
+/// Coverage allows what the shaper substitutes: the plain space for a space
+/// separator, U+2010 for U+2011, and nothing for a missing joiner. A tab
 /// draws nothing and keeps the font before it. A visible character the font
 /// lacks still falls back.
 #[test]
@@ -83,7 +86,7 @@ fn what_the_shaper_substitutes_counts_as_covered() {
 }
 
 /// Where no font draws a whole cluster, the one drawing its base wins over
-/// one drawing more of its marks, and default-ignorables count for nothing.
+/// one drawing more of its marks.
 #[test]
 fn the_best_partial_font_draws_the_base() {
     let mut fixture = fixture_with(&[marks(), only_marks()]);
@@ -96,12 +99,12 @@ fn the_best_partial_font_draws_the_base() {
     assert_eq!(fixture.families(&layout), ["Test Acute Marks"]);
 }
 
-/// Only the listed families draw a private-use character or a noncharacter:
-/// the platform's fallback is not asked for one, as Blink's
-/// `FallbackFontForCharacter` asks for none
-/// (`font-unicode-PUA-primary-font`). A fallback font that maps U+E000 and
-/// U+FDD0 draws neither beside a primary of ASCII, which draws them as its
-/// missing glyph. Listed, it draws both.
+/// Only the listed families draw a private-use character or a noncharacter.
+/// Platform fallback is not asked for one, as Blink's
+/// `FallbackFontForCharacter` asks for none (WPT's
+/// `font-unicode-PUA-primary-font`). A fallback font that maps U+E000 and
+/// U+FDD0 draws neither; the ASCII primary draws them as its missing glyph.
+/// Listed, the font draws both.
 #[test]
 fn a_private_use_character_falls_back_to_no_platform_font() {
     let ascii = TestFont::new("Test Bare Ascii", &[(0x20, 0x7E)]);

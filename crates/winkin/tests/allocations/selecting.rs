@@ -7,8 +7,8 @@ use fontwich::Collection;
 use winkin::style::{ComputedStyle, FontFamilyName, FontGroup, FontWeight, Language, TextGroup};
 use winkin::{BuildOptions, ComputedBlockStyle, Context, Layout, NodeKey, SharedFonts};
 
-/// Ahem, and a CJK font that Han and kana fall back to from it, which
-/// has digits and spaces too, as Ahem is asked for first.
+/// Ahem, and a CJK font with digits and spaces that Han and kana fall back
+/// to from Ahem.
 fn collection() -> Collection {
     let han = TestFont::new(
         "Test Han",
@@ -23,8 +23,8 @@ fn collection() -> Collection {
     test_fonts::collection(&[han], han_fallback("Test Han"))
 }
 
-/// `text` in paragraphs in `language`, asking for Ahem, some of it in a
-/// bold span at another size: two styles, two used fonts, a fallback
+/// Builds `text` in paragraphs in `language`, asking for Ahem, some of it in
+/// a bold span at another size: two styles, two used fonts, and a fallback
 /// font for the Han.
 fn prose(layout: &mut Layout, cx: &mut Context, language: &str, text: &str) {
     let families = [FontFamilyName::named("Ahem")];
@@ -63,11 +63,11 @@ fn prose(layout: &mut Layout, cx: &mut Context, language: &str, text: &str) {
     assert!(b.finish().is_complete());
 }
 
-/// Selecting fonts again allocates nothing: the family lists, the fonts
-/// each tries and the instances are the context's, found by hash, and the
-/// fonts and the scratch keep their capacity. So for Latin set in the
-/// font asked for, for Han falling back from it, and for the two mixed,
-/// where the fallback's runs end at every Latin letter, digit and space.
+/// Selecting fonts again allocates nothing.
+///
+/// The family lists, fallback lists and instances are the context's, found
+/// by hash, and the fonts and scratch keep their capacity. Covers Latin in
+/// the font asked for, Han falling back, and the two mixed.
 #[test]
 fn selecting_fonts_allocates_nothing_warm() {
     let documents = [

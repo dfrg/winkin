@@ -1,4 +1,4 @@
-//! Tests of shaping with the font's full features:
+//! Shaping tests with a font's full features:
 //! - a variable font shaped at its coordinates, two instances of it apart in
 //!   one paragraph;
 //! - synthesized small capitals fed uppercased at their size, with Turkish
@@ -9,8 +9,8 @@
 use super::*;
 use crate::style::FirstLineVariant;
 
-/// ASCII, the sharp s and the Turkish capital dotted I, varying in weight
-/// from 100 to 900 about 400, 200 units wider at 900.
+/// Returns a font of ASCII, the sharp s and the Turkish capital dotted I,
+/// varying in weight from 100 to 900 about 400, 200 units wider at 900.
 fn cased() -> TestFont {
     let mut font = TestFont::new("Test Cased", &[(0x20, 0x7E), (0xDF, 0xDF), (0x130, 0x131)]);
     font.axes = vec![TestAxis {
@@ -26,7 +26,7 @@ fn cased() -> TestFont {
 const CASED: [FontFamilyName<'static>; 1] = [FontFamilyName::Named(Cow::Borrowed("Test Cased"))];
 
 /// A variable font is shaped at the coordinates its used font holds, so its
-/// advances move with its axes: at 700 the weight axis is 0.6 of the way to
+/// advances move with its axes. At 700 the weight axis is 0.6 of the way to
 /// its end, which adds 120 of the 200 units every advance gains there.
 #[test]
 fn a_variable_font_is_shaped_at_its_coordinates() {
@@ -76,9 +76,11 @@ fn instances_of_one_font_shape_apart_in_one_paragraph() {
 
 /// Synthesized small capitals are fed to the shaper uppercased, each
 /// character they make labelled with the one it came from, and set at their
-/// own size: `x` is drawn as `X`, and `ß` as `SS`, two glyphs in one
-/// cluster, at 14 px of a 20 px style. The text keeps the author's case, and
-/// a range of the run shaped again is its slice.
+/// own size.
+///
+/// At 14 px of a 20 px style, `x` is drawn as `X`, and `ß` as `SS`, two
+/// glyphs in one cluster. The text keeps the author's case, and a range of
+/// the run shaped again is its slice.
 #[test]
 fn synthesized_small_caps_are_fed_uppercased_at_their_size() {
     let font = cased();
@@ -141,8 +143,8 @@ fn turkish_small_caps_dot_the_capital_i() {
     assert_eq!(ids(&layout), [vec![font.glyph('I')]]);
 }
 
-/// `font-kerning: none` turns the font's kerning off, `kern` among the
-/// features the run is shaped with.
+/// `font-kerning: none` turns the font's kerning off, with `kern` off among
+/// the features the run is shaped with.
 #[test]
 fn font_kerning_none_leaves_the_pairs_apart() {
     let mut fixture = fixture();
@@ -156,8 +158,8 @@ fn font_kerning_none_leaves_the_pairs_apart() {
     assert!(apart > kerned, "{apart} against {kerned}");
 }
 
-/// A font that tracks by its point size, as San Francisco's `trak` does:
-/// nothing at 10 points and 900 units at 40, read between them.
+/// Returns a font that tracks by its point size, as San Francisco's `trak`
+/// does: nothing at 10 points and 900 units at 40, read between them.
 fn tracked() -> TestFont {
     let mut font = TestFont::new("Test Tracked", &[(0x20, 0x7E)]);
     font.tracking = vec![(10.0, 0), (40.0, 900)];
@@ -167,15 +169,17 @@ fn tracked() -> TestFont {
 const TRACKED: [FontFamilyName<'static>; 1] =
     [FontFamilyName::Named(Cow::Borrowed("Test Tracked"))];
 
-/// The shaper is told the style's computed size as its point size, as
-/// Chrome hands HarfBuzz the specified size (`HarfBuzzShaper::ShapeSegment`
-/// passes `SpecifiedSize` to `hb_font_set_ptem`), not the size the glyphs are
-/// set at, and a `trak` table tracks by it. At 20 px a grapheme gains 300
-/// units, a third of the way from 10 points to 40: 6 px on its 10. Where
-/// `font-size-adjust` sets the glyphs at 10 px it gains the same 300 units of
-/// their em, 3 px, where their own size would give nothing; synthesized
-/// small capitals at 14 px gain 300 units of theirs, 4.2 px, where theirs
-/// would give 120. A line edge shaped again is tracked as its run was.
+/// The shaper is told the style's computed size as its point size, not the
+/// size the glyphs are set at, and a `trak` table tracks by it. Chrome hands
+/// HarfBuzz the specified size the same way (`HarfBuzzShaper::ShapeSegment`
+/// passes `SpecifiedSize` to `hb_font_set_ptem`).
+/// - At 20 px a grapheme gains 300 units, a third of the way from 10 points
+///   to 40: 6 px on its 10.
+/// - Where `font-size-adjust` sets the glyphs at 10 px, it gains the same
+///   300 units of their em, 3 px; their own size would give nothing.
+/// - Synthesized small capitals at 14 px gain 300 units of theirs, 4.2 px;
+///   their own size would give 120.
+/// - A line edge shaped again is tracked as its run was.
 #[test]
 fn the_point_size_is_the_computed_size() {
     let font = tracked();

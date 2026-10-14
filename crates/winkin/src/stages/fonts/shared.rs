@@ -1,10 +1,10 @@
 //! Faces several contexts share, so that each font is read once between them.
 //!
-//! A context's own table of faces stays the first place a face is looked
-//! for, without a lock. Only a face the context lacks locks the shared
-//! table, which hands back a clone of its font or makes the font under the
-//! lock. A font held whole carries what harfrust reads of it lazily, so
-//! every context sharing the face shares that too.
+//! A context looks for a face in its own table first, without a lock. Only
+//! a face the context lacks locks the shared table, which hands back a
+//! clone of its font or makes the font under the lock. A font held whole
+//! carries the tables read from it lazily, harfrust's included, so every
+//! context sharing the face shares those too.
 
 use alloc::sync::Arc;
 use core::fmt;
@@ -14,12 +14,12 @@ use read_fonts::model::{Blob, Font};
 
 use crate::data::{HeapBytes, LruCache, Mutex, define_id};
 
-/// Returns the bytes of the face of `font`, of `family`, and the font held
-/// whole at its default coordinates.
+/// Returns the bytes of `font`, of `family`, and the font held whole at its
+/// default coordinates.
 ///
-/// `hash` is the hash of `key`, the font key. Reads them from `shared`
+/// `hash` is the hash of `key`, the font's key. Takes them from `shared`
 /// where given, and otherwise loads them. Returns `None` for a font whose
-/// bytes are not here or are not a font read-fonts reads.
+/// bytes are missing or are not a font read-fonts reads.
 pub(super) fn face_font(
     shared: Option<&SharedFonts>,
     family: &Family,
@@ -43,17 +43,18 @@ fn load(font: &fontwich::Font) -> Option<(FontBytes, Font)> {
 
 /// Parsed fonts that several [`Context`](crate::Context)s share.
 ///
-/// A font is parsed once for every context created with a clone of the same
-/// `SharedFonts` by [`Context::with_shared_fonts`](crate::Context::with_shared_fonts),
-/// and the tables the shaper reads from it lazily are shared too. The set
-/// holds each font's bytes, so the files are not read again while it holds
-/// them. Layout results are the same as with private contexts.
+/// Contexts created by
+/// [`Context::with_shared_fonts`](crate::Context::with_shared_fonts) with
+/// clones of one `SharedFonts` parse each font once between them, and share
+/// the tables the shaper reads from it lazily. The set holds each font's
+/// bytes, so the files are not read again while it holds them. Layout
+/// results are the same as with contexts that share nothing.
 ///
 /// Clones share one set, which a lock guards: a blocking lock with the
-/// `std` feature, a spin lock without it. Contexts lock it only for a font
-/// they do not hold themselves, so contexts on several threads may share one
-/// set. The set keeps at most the number of fonts it is created
-/// with, dropping those asked for longest ago.
+/// `std` feature, a spin lock without it. A context locks the set only for
+/// a font it does not hold itself, so contexts on several threads may share
+/// one set. The set keeps at most the number of fonts it is created with,
+/// dropping those asked for longest ago.
 ///
 /// ```
 /// use winkin::{Context, SharedFonts};
@@ -85,8 +86,7 @@ struct SharedFaces {
 struct SharedFace {
     /// fontwich's key for the font, which the face is found by.
     key: FontKey,
-    /// The font's family, by which a collection says whether it has the
-    /// font.
+    /// The font's family, which a collection is asked whether it holds.
     family: Family,
     /// The font's bytes, which the set keeps loaded.
     bytes: FontBytes,
@@ -135,8 +135,8 @@ impl SharedFonts {
     /// Finds the face of `font`, of `family`, by its key `key` hashing to
     /// `hash`, or makes it under the lock, and returns its bytes and font.
     ///
-    /// Returns `None` for a font whose bytes are not here
-    /// or are not a font read-fonts reads.
+    /// Returns `None` for a font whose bytes are missing or are not a font
+    /// read-fonts reads.
     fn find_or_make(
         &self,
         family: &Family,
@@ -158,7 +158,8 @@ impl SharedFonts {
             bytes: bytes.clone(),
             font: held.clone(),
         };
-        // A full table keeps nothing, and the context holds the face alone.
+        // Where every id is taken the set keeps nothing, and the context
+        // holds the face alone. The trim keeps the set at its limit.
         let _ = table.insert(hash, face);
         table.trim(|_, _| {});
         #[cfg(test)]

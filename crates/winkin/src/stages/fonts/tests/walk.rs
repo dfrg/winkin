@@ -1,6 +1,6 @@
 //! Tests that choosing fonts for many clusters at once chooses exactly what
-//! asking the list at every cluster chooses, over random text and styles,
-//! variation sequences among them.
+//! asking the list at every cluster chooses, over random text and styles
+//! with variation sequences among them.
 
 use core::iter;
 
@@ -8,10 +8,12 @@ use super::*;
 use crate::style::LengthPercentage;
 use crate::tests::VARIATION_FONTS;
 
-/// Returns what font selection made for `layout`, by what each font is rather than by the
-/// context's ids: every run of the text and of the first line, and every
-/// used font's family, sizes, synthesis, coordinates and features, each
-/// style's primary font, the generated text and the faces wanted.
+/// Returns what font selection made for `layout`, naming each font by what
+/// it is rather than by the context's ids.
+///
+/// That covers every run of the text and of the first line; every used
+/// font's family, sizes, synthesis, coordinates and features; each text's
+/// primary font; the generated text; and the wanted faces.
 fn selection(fixture: &Fixture, layout: &Layout) -> Vec<String> {
     use alloc::format;
     let fonts = layout.fonts();
@@ -60,16 +62,17 @@ fn selection(fixture: &Fixture, layout: &Layout) -> Vec<String> {
 /// asking at every cluster chooses.
 ///
 /// The text is random, of every script, class and form the fixture's fonts
-/// cover in part. It has fallback runs ending where an earlier font covers
-/// again, emoji and symbols with and without selectors, keycap bases, and
-/// variation sequences a later font or no font has. It has graphemes
-/// divided by spans that shape alike and ones that don't, composed and
-/// decomposed forms, what a font fakes, clusters that draw nothing, and a
-/// pending face wanted.
+/// partly cover:
+/// - fallback runs ending where an earlier font covers again;
+/// - emoji and symbols with and without selectors, and keycap bases;
+/// - variation sequences that a later font or no font has;
+/// - graphemes divided by spans that shape alike and ones that don't;
+/// - composed and decomposed forms, and what a font fakes;
+/// - clusters that draw nothing, and a wanted pending face.
 ///
 /// The styles are random too: sizes, lists, small capitals synthesized and
 /// not, positions covered and synthesized, emoji forced either way,
-/// languages, and a first line restyled. Each build makes what the walk that
+/// languages, and a restyled first line. Each build makes what the walk that
 /// asks at every cluster makes, cold and warm, in two contexts fed alike.
 #[test]
 fn choosing_for_many_clusters_at_once_matches_asking_every_cluster() {
@@ -118,9 +121,9 @@ fn choosing_for_many_clusters_at_once_matches_asking_every_cluster() {
                 .iter()
                 .map(|(name, _)| String::from(*name)),
         );
-        // Emoji fall back to their own font, which text never does: an
-        // emoji's candidate list and the text's part after the fonts the
-        // style lists.
+        // Emoji fall back to their own font, which text never reaches, so
+        // an emoji's candidate list and the text's differ after the fonts
+        // the style lists.
         let fallback = han_fallback("Test Han Acute").emoji_family("Test Emoji");
         let collection = collection(&fonts, fallback).with_layer(document.snapshot());
         Fixture::from_collection(collection, &names, StageCheck::Placed(|_| {}))
@@ -252,7 +255,8 @@ fn choosing_for_many_clusters_at_once_matches_asking_every_cluster() {
         let style_of = |random: &mut Lcg| {
             let list = &lists[random.next(lists.len())];
             let mut style = sized(list, sizes[random.next(sizes.len())]);
-            // Mostly the plain case, where the shortcut keeps the most clusters.
+            // Mostly the plain case, where the shortcut keeps the most
+            // clusters.
             if random.next(3) == 0 {
                 style.font.variant_caps = caps[random.next(caps.len())];
             }
@@ -267,8 +271,8 @@ fn choosing_for_many_clusters_at_once_matches_asking_every_cluster() {
             style.text.white_space_collapse = collapses[random.next(collapses.len())];
             style
         };
-        // A first line mostly restyled in size and spacing alone, whose runs
-        // are mapped from the text's, and else in anything.
+        // A first line restyled in size and spacing alone, whose runs are
+        // mapped from the text's, or in any style.
         fn resized<'a>(style: &ComputedStyle<'a>, random: &mut Lcg) -> ComputedStyle<'a> {
             let mut style = *style;
             style.font.size = [20.0, 32.0, 13.3][random.next(3)];
@@ -282,10 +286,9 @@ fn choosing_for_many_clusters_at_once_matches_asking_every_cluster() {
         };
         let mut spans: Vec<(ComputedStyle<'_>, Option<ComputedStyle<'_>>, String)> = Vec::new();
         for _ in 0..1 + random.next(6) {
-            // Half the spans go on in the style before, or one that only
-            // paints otherwise, so that a grapheme a span divides is often
-            // chosen for whole; and a quarter start with a mark, dividing
-            // one.
+            // Half the spans keep the style before, or one that differs only
+            // in painting, so a grapheme a span divides is often chosen for
+            // whole. A quarter start with a mark, dividing one.
             let style = match spans.last() {
                 Some((before, _, _)) if random.next(2) == 0 => ComputedStyle {
                     paints: random.next(2) == 0,
@@ -298,7 +301,7 @@ fn choosing_for_many_clusters_at_once_matches_asking_every_cluster() {
                 1 | 2 => Some(resized(&style, &mut random)),
                 _ => None,
             };
-            // A third of them in plain text alone, whose position runs
+            // A third of them hold plain text alone, whose position runs
             // hold nothing the shortcut does not see.
             let pool = if random.next(3) == 0 {
                 &plain[..]

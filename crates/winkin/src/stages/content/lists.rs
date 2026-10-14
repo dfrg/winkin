@@ -1,24 +1,21 @@
-//! The build's lists, and the one lookup every interned table of the
-//! content finds its rows by.
+//! Interned style lists, and the [`Lookup`] every interned content table
+//! uses.
 //!
-//! There is a table for each kind of list a caller's style names, and each
-//! list is stored once. Each table answers one question, by id.
+//! Each kind of list a style names has a table that stores each distinct
+//! list once and names it by id.
 //!
-//! [`Lists`] lives in the context's content scratch: font selection reads
-//! its feature and variation settings and its hyphen strings during the
-//! build, and nothing reads them after it. Each build clears and refills
-//! it, keeping the capacity, so a warm rebuild allocates nothing. The
-//! content keeps only its [`Languages`], which shaping reads at break time.
-//! A `font-family` list is named by the font context's id for it, which
-//! the font context finds by the list's names.
+//! - [`Lists`] lives in the context's content scratch. Font selection reads
+//!   its feature and variation settings and hyphen strings; measurement
+//!   reads the hyphen strings for generated text. Each build clears it and
+//!   keeps the capacity, so a warm rebuild allocates nothing.
+//! - The content keeps only its [`Languages`].
+//! - A `font-family` list is named by the font context's id for it.
+//! - A table refuses a list that does not fit instead of panicking; the
+//!   style then takes the initial list, and the build reports the count.
 //!
-//! Every table refuses what does not fit rather than panicking. A list that
-//! cannot be stored takes the initial one. The writer counts each, and the
-//! build reports them.
-//!
-//! [`Lists::key`] is where every style's lists enter. It interns them into
-//! their tables and returns the style keyed by their ids, a [`StyleKey`].
-//! The content never stores a key: the writer lowers it into the facts.
+//! Start at [`Lists::key`], which interns a style's lists and returns a
+//! [`StyleKey`]. The writer lowers the key into the facts and keeps it
+//! nowhere.
 
 use alloc::boxed::Box;
 
@@ -45,10 +42,10 @@ define_id! {
 }
 
 define_id! {
-    /// The id of a distinct content language in a layout.
+    /// Names a distinct content language in a layout.
     ///
-    /// The analysis's runs name languages by this id too, so a run is 12
-    /// bytes and every stage asks one table.
+    /// Script runs name languages by this id too, which keeps a
+    /// `ScriptRun` at 12 bytes.
     pub(crate) struct LanguageId(u16);
 }
 
@@ -58,20 +55,17 @@ define_id! {
 }
 
 define_id! {
-    /// Names one setting of an interned `font-feature-settings` list, in
-    /// [`FeatureSettings`]' table of every list's settings.
+    /// Names one setting in the shared value table of [`FeatureSettings`].
     pub(crate) struct FontFeatureId(u32);
 }
 
 define_id! {
-    /// Names one setting of an interned `font-variation-settings` list, in
-    /// [`VariationSettings`]' table of every list's settings.
+    /// Names one setting in the shared value table of [`VariationSettings`].
     pub(crate) struct FontVariationId(u32);
 }
 
 define_id! {
-    /// Names one byte of an interned `hyphenate-character` string, in
-    /// [`HyphenStrings`]' table of every string's bytes.
+    /// Names one byte in the shared byte table of [`HyphenStrings`].
     struct HyphenByteId(u32);
 }
 
@@ -83,31 +77,24 @@ same_by_value!(
 );
 
 impl FeatureSettingsId {
-    /// The empty list, the table's first.
-    ///
-    /// The table stores it only once it stores another list after it (see
+    /// The empty list, stored only once another list is (see
     /// [`InternedLists::intern`]).
     pub(super) const EMPTY: Self = Self(0);
 }
 
 impl VariationSettingsId {
-    /// The empty list, the table's first.
-    ///
-    /// The table stores it only once it stores another list after it (see
+    /// The empty list, stored only once another list is (see
     /// [`InternedLists::intern`]).
     pub(super) const EMPTY: Self = Self(0);
 }
 
 impl LanguageId {
-    /// `und`, for no language given, the table's first.
-    ///
-    /// The table stores it only once it stores another language after it
-    /// (see [`Languages::intern`]).
+    /// `und`, for no language, stored only once another language is (see
+    /// [`Languages::intern`]).
     pub(super) const UNDETERMINED: Self = Self(0);
 }
 
-/// Returns `id` where there is one, else `initial`, counting the
-/// substitution in `replaced`.
+/// Returns `id`, or `initial` counted in `replaced` when `id` is `None`.
 fn or_initial<T>(id: Option<T>, initial: T, replaced: &mut usize) -> T {
     id.unwrap_or_else(|| {
         *replaced = replaced.saturating_add(1);
@@ -115,23 +102,17 @@ fn or_initial<T>(id: Option<T>, initial: T, replaced: &mut usize) -> T {
     })
 }
 
-/// How many values a table holds before it is searched by hash.
+/// The most values a table holds before it is searched by hash.
 const FEW: usize = 8;
 
-/// How the build's tables of interned values find a value they hold
-/// already.
+/// Finds values already held by the build's interned tables.
 ///
-/// While a table holds [`FEW`] or fewer values, it compares the value with
-/// each, newest first. Past that it searches one hash index shared by every
-/// table. A table fills the index with its own values the first time it
-/// holds more.
-///
-/// A build interns a style's lists and facts for each box, and most
-/// builds hold a few of each. Comparing a few is quicker than hashing a
-/// row. The lookup lives in the context's content scratch, so no layout
-/// keeps an index. The one index serves every table, each asking about its
-/// own values (see [`HashIndex`]). The builder's memo keeps an index of its
-/// own (see `memo`).
+/// A table of up to [`FEW`] values is scanned newest first; most builds
+/// hold only a few of each, and comparing a few is cheaper than hashing.
+/// A larger table uses one [`HashIndex`] shared by every table, which it
+/// fills with its earlier values when it first passes [`FEW`]. The lookup
+/// lives in the context's content scratch, so no layout keeps an index. The
+/// style memo has a `Lookup` of its own.
 pub(super) struct Lookup {
     index: HashIndex,
 }
@@ -149,12 +130,11 @@ impl Lookup {
         self.index.clear();
     }
 
-    /// Finds the id, among the `held` values a table holds, of the value
-    /// `same` accepts.
+    /// Finds the id, among a table's first `held` values, that `same`
+    /// accepts.
     ///
-    /// Where there is none, returns the hash `hash` made of the value
-    /// asked for, for [`add`](Self::add), or `None` where nothing was
-    /// hashed.
+    /// On a miss, returns the hash computed by `hash` for
+    /// [`add`](Self::add), or `None` if nothing was hashed.
     pub(super) fn find<I: Id>(
         &self,
         held: usize,
@@ -172,12 +152,11 @@ impl Lookup {
         self.index.find(hash, same).ok_or(Some(hash))
     }
 
-    /// Notes `id`, the value the table has just added.
+    /// Records `id`, the value a table has just added.
     ///
-    /// `hash` is the hash [`find`](Self::find) made of it, if any. The
-    /// value is indexed where the table holds more than a few. The first
-    /// time it does, every value before it is indexed too, each hashed by
-    /// `hash_of`.
+    /// `hash` is the hash from [`find`](Self::find), if any. Nothing is
+    /// indexed until the table passes [`FEW`] values; then every earlier
+    /// value is indexed too, hashed by `hash_of`.
     pub(super) fn add<I: Id>(&mut self, id: I, hash: Option<u64>, hash_of: impl Fn(I) -> u64) {
         let held = id.get() + 1;
         if held <= FEW {
@@ -193,10 +172,8 @@ impl Lookup {
         self.index.insert(h, id);
     }
 
-    /// Returns the id of `value` in `values`, adding it where it is new, or
-    /// `None` where the table is full.
-    ///
-    /// `values` holds each value once: the languages or a table of facts.
+    /// Returns the id of `value` in `values`, adding it if new, or `None` if
+    /// the table is full.
     pub(super) fn intern<I: Id, T: PartialEq + Hash>(
         &mut self,
         values: &mut Table<I, T>,
@@ -223,15 +200,12 @@ heap_bytes! {
     Lookup { index }
 }
 
-/// Lists of fixed-size values, each list stored once.
+/// Lists of `Copy` values, each distinct list stored once.
 ///
-/// It holds the build's `font-feature-settings` ([`FeatureSettings`]), its
-/// `font-variation-settings` ([`VariationSettings`]) and the bytes of its
-/// `hyphenate-character` strings ([`HyphenStrings`]). A fact's id for them
-/// names one. Every list's values share one table: `V` names each value in
-/// it as `I` names each list.
+/// Backs [`FeatureSettings`], [`VariationSettings`] and [`HyphenStrings`].
+/// `I` names a list; `V` names a value in the one table all lists share.
 pub(crate) struct InternedLists<I, V, T> {
-    /// Each list's values.
+    /// Each list's range of `values`.
     lists: Table<I, Range<V>>,
     values: Table<V, T>,
 }
@@ -266,12 +240,11 @@ impl<I: Id, V: Id, T: Same + Copy> InternedLists<I, V, T> {
         fx.finish()
     }
 
-    /// Returns the id of `list`, found through `lookup` and interned if it
-    /// is new, or `None` if it does not fit.
+    /// Returns the id of `list`, interning it if new, or `None` if it does
+    /// not fit.
     ///
-    /// The empty list is the first, and is stored only once a list is
-    /// stored after it. A build that sets no list stores nothing, and
-    /// [`get`](Self::get) still answers the empty list's id past the last.
+    /// The empty list is id 0 and is stored only when the first other list
+    /// is. Until then [`get`](Self::get) returns it as an id past the end.
     fn intern(&mut self, list: &[T], lookup: &mut Lookup) -> Option<I> {
         if list.is_empty() {
             return Some(I::new(0));
@@ -288,7 +261,7 @@ impl<I: Id, V: Id, T: Same + Copy> InternedLists<I, V, T> {
             Ok(id) => return Some(id),
             Err(hash) => hash,
         };
-        // A list is stored whole or not at all, and the empty one first.
+        // A list is stored whole or not at all, after the empty one.
         let first = self.lists.is_empty();
         if self.lists.remaining() < 1 + usize::from(first) {
             return None;
@@ -311,7 +284,7 @@ impl<I: Id, V: Id, T: Same + Copy> InternedLists<I, V, T> {
         Some(id)
     }
 
-    /// Returns the values of the list `id` names, or none past the last.
+    /// Returns the values of list `id`; empty past the end.
     pub(crate) fn get(&self, id: I) -> &[T] {
         self.lists
             .get(id)
@@ -329,10 +302,8 @@ impl<I, V, T> HeapBytes for InternedLists<I, V, T> {
 
 /// The layout's content languages, each stored once.
 ///
-/// A font request's and a script run's [`LanguageId`] names one.
-///
-/// The table is made at the first language other than `und`, then cleared
-/// and kept.
+/// Font requests and script runs name them by [`LanguageId`]. The table is
+/// boxed at the first language other than `und`, then cleared and kept.
 pub(crate) struct Languages {
     languages: Option<Box<Table<LanguageId, Language>>>,
 }
@@ -350,12 +321,11 @@ impl Languages {
         }
     }
 
-    /// Returns the id of a language, `None` being `und`, found through
-    /// `lookup` and interned if it is new.
+    /// Returns the id of `language` (`None` is `und`), interning it if new,
+    /// or `None` if the table is full.
     ///
-    /// `und` is the first language, and is stored only once a language is
-    /// stored after it. A layout whose text sets none keeps nothing, and
-    /// [`get`](Self::get) still answers `und` past the last.
+    /// `und` is id 0 and is stored only when the first other language is.
+    /// Until then [`get`](Self::get) returns it as an id past the end.
     fn intern(&mut self, language: Option<Language>, lookup: &mut Lookup) -> Option<LanguageId> {
         let language = language.unwrap_or(Language::UND);
         if language == Language::UND {
@@ -368,7 +338,7 @@ impl Languages {
         lookup.intern(languages, language)
     }
 
-    /// Returns the language `id` names, or `und` past the last.
+    /// Returns language `id`; `und` past the end.
     pub(crate) fn get(&self, id: LanguageId) -> Language {
         self.languages
             .as_deref()
@@ -384,8 +354,8 @@ heap_bytes! {
 
 /// The build's `hyphenate-character` strings, each stored once.
 ///
-/// A text facts row's [`HyphenStringId`] names one. Each is interned as the
-/// list of its bytes, which come from a `str` and read back as one.
+/// Text facts name them by [`HyphenStringId`]. Each is interned as its
+/// UTF-8 bytes.
 pub(crate) struct HyphenStrings {
     strings: InternedLists<HyphenStringId, HyphenByteId, u8>,
 }
@@ -403,15 +373,14 @@ impl HyphenStrings {
         self.strings.clear();
     }
 
-    /// Returns the id of `string`, found through `lookup` and interned if
-    /// it is new, or `None` if it does not fit.
+    /// Returns the id of `string`, interning it if new, or `None` if it does
+    /// not fit.
     fn intern(&mut self, string: &str, lookup: &mut Lookup) -> Option<HyphenStringId> {
         self.strings.intern(string.as_bytes(), lookup)
     }
 
-    /// Returns the string `id` names, or an empty one past the last.
-    ///
-    /// Only a `str`'s bytes are interned, so they are always valid UTF-8.
+    /// Returns string `id`; empty past the end. The bytes always came from
+    /// a `str`, so they are valid UTF-8.
     pub(crate) fn get(&self, id: HyphenStringId) -> &str {
         str::from_utf8(self.strings.get(id)).unwrap_or_default()
     }
@@ -421,16 +390,12 @@ heap_bytes! {
     HyphenStrings { strings }
 }
 
-/// The build's lists, and the one entry every style's lists come in by.
+/// The build's interned style lists.
 ///
-/// Keying a caller's style interns its lists into these tables, its
-/// language into the content's, and its family list into the font
-/// context's. It returns the style with each list named by its table's id,
-/// a [`StyleKey`]. The writer lowers the key into the facts and keeps it
-/// nowhere. Font selection reads the lists here during the build.
+/// [`key`](Self::key) is the entry for every style's lists.
 pub(crate) struct Lists {
-    /// How every table here, and every table of the content's facts and
-    /// languages, finds a value it holds already.
+    /// The lookup for these tables and for the content's facts and
+    /// languages.
     lookup: Lookup,
     feature_settings: FeatureSettings,
     variation_settings: VariationSettings,
@@ -448,27 +413,22 @@ impl Lists {
         }
     }
 
-    /// The `font-feature-settings` lists the font requests name.
+    /// Returns the `font-feature-settings` lists font requests name.
     pub(crate) fn feature_settings(&self) -> &FeatureSettings {
         &self.feature_settings
     }
 
-    /// The `font-variation-settings` lists the font requests name.
+    /// Returns the `font-variation-settings` lists font requests name.
     pub(crate) fn variation_settings(&self) -> &VariationSettings {
         &self.variation_settings
     }
 
-    /// The `hyphenate-character` strings the text facts name, which font
-    /// selection sets a hyphen in.
+    /// Returns the `hyphenate-character` strings text facts name.
     pub(crate) fn hyphen_strings(&self) -> &HyphenStrings {
         &self.hyphen_strings
     }
 
     /// Empties every table, keeping its capacity.
-    ///
-    /// The initial values, no settings and `und`, take the first ids of
-    /// their tables without being stored, until a value is stored after
-    /// them.
     pub(super) fn clear(&mut self) {
         self.lookup.clear();
         self.feature_settings.clear();
@@ -476,12 +436,11 @@ impl Lists {
         self.hyphen_strings.clear();
     }
 
-    /// Keys `style` for the writer, interning its lists where they are new
-    /// and naming each by its id.
+    /// Returns `style` with each list replaced by its interned id.
     ///
-    /// Its language goes into `languages`, and its family list is named by
-    /// `fonts`. A list that does not fit its table is replaced by the
-    /// initial one, and counted in `replaced`.
+    /// The language is interned in `languages` and the family list in
+    /// `fonts`. A list that does not fit becomes the initial one and is
+    /// counted in `replaced`.
     pub(super) fn key(
         &mut self,
         style: &ComputedStyle<'_>,
@@ -494,7 +453,7 @@ impl Lists {
         let families = fonts.family_list(font.families);
         let language = languages.intern(text.language, lookup);
         let hyphenate_character = match text.hyphenate_character {
-            // `auto`, whatever does or does not fit.
+            // `auto`, which needs no room.
             None => None,
             Some(string) => or_initial(
                 self.hyphen_strings.intern(string, lookup).map(Some),
@@ -522,12 +481,12 @@ impl Lists {
             edges: style.edges,
             ruby: style.ruby,
             paints: style.paints,
+            outlines: style.outlines,
             decorates: style.decorates,
         }
     }
 
-    /// Returns the lookup the content's facts find their rows by, which the
-    /// writer lowers a style with (see `facts`).
+    /// Returns the lookup the writer interns fact rows with.
     pub(super) fn lookup(&mut self) -> &mut Lookup {
         &mut self.lookup
     }

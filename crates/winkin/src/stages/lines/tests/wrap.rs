@@ -1,19 +1,11 @@
-//! `text-wrap-style: balance` and `pretty` tests, in Ahem at 10 px, with
-//! every case Chrome 153 decides measured in it:
-//! - balance evens a paragraph's slack as Chrome's scorer does, weighing a
-//!   picture's opportunity past the space after it;
-//! - balanced lines sit in their band under any `text-align` and
-//!   `text-align-last`;
-//! - the first line's indent and a leading float shrink their lines' rooms;
-//! - few opportunities, a restyled first line and a clamp each balance as
-//!   Chrome does;
-//! - beyond Chrome, every paragraph balances, as do more than six lines,
-//!   a float inside the paragraph and an initial letter;
-//! - `pretty` gives a lone last word company over the last four lines, and
-//!   leaves a last line of a third or of two words alone;
-//! - `Pretty::Even` (beyond Chrome) evens a short ending of two words;
-//! - relayout equals a fresh layout, any width gives valid lines, and the
-//!   work stays bounded.
+//! `text-wrap-style: balance` and `pretty` tests, in 10 px Ahem, with every
+//! case Chrome 153 decides measured there:
+//! - balance as Chrome's scorer does it, with alignment, indents, leading
+//!   floats, few opportunities, a restyled first line and a clamp;
+//! - balance beyond Chrome: every paragraph, more than six lines, a float
+//!   inside the paragraph, an initial letter;
+//! - `pretty` as Chrome does it, and `Pretty::Even`;
+//! - relayout, any width, and bounded work.
 
 use alloc::format;
 use alloc::string::String;
@@ -22,12 +14,12 @@ use alloc::vec::Vec;
 use super::*;
 use crate::config::{Config, Pretty};
 use crate::style::{InitialLetter, LineClamp, OverflowWrap, TextAlignLast, TextWrapStyle};
-// Read only by the step-count tests, which run in debug builds.
+// The step-count tests run only in debug builds.
 #[cfg(debug_assertions)]
 use crate::work;
 
-/// Nine words of Ahem that break greedily at 180 px into lines of 17, 15
-/// and 3 characters.
+/// Nine words that break greedily at 180 px into lines of 17, 15 and 3
+/// characters.
 const NINE: &str = "a bb cccccc d eee fffff gg hhhhhh iii";
 
 /// Returns a block whose `text-wrap-style` is `style`.
@@ -38,8 +30,8 @@ fn wrapping(style: TextWrapStyle) -> ComputedBlockStyle<'static> {
     }
 }
 
-/// Builds `text` in Ahem at 10 px into `layout`, in `block`, with a forced
-/// break at each `\n`.
+/// Builds `text` in 10 px Ahem into `layout`, with a forced break at each
+/// `\n`.
 fn build(fixture: &mut Fixture, layout: &mut Layout, block: &ComputedBlockStyle, text: &str) {
     let style = ahem(10.0);
     fixture.build(
@@ -59,8 +51,7 @@ fn build(fixture: &mut Fixture, layout: &mut Layout, block: &ComputedBlockStyle,
     );
 }
 
-/// Returns each line's text without its trailing white space, as Chrome's
-/// rows read it.
+/// Returns each line's text without trailing white space.
 fn rows(layout: &Layout) -> Vec<String> {
     texts(layout)
         .into_iter()
@@ -68,7 +59,7 @@ fn rows(layout: &Layout) -> Vec<String> {
         .collect()
 }
 
-/// Returns each line's text for `text` in `block` broken `width` wide.
+/// Returns the lines of `text` in `block` laid out `width` wide.
 fn broken(
     fixture: &mut Fixture,
     block: &ComputedBlockStyle,
@@ -81,10 +72,7 @@ fn broken(
     rows(&layout)
 }
 
-/// A host placing each float at its side's edge of the band, as high as
-/// asked.
-///
-/// It keeps every float and rewinds to a checkpoint.
+/// A host that places each float at its side's edge, as high as asked.
 struct Floats {
     width: f32,
     placed: Vec<(FloatSide, f32, f32, f32, f32)>,
@@ -98,7 +86,7 @@ impl Floats {
         }
     }
 
-    /// Returns what the floats leave of the area from `top` to `bottom`.
+    /// Returns the left and right of the room between `top` and `bottom`.
     fn room(&self, top: f32, bottom: f32) -> (f32, f32) {
         let (mut left, mut right) = (0.0f32, self.width);
         for &(side, from, to, start, end) in &self.placed {
@@ -161,17 +149,13 @@ impl Exclusions for Floats {
 
 // Balance ------------------------------------------------------------------
 
-/// Balance evens the paragraph's slack over the greedy count of lines, as
-/// Blink's `ScoreLineBreaker::BalanceBreakPoints` does for six lines or
-/// fewer.
+/// Balance evens the slack over the greedy line count, as Blink's
+/// `ScoreLineBreaker::BalanceBreakPoints` does for up to six lines.
 ///
-/// - It minimizes the sum of each line's room left squared. The narrowest
-///   room keeping three lines would end them at `d`, `gg` and the end
-///   instead. Measured in Chrome 153 at 180 px.
-/// - A 60 px picture in place of `hhhhhh` breaks where the word did, as
-///   Chrome's scorer takes atomic inlines.
-/// - The lines sit in the whole band, so a centred block's lines are
-///   centred in it, 35, 35 and 25 px in, as in Chrome.
+/// - It minimizes the sum of squared slack. Bisecting the room would end
+///   the lines at `d`, `gg` and the end instead.
+/// - A 60 px picture in place of `hhhhhh` breaks where the word does.
+/// - Centred lines are centred in the whole band.
 #[test]
 fn balance_evens_the_slack_as_chromes_scorer_does() {
     let mut fixture = fixture();
@@ -213,9 +197,8 @@ fn balance_evens_the_slack_as_chromes_scorer_does() {
     assert_eq!(lefts, [35.0, 35.0, 25.0]);
     assert!(bands(&layout).iter().all(|&band| band == (0.0, 180.0)));
 
-    // Justified, the text breaks at the same places, as in Chrome 153. The
-    // lines before the last span the band, and `text-align-last` sets the
-    // last. The scorer reads `text-align` alone, as Chrome's does.
+    // Justified text breaks at the same places, as in Chrome 153, and
+    // `text-align-last` places the last line.
     let justified = ComputedBlockStyle {
         text_align: TextAlign::Justify,
         text_align_last: TextAlignLast::Center,
@@ -231,7 +214,7 @@ fn balance_evens_the_slack_as_chromes_scorer_does() {
     let lefts: Vec<f32> = layout.lines().map(|line| line.metrics().left).collect();
     assert_eq!(lefts, [0.0, 0.0, 25.0]);
 
-    // Six lines, the most Chrome scores, measured at 120 px.
+    // Six lines, the most Chrome scores.
     let six = "aa bbbbbb c dd e fff gggg hhhhhhh ii jjjj kkkkk l mmmmm nn";
     assert_eq!(
         broken(&mut fixture, &balance, six, 120.0),
@@ -249,18 +232,15 @@ fn balance_evens_the_slack_as_chromes_scorer_does() {
 /// The scorer weighs an atomic inline's opportunity past the space after
 /// it.
 ///
-/// CSS Text 3 places the opportunity before the space too, but the space
-/// hangs at a line's end and the next line starts past it. Blink's
-/// `AppendTrailingSpaces` likewise moves its candidate past the space.
-/// Measured in Chrome 153, Ahem at 10 px in 60:
+/// The space hangs at a line's end, so the next line starts past it, as
+/// Blink's `AppendTrailingSpaces` moves its candidate. Measured in Chrome
+/// 153, in 60 px:
 /// - `a ￼ a bb ￼ a a` with 20 px pictures balances to `a ￼`, `a bb` and
-///   `￼ a a`. Greedy sets `a ￼ a`, `bb ￼` and `a a`.
-/// - With 60 px pictures, `a ￼ a dddd ￼ a a` balances to the greedy
-///   lines, each picture keeping the space after it.
+///   `￼ a a`.
+/// - With 60 px pictures, `a ￼ a dddd ￼ a a` balances to the greedy lines.
 ///
-/// Chrome's own lines put that space on the next line, skipped there as
-/// leading white space, since `LineBreaker::HandleText` finds the case too
-/// complex. Nothing shows it, and it is not copied.
+/// Chrome puts that space at the next line's start, where it collapses.
+/// The difference is invisible, so the space stays on the line here.
 #[test]
 fn balance_weighs_a_pictures_opportunity_past_the_space_after_it() {
     let mut fixture = fixture();
@@ -303,9 +283,8 @@ fn balance_weighs_a_pictures_opportunity_past_the_space_after_it() {
 /// The first line's room is its band less its indent, as Chrome's
 /// `AvailableWidth` has it.
 ///
-/// WPT `text-wrap-balance-text-indent-001` balances a 100 px block indented
-/// 50 into lines 70 px long each, the first with its indent. Measured in
-/// Chrome 153.
+/// WPT `text-wrap-balance-text-indent-001`: a 100 px block indented 50
+/// balances into 70 px lines, the first with its indent.
 #[test]
 fn balance_takes_the_indent_off_the_first_lines_room() {
     let mut fixture = fixture();
@@ -335,9 +314,8 @@ fn balance_takes_the_indent_off_the_first_lines_room() {
 /// A paragraph with fewer than three opportunities is balanced by bisecting
 /// the room, as Blink's `ParagraphLineBreaker` does.
 ///
-/// The scorer has nothing to choose between. The room shrinks to the
-/// narrowest that keeps the line count, so the longest line is shortest.
-/// Measured in Chrome 153 at 100 px.
+/// The room shrinks to the narrowest that keeps the line count. Measured in
+/// Chrome 153 at 100 px.
 #[test]
 fn few_opportunities_are_balanced_by_halving_the_room() {
     let mut fixture = fixture();
@@ -359,10 +337,9 @@ fn few_opportunities_are_balanced_by_halving_the_room() {
 
 /// Balancing takes no room that needs an `overflow-wrap` emergency break.
 ///
-/// Chrome's breaker retries a line that overflows with the emergency
-/// breaks, and that disables its bisection (`RetryAfterOverflow`). So a
-/// trial room that breaks inside `CONTROLLING` is too narrow, and the
-/// greedy lines stay.
+/// Chrome's retry with emergency breaks disables its bisection
+/// (`RetryAfterOverflow`). So a trial room that breaks inside
+/// `CONTROLLING` counts as too narrow.
 #[test]
 fn balance_takes_no_room_that_needs_an_emergency_break() {
     let mut fixture = fixture();
@@ -386,9 +363,7 @@ fn balance_takes_no_room_that_needs_an_emergency_break() {
 /// Each line beside a leading float is scored in its own room, as Chrome's
 /// scorer reads its `LineWidths`.
 ///
-/// In Chrome 153 a float 40 wide and 20 tall beside 10 px lines in 180
-/// gives the first two lines 140 each. The paragraph balances by the slack
-/// in those rooms.
+/// In Chrome 153 a 40 by 20 float in 180 px leaves the first two lines 140.
 #[test]
 fn a_leading_floats_lines_are_balanced_in_their_own_rooms() {
     let mut fixture = fixture();
@@ -416,10 +391,7 @@ fn a_leading_floats_lines_are_balanced_in_their_own_rooms() {
 
 /// `line-clamp` applies first, and the lines it keeps are balanced.
 ///
-/// CSS Text 4 says so, and Chrome 153 does it under
-/// `-webkit-line-clamp: 2`. Greedily the two kept lines end at `c` and
-/// `fff`. Balanced, they end at `bbbbbb` and `fff`, the second cut for its
-/// ellipsis.
+/// CSS Text 4 says so, and Chrome 153 does it under `-webkit-line-clamp: 2`.
 #[test]
 fn a_clamps_kept_lines_are_balanced() {
     let mut fixture = fixture();
@@ -446,8 +418,8 @@ fn a_clamps_kept_lines_are_balanced() {
 /// A first line in its own styles is balanced by bisecting the room, as in
 /// Chrome, whose scorer takes no `::first-line`.
 ///
-/// With a 12 px first line and 10 px for the rest, in 180 px, Chrome 153
-/// ends the lines at `cccccc` and `fffff`.
+/// With a 12 px first line in 180 px, Chrome 153 ends the lines at `cccccc`
+/// and `fffff`.
 #[test]
 fn a_restyled_first_line_is_balanced_by_halving_the_room() {
     let mut fixture = fixture();
@@ -481,11 +453,9 @@ fn a_restyled_first_line_is_balanced_by_halving_the_room() {
 /// Beyond Chrome, every paragraph balances, and so do paragraphs of more
 /// than six lines.
 ///
-/// CSS Text 4 balances each group of lines between forced breaks
-/// separately. Chrome 153 balances only the first. A paragraph of more
-/// than six lines is balanced by bisecting the room, where Chrome leaves it
-/// greedy. Here the room comes to 150⅓ px, the narrowest that keeps its
-/// seven lines.
+/// CSS Text 4 balances each paragraph separately; Chrome 153 balances only
+/// the first. Past six lines the room is bisected, here to 150⅓ px, where
+/// Chrome stays greedy.
 #[test]
 fn every_paragraph_and_more_than_six_lines_are_balanced() {
     let mut fixture = fixture();
@@ -534,10 +504,9 @@ fn every_paragraph_and_more_than_six_lines_are_balanced() {
 /// Beyond Chrome, a paragraph holding a float is balanced by bisecting the
 /// room.
 ///
-/// Every line's band narrows alike, so the room each line leaves comes out
-/// even. CSS Text 4 balances "the remaining space ... after placing
-/// floats". Chrome 153 leaves it greedy. The float is placed once, the line
-/// count holds, and no line overflows.
+/// CSS Text 4 balances "the remaining space ... after placing floats".
+/// Chrome 153 leaves it greedy. The float is placed once, the line count
+/// holds, and no line overflows.
 #[test]
 fn a_paragraph_holding_a_float_is_balanced_beside_it() {
     let mut fixture = fixture();
@@ -574,7 +543,7 @@ fn a_paragraph_holding_a_float_is_balanced_beside_it() {
             .lines()
             .all(|line| line.metrics().width <= line.metrics().band.size())
     );
-    // The slack each line leaves is more even than the greedy lines'.
+    // The slack is more even than greedy.
     let spread = |layout: &Layout| {
         let slack: Vec<f32> = layout
             .lines()
@@ -585,8 +554,8 @@ fn a_paragraph_holding_a_float_is_balanced_beside_it() {
         most - least
     };
     assert!(spread(&layout) < spread(&greedy), "{:?}", rows(&layout));
-    // The float goes with its anchor to the second line. Beside it the
-    // lines leave 50, 20 and 40, where the greedy ones leave 10, 60 and 40.
+    // The float moves with its anchor to the second line. The slack is
+    // 50, 20 and 40 against greedy's 10, 60 and 40.
     assert_eq!(
         rows(&layout),
         ["a bb cccccc d", "eee fffff gg", "hhhhhh iii"]
@@ -596,8 +565,6 @@ fn a_paragraph_holding_a_float_is_balanced_beside_it() {
 
 /// Beyond Chrome, lines beside an initial letter are balanced in the rooms
 /// it leaves.
-///
-/// Chrome balances nothing with an initial letter.
 #[test]
 fn an_initial_letters_paragraph_is_balanced() {
     let mut fixture = fixture();
@@ -636,7 +603,7 @@ fn an_initial_letters_paragraph_is_balanced() {
         rows(&greedy),
         ["X a bb cccccc d", "eee fffff gg", "hhhhhh iii jj", "kkkk"]
     );
-    // Lines 1 and 2 beside the letter, 157 long, the others 180.
+    // Lines 1 and 2 sit beside the letter.
     assert_eq!(
         rows(&layout),
         ["X a bb cccccc", "d eee fffff", "gg hhhhhh", "iii jj kkkk"]
@@ -650,13 +617,9 @@ fn an_initial_letters_paragraph_is_balanced() {
 /// Chrome's `pretty` gives a lone last word company over the last four
 /// lines, keeping the line count.
 ///
-/// It minimizes the squared room the lines before the last leave. A line
-/// ending at the last opportunity pays Blink's orphan penalty. Measured in
-/// Chrome 153 at 180 px:
-/// - the greedy `iii` alone becomes `hhhhhh iii`;
-/// - a paragraph of seven lines keeps its first three and scores its last
-///   four;
-/// - each paragraph of a block is scored.
+/// It minimizes the squared slack of the lines before the last, with
+/// Blink's orphan penalty. Measured in Chrome 153 at 180 px, including
+/// seven lines and two paragraphs.
 #[test]
 fn pretty_gives_a_lone_last_word_company_as_chrome_does() {
     let mut fixture = fixture();
@@ -691,8 +654,7 @@ fn pretty_gives_a_lone_last_word_company_as_chrome_does() {
             "hhhhhh iii"
         ]
     );
-    // The first line keeps its indent, and pretty keeps its lines, as in
-    // Chrome 153.
+    // An indented first line, as in Chrome 153.
     let indented = ComputedBlockStyle {
         text_indent: TextIndent {
             amount: LengthPercentage {
@@ -718,8 +680,7 @@ fn pretty_gives_a_lone_last_word_company_as_chrome_does() {
 /// Chrome's `pretty` acts only where the last line is one word under a
 /// third of its room, as `ShouldOptimize` decides.
 ///
-/// `iiiiii`, 60 of 180, is a third and stays, and so do two short words,
-/// `i j`. Measured in Chrome 153.
+/// `iiiiii`, 60 of 180, stays, and so does `i j`. Measured in Chrome 153.
 #[test]
 fn pretty_leaves_a_third_and_two_words_alone() {
     let mut fixture = fixture();
@@ -740,10 +701,9 @@ fn pretty_leaves_a_third_and_two_words_alone() {
 /// `Config::pretty = Pretty::Even` (beyond Chrome) also evens an ending
 /// Chrome leaves alone.
 ///
-/// A last line under a fifth of its room costs more than any choice for the
-/// six lines before it. So `i j`, 30 of 180, takes `hhhhhh` down with it,
-/// and the lines before even out. Where Chrome's rule acts, so does
-/// `Pretty::Even`.
+/// A last line under a fifth of its room costs more than any other choice,
+/// so `i j`, 30 of 180, takes `hhhhhh` down with it. Where Chrome's rule
+/// acts, so does `Pretty::Even`.
 #[test]
 fn pretty_even_evens_endings_chrome_leaves_alone() {
     let mut fixture = fixture();
@@ -782,8 +742,8 @@ fn pretty_even_evens_endings_chrome_leaves_alone() {
 /// A relayout of balanced and pretty text equals a fresh layout, record
 /// for record.
 ///
-/// The text has floats, a first line in its own styles, an initial letter,
-/// ruby and a tab. The widths make each path run.
+/// The text has floats, a restyled first line, an initial letter, ruby and
+/// a tab.
 #[test]
 fn a_relayout_of_balanced_and_pretty_text_equals_a_fresh_layout() {
     let mut fixture = fixture();
@@ -828,7 +788,7 @@ fn a_relayout_of_balanced_and_pretty_text_equals_a_fresh_layout() {
                 b.text(NodeKey(4), "fffff gg hhhhhh iii jj kkkk lllll m nn o");
                 b.line_break(NodeKey(5));
                 if ruby {
-                    // Ruby over a paragraph, and a tab, which is walked.
+                    // Ruby, and a tab, whose paragraph is walked.
                     b.open_ruby(NodeKey(10), &style, None);
                     b.text(NodeKey(11), "rrr");
                     b.open_annotation(NodeKey(12), &small, None);
@@ -862,10 +822,8 @@ fn a_relayout_of_balanced_and_pretty_text_equals_a_fresh_layout() {
     }
 }
 
-/// Balanced and pretty text breaks into valid lines at any width, under
-/// either rule.
-///
-/// The widths include zero, negative, not a number and past the grid.
+/// Balanced and pretty text gives valid lines at any width, under either
+/// `Pretty` rule, including zero, negative, NaN and past the grid.
 #[test]
 fn any_width_gives_valid_lines() {
     let mut fixture = fixture();
@@ -889,16 +847,10 @@ fn any_width_gives_valid_lines() {
     }
 }
 
-/// Balancing's work, counted in `crate::work` steps, stays bounded.
+/// Balancing's steps a line stay bounded as the paragraph grows.
 ///
-/// - Bisecting the room of a paragraph past six lines lays it out once a
-///   step, at most 25 times. So a paragraph four times as long takes about
-///   four times the steps.
-/// - The scorer weighs each candidate against those a line's length back.
-///   So a six-line window costs the same however long the paragraph before
-///   it.
-///
-/// Steps are counted only in debug builds.
+/// Bisection lays the paragraph out once a step, down to a pixel. The scorer
+/// weighs each candidate only against those a line's length back.
 #[cfg(debug_assertions)]
 #[test]
 fn balancing_takes_steps_in_line_with_the_paragraph() {

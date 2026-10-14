@@ -1,7 +1,4 @@
 //! Tables of runs that tile a range of positions, and cursors that walk them.
-//!
-//! Each run ends where the next starts. A cursor holds the run in hand and
-//! where it ends.
 
 use core::fmt;
 use core::ops::Range;
@@ -9,34 +6,31 @@ use core::ops::Range;
 use super::{HeapBytes, Id, Table};
 use crate::work;
 
-/// A record of [`Runs`]: where it starts.
+/// A record of [`Runs`], known by its start.
 pub(crate) trait Run {
-    /// The positions the runs tile, and which the table's owner asks of:
-    /// clusters, for every table of runs the crate has.
+    /// The positions the runs tile. Every table of runs in the crate tiles
+    /// clusters.
     type Position: Id;
 
-    /// Its first position.
+    /// The run's first position.
     fn start(&self) -> Self::Position;
 }
 
 /// Runs that tile a range of positions in order, each ending where the next
 /// starts.
 ///
-/// The last run ends where the range does. A reader asking about one
-/// position finds its run by halving ([`containing`](Self::containing)). A stage
-/// walking the positions forward uses a [`RunCursor`] instead, which passes
-/// each run once.
+/// [`containing`](Self::containing) finds one position's run by binary
+/// search. A forward walk uses a [`RunCursor`], which passes each run once.
 ///
-/// Every table of runs of clusters has this shape: the paragraphs, the
-/// items' clusters, the font runs and the shaping runs. The owner knows
-/// where the last run ends and passes it in ([`span`](Self::span)). It is
-/// the text's end, or where the owner's variant stops.
+/// Paragraphs, item clusters, script runs, font runs and shaped runs are
+/// tables of this shape. The table does not store where the last run ends;
+/// the owner passes that `end`: the text end, or where its variant stops.
 pub(crate) struct Runs<I, T> {
     runs: Table<I, T>,
 }
 
 impl<I: Id, T: Run> Runs<I, T> {
-    /// None, allocating nothing.
+    /// An empty table, allocating nothing.
     pub(crate) const fn new() -> Self {
         Self { runs: Table::new() }
     }
@@ -51,8 +45,8 @@ impl<I: Id, T: Run> Runs<I, T> {
         self.runs.reserve(count);
     }
 
-    /// Appends `run`, which starts where the last does or after it, and
-    /// returns its id, or `None` past what an id names.
+    /// Appends `run`, which starts at or after the last run, and returns its
+    /// id, or `None` if the table is full.
     pub(crate) fn push(&mut self, run: T) -> Option<I> {
         debug_assert!(
             self.runs
@@ -63,13 +57,13 @@ impl<I: Id, T: Run> Runs<I, T> {
         self.runs.push(run)
     }
 
-    /// How many runs there are.
+    /// The number of runs.
     #[inline]
     pub(crate) fn len(&self) -> usize {
         self.runs.len()
     }
 
-    /// Whether there are none.
+    /// Whether there are no runs.
     #[inline]
     pub(crate) fn is_empty(&self) -> bool {
         self.runs.is_empty()
@@ -81,7 +75,7 @@ impl<I: Id, T: Run> Runs<I, T> {
         self.runs.get(id)
     }
 
-    /// The last run, or `None` where there are none.
+    /// The last run, or `None` if there are none.
     pub(crate) fn last(&self) -> Option<&T> {
         self.runs.last()
     }
@@ -91,81 +85,72 @@ impl<I: Id, T: Run> Runs<I, T> {
         self.runs.iter()
     }
 
-    /// Every run, in order, for the tests to check.
+    /// Every run, in order. Tests only.
     #[cfg(test)]
     pub(crate) fn as_slice(&self) -> &[T] {
         self.runs.as_slice()
     }
 
-    /// Every run from `from` on, in order: from a cursor, the runs of the
-    /// positions after it.
+    /// Every run from `from` on, in order.
     pub(crate) fn rest(&self, from: I) -> &[T] {
         self.runs
             .get_slice(from..self.runs.next_id())
             .unwrap_or_default()
     }
 
-    /// Where run `id` starts, or `end`, where the last run ends, past the
-    /// last.
+    /// Where run `id` starts, or `end` past the last run.
     #[inline]
     pub(crate) fn start(&self, id: I, end: T::Position) -> T::Position {
         self.runs.get(id).map_or(end, Run::start)
     }
 
-    /// Where the run after `id` starts, which is where `id` ends; `None`
-    /// where `id` is the last, which ends where the range does.
+    /// Where the run after `id` starts, which is where `id` ends, or `None`
+    /// if `id` is the last.
     #[inline]
     pub(crate) fn next_start(&self, id: I) -> Option<T::Position> {
         self.runs.get(I::new(id.get() + 1)).map(Run::start)
     }
 
-    /// Run `id`'s positions, from its start to the next run's start or `end`.
+    /// Run `id`'s positions, ending at the next run's start or `end`.
     ///
-    /// `end` is where the last run ends. Past the last run the range is
-    /// empty, at `end`.
+    /// Past the last run the range is empty, at `end`.
     #[inline]
     pub(crate) fn span(&self, id: I, end: T::Position) -> Range<T::Position> {
         self.start(id, end)..self.next_start(id).unwrap_or(end)
     }
 
-    /// The run containing `pos`, by halving: the last that starts at or before
-    /// it. `None` where none does, as where there are no runs.
+    /// Finds, by binary search, the run containing `pos`: the last that
+    /// starts at or before it. `None` if no run does.
     #[inline]
     pub(crate) fn containing(&self, pos: T::Position) -> Option<I> {
         self.last_where(|run| run.start() <= pos)
     }
 
-    /// The last run containing `pos` that `before` holds of, by halving, or
-    /// `None` where it holds of none.
+    /// Finds, by binary search, the last run `before` accepts, or `None`.
     ///
-    /// `before` must hold of every run up to some point and of none after.
-    /// An owner uses it to seek a run by a position on another axis that its
-    /// runs' starts map to in order, such as a caller's offset.
+    /// `before` must accept a prefix of the runs. Owners use it to seek by a
+    /// position on another axis that run starts map to in order.
     #[inline]
     pub(crate) fn last_where(&self, before: impl FnMut(&T) -> bool) -> Option<I> {
         self.runs.last_where(before)
     }
 
-    /// The first run that starts at or after `at`, by halving: one past the
-    /// last where none does.
+    /// Finds, by binary search, the first run that starts at or after `at`,
+    /// or one past the last if none does.
     pub(crate) fn first_from(&self, at: T::Position) -> I {
         work::seek();
         I::new(self.runs.as_slice().partition_point(|run| run.start() < at))
     }
 }
 
-/// Where a walk over a table of [`Runs`] stands: the run in hand and where
-/// it ends.
+/// A position in a walk over [`Runs`]: the current run and where it ends.
 ///
-/// The end is read once from the next run's start. So the walk makes one
-/// comparison per run and none per position. An id alone would make the
-/// walk find each run's end again. A walk over the shaping runs needs the
-/// end held: finding each end from the start bits makes relayout 3 to 5%
-/// slower.
+/// Holding the end costs the walk one comparison per run and none per
+/// position. Walks over shaped runs need it: finding each end from the start
+/// bits makes relayout 3 to 5% slower.
 ///
-/// It is two positions in size and `Copy`, so a walk that looks ahead copies
-/// it. Its fields stay behind methods: `end` is the next run's start, which
-/// only the table moving the cursor keeps true.
+/// `Copy`, so a walk that looks ahead copies it. The fields are private
+/// because only the table keeps `end` equal to the next run's start.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub(crate) struct RunCursor<I, P> {
     id: I,
@@ -173,15 +158,14 @@ pub(crate) struct RunCursor<I, P> {
 }
 
 impl<I: Copy, P: Copy> RunCursor<I, P> {
-    /// The run in hand: one past the last where the walk has passed every
-    /// run.
+    /// The current run, or one past the last once the walk passes every run.
     #[inline]
     pub(crate) fn id(self) -> I {
         self.id
     }
 
-    /// Where it ends: where the next starts, or where the last run ends,
-    /// which is where a cursor past the last stands.
+    /// Where the current run ends: the next run's start, or the range end
+    /// for the last run and past it.
     #[inline]
     pub(crate) fn end(self) -> P {
         self.end
@@ -189,10 +173,10 @@ impl<I: Copy, P: Copy> RunCursor<I, P> {
 }
 
 impl<I: Id, T: Run> Runs<I, T> {
-    /// A cursor at run `id`, made from a link with no search.
+    /// A cursor at run `id`, without a search.
     ///
-    /// `end` is where the last run ends. Past the last run the cursor stands
-    /// at `end`, holding nothing.
+    /// `end` is where the last run ends. Past the last run the cursor holds
+    /// no run and ends at `end`.
     #[inline]
     pub(crate) fn cursor(&self, id: I, end: T::Position) -> RunCursor<I, T::Position> {
         let end = if id.get() < self.runs.len() {
@@ -203,11 +187,11 @@ impl<I: Id, T: Run> Runs<I, T> {
         RunCursor { id, end }
     }
 
-    /// A cursor at the run containing `at`, found by halving, or `None` where no
-    /// run holds it.
+    /// A cursor at the run containing `at`, found by binary search, or `None`
+    /// if no run contains it.
     ///
     /// `end` is where the last run ends. A walk with no link to start from
-    /// seeks once with this ([`containing`](Self::containing)).
+    /// seeks once with this.
     pub(crate) fn cursor_containing(
         &self,
         at: T::Position,
@@ -216,12 +200,11 @@ impl<I: Id, T: Run> Runs<I, T> {
         self.containing(at).map(|id| self.cursor(id, end))
     }
 
-    /// A cursor at the run containing `at`, walked to from run `near` a run
-    /// at a time, either way: what
-    /// [`cursor_containing`](Self::cursor_containing) finds, with no search.
+    /// A cursor at the run containing `at`, stepping from run `near` in
+    /// either direction, or `None` if no run contains `at`.
     ///
-    /// A walk that holds a run near `at` uses it, and pays a step a run
-    /// between. `None` where no run holds `at`.
+    /// Finds what [`cursor_containing`](Self::cursor_containing) finds, at a
+    /// cost of one step per run between `near` and `at`.
     pub(crate) fn cursor_from(
         &self,
         near: I,
@@ -242,10 +225,10 @@ impl<I: Id, T: Run> Runs<I, T> {
         Some(cursor)
     }
 
-    /// Moves `cursor` to the next run, whether or not it holds a position.
+    /// Moves `cursor` to the next run, even an empty one.
     ///
-    /// `end` is where the last run ends. Past the last run the cursor stands
-    /// at `end` and stays there.
+    /// `end` is where the last run ends. A cursor past the last run stays
+    /// there.
     #[inline]
     pub(crate) fn step(&self, cursor: &mut RunCursor<I, T::Position>, end: T::Position) {
         if cursor.id.get() < self.runs.len() {
@@ -253,11 +236,10 @@ impl<I: Id, T: Run> Runs<I, T> {
         }
     }
 
-    /// Moves `cursor` forward to the run holding `at`.
+    /// Moves `cursor` forward to the run containing `at`.
     ///
-    /// It passes each run ending at or before `at`, but never the last run,
-    /// which ends at `end`. It costs one comparison where the cursor holds
-    /// `at` already.
+    /// Passes each run ending at or before `at`, but never the last run.
+    /// Costs one comparison if the cursor already contains `at`.
     #[inline]
     pub(crate) fn step_to(
         &self,

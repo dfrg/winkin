@@ -4,14 +4,15 @@
 
 use super::*;
 
-/// A hyphen whose characters the primary font does not all map is drawn a
-/// generated run a font, one after the other where the one before ends:
-/// `hyphenate-character: "a→"` in Test Latin, whose
-/// arrow is Test Arrows', an em wide there where `a` is half an em, is two
-/// runs at 20 px after `XX`, the arrow's drawn with its own glyph and not
-/// the primary's missing one, and the line pays both. In a style reading
-/// right to left the hyphen is shaped that way, as Chrome shapes a hyphen
-/// in its style's direction, so its arrow is drawn on the left of its `a`.
+/// A hyphen whose characters the primary font does not all map is drawn as
+/// one generated run per font, each starting where the one before ends.
+///
+/// `hyphenate-character: "a→"` in Test Latin, whose arrow comes from Test
+/// Arrows, an em wide there where `a` is half an em, makes two runs at 20 px
+/// after `XX`. The arrow uses its own glyph, not the primary's missing one,
+/// and the line pays for both. In a right-to-left style the hyphen is
+/// shaped right to left, as Chrome shapes a hyphen in its style's
+/// direction, so its arrow is drawn left of its `a`.
 #[test]
 fn a_hyphen_is_drawn_in_one_run_per_font() {
     use crate::Generated;
@@ -68,13 +69,13 @@ fn a_hyphen_is_drawn_in_one_run_per_font() {
     }
 }
 
-/// A hyphen and an ellipsis are generated runs: each
-/// holds no content, names its generated text, and draws its glyphs from
-/// where it stands; the hyphen, of the text it ends, is painted in the
-/// hyphen's phase after the line's text, and the ellipsis, the block's,
-/// with the text; the tail a cut hides is laid out, read only by
-/// `all_items`, and not painted. A line clamped to one, broken at its soft
-/// hyphen, has both.
+/// A hyphen and an ellipsis are generated runs: each holds no content,
+/// names its generated text, and draws its glyphs from where it stands.
+///
+/// The hyphen belongs to the text it ends and the ellipsis to the block;
+/// each paints where it stands among the line's items. A line clamped to
+/// one, broken at its soft hyphen, has both. The tail an ellipsis cut hides
+/// is laid out, read only by `all_items`, and not painted.
 #[test]
 fn a_line_reads_and_paints_its_hyphen_and_its_ellipsis() {
     use crate::Generated;

@@ -7,8 +7,8 @@ use crate::style::same::same_by_value;
 pub enum RubyPosition {
     /// Above the base.
     ///
-    /// The initial value as Chrome computes it; the specification's is
-    /// `alternate`, which Chrome does not support.
+    /// The initial value as Chrome computes it. CSS gives `alternate`, which
+    /// Chrome does not support.
     #[default]
     Over,
     /// Below the base.
@@ -45,9 +45,8 @@ pub enum RubyOverhang {
     Auto,
     /// Never.
     None,
-    /// Over the spaces and tabs beside it only.
-    ///
-    /// Never over a blank another column already reaches over.
+    /// Over the spaces and tabs beside it only, and never over a blank that
+    /// another column already reaches over.
     Spaces,
 }
 

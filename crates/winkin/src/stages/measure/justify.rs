@@ -1,61 +1,31 @@
 //! Justification opportunities: where a justified line puts its extra room,
 //! cluster by cluster.
 //!
-//! Three readers ask the one rule:
-//! - this stage, when it sizes a ruby column's base, whose room
-//!   `ruby-align` spreads over the base's opportunities;
-//! - line layout, when it counts a line's opportunities and gives each
-//!   piece its share;
-//! - the readers, when they place a justified line's glyphs and clusters.
+//! The scan, line layout and the readers all ask this one rule, so what a
+//! reader walks adds up to what line layout placed. Nothing is stored per
+//! cluster.
 //!
-//! So what a reader walks adds up to what line layout placed. The rule
-//! lives in this stage, the first to ask it, so no stage names a later
-//! one's rule. Nothing is stored per cluster. Line layout records a line's
-//! amount per opportunity and which opportunity takes the remainder; which
-//! clusters take room is this rule, asked again.
+//! Chrome's rule under `text-justify: auto`
+//! (`Character::ExpansionOpportunityCount`,
+//! `ShapeResultSpacing::ComputeSpacing`), over the line less what hangs:
+//! - a space, a tab or U+00A0 (`TreatAsSpace`) has an opportunity after it;
+//! - an ideograph or CJK symbol (`IsCJKIdeographOrSymbol`) has one after
+//!   it, and one before it where what precedes it is neither;
+//! - the line's last opportunity, after its last character, is dropped;
+//! - a zero-width space, control, soft hyphen or lone joiner takes none,
+//!   and its neighbours don't see it.
 //!
-//! **Chrome's rule** (`Character::ExpansionOpportunityCount` and
-//! `ShapeResultSpacing::ComputeSpacing`, over the line's text less what
-//! hangs at its end), under `text-justify: auto`:
-//! - a space, a tab or a no-break space (Chrome's `TreatAsSpace`, U+00A0
-//!   and not U+2007 or U+202F) has an opportunity after it;
-//! - an ideograph or a CJK symbol has one after it, and one before it where
-//!   what precedes it on the line is neither. Chrome's
-//!   `IsCJKIdeographOrSymbol` counts the ideographs, kana, bopomofo, the CJK
-//!   symbols and punctuation, the full-width forms, and a few symbols set on
-//!   the same grid;
-//! - nothing before the line's first character: the line starts as if after
-//!   an opportunity;
-//! - nothing after its last, where that would be one: the last opportunity
-//!   is dropped;
-//! - what Chrome treats as a zero-width space (a control, U+200B, a soft
-//!   hyphen, a lone joiner) takes none, and its neighbours don't see it.
+//! `inter-word` keeps the spaces alone. `inter-character` puts one after
+//! every cluster but the last, as Chrome's `distribute` does, and one
+//! before the first character after a run of atomic inlines. `none`
+//! justifies nothing. Each cluster follows its own text's `text-justify`.
+//! Hangul is no ideograph, as in Chrome.
 //!
-//! `inter-word` keeps the spaces alone; `inter-character` puts an
-//! opportunity after every cluster but the line's last, as Chrome's
-//! `distribute` does, and one before the first character after an atomic
-//! inline or a run of them, which is one unit; `none` justifies nothing.
-//! Each cluster follows its own text's `text-justify`, as Chrome reads it
-//! item by item: a span under `none` takes no room on a justified line. A
-//! line with no opportunity is set at its start.
-//!
-//! Hangul is not among the ideographs, as in Chrome, so Korean justifies at
-//! its spaces.
-//!
-//! **Combined text** (`text-combine-upright`) is one character. Blink
-//! justifies a `LayoutTextCombine` as U+3042, a hiragana
-//! (`kTextCombineItemMarker`, `JustifyResults`). It has an ideograph's
-//! opportunity before it, on its first cluster, which moves its whole em
-//! along, and one after it, on its last. The clusters between are unseen.
-//!
-//! **Ruby on a justified line** follows Chrome too (`JustifyResults`):
-//! - a column's base is justified as the line's own text where it is at
-//!   least as wide as its annotations;
-//! - where an annotation is wider, the column is one object, as an atomic
-//!   inline's U+FFFC is (`kBaseShorterRubyMarker`), and `ruby-align` alone
-//!   spreads its base;
-//! - an annotation's text is on a line of its own, and the line doesn't see
-//!   it.
+//! Combined text (`text-combine-upright`) is one ideograph, as Blink
+//! justifies it as U+3042 (`kTextCombineItemMarker`). A ruby base at least
+//! as wide as its annotations is justified as the line's text. A narrower
+//! one makes its column one object (`kBaseShorterRubyMarker`). Annotation
+//! text is unseen.
 
 use core::cell::{Cell, RefCell};
 use core::fmt;
@@ -82,33 +52,28 @@ use super::{RubyColumn, RubyColumnId, RubyColumns};
 enum Kind {
     /// A space, a tab or U+00A0: an opportunity after it.
     Space,
-    /// An ideograph or a CJK symbol: one after it, and one before it where
-    /// what precedes it is neither this nor a space.
+    /// An ideograph or a CJK symbol: one after it, and one before it after
+    /// [`Other`](Self::Other), [`Object`](Self::Object) or
+    /// [`Cursive`](Self::Cursive).
     Cjk,
-    /// What Chrome treats as a zero-width space: nothing, and not seen by
-    /// its neighbours.
+    /// What Chrome treats as a zero-width space: nothing, and unseen.
     Invisible,
     /// An atomic inline's U+FFFC: nothing, even between characters.
     Object,
-    /// A letter of a cursive script, whose letters join: under
-    /// `inter-character`, an atomic inline's nothing; otherwise anything
-    /// else's.
+    /// A letter of a script whose letters join. Under `inter-character` it
+    /// takes nothing, as an atomic inline; otherwise it is [`Other`](Self::Other).
     Cursive,
-    /// The first cluster of a combined unit of several: an ideograph's
-    /// opportunity before it, none after.
+    /// The first cluster of a combined unit: an ideograph's room before it.
     UnitStart,
-    /// The last cluster of a combined unit of several: an ideograph's
-    /// opportunity after it, none before, and seen as an ideograph.
+    /// The last cluster of a combined unit: an ideograph's room after it.
     UnitEnd,
     /// Anything else.
     Other,
 }
 
 impl Kind {
-    /// Returns how a cluster of `class` takes part, where its class decides.
-    ///
-    /// Returns `None` for a no-break space, text, an emoji, a symbol or
-    /// another space separator, where the character decides.
+    /// Returns how a cluster of `class` takes part, or `None` where its
+    /// character decides.
     #[inline]
     fn from_class(class: ClusterClass) -> Option<Self> {
         match class {
@@ -128,7 +93,8 @@ impl Kind {
     }
 }
 
-/// Line-wide facts computed once during placement and reused by readers.
+/// The line-wide facts of a line's opportunities, which line layout keeps
+/// so a reader skips a walk over the line.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct JustifySummary {
     ascii: bool,
@@ -139,16 +105,10 @@ pub(crate) struct JustifySummary {
 /// The opportunities of one line: which of its clusters take a share of its
 /// extra room, and where.
 ///
-/// They are worked out as they are read, from each cluster's class. Where
-/// the line's text is ASCII, as Latin prose nearly always is, the class
-/// decides and the text is not read. The line's last cluster that its
-/// neighbours see is found once, since the opportunity after it is dropped.
-///
-/// **Counted from the text's bytes** where the line is ASCII and justified
-/// at its spaces ([`is_simple`](Self::is_simple)). There every character is
-/// a cluster of its own, whose class is a space or a tab exactly where the
-/// character is one. So the line's bytes are its classes, and its
-/// opportunities are counted a machine word at a time.
+/// They are worked out as they are read. On an ASCII line the class
+/// decides; on one also justified at its spaces
+/// ([`is_simple`](Self::is_simple)), they are counted from the bytes, a
+/// word at a time.
 #[derive(Clone)]
 pub(crate) struct JustifyOpportunities<'a> {
     content: &'a Content,
@@ -161,24 +121,18 @@ pub(crate) struct JustifyOpportunities<'a> {
     end: ClusterId,
     /// The line's text is ASCII: no cluster of it is CJK or U+00A0.
     ascii: bool,
-    /// Where it is ASCII, how many of its clusters are spaces or tabs. One
-    /// walk over its bytes counts them and tests for ASCII.
+    /// Where it is ASCII, how many of its clusters are spaces or tabs.
     spaces: usize,
-    /// The line is ASCII and justified at its spaces (`auto` or
-    /// `inter-word`), so a cluster's class decides
-    /// ([`is_simple`](Self::is_simple)).
-    ///
-    /// A cluster then has an opportunity after it where its class is a
-    /// space or a tab and it is not the last, and none before it.
+    /// See [`is_simple`](Self::is_simple).
     simple: bool,
     /// The line's last cluster that its neighbours see, whose opportunity
     /// after is dropped. `end` where there is none.
     last: ClusterId,
-    /// The ruby column whose base the opportunities are of, where they are
-    /// of one: its child columns count as one character each.
+    /// The ruby column whose base is walked, where one is. Its child
+    /// columns count as one character each.
     scope: Option<RubyColumnId>,
     /// Each cluster's own `text-justify`, where some style sets one other
-    /// than `auto`; `justify` answers for every cluster otherwise.
+    /// than `auto`.
     per_cluster: Option<ClusterJustify>,
     /// Some cluster may be justified under `inter-character`.
     characters: bool,
@@ -187,42 +141,33 @@ pub(crate) struct JustifyOpportunities<'a> {
     scripts: bool,
     /// Some text is combined. Each combined unit is one character.
     combined: bool,
-    /// The script run and the ruby column the last cluster's kind was read
-    /// in.
-    ///
-    /// The next cluster is read near it: a line's clusters are read in
-    /// order, and a cluster's neighbours a few back. So each step moves a
-    /// run or a column at a time. They are sought once, at the line's
-    /// start, where the line has either.
+    /// The script run and the ruby column the last cluster was read in.
+    /// Reads step from here, since a line is read nearly in order.
     near: Cell<ScriptRunId>,
     columns: Option<RefCell<ColumnScope<'a>>>,
 }
 
-/// The ruby columns an opportunity walk reads, and the column whose base it
-/// walks, where it walks one.
+/// The ruby columns an opportunity walk reads, and the base it walks.
 struct RubyScope<'a> {
     columns: ColumnScope<'a>,
     base: Option<RubyColumnId>,
 }
 
-/// The `text-justify` of each of a line's clusters, where they may differ.
-///
-/// The item cursor moves from the last cluster read, as `near` does, so a
-/// line read in order seeks no item.
+/// The `text-justify` of each of a line's clusters, read through an item
+/// cursor that steps from the last cluster read.
 #[derive(Clone)]
 struct ClusterJustify {
-    /// The first-line variant the line is set in, whose styles it reads.
+    /// The first-line variant the line is set in.
     variant: FirstLineVariant,
     item: Cell<ItemId>,
 }
 
 impl ClusterJustify {
-    /// Returns the `text-justify` of the text holding `cluster`, of
-    /// `content` and `analysis`.
+    /// Returns the `text-justify` of the text holding `cluster`.
     fn justify(&self, content: &Content, analysis: &Analysis, cluster: ClusterId) -> TextJustify {
         let items = &analysis.item_clusters;
-        // The first item at the cluster's start may be a box's edge: the
-        // cluster's own item is the first after it that holds clusters.
+        // The first item at the cluster's start may be a box's edge. The
+        // cluster's item is the first from there that holds clusters.
         let item = items.walk_to_cluster(self.item.get(), cluster);
         self.item.set(item);
         content.items.get(item).map_or(TextJustify::Auto, |row| {
@@ -245,12 +190,9 @@ impl fmt::Debug for JustifyOpportunities<'_> {
 }
 
 impl<'a> JustifyOpportunities<'a> {
-    /// Returns the opportunities of `clusters` as a line of their own under
-    /// `justify`.
-    ///
-    /// The clusters are a ruby base or annotation, which Chrome justifies as
-    /// a line of its own (`ApplyJustification` for `kRubyBase` and
-    /// `kRubyText`). Returns `None` where `text-justify: none` makes none.
+    /// Returns the opportunities of `clusters`, a ruby base or annotation,
+    /// as a line of their own under `justify` (Chrome's
+    /// `ApplyJustification`). `None` under `text-justify: none`.
     pub(crate) fn new(
         content: &'a Content,
         analysis: &'a Analysis,
@@ -260,13 +202,9 @@ impl<'a> JustifyOpportunities<'a> {
         Self::from_clusters(content, analysis, clusters, justify, None, None, None)
     }
 
-    /// Returns the opportunities of a ruby base.
-    ///
-    /// The base sees its direct child columns as indivisible characters, and
-    /// never counts their annotation clusters as opportunities. The columns
-    /// are walked to from `near`, any column near `clusters`' start. Where
-    /// the base was spread before, the line-wide facts `summary` counted
-    /// then save a walk over it.
+    /// Returns the opportunities of `column`'s base, in which each child
+    /// column is one character. The columns are walked to from `near`.
+    /// `None` under `text-justify: none`.
     pub(crate) fn from_base(
         content: &'a Content,
         analysis: &'a Analysis,
@@ -295,10 +233,7 @@ impl<'a> JustifyOpportunities<'a> {
     /// cluster under its own text's `text-justify`.
     ///
     /// `clusters` runs from the line's first cluster to its content's end.
-    /// Ruby columns come from the text the line is measured in, where the
-    /// content has any. Returns `None` where every style is `auto` but the
-    /// block's `text-justify: none` makes none. Where the line was placed,
-    /// the `summary` made then saves a walk over it.
+    /// `None` where only the block sets `text-justify`, to `none`.
     pub(crate) fn from_line(
         stages: &LineStages<'a>,
         clusters: Range<ClusterId>,
@@ -325,8 +260,7 @@ impl<'a> JustifyOpportunities<'a> {
                             .id(),
                     ),
                 });
-        // With styles of their own, the clusters decide, whatever the
-        // block's value.
+        // With styles of their own, the clusters decide.
         let justify = match per_cluster {
             Some(_) => TextJustify::Auto,
             None => content.facts.text(block).justify,
@@ -347,12 +281,8 @@ impl<'a> JustifyOpportunities<'a> {
     }
 
     /// Returns the opportunities of `clusters`, reading the ruby columns
-    /// through `scope`, which starts at their first, where given, and each
-    /// cluster's `text-justify` through `per_cluster`, where given.
-    ///
-    /// Where `summary` holds the line-wide facts, they are taken as they
-    /// are. Otherwise the clusters' bytes are counted, and the last cluster
-    /// its neighbours see is found, in the scope's base where it has one.
+    /// through `scope` and each cluster's `text-justify` through
+    /// `per_cluster`. A `summary` saves the walk over the clusters.
     fn from_clusters(
         content: &'a Content,
         analysis: &'a Analysis,
@@ -442,10 +372,8 @@ impl<'a> JustifyOpportunities<'a> {
         u32::from(before) + u32::from(after)
     }
 
-    /// Returns whether the line is ASCII and justified at its spaces.
-    ///
-    /// [`simple_after`](Self::simple_after) then answers for any of its
-    /// clusters.
+    /// Returns whether the line is ASCII and justified at its spaces, so
+    /// [`simple_after`](Self::simple_after) answers for each cluster.
     pub(crate) fn is_simple(&self) -> bool {
         self.simple
     }
@@ -464,8 +392,7 @@ impl<'a> JustifyOpportunities<'a> {
                 .is_some_and(ClusterClass::is_space_or_tab)
     }
 
-    /// Returns how many opportunities the clusters of `range` have, in one
-    /// walk.
+    /// Returns how many opportunities the clusters of `range` have.
     pub(crate) fn count_range(&self, range: Range<ClusterId>) -> u32 {
         let from = range.start.max(self.start);
         let to = range.end.min(self.end);
@@ -473,9 +400,7 @@ impl<'a> JustifyOpportunities<'a> {
             return 0;
         }
         if self.simple {
-            // Count the spaces and tabs, less the line's last where it is
-            // one. Each character is a cluster, so count bytes. The whole
-            // line's count is ready where the whole line is asked.
+            // The spaces and tabs, less the line's last where it is one.
             let spaces = if from == self.start && to == self.end {
                 self.spaces
             } else {
@@ -492,8 +417,7 @@ impl<'a> JustifyOpportunities<'a> {
             let count = u32::try_from(spaces).unwrap_or(u32::MAX);
             return count.saturating_sub(u32::from(last));
         }
-        // Find what precedes the first as its neighbours see it, then walk
-        // each in turn.
+        // What precedes the first, then each in turn.
         let mut previous = self.before(from).map(|at| self.kind(at));
         let mut count = 0u32;
         for cluster in (from..to).ids() {
@@ -509,9 +433,6 @@ impl<'a> JustifyOpportunities<'a> {
 
     /// Returns the last cluster of `range` with an opportunity, before or
     /// after it.
-    ///
-    /// On a line justified at its spaces, it is the last space or tab other
-    /// than the line's last, found from the class alone.
     pub(crate) fn last(&self, range: Range<ClusterId>) -> Option<ClusterId> {
         if self.simple {
             range
@@ -533,7 +454,7 @@ impl<'a> JustifyOpportunities<'a> {
         }
     }
 
-    /// Returns the text of `clusters` as bytes, or `None` where they are not
+    /// Returns the text of `clusters` as bytes, empty where they are not
     /// the text's.
     fn bytes(&self, clusters: Range<ClusterId>) -> &'a [u8] {
         let (from, to) = (
@@ -547,11 +468,10 @@ impl<'a> JustifyOpportunities<'a> {
             .unwrap_or_default()
     }
 
-    /// Returns whether `cluster` has an opportunity before it, which moves
-    /// its glyphs along, and one after it, which moves what follows.
+    /// Returns whether `cluster` has an opportunity before it and after it.
     ///
-    /// It stays out of line: inlined into a reader's cluster step, it slows
-    /// the glyph walk of a justified ASCII line, which never calls it, by 9%.
+    /// Out of line: inlined, it slows a justified ASCII line's glyph walk,
+    /// which never calls it, by 9%.
     #[inline(never)]
     pub(crate) fn at(&self, cluster: ClusterId) -> (bool, bool) {
         if cluster < self.start || cluster >= self.end {
@@ -568,13 +488,10 @@ impl<'a> JustifyOpportunities<'a> {
         self.rule(cluster, kind, previous)
     }
 
-    /// Applies the rule to `cluster` of `kind`, after `previous`, what its
-    /// neighbours see before it.
+    /// Applies the rule to `cluster` of `kind`, after `previous`.
     ///
-    /// Under `inter-character`, a run of atomic inlines or of cursive
-    /// letters is one unit with no room of its own: the character after it
-    /// takes the room before it, as Chrome's text item after an atomic
-    /// inline does.
+    /// Under `inter-character`, a run of atomic inlines or cursive letters
+    /// takes no room; the character after it takes the room before it.
     fn rule(&self, cluster: ClusterId, kind: Kind, previous: Option<Kind>) -> (bool, bool) {
         let last = self.last == cluster;
         let justify = match &self.per_cluster {
@@ -614,8 +531,8 @@ impl<'a> JustifyOpportunities<'a> {
         None
     }
 
-    /// Returns how the ruby column held by the cursor says `cluster` takes
-    /// part.
+    /// Returns how `cluster` takes part where the ruby column in scope
+    /// decides, or `None`.
     fn column_kind(&self, cluster: ClusterId) -> Option<Kind> {
         let mut scope = self.columns.as_ref()?.borrow_mut();
         let column = scope.scope_column(cluster, self.scope)?;
@@ -631,13 +548,8 @@ impl<'a> JustifyOpportunities<'a> {
         Some(id)
     }
 
-    /// Returns how `cluster` takes part where it is in a combined unit of
-    /// `runs`. Moves the script-run cursor to the run holding it.
-    ///
-    /// A combined unit is one ideograph. Its first cluster takes the room
-    /// before it, its last the room after it, and those between are unseen.
-    /// A unit of one cluster is an ideograph. A cluster in no unit gets
-    /// `None`.
+    /// Returns how `cluster` takes part as part of a combined unit, one
+    /// ideograph, or `None` outside one. Moves the script-run cursor.
     fn unit_kind(&self, runs: &ScriptRuns, cluster: ClusterId) -> Option<Kind> {
         let id = self.script_run(runs, cluster)?;
         let run = runs.get(id)?;
@@ -697,12 +609,10 @@ impl<'a> JustifyOpportunities<'a> {
         }
     }
 
-    /// Returns whether `cluster` is in a run of a script whose letters join,
-    /// which `inter-character` leaves whole.
-    ///
-    /// The scripts are those Chrome 155 leaves whole: Arabic, Syriac,
-    /// Mongolian, N'Ko, Mandaic, Hanifi Rohingya and Phags-pa. It spreads
-    /// Adlam, Sogdian, Manichaean and the other joining scripts.
+    /// Returns whether `cluster` is in a run of a script that
+    /// `inter-character` leaves whole: Arabic, Syriac, Mongolian, N'Ko,
+    /// Mandaic, Hanifi Rohingya and Phags-pa, as in Chrome 155. Chrome
+    /// spreads Adlam, Sogdian, Manichaean and the other joining scripts.
     fn is_cursive(&self, cluster: ClusterId) -> bool {
         if !self.scripts {
             return false;
@@ -730,11 +640,8 @@ const CURSIVE: [Script; 7] = [
 /// Returns whether `bytes` are ASCII, and how many of them are spaces or
 /// tabs.
 ///
-/// On an ASCII line, that count is how many clusters have a space's or a
-/// tab's class. It reads eight bytes a step. A word is ASCII where no byte
-/// has its high bit set. Its spaces are the bytes that become zero once the
-/// word is xored with eight spaces, and the same for tabs. Each zero byte is
-/// marked by its high bit, and the marks are counted.
+/// It reads eight bytes a step. A space or tab byte becomes zero when xored
+/// with it, and each zero byte's high bit is set and counted.
 fn count_ascii_spaces(bytes: &[u8]) -> (bool, usize) {
     const LOW: u64 = 0x7F7F_7F7F_7F7F_7F7F;
     const HIGH: u64 = 0x8080_8080_8080_8080;
@@ -764,12 +671,9 @@ fn count_ascii_spaces(bytes: &[u8]) -> (bool, usize) {
 
 /// Returns how `cluster` takes part where the ruby column `column` decides.
 ///
-/// `column` is the last column of `rubies` whose base starts at or before
-/// `cluster`.
-/// - An annotation's text is on a line of its own, so it is unseen.
-/// - Where an annotation is wider than its base, the base's first cluster
-///   is one object and the rest are unseen.
-/// - Anything else gets `None`.
+/// `column` is what [`ColumnScope::scope_column`] finds. Where `unit`, the
+/// walk is in its parent's base, and its base is one ideograph. A
+/// base-shorter column is one object. Annotation text is unseen.
 fn ruby_kind(
     rubies: &RubyColumns,
     column: &RubyColumn,
@@ -805,8 +709,6 @@ fn ruby_kind(
 
 /// Returns whether `ch` is set on the CJK grid, as Chrome's
 /// `Character::IsCJKIdeographOrSymbol` says.
-///
-/// Such characters take room either side when a line is justified.
 fn is_cjk_ideograph_or_symbol(ch: char) -> bool {
     let c = u32::from(ch);
     if c < 0x2C7 {
@@ -948,9 +850,8 @@ fn is_cjk_ideograph_or_symbol(ch: char) -> bool {
 mod tests {
     use super::count_ascii_spaces;
 
-    /// The eight-bytes-a-step test and count match a byte-at-a-time one, for
-    /// every byte in every place of a word and past it, beside a space and a
-    /// tab.
+    /// The word-at-a-time count matches a byte-at-a-time one for every byte
+    /// in every place.
     #[test]
     fn ascii_spaces_and_tabs_are_found_a_word_at_a_time() {
         let mut bytes = [b'a'; 19];

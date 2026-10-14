@@ -1,15 +1,13 @@
 //! The shaping caches and scratch that outlive a layout.
 //!
-//! Everything here is a cache, keyed by content: a font and its
-//! coordinates, a script, a direction, a language, a list of features.
-//! Nothing is keyed by a width, a first-line cut or a layout's ids. A call
-//! shapes in the layout's own used-font record ([`UsedInstance`]), which
-//! holds the whole font. Lookups use that record's [`FontKey`] and
-//! coordinates, and a miss rebuilds the entry from it. So any entry may be
-//! dropped between calls, and a reshape never finds another font's data.
-//! Each cache keeps at most its capacity: [`ShapeContext::trim`] drops the
-//! entries used longest ago between calls. An id lives for one shaping
-//! call, so none is held then.
+//! Every cache is keyed by content: a font and its coordinates, a script, a
+//! direction, a language, a list of features. Nothing is keyed by a width, a
+//! first-line cut or a layout's ids. A call shapes in a used font's
+//! [`UsedInstance`], which holds the font whole. Lookups use its [`FontKey`]
+//! and coordinates, and a miss rebuilds the entry from it. So any entry may
+//! be dropped between calls, and a reshape never finds another font's data.
+//! Between calls, when no id is held, [`ShapeContext::trim`] drops the
+//! entries used longest ago down to each cache's capacity.
 //!
 //! The caches:
 //! - **languages**: harfrust's [`Language`] per [`PlanLanguage`], since
@@ -31,8 +29,13 @@
 //!   `halt` over each mark's range. A plan compiled with one such range
 //!   serves a call with any number, since harfrust sets ranged masks per
 //!   call.
+//! - **shared glyphs** ([`SharedGlyphs`]): the sidecar entries a
+//!   paragraph's one-glyph clusters point at.
 //! - **advance rooms** ([`AdvanceRooms`]): the shaped advances of a layout
 //!   that keeps none of its own.
+//!
+//! Fonts prepared for harfrust ([`ShaperFont`]) are not kept here. Each
+//! pass prepares its own few ([`ShapeSession`]).
 //!
 //! Warm, a call finds each entry by hash and allocates nothing. A plan's
 //! hash names its language by the language table's id, and its match
@@ -87,8 +90,8 @@ define_id! {
 /// What one font instance says to `text-spacing-trim` in one language and
 /// direction.
 struct TrimEntry {
-    /// The font, by its key, and held at the instance's coordinates, which
-    /// are compared.
+    /// The font's key and the font at the instance's coordinates, compared
+    /// together ([`is_instance`]).
     key: FontKey,
     font: Font,
     language: PlanLanguage,
@@ -96,14 +99,13 @@ struct TrimEntry {
     trim: TrimFont,
 }
 
-/// Whether `font`, held at an instance's coordinates and keyed `key`, is the
-/// instance `used`: the same font at the same coordinates.
+/// Returns whether `font`, keyed `key` and held at an instance's
+/// coordinates, is the instance `used`.
 pub(super) fn is_instance(key: FontKey, font: &Font, used: &UsedInstance) -> bool {
     key == used.key() && font.normalized_coords() == used.font.normalized_coords()
 }
 
-/// Feeds `used`'s font and coordinates to `fx`, as a table keyed by
-/// instance hashes it.
+/// Hashes `used`'s font key and coordinates into `fx`.
 fn hash_instance(fx: &mut FxHasher, used: &UsedInstance) {
     used.key().hash(fx);
     used.coords.hash(fx);
@@ -118,17 +120,14 @@ pub(super) enum PlanLanguage {
     /// It is the content language, or the build's default where the style
     /// names none, or [`parlance::Language::UND`] where neither does.
     Text(parlance::Language),
-    /// A language system tag, passed as HarfBuzz's private `x-hbot` subtag
-    /// in its hexadecimal form, which names the system itself, case and
-    /// all, rather than a language.
+    /// An OpenType language system tag, passed to harfrust as a private
+    /// `x-hbot` subtag in hexadecimal, which keeps its case.
     System(parlance::Tag),
 }
 
 impl PlanLanguage {
-    /// Returns what text with fonts chosen in `language` and styled with
-    /// `language_override` is planned for.
-    ///
-    /// That is the language system the override names, or else `language`.
+    /// Returns the language system `language_override` names, or else
+    /// `language`, the language the fonts were chosen in.
     pub(super) fn new(
         language: parlance::Language,
         language_override: FontLanguageOverride,
@@ -139,9 +138,9 @@ impl PlanLanguage {
         }
     }
 
-    /// The script a font's [`TRIM_PROBES`] are shaped in for text planned
-    /// for it: kana for Japanese, hangul for Korean, and Han for any other
-    /// language or a language system.
+    /// Returns the script [`TRIM_PROBES`] are shaped in: kana for Japanese,
+    /// hangul for Korean, and Han for any other language or a language
+    /// system.
     fn probe_script(self) -> Option<Script> {
         let tag = match self {
             Self::Text(language) => match language.language() {
@@ -154,8 +153,8 @@ impl PlanLanguage {
         Script::from_iso15924_tag(harfrust::Tag::new(tag))
     }
 
-    /// harfrust's language for it, or `None` for none: undetermined, or a
-    /// tag harfrust cannot hold.
+    /// Returns harfrust's language, or `None` for an undetermined language
+    /// or a tag harfrust cannot hold.
     fn to_shaper(self) -> Option<Language> {
         match self {
             Self::Text(language) if language == parlance::Language::UND => None,
@@ -187,41 +186,37 @@ struct ShapeLanguage {
     shaper: Language,
 }
 
-/// A compiled plan, and the font it was compiled for, by its key, which
-/// harfrust's own key does not name.
+/// A compiled plan and the key of its font, which harfrust's plan key does
+/// not name.
 struct Plan {
     font: FontKey,
     plan: ShapePlan,
 }
 
-/// The shaping caches, which outlive every layout, and a call's scratch.
-///
-/// The scratch serves the two steps of a call: finding the marks
-/// `text-spacing-trim` trims, and calling harfrust.
+/// The shaping caches, which outlive every layout, and the scratch shaping
+/// reuses.
 pub(crate) struct ShapeContext {
     languages: LruCache<ShapeLanguageId, ShapeLanguage>,
     plans: LruCache<PlanId, Plan>,
     /// What each font says to `text-spacing-trim`, by instance, language
     /// and direction.
     trims: LruCache<TrimEntryId, TrimEntry>,
-    /// Each instance set down the line at a size, by instance, size and
-    /// fallback, and its glyphs' metrics down the line.
-    ///
-    /// The glyphs of a font dropped go with it.
+    /// Each instance set down the line, by instance, size and fallback.
     verticals: LruCache<VerticalFontId, VerticalFont>,
+    /// Each vertical font's glyph metrics down the line, dropped with their
+    /// font.
     vertical_glyphs: VerticalGlyphs,
-    /// What a call to harfrust fills.
+    /// Scratch for one call to harfrust.
     buffers: CallBuffers,
-    /// A call's marks that give their blanks back, and where they make
-    /// breaking unsafe.
+    /// A call's `text-spacing-trim` marks, and where they make breaking
+    /// unsafe.
     ///
-    /// The call that finds them takes them and gives them back
-    /// ([`take_trim_marks`](Self::take_trim_marks)).
+    /// Lent to one call at a time ([`take_trim_marks`](Self::take_trim_marks)).
     trim_marks: TrimMarks,
     /// Where a paragraph's one-glyph clusters find the sidecar entry already
     /// holding their glyph.
     ///
-    /// The shaping pass takes it and gives it back
+    /// Lent to one shaping pass at a time
     /// ([`take_shared_glyphs`](Self::take_shared_glyphs)).
     shared_glyphs: SharedGlyphs,
     /// Where the shaping pass writes the advances of a layout that has no
@@ -229,16 +224,19 @@ pub(crate) struct ShapeContext {
     advance_rooms: AdvanceRooms,
 }
 
-/// One build or break pass over the shaping caches, with a borrowed metric
-/// source and the fonts the pass shapes in.
+/// One pass over the shaping context, with the host's metric provider and
+/// the fonts the pass has prepared for harfrust.
 ///
-/// The context retains neither the provider, its cache, nor the fonts.
+/// A build's shaping, a measurement and a line break each make one. The
+/// context keeps neither the provider nor the prepared fonts.
 pub(crate) struct ShapeSession<'c, 'p> {
     context: &'c mut ShapeContext,
     pass: PassFonts<'p>,
 }
 
 impl<'c, 'p> ShapeSession<'c, 'p> {
+    /// Starts a pass over `context`, reading glyph metrics from `provider`
+    /// where given.
     pub(crate) fn new(
         context: &'c mut ShapeContext,
         provider: Option<&'p dyn FontMetricsProvider>,
@@ -251,6 +249,8 @@ impl<'c, 'p> ShapeSession<'c, 'p> {
         Self { context, pass }
     }
 
+    /// Shapes as [`ShapeContext::shape_call`] does, with the pass's provider
+    /// and prepared fonts.
     pub(super) fn shape_call<R>(
         &mut self,
         font: &'p UsedInstance,
@@ -263,6 +263,7 @@ impl<'c, 'p> ShapeSession<'c, 'p> {
             .shape_call(font, text, settings, wanted, Some(&mut self.pass), read)
     }
 
+    /// Returns the host's metric provider, if any.
     pub(crate) fn provider(&self) -> Option<&'p dyn FontMetricsProvider> {
         self.pass.provider
     }
@@ -285,12 +286,13 @@ impl DerefMut for ShapeSession<'_, '_> {
 /// How many prepared fonts a pass keeps.
 const SHAPERS: usize = 4;
 
-/// What a pass shapes with beside the context: its metric provider, and
-/// the fonts it last shaped in, prepared for harfrust.
+/// A pass's metric provider, and the fonts it last shaped in, prepared for
+/// harfrust.
 ///
-/// Preparing a font reads its layout tables and character map, and its
-/// glyph metrics on first use. A pass shapes run after run in the same few
-/// fonts, so a few prepared fonts spare nearly every preparation.
+/// Preparing a font sets up its layout tables, feature variations and
+/// character map; its glyph metrics load on first use. A pass shapes run
+/// after run in the same few fonts, so a few prepared fonts spare nearly
+/// every preparation.
 struct PassFonts<'f> {
     provider: Option<&'f dyn FontMetricsProvider>,
     /// The prepared fonts, each with its key and the scale it was last set
@@ -326,14 +328,16 @@ impl<'f> PassFonts<'f> {
     }
 }
 
-/// What a call to harfrust fills: [`ShapeContext::shape_call`]'s scratch.
+/// Scratch for one call to harfrust ([`ShapeContext::shape_call`]).
 ///
-/// It is kept between calls, and keeps the base features' conversion while
-/// their content is unchanged.
+/// Keeps the last font's converted features while its feature list is
+/// unchanged.
 struct CallBuffers {
-    /// The source of the converted prefix; compared by content, never a layout id.
+    /// The font features the converted prefix of `features` comes from,
+    /// compared by content.
     base_features: Vec<FontFeature>,
-    /// Converted base features, followed by the call's ranged/width overrides.
+    /// The converted font features, then the call's width form and `halt`
+    /// ranges.
     features: Vec<Feature>,
     /// The one buffer, filled for every call, shaped in place, and cleared
     /// after it, keeping its capacity.
@@ -341,7 +345,7 @@ struct CallBuffers {
 }
 
 impl CallBuffers {
-    /// Empty, allocating nothing.
+    /// Returns empty scratch, allocating nothing.
     fn new() -> Self {
         Self {
             base_features: Vec::new(),
@@ -350,13 +354,13 @@ impl CallBuffers {
         }
     }
 
-    /// Sets the features a call in `font` shapes with, as `wanted` says,
-    /// shaping down the line where `vertical`.
+    /// Sets the features a call in `font` shapes with, as `wanted` says.
+    /// `vertical` selects `vhal` over `halt`.
     ///
-    /// Returns them, how many of them the plan is compiled for, and the
-    /// buffer to fill. The plan is compiled for the features and one `halt`
-    /// range at most, and the call shapes with every range. A probe shapes
-    /// with no features, and the font's stay converted for the next call.
+    /// Returns the features, how many of them the plan is compiled for, and
+    /// the buffer to fill. The plan covers the font's features, the width
+    /// form and at most one `halt` range; the call applies every range. A
+    /// plain call shapes with no features and leaves the font's converted.
     fn features(
         &mut self,
         font: &UsedInstance,
@@ -380,7 +384,7 @@ impl CallBuffers {
             // Drop only the preceding call's ranged and width overrides.
             features.truncate(base_features.len());
         }
-        // After the style's, so that it holds whatever they say, as Blink's
+        // After the style's features, so it overrides them, as Blink's
         // compressed font holds its width variant.
         if let Some(tag) = narrow {
             features.push(Feature {
@@ -421,15 +425,13 @@ pub(super) enum Features<'a> {
     Plain,
 }
 
-/// The text one call shapes.
-///
-/// The shaping function and the trim-font reader build one per call, and
-/// [`ShapeContext::shape_call`] reads it. It lives no longer than the call.
+/// The text one call shapes, built for that call alone.
 pub(super) struct CallText<'a> {
     /// The characters, which start at byte `base` of the text.
     pub(super) chars: &'a str,
     pub(super) base: u32,
-    /// Up to five characters before and after, for joining.
+    /// The paragraph's text before and after the characters, for joining;
+    /// empty at a cut. harfrust keeps up to five characters of each.
     pub(super) before: &'a str,
     pub(super) after: &'a str,
     /// The characters start their paragraph.
@@ -445,7 +447,8 @@ pub(super) struct CallSettings {
     pub(super) direction: Direction,
     pub(super) script: Option<Script>,
     pub(super) language: PlanLanguage,
-    /// harfrust's scale: the size in 1/65536 px.
+    /// harfrust's scale: the glyph size in 1/65536 px, or the font's em for
+    /// trim probes.
     pub(super) scale: i32,
     /// The point size in CSS pixels, for `trak` tables, as Chrome hands
     /// HarfBuzz the specified size.
@@ -493,7 +496,7 @@ impl ShapeContext {
     }
 
     /// Drops the entries used longest ago from each cache down to its
-    /// capacity, and the glyphs of each font set down the line it drops.
+    /// capacity, with the glyphs of any vertical font dropped.
     ///
     /// The context calls it between calls, when no id is held.
     pub(crate) fn trim(&mut self) {
@@ -507,8 +510,8 @@ impl ShapeContext {
         }
     }
 
-    /// Drops the entries of each font `keep` refuses by its key: they hold
-    /// the font's bytes.
+    /// Drops every entry whose font key `keep` rejects, releasing the
+    /// font's bytes.
     pub(crate) fn retain_fonts(&mut self, keep: impl Fn(FontKey) -> bool) {
         self.plans.retain(|_, plan| keep(plan.font), |_, _| {});
         self.trims.retain(|_, entry| keep(entry.key), |_, _| {});
@@ -520,7 +523,7 @@ impl ShapeContext {
         }
     }
 
-    /// Drops the glyphs of the fonts set down the line that are gone.
+    /// Drops the glyphs of vertical fonts the cache has dropped.
     fn drop_orphan_glyphs(&mut self) {
         let verticals = &self.verticals;
         self.vertical_glyphs
@@ -535,12 +538,11 @@ impl ShapeContext {
         self.advance_rooms = AdvanceRooms::default();
     }
 
-    /// Takes the emptied scratch a call finds `text-spacing-trim` marks
-    /// into.
+    /// Takes the trim-mark scratch, emptied.
     ///
-    /// The call holds it while it shapes with the context, then hands it
-    /// back ([`restore_trim_marks`](Self::restore_trim_marks)) so its
-    /// capacity is kept.
+    /// A call holds it while it shapes with the context, then returns it
+    /// ([`restore_trim_marks`](Self::restore_trim_marks)) so its capacity is
+    /// kept.
     pub(super) fn take_trim_marks(&mut self) -> TrimMarks {
         let mut marks = mem::take(&mut self.trim_marks);
         marks.clear();
@@ -548,15 +550,15 @@ impl ShapeContext {
     }
 
     /// Takes back the scratch [`take_trim_marks`](Self::take_trim_marks)
-    /// handed out, for the next call.
+    /// lent.
     pub(super) fn restore_trim_marks(&mut self, marks: TrimMarks) {
         self.trim_marks = marks;
     }
 
-    /// Takes the emptied scratch a sink finds shared sidecar entries in.
+    /// Takes the shared-glyph scratch, emptied.
     ///
-    /// The shaping of a text holds it in its sink while it shapes with the
-    /// context, then hands it back
+    /// The shaping pass holds it in its sink while it shapes with the
+    /// context, then returns it
     /// ([`restore_shared_glyphs`](Self::restore_shared_glyphs)) so its
     /// capacity is kept.
     pub(super) fn take_shared_glyphs(&mut self) -> SharedGlyphs {
@@ -566,7 +568,7 @@ impl ShapeContext {
     }
 
     /// Takes back the scratch
-    /// [`take_shared_glyphs`](Self::take_shared_glyphs) handed out.
+    /// [`take_shared_glyphs`](Self::take_shared_glyphs) lent.
     pub(super) fn restore_shared_glyphs(&mut self, shared: SharedGlyphs) {
         self.shared_glyphs = shared;
     }
@@ -583,10 +585,10 @@ impl ShapeContext {
         self.advance_rooms.last_text()
     }
 
-    /// The bytes the scratch takes on the heap.
+    /// Returns the scratch's heap bytes.
     ///
-    /// [`heap_bytes`](HeapBytes::heap_bytes) counts these too; the rest is
-    /// the caches.
+    /// [`heap_bytes`](HeapBytes::heap_bytes) counts these too, with the
+    /// caches.
     pub(crate) fn scratch_heap_bytes(&self) -> usize {
         self.buffers.heap_bytes()
             + self.trim_marks.heap_bytes()
@@ -594,20 +596,20 @@ impl ShapeContext {
             + self.advance_rooms.heap_bytes()
     }
 
-    /// Drops every instance set down the line, and its glyphs.
+    /// Drops every vertical font and its glyphs.
     fn clear_verticals(&mut self) {
         self.verticals.clear();
         self.vertical_glyphs.clear();
     }
 
-    /// How many plans are compiled.
+    /// Returns how many plans are compiled.
     #[cfg(test)]
     pub(crate) fn plan_count(&self) -> usize {
         self.plans.len()
     }
 
-    /// How many languages, plans, trim answers, fonts set down the line and
-    /// their glyphs are held, in that order.
+    /// Returns how many languages, plans, trim answers, vertical fonts and
+    /// vertical glyphs are held, in that order.
     #[cfg(test)]
     pub(crate) fn counts(&self) -> [usize; 5] {
         [
@@ -619,20 +621,23 @@ impl ShapeContext {
         ]
     }
 
-    /// How many instances are set down the line at a size, and how many of
-    /// their glyphs' metrics down the line are read.
+    /// Returns how many vertical fonts and vertical glyphs are held.
     #[cfg(test)]
     pub(super) fn vertical_counts(&self) -> (usize, usize) {
         (self.verticals.len(), self.vertical_glyphs.len())
     }
 
-    /// Shapes `text` in `font`, a layout's used font, as `call` says,
-    /// and hands the shaped buffer to `read`.
+    /// Shapes `text` in `font` as `call` and `wanted` say, and returns what
+    /// `read` makes of the shaped buffer.
     ///
-    /// It uses the glyph metrics of `pass`'s provider where there is one,
-    /// and otherwise the font as `pass` holds it prepared. Without `pass`, it
-    /// prepares the font for the call. Returns `None` where harfrust refuses
-    /// the call, which never happens for a buffer filled this way.
+    /// Glyph metrics come from `pass`'s provider where there is one and
+    /// `wanted` is the font's features; trim probes never read it. Down the
+    /// line, the font's vertical metrics answer what the provider leaves
+    /// (see `vertical`). Across the line with no provider, the call uses the
+    /// font as `pass` holds it prepared, or prepares it without `pass`.
+    ///
+    /// Returns `None` where harfrust refuses the call, which never happens
+    /// for a buffer filled this way.
     fn shape_call<'f, R>(
         &mut self,
         font: &'f UsedInstance,
@@ -674,8 +679,8 @@ impl ShapeContext {
             },
         );
         fill(buffer, text, call);
-        // Trim probes shape at the font's em rather than a used CSS size;
-        // they classify the font's design-space punctuation, not hinted ink.
+        // Only a run's call reads the host's metrics. Trim probes shape at
+        // the font's em and classify punctuation by the font's own ink.
         let provided = (pass.as_ref())
             .and_then(|pass| pass.provider)
             .filter(|_| matches!(wanted, Features::Font { .. }))
@@ -716,9 +721,9 @@ impl ShapeContext {
     /// Returns the vertical font `key` names, `font` at its size, building
     /// it the first time.
     ///
-    /// Returns `None` where its em is zero, and harfrust's own metrics are
-    /// used. A table whose ids are all taken drops every vertical font and
-    /// its glyphs and starts again.
+    /// Returns `None` where its em is zero; the call then uses harfrust's
+    /// own metrics. A table whose ids are all taken drops every vertical
+    /// font and its glyphs and starts again.
     fn vertical_font(&mut self, key: VerticalKey, font: &UsedInstance) -> Option<VerticalFontId> {
         let hash = || {
             let mut fx = FxHasher::new();
@@ -743,9 +748,10 @@ impl ShapeContext {
     /// Returns what `font` says to `text-spacing-trim` in `language`, set
     /// `horizontal`ly or not.
     ///
-    /// It is cached per instance, or read once from the font's feature lists
-    /// and from [`TRIM_PROBES`] shaped in it. Where the bytes are not a font,
-    /// it is the default: no `halt`, no `chws`.
+    /// Caches the answer per instance, language and direction. A miss reads
+    /// the font's feature lists and shapes [`TRIM_PROBES`] in it. Where the
+    /// probes do not shape one glyph each, the answer has no `halt` and
+    /// default punctuation classes.
     ///
     /// Upright text in a vertical line reads `vhal` and `vchw`, and shapes
     /// its probes down the line to read their heights, as Blink's
@@ -800,9 +806,9 @@ impl ShapeContext {
     /// from the top of each glyph's advance, as Blink's `CharTypeFromBounds`
     /// reads bounds `!is_horizontal`.
     ///
-    /// This reads in font units with harfrust's own vertical metrics. Those
-    /// match Blink's except that Blink rounds a bounds' top out to a whole
-    /// pixel at a size (see `vertical`). The reading is kept for any size,
+    /// It reads in font units, with harfrust's own vertical metrics. These
+    /// match Blink's except that Blink rounds the top of the bounds out to a
+    /// whole pixel at a size (see `vertical`). The answer serves every size,
     /// so it leaves that rounding out.
     fn read_trim_font(
         &mut self,
@@ -933,20 +939,20 @@ heap_bytes! {
     }
 }
 
-/// Room for the shaped advances of a layout that has no allocation for
-/// them, one a first-line variant.
+/// Rooms for the shaped advances of a layout with no allocation for them,
+/// one per first-line variant.
 ///
 /// [`lend`](Self::lend) swaps a room in before the shaping pass writes.
-/// [`settle`](Self::settle) leaves the advances to the layout where it
-/// keeps them, and otherwise takes the room back with them, so a layout
-/// that keeps none never allocates for them. A layout with an allocation
-/// of its own writes in place and keeps it.
+/// [`settle`](Self::settle) takes it back after measurement, so a layout
+/// that drops its advances never allocates for them. A layout that keeps
+/// them gets an allocation of their length. A layout with an allocation of
+/// its own writes in place and keeps it.
 #[derive(Default)]
 pub(super) struct AdvanceRooms {
     text: AdvanceRoom,
     first_line: AdvanceRoom,
-    /// The text's advances as the last build's shaping wrote them, for
-    /// tests to read whether or not the layout keeps them.
+    /// The text's advances as the last build's shaping wrote them, kept
+    /// for tests whether or not the layout keeps them.
     #[cfg(test)]
     last_text: Vec<TextUnit>,
 }
@@ -959,7 +965,6 @@ struct AdvanceRoom {
 }
 
 impl AdvanceRooms {
-    /// Returns `variant`'s room.
     fn room(&mut self, variant: FirstLineVariant) -> &mut AdvanceRoom {
         match variant {
             FirstLineVariant::Standard => &mut self.text,
@@ -976,12 +981,12 @@ impl AdvanceRooms {
         }
     }
 
-    /// Leaves `advances` of `variant` to the layout where `keep` says it
-    /// keeps them, and otherwise empties them and takes the room back.
+    /// Leaves `variant`'s `advances` to the layout where `keep`, and
+    /// otherwise empties them and takes the room back.
     ///
-    /// Kept advances that hold the room keep it where it is exactly their
-    /// length, and are copied to an allocation of their length otherwise.
-    /// Where the allocator refuses the copy, they keep the room.
+    /// Kept advances in the room keep it where it is exactly their length,
+    /// and move to an allocation of their length otherwise. Where the
+    /// allocator refuses, they keep the room.
     pub(super) fn settle(
         &mut self,
         variant: FirstLineVariant,
@@ -1310,7 +1315,8 @@ mod tests {
         let mut cx = ShapeContext::new(&CacheLimits::default());
         let language = PlanLanguage::Text(parlance::Language::UND);
         assert!(cx.trim_font(&font, language, true).has_halt());
-        // Invalidate the result only: the next call must actually read the probes again.
+        // Clear the cached answer only, so the next call reads the probes
+        // again.
         cx.trims.clear();
         let allocations = count_allocations(|| {
             assert!(cx.trim_font(&font, language, true).has_halt());
@@ -1318,6 +1324,8 @@ mod tests {
         assert_eq!(allocations, 0, "a trim miss allocates nothing");
     }
 
+    /// A font's converted features never reach a plain call, and a changed
+    /// feature list is converted again.
     #[test]
     fn cached_features_do_not_leak_into_probes_or_other_styles() {
         let mut font = TestFont::new("Feature cache", &[(0x20, 0x7e)]);

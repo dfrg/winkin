@@ -1,15 +1,14 @@
-//! The context every layout is built and broken with, and what it keeps on the heap.
+//! The context layouts are built and broken with, and its heap accounting.
 //!
 //! It holds the fonts, the config, the caches that outlive one layout, and
-//! every stage's scratch, the content writer's included. The stages borrow
-//! one cache and scratch at a time ([`Context::analyzing`] and the rest).
+//! every stage's scratch. Each stage borrows its cache and scratch through
+//! an accessor ([`Context::analyzing`] and the rest).
 //!
-//! Every cache keeps at most its capacity ([`CacheLimits`]).
-//! [`Context::start_build`] and [`Context::start_break`] trim the caches to
-//! it before every build and break, when no id into a cache is held: a
-//! layout reads none after its build, and a call holds its ids only while
-//! it runs. [`Context::finish_build`] and [`Context::start_break`] release
-//! scratch far bigger than the last calls needed.
+//! [`Context::start_build`] and [`Context::start_break`] trim each cache to
+//! its [`CacheLimits`] entry. No id into a cache is held then: a layout
+//! reads none after its build, and a call holds its ids only while it runs.
+//! [`Context::finish_build`] and [`Context::start_break`] release scratch
+//! far bigger than the last calls needed.
 
 #[cfg(test)]
 use alloc::vec::Vec;
@@ -33,18 +32,16 @@ use crate::unit::InlineLayoutUnit;
 
 /// Fonts, configuration, caches and working memory for layout.
 ///
-/// Use one context per thread; layout operations require mutable access.
-/// Layouts retain their font data and can be read without a context, including
-/// on another thread. Relayout uses a context for configuration, shaping
-/// caches and working memory. Equivalent settings produce equivalent results.
+/// Building and breaking lines take the context mutably, so each thread
+/// uses its own. Layouts keep their font data and are read without a
+/// context, on any thread. Contexts with equal settings give equal results.
 ///
-/// Caches hold at most the number of entries [`CacheLimits`] sets, and drop
-/// the entries used longest ago at the start of each build and line
-/// breaking. Working memory far larger than recent calls needed is released
-/// at the same points. [`clear_caches`](Self::clear_caches) releases every
-/// cache and all working memory at once. Existing layouts remain valid
-/// either way. Font bytes remain shared until the last reference is
-/// dropped. Subsequent builds and line breaking repopulate the caches.
+/// Each cache holds at most the entries [`CacheLimits`] sets, and drops the
+/// least recently used at the start of each build and line breaking.
+/// Working memory far larger than recent calls needed is released at the
+/// same points. [`clear_caches`](Self::clear_caches) releases every cache
+/// and all working memory at once. Existing layouts stay valid either way,
+/// and font bytes stay shared until the last reference is dropped.
 ///
 /// ```
 /// use winkin::{
@@ -64,16 +61,16 @@ use crate::unit::InlineLayoutUnit;
 /// builder.text(NodeKey(1), "Hello, world");
 /// builder.finish();
 ///
-/// // Every cache dropped, the fonts and the config kept.
+/// // Drop every cache; keep the fonts and the config.
 /// cx.clear_caches();
 /// assert_eq!(cx.heap_bytes().total(), 0);
 ///
-/// // The layout built before breaks as it would have.
+/// // The layout built before still breaks the same way.
 /// layout.break_lines(&mut cx, Area::new(100.0), &mut NoExclusions);
 /// assert_eq!(layout.lines().len(), 2);
 /// ```
 pub struct Context {
-    /// The engine's choices that are not CSS.
+    /// The layout choices that CSS does not make.
     config: Config,
     /// How many entries each cache keeps.
     limits: CacheLimits,
@@ -81,26 +78,22 @@ pub struct Context {
     /// and font instances.
     fonts: FontContext,
     /// The content writer's working memory, which a builder takes while it
-    /// writes, and the build's lists, which font selection reads.
+    /// writes, and the build's lists for font selection.
     content_scratch: ContentScratch,
     /// Font selection's working memory.
     font_scratch: FontScratch,
-    /// The analysis cache: the segmenters analysis runs.
+    /// The segmenters analysis runs.
     analysis: AnalysisContext,
-    /// The analysis's working memory.
+    /// Analysis's working memory.
     analysis_scratch: AnalysisScratch,
-    /// The shaping caches, which the breaker's reshapes share.
+    /// The shaping caches, shared with the breaker's reshapes.
     ///
-    /// They hold the shape plans, each font's `text-spacing-trim` answers,
-    /// the fonts set down the line, and the one buffer every shaping call
-    /// fills.
+    /// They hold the shape plans, each font's `text-spacing-trim` data, the
+    /// vertical fonts, and the buffer every shaping call fills.
     shaping: ShapeContext,
     /// Measurement's cursors for walking intrinsic ruby pieces.
     measure_scratch: MeasureScratch,
     /// The breaker's working memory, one part per phase.
-    ///
-    /// It holds a line whose height is worked out box by box, the boxes open
-    /// across a line's start, and a line's annotation levels.
     break_scratch: BreakScratch,
     /// Line layout's working memory: a line's pieces, its order and its boxes' fragment items.
     place_scratch: PlaceScratch,
@@ -115,12 +108,12 @@ impl Context {
         Self::with_fonts(fonts, None)
     }
 
-    /// Creates a context as [`new`](Self::new) does, which parses each font
+    /// Creates a context as [`new`](Self::new) does, parsing each font
     /// through `shared`.
     ///
-    /// Contexts created with clones of one [`SharedFonts`] parse a font once
-    /// between them, so a new context lays out its first text sooner. Layout
-    /// results are the same as with [`new`](Self::new).
+    /// Contexts created with clones of one [`SharedFonts`] parse each font
+    /// once between them, so a new context lays out its first text sooner.
+    /// Results are the same as with [`new`](Self::new).
     pub fn with_shared_fonts(fonts: Collection, shared: SharedFonts) -> Self {
         Self::with_fonts(fonts, Some(shared))
     }
@@ -147,11 +140,11 @@ impl Context {
 
     /// Replaces the font collection, for example after loading a web font.
     ///
-    /// Existing layouts retain their fonts until rebuilt. Cached family
-    /// lists are discarded unless `fonts` holds the same layer snapshots.
-    /// Cached data of fonts that `fonts` no longer contains is discarded,
-    /// which releases their bytes once no layout uses them. Cached data of
-    /// the remaining fonts is retained for reuse.
+    /// Existing layouts keep their fonts until rebuilt. Cached family lists
+    /// are discarded unless `fonts` holds the same layer snapshots. Cached
+    /// data of fonts missing from `fonts` is discarded, which releases their
+    /// bytes once no layout uses them. Cached data of the other fonts is
+    /// kept.
     pub fn set_collection(&mut self, fonts: Collection) {
         if self.fonts.set_collection(fonts) {
             let held = &self.fonts;
@@ -166,13 +159,14 @@ impl Context {
 
     /// Sets the layout configuration.
     ///
-    /// Existing layouts retain build-time settings until rebuilt, including
-    /// word-spacing rules. Settings applied during line layout, such as tab
-    /// justification, take effect at the next
-    /// [`break_lines`](crate::Layout::break_lines) call.
+    /// Existing layouts keep the settings read at build time, such as the
+    /// word-spacing rule, until rebuilt. Settings read in line breaking,
+    /// such as tab justification, apply at the next
+    /// [`break_lines`](crate::Layout::break_lines) call. Each field's
+    /// documentation says which applies.
     ///
-    /// Configuration changes do not invalidate caches. Font line metrics
-    /// are derived from unscaled metrics during each build.
+    /// The caches stay valid: each build derives font line metrics from
+    /// unscaled metrics.
     pub fn set_config(&mut self, config: Config) {
         self.config = config;
     }
@@ -184,8 +178,8 @@ impl Context {
 
     /// Sets how many entries each cache keeps.
     ///
-    /// Caches above a new limit drop their least recently used entries
-    /// immediately. Existing layouts remain valid.
+    /// A cache above its new limit drops its least recently used entries
+    /// at once. Existing layouts stay valid.
     pub fn set_cache_limits(&mut self, limits: CacheLimits) {
         self.limits = limits;
         self.fonts.set_limits(&limits);
@@ -202,8 +196,8 @@ impl Context {
     /// memory.
     ///
     /// Keeps the collection, the configuration and the cache limits.
-    /// Existing layouts remain valid. Later builds and line breaking fill
-    /// the caches again and give the same results.
+    /// Existing layouts stay valid. Later builds and line breaking fill the
+    /// caches again and give the same results.
     pub fn clear_caches(&mut self) {
         self.fonts.clear(&self.limits);
         self.shaping = ShapeContext::new(&self.limits);
@@ -213,12 +207,12 @@ impl Context {
 
     /// Returns estimated heap usage by cache, in bytes.
     ///
-    /// Includes table capacities, cached values and retained working memory.
-    /// Font bytes shared with the collection are reported separately in
+    /// Counts table capacities, cached values and retained working memory.
+    /// Font bytes shared with the collection are in
     /// [`ContextHeap::font_data`]. Excludes the collection, [`SharedFonts`],
-    /// which reports its own usage, and allocations within read-fonts,
-    /// harfrust and fontwich values that do not report their size: parsed
-    /// fonts, shape plans, the shaping buffer, and family handles.
+    /// which reports its own usage, and read-fonts, harfrust and fontwich
+    /// values that do not report their size: parsed fonts, shape plans, the
+    /// shaping buffer and family handles.
     pub fn heap_bytes(&self) -> ContextHeap {
         let Self {
             config: _,
@@ -249,9 +243,9 @@ impl Context {
         }
     }
 
-    /// Readies the context for a build, as its builder starts.
+    /// Readies the context for a build as its builder starts.
     ///
-    /// Trims every cache to its limit, as no call holds an id into one now.
+    /// Trims every cache to its limit, since no call holds an id into one.
     /// The builder then holds the context until it finishes, so nothing
     /// trims the family lists it names.
     pub(crate) fn start_build(&mut self) {
@@ -259,10 +253,9 @@ impl Context {
     }
 
     /// Notes a finished build of content `size` long, and releases the
-    /// scratch where the calls before it grew it far past what the last
-    /// calls need.
+    /// scratch where it is far larger than the last calls need.
     ///
-    /// `size` is the content's text bytes and items, which every scratch
+    /// `size` counts the content's text bytes and items, which every scratch
     /// grows with.
     pub(crate) fn finish_build(&mut self, size: usize) {
         if self.scratch_sizes.note(size) {
@@ -272,8 +265,8 @@ impl Context {
 
     /// Readies the context for a break of content `size` long.
     ///
-    /// As [`start_build`](Self::start_build), but leaves the font caches,
-    /// which only a build fills.
+    /// Trims the shaping caches and releases oversized scratch. Leaves the
+    /// font caches, which only a build fills.
     pub(crate) fn start_break(&mut self, size: usize) {
         self.shaping.trim();
         if self.scratch_sizes.note(size) {
@@ -303,8 +296,7 @@ impl Context {
         (&self.analysis, &mut self.analysis_scratch)
     }
 
-    /// Takes the content writer's working memory, leaving empty scratch
-    /// that holds nothing.
+    /// Takes the content writer's working memory, leaving empty scratch.
     pub(crate) fn take_content_scratch(&mut self) -> ContentScratch {
         mem::take(&mut self.content_scratch)
     }
@@ -325,9 +317,8 @@ impl Context {
         )
     }
 
-    /// Returns measurement's shaping caches, its reusable level cursors,
-    /// and the generated texts the last build chose fonts for, which it
-    /// shapes after a build.
+    /// Returns what measurement runs with: the shaping caches, its scratch,
+    /// and the generated texts the last build chose fonts for.
     pub(crate) fn measuring(
         &mut self,
     ) -> (&mut ShapeContext, &mut MeasureScratch, GeneratedInput<'_>) {
@@ -339,17 +330,17 @@ impl Context {
         (&mut self.shaping, &mut self.measure_scratch, generated)
     }
 
-    /// Returns the shaping caches, also used for generated text and tests.
+    /// Returns the shaping caches.
     pub(crate) fn shaping(&mut self) -> &mut ShapeContext {
         &mut self.shaping
     }
 
-    /// Returns what the breaker runs with: the shaping caches its reshapes share, and its scratch.
+    /// Returns what the breaker runs with: the shaping caches and its scratch.
     pub(crate) fn breaking(&mut self) -> (&mut ShapeContext, &mut BreakScratch) {
         (&mut self.shaping, &mut self.break_scratch)
     }
 
-    /// Returns the transient line facts breaking made, and line layout's scratch.
+    /// Returns the line placements breaking made, and line layout's scratch.
     pub(crate) fn placing(&mut self) -> (&mut LinePlacements, &mut PlaceScratch) {
         (&mut self.break_scratch.placements, &mut self.place_scratch)
     }
@@ -395,23 +386,23 @@ type FontSelection<'a> = (
 /// How many scratch sizes [`ScratchSizes`] remembers.
 const SCRATCH_CALLS: usize = 8;
 
-/// How many times the largest of the last calls the scratch may have grown
-/// for before it is released.
+/// How many times larger than the largest recent call the scratch may have
+/// grown before it is released.
 const SCRATCH_SLACK: usize = 4;
 
-/// The call size below which the scratch is never released, so a context
-/// of small calls never gives back and takes again.
+/// The call size below which the scratch is never released, so small calls
+/// never release and allocate again.
 ///
-/// It is a size, not bytes, since the shaping buffer, which grows with the
-/// longest run, does not report its bytes.
+/// It is a call size, not bytes, since the shaping buffer does not report
+/// its bytes.
 const SCRATCH_FLOOR: usize = 16 * 1024;
 
 /// The sizes of the last calls, and the largest the scratch grew for.
 ///
 /// The scratch keeps its capacity, so one huge paragraph would keep it huge.
-/// Once the last [`SCRATCH_CALLS`] calls are each under a
-/// [`SCRATCH_SLACK`]th of what it grew for, it is released. Steady calls of
-/// one size never release it, so a warm relayout allocates nothing.
+/// It is released once the last [`SCRATCH_CALLS`] calls are each under a
+/// [`SCRATCH_SLACK`]th of what it grew for. Calls of a steady size never
+/// release it, so a warm relayout allocates nothing.
 struct ScratchSizes {
     recent: [usize; SCRATCH_CALLS],
     /// Where in `recent` the next size goes.
@@ -430,8 +421,8 @@ impl ScratchSizes {
         }
     }
 
-    /// Notes a call of `size`, and returns whether the scratch is far
-    /// bigger than the last calls need.
+    /// Notes a call of `size` and returns whether the scratch is far bigger
+    /// than the last calls need.
     fn note(&mut self, size: usize) -> bool {
         if let Some(recent) = self.recent.get_mut(self.next) {
             *recent = size;
@@ -456,7 +447,7 @@ impl ScratchSizes {
 /// when next needed, with the same result. A limit of zero keeps nothing
 /// between calls.
 ///
-/// The defaults suffice for content with a few dozen distinct styles.
+/// The defaults suit content with a few dozen distinct styles.
 ///
 /// ```
 /// use winkin::{CacheLimits, Context};
@@ -473,8 +464,8 @@ impl ScratchSizes {
 pub struct CacheLimits {
     /// Distinct `font-family` lists. Default 64.
     ///
-    /// A build keeps every list it names until it finishes, however many;
-    /// the next build trims the cache back to this limit when it starts.
+    /// A build keeps every list it names until it finishes. The next build
+    /// trims the cache back to this limit as it starts.
     pub family_lists: usize,
     /// Fallback lists: the fonts to try for one family list, script,
     /// language, weight, width and style. Default 128.
@@ -482,11 +473,11 @@ pub struct CacheLimits {
     /// Font instances: a font at one set of variation coordinates, with
     /// its features, synthesis and `@font-face` metric overrides. Default 64.
     ///
-    /// Each distinct `font-variation-settings`, and each font size of a font
-    /// with an `opsz` axis under `font-optical-sizing: auto`, makes one. The
-    /// same limit applies to per-font shaping data: `text-spacing-trim`
-    /// data, vertical metrics at each size, and the features a font supports
-    /// and covers.
+    /// Each distinct `font-variation-settings` makes one, and so does each
+    /// size of a font with an `opsz` axis under `font-optical-sizing: auto`.
+    /// The same limit applies to per-font shaping data: `text-spacing-trim`
+    /// data, vertical metrics at each size, and the features a font
+    /// supports and covers.
     pub font_instances: usize,
     /// Shape plans: one per font, script, direction, language and list of
     /// features. Default 128. The same limit applies to the languages the
@@ -508,8 +499,8 @@ impl Default for CacheLimits {
 /// Estimated context heap usage by cache, in bytes.
 ///
 /// Returned by [`Context::heap_bytes`]. Counts table capacities, including
-/// memory retained for later layouts. Caches are released when the context
-/// is dropped or by [`Context::clear_caches`].
+/// memory kept for later layouts. Dropping the context or calling
+/// [`Context::clear_caches`] releases the caches.
 ///
 /// Excludes compiled segmenter data and unreported allocations within
 /// read-fonts, harfrust and fontwich. Font bytes shared with the collection
@@ -529,14 +520,14 @@ pub struct ContextHeap {
     pub shaping: usize,
     /// The working memory of text preparation, line breaking and line layout.
     ///
-    /// Empty between calls. Capacity is retained until a series of much
-    /// smaller calls releases it.
+    /// Holds nothing between calls, but keeps its capacity until a series of
+    /// much smaller calls releases it.
     pub scratch: usize,
     /// The bytes of the font files the font caches hold.
     ///
-    /// The collection and the layouts set in these fonts share the bytes, so
-    /// they stay in memory while any of them holds the font. Not included in
-    /// [`total`](Self::total).
+    /// The collection and the layouts set in these fonts share the bytes,
+    /// which stay in memory while any of them holds the font. Not included
+    /// in [`total`](Self::total).
     pub font_data: usize,
 }
 

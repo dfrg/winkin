@@ -1,24 +1,23 @@
 //! Letter- and word-spacing: the room added after a cluster.
 //!
 //! The room depends only on the cluster, its style and the build's
-//! [`WordSpacingRule`], so it goes into the prefix before any width is known.
-//! [`LetterWordSpacing::after`] decides it. The measure scan adds it to the
-//! prefix, and the breaker adds it to a line edge it reshapes with the same
-//! rule, so a reshaped piece is spaced exactly as the paragraph was.
+//! [`WordSpacingRule`], so the prefix includes it. The breaker spaces a
+//! reshaped line edge with the same [`LetterWordSpacing::after`].
 //!
 //! The rules follow Chrome's `ShapeResultSpacing::ComputeSpacing`:
 //! - `letter-spacing` goes after every cluster that draws, once per ligature.
 //!   Zero-width characters, U+FFFC and tabs take none.
-//! - No letter-spacing goes after a cluster of a cursive script, as CSS Text
-//!   3, section 7.2.1 allows and Chrome 153 does (probe `joining`).
+//! - A cluster of a cursive script takes no letter-spacing, as CSS Text 3,
+//!   section 7.2.1 allows and Chrome 153 does.
 //! - `word-spacing` goes after U+0020 and U+00A0, but not after a U+0020
-//!   that starts the block's text unless the block keeps its spaces. With
-//!   [`WordSeparators`](crate::config::WordSpacing::WordSeparators) it goes after every separator
-//!   in CSS Text 3's list, the first included.
-//! - A percentage of either is of the style's own computed font size, as in
-//!   CSS Text 4 and Chrome 153, not of the space's advance.
+//!   that starts the text unless the block keeps its spaces.
+//!   [`WordSeparators`](crate::config::WordSpacing::WordSeparators) uses CSS
+//!   Text 3's separator list instead.
+//! - A percentage resolves against the computed font size (CSS Text 4,
+//!   Chrome 153).
 //!
-//! Both round to 16.16, as Chrome's `TextRunLayoutUnit` does, and saturate.
+//! Both are 16.16 `TextUnit`s, as Chrome's `TextRunLayoutUnit` is, and sums
+//! saturate.
 
 use crate::config::WordSpacing;
 use crate::data::Id;
@@ -28,31 +27,29 @@ use crate::style::FirstLineVariant;
 use crate::unicode::{self, ScriptId};
 use crate::unit::TextUnit;
 
-/// The scripts CSS Text 3 calls cursive, whose letters take no spacing
-/// between them.
+/// The scripts CSS Text 3 calls cursive, which take no letter-spacing.
 const CURSIVE: [[u8; 4]; 7] = [
     *b"Arab", *b"Rohg", *b"Mand", *b"Mong", *b"Nkoo", *b"Phag", *b"Syrc",
 ];
 
-/// Which clusters of one build's text take `word-spacing`: the separators
-/// the context's [`Config::word_spacing`](crate::config::Config::word_spacing)
-/// names, and whether a U+0020 that starts the text takes it.
+/// The rule for which clusters of one build's text take `word-spacing`.
 ///
-/// It is worked out once a build, from the config and the block's own
-/// `white-space-collapse`, and kept in the measurements. The breaker then
-/// spaces a reshaped edge by the rule the prefix was built with, even if the
-/// context's config has changed since.
+/// Measurement computes it once a build from
+/// [`Config::word_spacing`](crate::config::Config::word_spacing)
+/// and the block's `white-space-collapse`, and stores it in
+/// [`Measured`](super::Measured), so a reshaped edge follows the prefix's
+/// rule even after the config changes.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
 pub(crate) struct WordSpacingRule {
-    /// CSS Text's list of separators, where Chrome's are U+0020 and U+00A0.
+    /// Whether CSS Text's list of separators applies, rather than Chrome's
+    /// U+0020 and U+00A0.
     css_separators: bool,
-    /// A U+0020 starting the text takes word-spacing.
+    /// Whether a U+0020 that starts the text takes word-spacing.
     first_space: bool,
 }
 
 impl WordSpacingRule {
-    /// Chrome's rule in a block that collapses its spaces, and the default
-    /// of empty measurements.
+    /// Chrome's rule in a block that collapses spaces; the empty default.
     pub(super) const CHROME: Self = Self {
         css_separators: false,
         first_space: false,
@@ -60,11 +57,10 @@ impl WordSpacingRule {
 
     /// Returns the rule `choice` makes for `content`.
     ///
-    /// `Css` spaces every separator. `Chrome` spaces U+0020 and U+00A0, and a
-    /// space starting the text only where the block keeps its spaces, as
-    /// Chrome's `allow_word_spacing_anywhere_` is the block's
-    /// `ShouldPreserveWhiteSpaces`. `preserve-spaces`, which Chrome does not
-    /// parse, keeps spaces as `preserve` does, and counts.
+    /// Under `SpaceAndNoBreakSpace`, a U+0020 that starts the text takes
+    /// spacing only where the block keeps its spaces, as Chrome's
+    /// `allow_word_spacing_anywhere_` follows `ShouldPreserveWhiteSpaces`.
+    /// `preserve-spaces`, which Chrome doesn't parse, keeps spaces.
     pub(super) fn new(choice: WordSpacing, content: &Content) -> Self {
         match choice {
             WordSpacing::WordSeparators => Self {
@@ -72,7 +68,6 @@ impl WordSpacingRule {
                 first_space: true,
             },
             WordSpacing::SpaceAndNoBreakSpace => {
-                // The block's own text's facts.
                 let block = content
                     .nodes
                     .text_facts(NodeId::BLOCK, FirstLineVariant::Standard);
@@ -84,8 +79,8 @@ impl WordSpacingRule {
         }
     }
 
-    /// Whether a cluster of `class` whose text is `text` takes
-    /// word-spacing, `first` where it starts the text.
+    /// Returns whether a cluster of `class` with text `text` takes
+    /// word-spacing; `first` marks a cluster that starts the text.
     #[inline]
     fn takes(self, class: ClusterClass, text: &str, first: bool) -> bool {
         match class {
@@ -97,14 +92,11 @@ impl WordSpacingRule {
     }
 }
 
-/// What one style's text adds after its clusters: its letter- and
-/// word-spacing on glyph geometry's grid, and which clusters take the
-/// word-spacing.
+/// One style's letter- and word-spacing, in 16.16 `TextUnit`s, with the
+/// rule for which clusters take the word-spacing.
 ///
-/// Letter- and word-spacing are shaping properties, so one value covers a
-/// shaping run, a reshaped piece of a line, or a piece of a ruby annotation.
-/// Each caller resolves it once ([`from_shaping`](Self::from_shaping)) and
-/// asks it of each cluster ([`after_cluster`](Self::after_cluster)).
+/// Both are shaping properties, so one value covers a shaping run, a
+/// reshaped line edge or a piece of ruby annotation.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
 pub(crate) struct LetterWordSpacing {
     letter: TextUnit,
@@ -113,7 +105,7 @@ pub(crate) struct LetterWordSpacing {
 }
 
 impl LetterWordSpacing {
-    /// Nothing either way: plain text's.
+    /// No letter- or word-spacing.
     pub(super) const NONE: Self = Self {
         letter: TextUnit::from_raw(0),
         word: TextUnit::from_raw(0),
@@ -122,12 +114,8 @@ impl LetterWordSpacing {
 
     /// Returns the spacing of text that shapes as `shaping`.
     ///
-    /// The letter- and word-spacing come as the builder resolved them.
-    /// Word-spacing goes where `words`, the rule the prefix was built with
-    /// ([`Measured::word_spacing_rule`]), says. The measure scan asks this of
-    /// each segment, and the breaker of each line edge it reshapes. Line
-    /// layout and the readers of ruby annotation text ask it too, so all
-    /// space text by one rule.
+    /// `words` is the rule the prefix was built with
+    /// ([`Measured::word_spacing_rule`]), so every reader spaces alike.
     ///
     /// [`Measured::word_spacing_rule`]: super::Measured::word_spacing_rule
     pub(crate) fn from_shaping(
@@ -143,8 +131,8 @@ impl LetterWordSpacing {
         }
     }
 
-    /// Returns the part of the spacing of text that shapes as `shaping` set
-    /// as fixed lengths, which `text-fit` leaves unscaled.
+    /// Returns only the spacing of `shaping` set as fixed lengths, which
+    /// `text-fit` leaves unscaled; the rest is zero.
     pub(crate) fn from_fixed(
         facts: &Facts,
         shaping: ShapingFactsId,
@@ -168,8 +156,8 @@ impl LetterWordSpacing {
 
     /// Returns the room after `cluster`, its text read in `source`.
     ///
-    /// It reads the cluster's class and text and calls
-    /// [`after`](Self::after). The text's first cluster is the one at offset 0.
+    /// As [`after`](Self::after); cluster 0 starts the text, and a cluster
+    /// without a class counts as `Text`.
     #[inline]
     pub(crate) fn after_cluster(
         self,
@@ -187,16 +175,13 @@ impl LetterWordSpacing {
         self.after(class, text, continuation, cluster == ClusterId::new(0))
     }
 
-    /// Whether it adds nothing after any cluster.
+    /// Returns whether it adds nothing after any cluster.
     pub(crate) fn is_none(self) -> bool {
         self.letter.raw() == 0 && self.word.raw() == 0
     }
 
-    /// Returns whether a cluster of `class` may take some of it, before its
-    /// text is read.
-    ///
-    /// Where this is false, [`after`](Self::after) returns zero whatever the
-    /// text.
+    /// Returns whether a cluster of `class` may take any spacing, before its
+    /// text is read. Where false, [`after`](Self::after) returns zero.
     #[inline]
     pub(super) fn may_space(self, class: ClusterClass) -> bool {
         (self.letter.raw() != 0 && takes_letter_spacing(class))
@@ -209,9 +194,9 @@ impl LetterWordSpacing {
 
     /// Returns the room after a cluster of `class` whose text is `text`.
     ///
-    /// Letter-spacing applies unless the cluster is a ligature's
-    /// `continuation`, draws nothing or is cursive. Word-spacing applies where
-    /// the rule makes it a word separator. `first` marks the text's start.
+    /// A ligature `continuation` takes nothing. Letter-spacing skips clusters
+    /// that draw nothing or are cursive. `first` marks the text's first
+    /// cluster.
     pub(super) fn after(
         self,
         class: ClusterClass,
@@ -233,9 +218,8 @@ impl LetterWordSpacing {
     }
 }
 
-/// Whether a cluster of `class` draws, and so takes letter-spacing after it:
-/// a control character that forces a break among them, which CSS Text 3,
-/// section 4 has drawn as any symbol is.
+/// Returns whether a cluster of `class` draws, and so takes letter-spacing.
+/// A drawn separator (VT, FF, NEL) counts (CSS Text 3, section 4).
 fn takes_letter_spacing(class: ClusterClass) -> bool {
     matches!(
         class,
@@ -252,12 +236,10 @@ fn takes_letter_spacing(class: ClusterClass) -> bool {
 /// Returns whether a cluster whose text is `text` is part of a word in a
 /// cursive script.
 ///
-/// The first character with a script of its own decides. A mark is `Zinh`
-/// and takes the script of what it sits on. A join-causing character (the
-/// tatweel, U+200D) belongs to the word it is in.
+/// The first character not of script `Zinh` decides. A join-causing
+/// character (tatweel, U+200D) counts as cursive.
 fn is_cursive(text: &str) -> bool {
-    // ASCII is Latin or Common, and nothing here: the common case in one
-    // byte.
+    // ASCII is Latin or Common, never cursive: the common case in one byte.
     if text.as_bytes().first().is_none_or(u8::is_ascii) {
         return false;
     }
@@ -274,11 +256,9 @@ fn is_cursive(text: &str) -> bool {
     false
 }
 
-/// Returns whether a cluster whose text is `text` is a word separator of a
-/// script that has its own (CSS Text 3, "word-separator characters").
-///
-/// These are the Ethiopic word space, the Aegean word separators, the
-/// Ugaritic word divider and the Phoenician word separator. None is ASCII.
+/// Returns whether `text` starts with a script's own word separator (CSS
+/// Text 3, "word-separator characters"): Ethiopic, Aegean, Ugaritic or
+/// Phoenician. None is ASCII.
 fn is_script_separator(text: &str) -> bool {
     if text.as_bytes().first().is_none_or(u8::is_ascii) {
         return false;

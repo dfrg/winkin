@@ -1,33 +1,28 @@
-//! The offset map: where each piece of the content's text came from in the
-//! text the caller gave each node.
+//! The offset map: where each piece of the content's text came from in each
+//! node's input text.
 //!
-//! The writer records it as it writes the text. It writes a unit for each
-//! run of a node's text that came through whole, each white space run that
-//! collapsing changed, each character a transform made another length, and
-//! each character the builder wrote itself. Units are in content order and
-//! tile the content's text: a unit ends where the next one starts, so a unit
-//! is 12 bytes. **A plain document is one unit per text node.** Text written
-//! as given, a transform that keeps every character's length, and a lone
-//! space that stays one space all join the unit before.
+//! The writer records a unit for each run of a node's text written as
+//! given, each white space run that collapsing changed, each character a
+//! transform changed the length of, and each character the builder wrote.
+//! Units are in content order and tile the content's text: a unit ends where
+//! the next starts, which keeps a unit at 12 bytes. **Plain text is one unit
+//! per text node**: text written as given, a length-preserving transform,
+//! and a lone space that stays one space all join the unit before.
 //!
-//! A node's units follow one another, since a node's text does: they are
-//! the units written while it was the last node the writer made. So the map
-//! keeps each node's first unit, and a binary search over those finds a
-//! unit's node. A break opportunity written between nodes (a `<wbr>` after a
-//! box closed) is a unit of the node written last. It holds none of the
-//! caller's text, so its owner changes no answer.
+//! A node's units are contiguous: they are the units written while it was
+//! the last node made. The map keeps each node's first unit, and a binary
+//! search over those finds a unit's node. A break opportunity written
+//! between nodes (a `<wbr>` after a box closes) belongs to the last node
+//! written; it holds no input text, so its owner changes no answer.
 //!
-//! **Offsets in a node's text** count every byte the caller gave the node,
-//! in its `text` calls in order, collapsed or not. A caller's offset in its
-//! own text node therefore finds its place. An atomic inline and a `<br>`
-//! are their node's offsets 0 and 1: before and after. A `::first-letter`
-//! box's text is cut from the caller's text node. Its units answer to that
-//! text node's key and count on from its offsets, and so does the rest of
-//! that text node after the box.
+//! **Offsets in a node's text** count every byte of the node's `text` calls
+//! in order, collapsed or not. An atomic inline and a `<br>` span their
+//! node's offsets 0 to 1. A `::first-letter` box's text is cut from a text
+//! node: its units, and the rest of that text node after it, answer to that
+//! text node's key and continue its offsets.
 //!
 //! The map is recorded only where [`BuildOptions::map_source`] asks.
-//! Otherwise the content hands the writer no map and keeps none, and
-//! positions are content offsets only.
+//! Otherwise it stays empty, and positions are content offsets only.
 //!
 //! [`BuildOptions::map_source`]: crate::BuildOptions::map_source
 
@@ -43,23 +38,22 @@ define_id! {
 }
 
 /// How a unit of the offset map relates the content's text to its node's
-/// own.
+/// text.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub(super) enum MapUnitKind {
-    /// Written as given, or by a transform that made each character one of
-    /// the same length: offsets map one to one.
+    /// Written as given, or by a length-preserving transform: offsets map
+    /// one to one.
     Identity,
     /// A white space run that became one space or none: an offset inside
-    /// maps to where the space is.
+    /// maps to the space's position.
     Collapsed,
-    /// A character a transform made another length (`ß` in capitals, `SS`).
-    /// It is one caret stop, and an offset inside maps to an end.
+    /// A character a transform changed the length of (`ß` uppercased to
+    /// `SS`). It is one caret stop, and an offset inside maps to an end.
     Variable,
     /// Written by the builder.
     ///
-    /// An atomic inline's U+FFFC and a `<br>`'s `\n` are their node's
-    /// offsets 0 and 1. A break opportunity's U+200B holds none of the
-    /// caller's text.
+    /// An atomic inline's U+FFFC and a `<br>`'s `\n` span their node's
+    /// offsets 0 to 1. A break opportunity's U+200B spans no input text.
     Generated,
 }
 
@@ -83,17 +77,16 @@ impl MapUnitKind {
     }
 }
 
-/// One unit of the offset map, 12 bytes.
-///
-/// It ends in the content's text where the next unit starts.
+/// One unit of the offset map, 12 bytes. It ends in the content's text
+/// where the next unit starts.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 struct MapUnit {
-    /// Where it starts in the content's text, shifted up two, with its kind
-    /// in the two low bits. The text holds under 2^30 bytes.
+    /// Its start in the content's text, shifted left two, with its kind in
+    /// the two low bits. The text holds under 2^30 bytes.
     start: u32,
-    /// Where it starts in its node's text.
+    /// Its start in its node's text.
     source: u32,
-    /// Where it ends there.
+    /// Its end in its node's text.
     source_end: u32,
 }
 
@@ -106,7 +99,6 @@ impl MapUnit {
         }
     }
 
-    /// Where it starts in the content's text.
     fn start(&self) -> TextOffset {
         TextOffset::from_u32(self.start >> 2)
     }
@@ -123,38 +115,38 @@ impl MapUnit {
         self.start = self.start & !3 | kind.bits();
     }
 
-    /// How many bytes of its node's text it stands for.
+    /// Returns how many bytes of its node's text it spans.
     fn source_len(&self) -> u32 {
         self.source_end - self.source
     }
 }
 
-/// A place in the offset map to take it back to: how many units it had,
-/// and its last unit then, which a later unit may have joined.
+/// A point to truncate the offset map back to: its unit count, and its
+/// last unit then, which a later unit may have joined.
 #[derive(Copy, Clone, Debug)]
 pub(super) struct MapMark {
     units: MapUnitId,
     last: Option<MapUnit>,
 }
 
-/// The offset map, filled only where the build asked for it.
+/// The offset map, filled only where the build asks for it.
 #[derive(Default)]
 pub(super) struct Map {
-    /// Whether this build records the map. The writer records in it, and
-    /// readers read it, only where it does.
+    /// Whether this build records the map. The writer records and readers
+    /// read only where it does.
     pub(super) recording: bool,
     /// The units, in content order, tiling the content's text.
     units: Table<MapUnitId, MapUnit>,
-    /// Each node's first unit. A node's units run to the next node's first.
-    /// There is one per node while recording, and none otherwise.
+    /// Each node's first unit; a node's units run to the next node's first.
+    /// One per node while recording, none otherwise.
     first_unit: Table<NodeId, MapUnitId>,
-    /// The key of the caller's text node the block's `::first-letter` box
-    /// took its text from, which that box's units answer to.
+    /// The key of the text node the `::first-letter` box took its text
+    /// from. The box's units answer to it.
     letter_key: Option<NodeKey>,
 }
 
 impl Map {
-    /// An empty map that records nothing, allocating nothing.
+    /// Creates an empty map that records nothing, allocating nothing.
     pub(super) const fn new() -> Self {
         Self {
             recording: false,
@@ -164,8 +156,8 @@ impl Map {
         }
     }
 
-    /// Removes every unit and keeps the allocations, for a new build that
-    /// records the map where `recording`.
+    /// Removes every unit, keeping the allocations, for a new build that
+    /// records the map if `recording` is set.
     pub(super) fn clear(&mut self, recording: bool) {
         self.recording = recording;
         self.units.clear();
@@ -182,13 +174,13 @@ impl Map {
         }
     }
 
-    /// Records that the block's `::first-letter` box takes its text from
-    /// the caller's text node `key`.
+    /// Records that the `::first-letter` box takes its text from the text
+    /// node keyed `key`.
     pub(super) fn letter_from(&mut self, key: NodeKey) {
         self.letter_key = Some(key);
     }
 
-    /// The first unit of the node made last.
+    /// Returns the first unit of the node made last.
     fn node_start(&self) -> MapUnitId {
         self.first_unit
             .last()
@@ -196,7 +188,7 @@ impl Map {
             .unwrap_or(self.units.next_id())
     }
 
-    /// Returns the last unit, where it belongs to the node made last.
+    /// Returns the last unit if it belongs to the node made last.
     fn last_node_unit(&mut self) -> Option<&mut MapUnit> {
         let start = self.node_start();
         let last = self.units.last_id()?;
@@ -208,14 +200,13 @@ impl Map {
 
     fn push(&mut self, unit: MapUnit) -> Option<MapUnitId> {
         let id = self.units.push(unit);
-        // Units are bounded by the text's bytes and the caller's calls,
+        // Units are bounded by the text's bytes and the builder's calls,
         // which a `u32` counts well past what fits in memory.
         debug_assert!(id.is_some(), "the map's units fit");
         id
     }
 
-    /// Returns a mark that [`truncate`](Self::truncate) takes the units back
-    /// to.
+    /// Returns a mark for [`truncate`](Self::truncate) to restore.
     pub(super) fn mark(&self) -> MapMark {
         MapMark {
             units: self.units.next_id(),
@@ -223,8 +214,8 @@ impl Map {
         }
     }
 
-    /// Takes back every unit recorded since `mark`, and whatever was joined
-    /// to the unit that was last there.
+    /// Drops every unit recorded since `mark`, and undoes anything joined
+    /// to the unit that was last then.
     pub(super) fn truncate(&mut self, mark: MapMark) {
         self.units.truncate(mark.units);
         if let Some(last) = mark.last
@@ -234,8 +225,8 @@ impl Map {
         }
     }
 
-    /// Returns how far the text of the node made last has got: the end of
-    /// its last unit, or its start where it has none.
+    /// Returns the end of the last unit of the node made last, or 0 where
+    /// it has none.
     pub(super) fn source_end(&self) -> u32 {
         let start = self.node_start();
         match self.units.last_id() {
@@ -247,8 +238,8 @@ impl Map {
     /// Records `len` bytes of the node's text from `source`, written as
     /// given at content offset `at`.
     ///
-    /// Where `merge` is on, they join the unit before if that unit is the
-    /// node's, written as given, and runs up to them.
+    /// If `merge` is set, they join the unit before where that unit is the
+    /// node's, written as given, and ends at `source`.
     pub(super) fn identity(&mut self, source: u32, len: usize, at: TextOffset, merge: bool) {
         if len == 0 {
             return;
@@ -265,26 +256,26 @@ impl Map {
         self.push(MapUnit::new(MapUnitKind::Identity, at, source..end));
     }
 
-    /// Records a character or a run of the node's text, `source`, that a
-    /// transform made another length, written at `at`.
+    /// Records `source`, a character or run of the node's text whose length
+    /// a transform changed, written at `at`.
     pub(super) fn variable(&mut self, source: Range<u32>, at: TextOffset) {
         self.push(MapUnit::new(MapUnitKind::Variable, at, source));
     }
 
-    /// Records what the builder wrote at `at`, standing for `source` of its
+    /// Records text the builder wrote at `at`, spanning `source` of its
     /// node's text.
     ///
-    /// An atomic inline or a `<br>` stands for offsets 0 to 1. A break
-    /// opportunity stands for none.
+    /// An atomic inline or a `<br>` spans offsets 0 to 1. A break
+    /// opportunity spans none.
     pub(super) fn generated(&mut self, source: Range<u32>, at: TextOffset) {
         self.push(MapUnit::new(MapUnitKind::Generated, at, source));
     }
 
-    /// Records white space of the node's text, `source`, collapsed away at
+    /// Records white space `source` of the node's text, collapsed away at
     /// `at`.
     ///
-    /// It joins the unit before if that unit is the node's, collapsed to
-    /// nothing at `at`, and runs up to it.
+    /// It joins the unit before where that unit is the node's, collapsed to
+    /// nothing at `at`, and ends at `source.start`.
     pub(super) fn collapsed(&mut self, source: Range<u32>, at: TextOffset) {
         if source.is_empty() {
             return;
@@ -300,11 +291,11 @@ impl Map {
         self.push(MapUnit::new(MapUnitKind::Collapsed, at, source));
     }
 
-    /// Records the first white space of a run, `source`, which owes one
-    /// space at `at` once something follows it.
+    /// Records `source`, the start of a white space run that owes one space
+    /// at `at` once something follows it.
     ///
-    /// It gets a unit of its own. The rest of the run in this node joins
-    /// it, and it takes the space if the space is written. Returns its id,
+    /// It gets its own unit, which the rest of the run in this node joins
+    /// and which takes the space if it is written. Returns the unit's id
     /// for [`space_written`](Self::space_written).
     pub(super) fn run(&mut self, source: Range<u32>, at: TextOffset) -> Option<MapUnitId> {
         self.push(MapUnit::new(MapUnitKind::Collapsed, at, source))
@@ -312,16 +303,14 @@ impl Map {
 
     /// Records that the space `run` owed is written where the run began.
     ///
-    /// Every unit after it moves along by one, as the items do. As Blink
-    /// maps a run (`AppendCollapseWhitespace`), the run's first character
-    /// is the space, written as given. It joins the unit before where both
-    /// are the node's. The rest of the run collapses after the space, so an
-    /// offset in the caller's text past the run's first character is after
-    /// the space.
+    /// Every later unit shifts by one byte, as the items do. As in Blink's
+    /// `AppendCollapseWhitespace`, the run's first character becomes the
+    /// space, written as given, and joins the unit before where both are
+    /// the node's. The rest of the run collapses after the space, so an
+    /// input offset past the run's first character maps after the space.
     ///
-    /// The units after the run's are those written while it was pending,
-    /// each counted as it moves. Adding or removing the unit for the run's
-    /// rest moves them once more.
+    /// The later units are those written while the run was pending. Adding
+    /// or removing the unit for the run's rest shifts their ids once more.
     pub(super) fn space_written(&mut self, run: MapUnitId) {
         let end = self.units.next_id();
         if let Some(after) = self.units.get_slice_mut(MapUnitId::new(run.get() + 1)..end) {
@@ -333,7 +322,7 @@ impl Map {
         let Some(&unit) = self.units.get(run) else {
             return;
         };
-        // Every character that collapses is one byte.
+        // Every collapsible character is one byte.
         let space = unit.source.saturating_add(1).min(unit.source_end);
         let at = unit.start();
         let rest = MapUnit::new(
@@ -361,8 +350,8 @@ impl Map {
                     *slot = rest;
                 }
             } else if let Some(tail) = self.units.as_mut_slice().get_mut(run.get()..) {
-                // The run's unit goes, and the units after it move back,
-                // with the nodes' first units among them.
+                // Drop the run's unit and shift later units, and the
+                // nodes' first units, back one.
                 tail.rotate_left(1);
                 self.units.pop();
                 self.renumber_after(run, false);
@@ -373,7 +362,7 @@ impl Map {
             *slot = MapUnit::new(MapUnitKind::Identity, at, unit.source..space);
         }
         if rest_left && self.push(rest).is_some() {
-            // Pushed last, and moved to just after the space.
+            // Pushed last, then rotated to just after the space.
             if let Some(after) = self.units.as_mut_slice().get_mut(run.get() + 1..) {
                 after.rotate_right(1);
             }
@@ -381,11 +370,9 @@ impl Map {
         }
     }
 
-    /// Moves the first units of the nodes made after unit `run` back one,
-    /// for a unit taken out at `run`, or on one (`on`), for a unit put in
-    /// after it.
-    ///
-    /// These are the nodes made while `run` was pending.
+    /// Shifts the first units of the nodes made while `run` was pending:
+    /// forward one if `on` (a unit inserted after `run`), else back one (a
+    /// unit removed at `run`).
     fn renumber_after(&mut self, run: MapUnitId, on: bool) {
         for first in self.first_unit.as_mut_slice().iter_mut().rev() {
             work::step();
@@ -400,25 +387,24 @@ impl Map {
     }
 
     /// Whether units `a` and `b`, `a` before `b`, belong to one node: no
-    /// node's units start after `a` and at or before `b`.
+    /// node's first unit is after `a` and at or before `b`.
     fn same_node(&self, a: MapUnitId, b: MapUnitId) -> bool {
         let firsts = self.first_unit.as_slice();
         firsts.partition_point(|&first| first <= a) == firsts.partition_point(|&first| first <= b)
     }
 
-    /// Records that the content's text lost its first `cut` bytes, the
-    /// block's leading trim of its kept white space.
+    /// Records that the block's leading trim of kept white space removed
+    /// the first `cut` bytes of the content's text.
     ///
-    /// The units before the cut collapse to nothing at the start, and the
-    /// rest move back.
+    /// Units before the cut collapse to nothing at offset 0, and the rest
+    /// shift back.
     pub(super) fn drain_front(&mut self, cut: TextOffset) {
         for unit in self.units.as_mut_slice() {
             work::step();
             let start = unit.start();
             if start < cut {
-                // The trim took this kept white space. The writer starts a
-                // unit at every kept segment break while it trims, so no
-                // unit runs across the cut.
+                // The writer starts a unit at every kept segment break
+                // while it trims, so no unit crosses the cut.
                 unit.set_kind(MapUnitKind::Collapsed);
                 unit.set_start(TextOffset::new(0));
             } else {
@@ -427,8 +413,8 @@ impl Map {
         }
     }
 
-    /// Records that the content's text was cut at `cut`, the block's
-    /// trailing trim. The units from there collapse to nothing at the cut.
+    /// Records that the block's trailing trim cut the content's text at
+    /// `cut`. Units from there collapse to nothing at the cut.
     pub(super) fn cut_end(&mut self, cut: TextOffset) {
         let units = self.units.as_mut_slice();
         let kept = units.partition_point(|unit| unit.start() < cut);
@@ -438,9 +424,9 @@ impl Map {
             unit.set_kind(MapUnitKind::Collapsed);
         }
         // The writer starts a unit at every kept segment break where the
-        // block trims, so the unit before ends at the cut. A unit written as
-        // given that ran past it would stand for more than it holds, so it
-        // becomes collapsed.
+        // block trims, so the unit before ends at the cut. An identity unit
+        // that ran past it would span more than it holds, so it becomes
+        // collapsed.
         if let Some(last) = kept.checked_sub(1).and_then(|at| units.get_mut(at))
             && last.kind() == MapUnitKind::Identity
             && u32_to_index(last.source_len()) != cut.get() - last.start().get()
@@ -453,9 +439,8 @@ impl Map {
     ///
     /// - Units are in content order within `text_len`.
     /// - There is one first unit per node, in order.
-    /// - Each node's units run on in its text.
-    /// - A unit written as given is as long in the content as in the
-    ///   caller's text.
+    /// - Each node's units are contiguous in its text.
+    /// - An identity unit has the same length in the content and its node.
     #[cfg(debug_assertions)]
     pub(super) fn debug_check(&self, text_len: usize, nodes: usize) {
         if !self.recording {
@@ -506,8 +491,8 @@ impl Map {
 
     // Reading. --------------------------------------------------------------
 
-    /// Returns a reader of the map against `nodes`, over a text `text_len`
-    /// bytes long, or `None` where the build did not record it.
+    /// Returns a reader of the map against `nodes`, over a text of
+    /// `text_len` bytes, or `None` where the build did not record it.
     pub(super) fn read<'a>(&'a self, nodes: &'a Nodes, text_len: usize) -> Option<OffsetMap<'a>> {
         self.recording.then_some(OffsetMap {
             map: self,
@@ -521,8 +506,8 @@ heap_bytes! {
     Map { units, first_unit; recording, letter_key }
 }
 
-/// A reader of the offset map: where a content offset is in the caller's
-/// text, and the reverse.
+/// A reader of the offset map, mapping content offsets to node text offsets
+/// and back.
 ///
 /// [`Content::offset_map`](super::Content::offset_map) returns one where
 /// the build recorded the map.
@@ -530,30 +515,27 @@ heap_bytes! {
 pub(crate) struct OffsetMap<'a> {
     map: &'a Map,
     nodes: &'a Nodes,
-    /// Where the content's text ends: the last unit's end.
+    /// The end of the content's text, which is the last unit's end.
     end: TextOffset,
 }
 
-/// Which place an offset maps to, where several places in one text are one
-/// place in the other.
-///
-/// The first place is before what was collapsed or generated there. The
-/// last is after it.
+/// Which position an offset maps to where several positions in one text
+/// are one position in the other.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub(crate) enum MapSide {
-    /// The first place: what came before.
+    /// The first position: before what was collapsed or generated there.
     Before,
-    /// The last place: what comes after.
+    /// The last position: after what was collapsed or generated there.
     After,
 }
 
 impl MapSide {
-    /// Picks this side's place among the units meeting at a boundary.
+    /// Picks this side's position among the units meeting at a boundary.
     ///
-    /// `meeting` holds, where there is one, the unit ending there, the
+    /// `meeting` holds, each where present: the unit ending there, the
     /// first and last units collapsed to nothing there, and the unit
-    /// starting there. `start` and `end` say where a unit starts and ends
-    /// in the text the answer is in.
+    /// starting there. `start` and `end` give a unit's bounds in the target
+    /// text.
     /// - `Before` takes the end of the unit ending, else the start of the
     ///   first collapsed, else the start of the unit starting.
     /// - `After` takes the start of the unit starting, else the end of the
@@ -579,12 +561,11 @@ impl MapSide {
 }
 
 impl<'a> OffsetMap<'a> {
-    /// Returns unit `unit`.
     fn unit(&self, unit: MapUnitId) -> Option<&'a MapUnit> {
         self.map.units.get(unit)
     }
 
-    /// Finds the first unit starting at or past `at`, by binary search.
+    /// Returns the first unit starting at or after `at`, by binary search.
     fn first_from(&self, at: TextOffset) -> MapUnitId {
         work::seek();
         MapUnitId::new(
@@ -595,14 +576,14 @@ impl<'a> OffsetMap<'a> {
         )
     }
 
-    /// Where `unit` ends in the content's text: where the next starts.
+    /// Returns `unit`'s end in the content's text: the next unit's start.
     fn unit_end(&self, unit: MapUnitId) -> TextOffset {
         self.unit(MapUnitId::new(unit.get() + 1))
             .map_or(self.end, MapUnit::start)
     }
 
-    /// Finds the node `unit` belongs to, by binary search: the last node
-    /// whose first unit is at or before it, or the block before any.
+    /// Returns the node `unit` belongs to, by binary search: the last node
+    /// whose first unit is at or before it, or else the block.
     fn node(&self, unit: MapUnitId) -> NodeId {
         self.map
             .first_unit
@@ -610,7 +591,7 @@ impl<'a> OffsetMap<'a> {
             .unwrap_or(NodeId::BLOCK)
     }
 
-    /// `node`'s units: from its first to the next node's.
+    /// Returns `node`'s units: from its first to the next node's first.
     fn node_units(&self, node: NodeId) -> Range<MapUnitId> {
         let firsts = &self.map.first_unit;
         let start = firsts
@@ -624,8 +605,8 @@ impl<'a> OffsetMap<'a> {
         start..end.max(start)
     }
 
-    /// Returns the key a node's units answer to: the node's own, except for
-    /// the `::first-letter` box, which answers to the text node it was cut
+    /// Returns the key a node's units answer to: the node's own, except
+    /// that the `::first-letter` box answers to the text node it was cut
     /// from.
     fn key(&self, node: NodeId) -> NodeKey {
         match (self.nodes.kind(node), self.map.letter_key) {
@@ -634,15 +615,15 @@ impl<'a> OffsetMap<'a> {
         }
     }
 
-    /// Maps content offset `at` to the caller's text: the key of the node
+    /// Maps content offset `at` to a node's input text: the key of the node
     /// whose text holds it, and the offset there.
     ///
-    /// `side` chooses among several places, where collapsing or the builder
-    /// made them one. Returns `None` where the text is empty.
+    /// `side` chooses where collapsing or generated text makes several
+    /// positions one. Returns `None` where the text is empty.
     pub(crate) fn source_position(&self, at: TextOffset, side: MapSide) -> Option<(NodeKey, u32)> {
         let first = self.first_from(at);
         let before = first.get().checked_sub(1).map(MapUnitId::new);
-        // Inside the unit before it.
+        // Strictly inside the unit before.
         if let Some(inside) = before
             && self.unit_end(inside) > at
         {
@@ -656,8 +637,8 @@ impl<'a> OffsetMap<'a> {
             };
             return Some((self.key(self.node(inside)), offset));
         }
-        // At a boundary: the unit ending here, the units collapsed to
-        // nothing here, and the one starting here.
+        // At a boundary: find the units collapsed to nothing here and the
+        // one starting here.
         let (mut empty_first, mut empty_last, mut starting) = (None, None, None);
         let mut next = first;
         while let Some(unit) = self.unit(next) {
@@ -681,14 +662,13 @@ impl<'a> OffsetMap<'a> {
         Some((self.key(self.node(unit)), offset))
     }
 
-    /// Maps `offset` in the text the caller gave node `key` to the content's
-    /// text.
+    /// Maps `offset` in the input text of the node keyed `key` to the
+    /// content's text.
     ///
-    /// `side` chooses among several places, where the offset collapsed or
-    /// sits beside what the builder made. A key given to several nodes
-    /// answers for the first whose text holds the offset. An offset past
-    /// every such node's text maps to the last one's end. Returns `None`
-    /// where no node the key names has any text.
+    /// `side` chooses where the offset collapsed or sits beside generated
+    /// text. A key shared by several nodes answers for the first whose text
+    /// holds the offset; an offset past all their text maps to the last
+    /// one's end. Returns `None` where no node with the key has text.
     pub(crate) fn content_offset(
         &self,
         key: NodeKey,
@@ -710,7 +690,7 @@ impl<'a> OffsetMap<'a> {
         past
     }
 
-    /// Maps `offset` of their node's text among units `own`, or returns
+    /// Maps `offset` in the node text that units `own` span, or returns
     /// `None` past their text.
     fn node_text_offset(
         &self,
@@ -719,7 +699,7 @@ impl<'a> OffsetMap<'a> {
         side: MapSide,
     ) -> Option<TextOffset> {
         let slice = self.map.units.get_slice(own.clone())?;
-        // Skips the units ending before the offset by binary search.
+        // Skip the units ending before the offset by binary search.
         work::seek();
         let skipped = slice.partition_point(|unit| unit.source_end < offset);
         let (mut ending, mut empty_first, mut empty_last, mut starting) = (None, None, None, None);
@@ -762,10 +742,9 @@ impl<'a> OffsetMap<'a> {
         )
     }
 
-    /// Returns the range of the character a transform made another length,
-    /// where content offset `at` is strictly inside one.
-    ///
-    /// Such a character is one caret stop, from its start to its end.
+    /// Returns the range of the length-changed character that content
+    /// offset `at` is strictly inside, if any. Such a character is one
+    /// caret stop.
     pub(crate) fn variable_around(&self, at: TextOffset) -> Option<Range<TextOffset>> {
         let inside = MapUnitId::new(self.first_from(at).get().checked_sub(1)?);
         let unit = self.unit(inside)?;
@@ -781,13 +760,12 @@ mod listing {
 
     use super::{Map, MapUnitKind};
 
-    /// A unit as the tests see it: its kind, where it is in the content's
-    /// text, and where in its node's.
+    /// A unit as the tests see it: its kind, its range in the content's
+    /// text, and its range in its node's text.
     type Listed = (MapUnitKind, Range<usize>, Range<u32>);
 
     impl Map {
-        /// Each unit, for the tests to look at, over a text `text_len`
-        /// bytes long.
+        /// Returns every unit, over a text of `text_len` bytes.
         pub(crate) fn listed(&self, text_len: usize) -> Vec<Listed> {
             let units = self.units.as_slice();
             units

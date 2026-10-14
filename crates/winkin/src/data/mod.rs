@@ -1,39 +1,29 @@
-//! The crate's data primitives: typed ids, the tables they index, the text
-//! position type, and the shapes every stage builds its data from.
+//! The crate's data primitives: typed ids, the tables they index, and the
+//! text position type.
 //!
-//! One rule has no exceptions: an `XId` indexes a table of `X`, and nothing
-//! else. An id is a newtype over `u32` (`u16` or `u8` where the table is
-//! small), never `usize` and never an alias. So an id cannot index the wrong
-//! table, and it cannot pass for a count or an offset. A byte position in the
-//! text is a [`TextOffset`], which is not an id: it indexes no table.
+//! An `XId` indexes a table of `X` and nothing else. An id is a newtype over
+//! `u32` (`u16` or `u8` for small tables), never `usize` and never an alias,
+//! so it cannot index the wrong table or pass for a count. A byte position in
+//! the text is a [`TextOffset`], which indexes no table.
 //!
-//! A [`Table`] hands out its own ids and can only be indexed by them. The `as`
-//! casts between ids and `usize` live in this module alone, and so do the
-//! casts of [`TextOffset`]. A type change then touches one place, not every
-//! call site. The lengths, and the only casts between a float and an integer,
-//! are in `unit`.
+//! A [`Table`] hands out its own ids and is indexed only by them. The casts
+//! between ids, [`TextOffset`] and `usize` live in this module; the casts
+//! between floats and integers live in `unit`.
 //!
-//! Each submodule holds one primitive, re-exported here, so a stage names
-//! what it uses from `data` alone:
-//!
-//! - `id`: the [`Id`] trait, [`define_id!`], and the casts between an id
-//!   and an index;
-//! - `offset`: [`TextOffset`];
-//! - `table`: [`Table`], and making room in a vector as a table does;
-//! - `bits`: [`BitTable`] and [`RankedBitTable`], a bit per id;
-//! - `flags`: [`define_flags!`], a set of flags over an integer;
-//! - `index`: [`HashIndex`], tables' ids by the hash of what each names;
-//! - `lru`: [`LruCache`], a bounded context cache whose entries are found
-//!   by hash or among those found last, and which drops those used longest
-//!   ago;
-//! - `sorted`: [`SortedTable`], a sparse table found by a key, and the one
-//!   search by key, [`find_sorted`];
-//! - `runs`: [`Runs`], a table of runs tiling a range of positions, each
-//!   found by its start, and [`RunCursor`], where a walk over one stands;
-//! - `hash`: the one hash, [`FxHasher`];
-//! - `heap`: [`HeapBytes`], what a table keeps on the heap, and
-//!   [`heap_bytes!`], which sums a struct's tables;
-//! - `sort`: the crate's sorts, [`sort_by_key`] and [`stable_sort_by_key`].
+//! - `id`: the [`Id`] trait, [`define_id!`] and the id-index casts.
+//! - `offset`: [`TextOffset`].
+//! - `table`: [`Table`], [`Staging`] and [`make_room`].
+//! - `bits`: [`BitTable`] and [`RankedBitTable`], one bit per id.
+//! - `flags`: [`define_flags!`], a set of flags over an integer.
+//! - `index`: [`HashIndex`], ids found by the hash of their records.
+//! - `lru`: [`LruCache`], a bounded cache that drops the least recently used.
+//! - `sorted`: [`SortedTable`], a sparse table found by key, and
+//!   [`find_sorted`], the one search by key.
+//! - `runs`: [`Runs`], runs tiling a range of positions, and [`RunCursor`].
+//! - `hash`: [`FxHasher`], the one hash.
+//! - `heap`: [`HeapBytes`] and [`heap_bytes!`], heap usage of tables.
+//! - `sort`: [`sort_by_key`] and [`stable_sort_by_key`].
+//! - `sync`: [`Mutex`], blocking with `std` and spinning without.
 
 mod bits;
 mod flags;

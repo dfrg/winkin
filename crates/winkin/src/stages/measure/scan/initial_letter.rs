@@ -1,5 +1,4 @@
-//! The block's initial letter, measured before the scan charges its box's
-//! edges.
+//! The block's initial letter, measured before the scan charges its edges.
 
 use super::{Scan, ScanWalk};
 use crate::data::{Id, IdRange};
@@ -17,29 +16,21 @@ use crate::{unit, work};
 /// Measures the block's initial letter in `scan`'s variant, as Chrome's
 /// `LayoutInitialLetterBox` and `initial_letter_utils` lay it out.
 ///
-/// `advances` holds each cluster's shaped advance, and `strut` is the
-/// line's strut. Returns `None` where the block has no initial letter.
+/// `advances` are the shaped advances, `strut` the line's strut. Returns
+/// `None` where the block has no initial letter.
 ///
-/// The box is the one the builder kept `initial-letter` on (`BlockFacts`).
-/// It opens at the text's start. Its text is set in the size font selection
-/// gave its font request.
-///
-/// - **Along the line:** its content is the ink of its glyphs
-///   (`ComputeTextInkBounds`, `CalculateInitialLetterBoxInlineSize`). Each
-///   glyph's ink is taken in whole pixels where the scan's pen will draw it,
-///   then rounded out onto the grid. A look-ahead with a copy of the walk
-///   steps each cluster as the scan will, in its segment's font. A tab in
-///   it takes its advance to its stop instead of ink. The text is
-///   set so its ink starts where the content does. Where the box has no
-///   border or padding, a negative side bearing kerns its margin ("inline
-///   kerning", `ComputeNegativeSideBearings`).
+/// - **Along the line:** its content is its glyphs' ink
+///   (`ComputeTextInkBounds`, `CalculateInitialLetterBoxInlineSize`), each
+///   taken in whole pixels where the pen will draw it, then rounded out to
+///   the grid. A tab takes its advance to its stop instead. The ink starts
+///   where the content does. A box with no border or padding kerns its
+///   margin by a negative side bearing (`ComputeNegativeSideBearings`).
 /// - **Across the lines** (`ComputeInitialLetterBoxBlockOffset`): where it
-///   sinks no further than it is tall, its baseline is on the `size`-th
-///   line's baseline: `size` line heights below the first line's top, less
-///   the strut's descent. A raised letter moves the first line's text down
-///   by the lines it stands above. Where it sinks further, its bottom is on
-///   the `sink`-th line's. Its exclusion is its margin box, from the first
-///   line's top or above it.
+///   sinks no further than it is tall, its baseline is the `size`-th
+///   line's, `size` line heights below the first line's top less the
+///   strut's descent; otherwise its bottom is on the `sink`-th line's. A
+///   raised letter moves the first line down. Its exclusion is its margin
+///   box, from the first line's top or above.
 pub(super) fn initial_letter(
     scan: &Scan<'_>,
     provider: Option<&dyn FontMetricsProvider>,
@@ -59,8 +50,7 @@ pub(super) fn initial_letter(
     let close = ItemId::new(items.end.get().checked_sub(1)?);
     let item_clusters = &scan.input.analysis.item_clusters;
     let clusters = item_clusters.get(items.start)?..item_clusters.get(close)?;
-    // Step each cluster as the scan will, and take the ink of its glyphs
-    // where the pen will draw them.
+    // Step each cluster as the scan will, taking its glyphs' ink at the pen.
     let mut look = ScanWalk::new(scan);
     let mut pen = InlineLayoutUnit::ZERO;
     // The ink along the line, and across it.
@@ -78,10 +68,9 @@ pub(super) fn initial_letter(
             .clusters
             .attrs(at)
             .map_or(ClusterClass::Text, ClusterAttrs::class);
-        // A tab takes its advance whole, ink or none, as Chrome counts a
-        // control item's inline size into the box's
-        // (`CalculateInitialLetterBoxInlineSize`). The prefix holds none of
-        // it: line layout sizes it where the line puts it.
+        // A tab takes its advance whole, as Chrome counts a control item into the
+        // box's size (`CalculateInitialLetterBoxInlineSize`). The prefix holds
+        // none of it: line layout sizes it.
         if class == ClusterClass::Tab
             && let Some(stops) = scan.tab_stops(look.text)
         {
@@ -120,8 +109,8 @@ pub(super) fn initial_letter(
             InlineLayoutUnit::from_text(advances.get(at.get()).copied().unwrap_or_default());
         pen += look.step(scan, class, advance, at);
     }
-    // Round the ink out onto the grid (`LogicalRect::EnclosingRect`). It is
-    // empty where the letter draws nothing.
+    // Round the ink out onto the grid (`LogicalRect::EnclosingRect`); empty
+    // where the letter draws nothing.
     let (left, right) = along.map_or((LayoutUnit::ZERO, LayoutUnit::ZERO), |(left, right)| {
         (-(-left).to_layout(), right.to_layout())
     });
@@ -132,17 +121,15 @@ pub(super) fn initial_letter(
     let direction = boxes.direction();
     let (margin_start, margin_end) = direction.line_order(boxes.margin_line.0, boxes.margin_line.1);
     let (room_start, room_end) = logical_edges(boxes);
-    // The box is bare where its border and padding are zero: along the
-    // line, where its room is its margin, and across it.
+    // The box is bare where it has no border or padding.
     let zero = (LayoutUnit::ZERO, LayoutUnit::ZERO);
     let bare = boxes.room == boxes.margin_line && boxes.across == zero;
-    // The part of the letter's advance outside its ink at its start and its
-    // end, with left and right swapped for a right-to-left box.
+    // The letter's advance outside its ink at each end, in the box's direction.
     let outside_right = pen - InlineLayoutUnit::from_layout(right);
     let (outside_start, outside_end) =
         direction.line_order(InlineLayoutUnit::from_layout(left), outside_right);
-    // Inline kerning: in a horizontal line, where nothing lies between the
-    // ink and the margin, a negative side bearing kerns the start.
+    // Inline kerning: in a horizontal line, a bare box's negative side bearing
+    // kerns its start.
     let kern = if bare && writing_mode == WritingMode::HorizontalTb {
         outside_start.to_layout().min(LayoutUnit::ZERO)
     } else {
@@ -152,8 +139,7 @@ pub(super) fn initial_letter(
     let start_room = InlineLayoutUnit::from_layout(room_start + kern) - outside_start;
     let end_room = InlineLayoutUnit::from_layout(room_end) - outside_end;
     let exclusion_width = (room_start + kern + width + room_end).max(LayoutUnit::ZERO);
-    // Across the lines, from the block-start side. Its margin there is the
-    // under one where lines flip.
+    // Across the lines, from the block-start side, swapped where lines flip.
     let (margin_before, margin_after) = if writing_mode.flips_lines() {
         (boxes.margin_across.1, boxes.margin_across.0)
     } else {
@@ -166,8 +152,8 @@ pub(super) fn initial_letter(
     let size = unit::ceil_count(letter.size);
     let raise = line.times_whole(size.saturating_sub(letter.sink));
     let border_top = if size >= letter.sink {
-        // Sit on the `size`-th line's baseline, whatever the lines between
-        // hold. For `ideographic`, the em box's bottom sits there.
+        // Sit on the `size`-th line's baseline. For `ideographic`, the em box's
+        // bottom sits there.
         let mut baseline = line.times_truncated(letter.size) - strut.descent();
         if letter.align == InitialLetterAlign::Ideographic {
             let em_under = |text| {
@@ -184,9 +170,8 @@ pub(super) fn initial_letter(
     };
     let exclusion_top = (border_top - margin_before).min(LayoutUnit::ZERO);
     let exclusion_bottom = border_top + block + margin_after;
-    // The ink is measured about the glyphs' alphabetic baseline, which a
-    // centred vertical line sets under its central one. The box's baseline
-    // is its line's, so the glyphs land where their ink was placed.
+    // The ink is measured about the alphabetic baseline, which a centred
+    // vertical line sets under its central one.
     let alphabetic = input
         .primary(text)
         .map_or(LayoutUnit::ZERO, |metrics| metrics.alphabetic);

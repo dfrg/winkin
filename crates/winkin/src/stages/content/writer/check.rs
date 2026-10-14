@@ -1,4 +1,4 @@
-//! The debug build's checks that a finished content keeps its invariants.
+//! Debug checks of a finished content's invariants.
 
 use core::cell::Cell;
 
@@ -7,14 +7,13 @@ use crate::data::{Id, TextOffset};
 use crate::stages::content::{ItemId, ItemKind};
 
 impl ContentWriter<'_> {
-    /// Checks the content's invariants in debug builds, in time linear in
-    /// the nodes and items.
+    /// Checks the content's invariants, in time linear in nodes and items.
     ///
-    /// - The items tile the text.
+    /// - Items tile the text.
     /// - Atomic inlines and breaks hold their one character.
-    /// - The nodes' item ranges nest as the nodes do, and each item is
-    ///   inside its own node's range.
-    /// - The offset map and the first line's text map stay in order.
+    /// - Node item ranges are in pre-order and nest inside their parents',
+    ///   and each item is inside its node's range.
+    /// - The offset map and the first-line map are in order.
     pub(super) fn debug_check(&self) {
         let content = &*self.content;
         let mut at = 0;
@@ -71,8 +70,8 @@ impl ContentWriter<'_> {
             .extras()
             .map
             .debug_check(content.text.len(), content.nodes.len());
-        // The first line's text maps each of the text's character
-        // boundaries it reaches to one of its own, in order.
+        // Each character boundary of the text maps, in order, to a
+        // character boundary of the first-line text.
         if let Some(source) = content.first_line_source() {
             let mut last = 0;
             let after = Cell::new(0);

@@ -29,12 +29,12 @@ use crate::work;
 #[derive(Clone)]
 pub(super) struct Lines<'a> {
     layout: &'a Layout,
-    /// The lines not handed out yet, from either end.
+    /// The lines not yet returned, from either end.
     ids: Range<LineId>,
 }
 
 impl<'a> Lines<'a> {
-    /// Every line `layout`'s last break chose.
+    /// Creates the walk of every line from `layout`'s last break.
     #[inline]
     pub(super) fn new(layout: &'a Layout) -> Self {
         Self {
@@ -125,7 +125,8 @@ impl<'a> Line<'a> {
 
     /// Returns visible items in visual order, from left to right.
     ///
-    /// Box fragments precede their descendants. Omits the tail hidden by an ellipsis.
+    /// Box fragments precede their descendants. Omits the tail hidden by an
+    /// ellipsis.
     #[inline]
     pub fn items(&self) -> impl Iterator<Item = Item<'a>> + Clone + use<'a> {
         LineItems::new(self, false)
@@ -133,11 +134,11 @@ impl<'a> Line<'a> {
 
     /// Returns paint operations in Chrome paint order.
     ///
-    /// Starts with the background, then hands out the items in visual
-    /// order, each box before what it holds. Each text run comes with its
-    /// underlines and overlines before it, and its emphasis marks and lines
-    /// through after it. Ruby annotations come last. See
-    /// [`paint`](crate::paint) for the full order.
+    /// Starts with the background, then yields the items in visual order,
+    /// each box before what it holds. Each text run comes with its underlines
+    /// and overlines before it, and its emphasis marks and lines through
+    /// after it. Ruby annotations come last. See [`paint`](crate::paint) for
+    /// the full order.
     ///
     /// `decorates` specifies decoration lines for the block and each box
     /// that sets [`ComputedStyle::decorates`](crate::ComputedStyle::decorates).
@@ -176,7 +177,9 @@ impl<'a> Line<'a> {
         LineItems::new(self, true)
     }
 
-    /// Returns the zero-based paragraph index. Each forced break starts a paragraph.
+    /// Returns the zero-based paragraph index.
+    ///
+    /// Each forced break starts a paragraph.
     pub fn paragraph(&self) -> usize {
         self.record.paragraph.get()
     }
@@ -206,46 +209,48 @@ impl<'a> Line<'a> {
 
 // What the other views read of a line.
 impl<'a> Line<'a> {
-    /// Line `id` of `layout`, or `None` past the last.
+    /// Returns line `id` of `layout`, or `None` past the last.
     #[inline]
     pub(crate) fn new(layout: &'a Layout, id: LineId) -> Option<Self> {
         let record = layout.line_records().lines.get(id)?;
         Some(Self { layout, id, record })
     }
 
-    /// The layout it is a line of, which the other views read.
+    /// Returns the line's layout, which the other views read.
     #[inline]
     pub(super) fn layout(&self) -> &'a Layout {
         self.layout
     }
 
-    /// Its id among the layout's lines.
+    /// Returns the line's id.
     #[inline]
     pub(super) fn id(&self) -> LineId {
         self.id
     }
 
-    /// Its record, as breaking made it.
+    /// Returns the line's record from line breaking.
     #[inline]
     pub(crate) fn record(&self) -> &'a lines::LineRecord {
         self.record
     }
 
-    /// Returns the scale `text-fit` sets its text in, 1 where none does.
+    /// Returns the scale `text-fit` sets the line's text in, or 1.
     #[inline]
     pub(crate) fn scale(&self) -> f32 {
         self.layout.line_records().scale(self.id)
     }
 
-    /// Its `Line` item: where line layout placed the line box. Every line
-    /// breaking made has one, since the two are laid out together.
+    /// Returns the line's `Line` item, which places the line box.
+    ///
+    /// Returns `None` after [`Layout::size_lines`], which places no items.
     pub(super) fn head(&self) -> Option<&'a FragmentItem> {
         let fragments = self.layout.fragments();
         let head = *fragments.line_heads.get(self.id)?;
         fragments.items.get(head)
     }
 
-    /// Which styles it is set in: the first line's or the ordinary ones.
+    /// Returns which styles the line is set in: the first line's or the
+    /// ordinary ones.
     ///
     /// Every prepared table read for this line is read in this variant.
     #[inline]
@@ -253,13 +258,13 @@ impl<'a> Line<'a> {
         self.record.variant()
     }
 
-    /// The prepared stages as it reads them: in its variant, resolved once.
+    /// Returns the prepared stages in the line's variant.
     #[inline]
     pub(crate) fn stages(&self) -> LineStages<'a> {
         self.layout.stages().variant(self.variant())
     }
 
-    /// The glyphs of its text item `item`, placed exactly.
+    /// Returns the walk of text item `item`'s glyphs, placed exactly.
     #[inline]
     pub(super) fn glyph_walk(&self, item: &FragmentItem) -> GlyphWalk<'a> {
         GlyphWalk::new(
@@ -271,7 +276,7 @@ impl<'a> Line<'a> {
         )
     }
 
-    /// The clusters of its text item `item`, each placed exactly.
+    /// Returns the walk of text item `item`'s clusters, placed exactly.
     #[inline]
     pub(super) fn cluster_walk(&self, item: &FragmentItem) -> ClusterWalk<'a> {
         ClusterWalk::new(
@@ -315,15 +320,17 @@ pub struct LineMetrics {
     pub ascent: f32,
     /// The line-box extent below the baseline.
     pub descent: f32,
-    /// The fitted content width on the 1/64-pixel layout grid.
+    /// The fitted content width, on the 1/64-pixel layout grid.
     ///
-    /// Excludes hanging content. Includes reshaped widths at unsafe line edges.
+    /// Excludes hanging content. Includes reshaped widths at unsafe line
+    /// edges.
     pub width: f32,
     /// The width of hanging whitespace.
     pub hang: f32,
     /// The available inline extents, narrowed by floats.
     ///
-    /// Content wider than this band overflows because no fitting break was available.
+    /// Content wider than this band overflows because no fitting break was
+    /// available.
     pub band: InlineExtents,
 }
 
@@ -345,9 +352,9 @@ impl LineMetrics {
 /// from the left but line-over is on the right.
 #[derive(Copy, Clone, PartialEq, Debug, Default)]
 pub struct CrossExtents {
-    /// Its line-over end, from the line box's over edge.
+    /// The line-over end, from the line box's over edge.
     pub over: f32,
-    /// Its line-under end, from the line box's over edge.
+    /// The line-under end, from the line box's over edge.
     pub under: f32,
 }
 
@@ -364,10 +371,10 @@ impl CrossExtents {
 pub enum Item<'a> {
     /// Shaped text of one node, one used font and one bidi level.
     ///
-    /// Its glyphs and clusters. A tab and white space hanging past the line's
-    /// end are runs of their own.
+    /// A tab, and white space hanging past the line's end, are runs of their
+    /// own.
     Text(TextRun<'a>),
-    /// Text the layout made: a hyphen or an ellipsis.
+    /// Text the layout generates: a hyphen or an ellipsis.
     Generated(TextRun<'a>),
     /// An atomic inline: its margin box.
     Atomic(Atomic<'a>),
@@ -384,13 +391,13 @@ pub enum Item<'a> {
 pub(crate) struct LineItems<'a> {
     line: Line<'a>,
     items: Iter<'a, FragmentItem>,
-    /// Whether the tail an ellipsis hides is handed out too.
+    /// Whether the tail an ellipsis hides is included.
     hidden: bool,
 }
 
 impl<'a> LineItems<'a> {
-    /// The items of `line`, the tail an ellipsis hides among them where
-    /// `hidden`.
+    /// Creates the walk of `line`'s items, including the tail an ellipsis
+    /// hides where `hidden`.
     #[inline]
     pub(crate) fn new(line: &Line<'a>, hidden: bool) -> Self {
         Self {

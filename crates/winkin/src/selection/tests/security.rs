@@ -2,7 +2,7 @@
 //! - one mask for each grapheme, after `text-transform`, with white space
 //!   masked rather than collapsed;
 //! - Chrome's mask characters;
-//! - caret stops, hit testing and selections in the caller's offsets;
+//! - caret stops, hit testing and selections in source offsets;
 //! - word motion over masked text, which finds no words inside it.
 
 use super::*;
@@ -138,7 +138,7 @@ fn each_keyword_masks_with_chromes_character() {
 }
 
 /// A mask is one caret stop, and its ends are the grapheme's ends in the
-/// caller's text.
+/// source text.
 ///
 /// In Chrome's password field the arrow keys stop at UTF-16 offsets 0, 1, 3
 /// and 4 of `ae\u{301}b`, and 0, 1, 3 and 4 of `a😀b`: the grapheme's ends.
@@ -170,8 +170,8 @@ fn a_mask_is_one_caret_stop() {
     }
 }
 
-/// A selection of masks is a selection of the caller's graphemes, and the
-/// masks highlight as wide as they are drawn.
+/// A selection of masks selects the source graphemes, and the masks
+/// highlight as wide as they are drawn.
 #[test]
 fn a_selection_of_masks_is_one_of_graphemes() {
     let layout = laid_masked("ae\u{301}\u{1F600}b", 400.0);

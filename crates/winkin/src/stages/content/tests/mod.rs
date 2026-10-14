@@ -7,12 +7,10 @@
 //! - limits, record sizes, and calls in any order;
 //! - text transforms and masks, and the first line's own text.
 //!
-//! The children pin the offset map (`map`) and `::first-letter`
-//! (`first_letter`).
+//! `map` pins the offset map and `first_letter` pins `::first-letter`.
 //!
-//! Every build here finishes. Finishing checks in debug builds that the items
-//! tile the text and that every node's items are its own, so each test checks
-//! that too.
+//! Every build here finishes, and finishing asserts in debug builds that the
+//! items tile the text and each node's items are its own.
 
 use alloc::borrow::Cow;
 use alloc::format;
@@ -95,8 +93,8 @@ fn build_limited(
     (layout, report)
 }
 
-/// Returns the content as a string: its text, with a mark for every item that
-/// holds none, and marks of their own for an atomic and a break.
+/// Returns the content as a string: each text item's text, and a mark for
+/// every other item.
 fn shown(layout: &Layout) -> String {
     let content = layout.content();
     let mut out = String::new();
@@ -150,7 +148,7 @@ fn items(layout: &Layout) -> Vec<(ItemKind, String, u64)> {
         .collect()
 }
 
-/// Returns the kinds of `node`'s items, by its range.
+/// Returns the kinds of `node`'s items.
 fn node_item_kinds(layout: &Layout, node: NodeId) -> Vec<ItemKind> {
     let content = layout.content();
     content
@@ -163,8 +161,8 @@ fn node_item_kinds(layout: &Layout, node: NodeId) -> Vec<ItemKind> {
 
 // White space ---------------------------------------------------------------
 
-/// A run of white space is one space wherever it began: spaces, tabs,
-/// segment breaks, and carriage returns, which are spaces.
+/// A run of spaces, tabs, segment breaks and carriage returns collapses to
+/// one space.
 #[test]
 fn whitespace_collapses_within_a_run() {
     let layout = build(|b| b.text(key(1), "a   b\t\tc\n\nd \r e"));
@@ -172,7 +170,7 @@ fn whitespace_collapses_within_a_run() {
 }
 
 /// WPT `control-chars-00D`: carriage returns in every white space mode are
-/// written as the spaces of its reference are, so the two lay out alike.
+/// written as the reference's spaces are.
 #[test]
 fn carriage_returns_are_written_as_the_spaces_of_control_chars_00d() {
     let modes = [
@@ -211,14 +209,13 @@ fn carriage_returns_are_written_as_the_spaces_of_control_chars_00d() {
 /// - A lone CR is a space in all respects (CSS Text 3, section 4):
 ///   collapsible where spaces collapse, a kept space where they are kept.
 /// - A CRLF is one segment break, its LF.
-/// - VT, FF, NEL, U+2028 and U+2029 force a line break whatever the white
-///   space (section 5.1). They are written as the caller wrote them. They
-///   take the collapsible white space on both sides, as a `<br>` does, so a
-///   space after one does not start the next line.
+/// - VT, FF, NEL, U+2028 and U+2029 force a line break in every white space
+///   mode (section 5.1). They are written as given and take the collapsible
+///   white space on both sides, as a `<br>` does.
 ///
-/// Chrome 153 differs, and is not copied here. It drops CR and FF under
-/// preserved white space, draws FF as a glyph under `normal`, and breaks at
-/// no BK or NL character.
+/// Chrome 153 differs and is not followed: it drops CR and FF under preserved
+/// white space, draws FF as a glyph under `normal`, and breaks at no BK or NL
+/// character.
 #[test]
 fn control_characters_are_as_css_has_them() {
     use WhiteSpaceCollapse as W;
@@ -268,9 +265,8 @@ fn control_characters_are_as_css_has_them() {
         b.text(key(4), " b");
     });
     assert_eq!(shown(&layout), "a[\u{2028}]b");
-    // Inside a ruby container no paragraph ends, so each is a space, as a
-    // `<br>` is there. The white space before it is written, and the white
-    // space after it is taken.
+    // Inside a ruby container each is a space, as a `<br>` is there. The
+    // white space before it stays; the white space after it collapses.
     let layout = build(|b| {
         b.open_ruby(key(1), &ComputedStyle::initial(), None);
         b.text(key(2), "a \u{C} b");
@@ -279,9 +275,9 @@ fn control_characters_are_as_css_has_them() {
     assert_eq!(shown(&layout), "<ruby>a  b</ruby>");
 }
 
-/// A box's edge neither trims the white space before it nor protects it. The
-/// run is one space, which lands where the run began: inside the box where
-/// the box holds its start. Chrome agrees (probe `collapse.html`).
+/// A box edge neither trims nor protects white space. The run becomes one
+/// space where it began, inside the box if the box holds its start. Chrome
+/// agrees (probe `collapse.html`).
 #[test]
 fn whitespace_collapses_across_a_box_edge() {
     for (inside, after, expected) in [
@@ -306,8 +302,7 @@ fn whitespace_collapses_across_a_box_edge() {
     }
 }
 
-/// `a<span> </span> b` keeps one space: an edge arriving does not forget
-/// that a run is under way.
+/// `a<span> </span> b` keeps one space: a box edge does not end a run.
 #[test]
 fn an_edge_does_not_end_a_run() {
     let layout = build(|b| {
@@ -320,8 +315,8 @@ fn an_edge_does_not_end_a_run() {
     assert_eq!(shown(&layout), "a[ ]b");
 }
 
-/// The space is written once the run is over. It goes before the edges and
-/// anchors that arrived while it was pending, and they move along by it.
+/// A collapsed space is written when its run ends, before the edges and
+/// anchors that arrived during the run, which shift after it.
 #[test]
 fn a_collapsed_space_goes_before_what_arrived_while_it_was_pending() {
     let layout = build(|b| {
@@ -346,8 +341,8 @@ fn a_collapsed_space_goes_before_what_arrived_while_it_was_pending() {
     assert_eq!(offsets, [(0, 2), (2, 2), (2, 2), (2, 2), (2, 3)]);
 }
 
-/// An atomic inline is not a space, so a run does not cross it. Where there
-/// was no space, it makes none.
+/// A white space run does not cross an atomic inline, and the atomic adds no
+/// space.
 #[test]
 fn an_atomic_separates_the_words_it_sits_between() {
     let atomic = |b: &mut LayoutBuilder<'_>| {
@@ -373,8 +368,8 @@ fn an_atomic_separates_the_words_it_sits_between() {
     assert_eq!(text(&layout), "a\u{FFFC}b");
 }
 
-/// Nothing collapsible is written at the block's start or end, whatever
-/// boxes are around it.
+/// Collapsible white space at the block's start or end is dropped, inside
+/// boxes too.
 #[test]
 fn nothing_collapsible_at_the_block_start_or_end() {
     let layout = build(|b| b.text(key(1), "   a b   "));
@@ -388,8 +383,8 @@ fn nothing_collapsible_at_the_block_start_or_end() {
     assert_eq!(shown(&layout), "[a]");
 }
 
-/// `preserve` keeps every character. A segment break stays in the text, and
-/// analysis reads it as a forced break.
+/// `preserve` keeps every character. A segment break stays in the text for
+/// analysis to read as a forced break.
 #[test]
 fn preserve_keeps_every_character() {
     let layout = build(|b| {
@@ -400,9 +395,8 @@ fn preserve_keeps_every_character() {
     assert_eq!(shown(&layout), "[a   b\nc\t ]");
 }
 
-/// Each node reads its own `white-space-collapse`. Inheriting is the
-/// cascade's job. Closing a box puts its parent's rule back, because the text
-/// after it is the parent's.
+/// Each node reads its own `white-space-collapse`; inheritance is the
+/// cascade's job. Text after a box's close follows the parent's rule.
 #[test]
 fn each_node_reads_its_own_white_space() {
     let pre = white_space(WhiteSpaceCollapse::Preserve);
@@ -432,8 +426,8 @@ fn kept_spaces_and_collapsible_spaces_meet() {
     assert_eq!(shown(&layout), "a [  b  ] c");
 }
 
-/// `pre-line` keeps the segment breaks that were typed and collapses the
-/// rest. It swallows the spaces either side of a kept break.
+/// `pre-line` keeps segment breaks, collapses the rest, and drops the spaces
+/// on either side of a kept break.
 #[test]
 fn pre_line_keeps_the_newlines_and_nothing_else() {
     let source = "one   two  \n   three";
@@ -466,9 +460,8 @@ fn preserve_spaces_keeps_the_spacing_and_not_the_lines() {
     assert_eq!(text(&layout), "one   two \tthree");
 }
 
-/// `discard` drops every space, tab and segment break, and owes nothing for
-/// them. The white space around the box is the block's, and collapses as the
-/// block's does.
+/// `discard` drops every space, tab and segment break, leaving no pending
+/// space. The white space around the box collapses by the block's rule.
 #[test]
 fn discard_drops_every_space() {
     let layout = build(|b| {
@@ -493,8 +486,8 @@ fn a_forced_break_takes_the_white_space_on_both_sides() {
         b.close_box();
     });
     assert_eq!(shown(&layout), "a[{br}b]");
-    // A kept segment break does the same to collapsible white space around
-    // it from other nodes.
+    // So does a kept segment break, to collapsible white space in other
+    // nodes.
     let layout = build(|b| {
         b.text(key(1), "a ");
         b.open_box(key(2), &white_space(WhiteSpaceCollapse::Preserve), None);
@@ -505,10 +498,9 @@ fn a_forced_break_takes_the_white_space_on_both_sides() {
     assert_eq!(shown(&layout), "a[\n]b");
 }
 
-/// White space from a node that wraps may collapse into a run that began in
-/// one that does not. It keeps its wrap opportunity as a generated U+200B, as
-/// Blink's `AppendGeneratedBreakOpportunity` does. The other way round there
-/// is nothing to keep.
+/// White space from a wrapping node that collapses into a run begun in a
+/// `nowrap` node keeps its wrap opportunity as a generated U+200B, as Blink's
+/// `AppendGeneratedBreakOpportunity` does. The reverse needs nothing.
 #[test]
 fn a_wrap_opportunity_survives_collapsing_into_nowrap() {
     let layout = build(|b| {
@@ -551,7 +543,7 @@ fn a_segment_break_beside_a_zero_width_space_is_removed() {
         "a \u{200B} b",
         "a space alone stays"
     );
-    // And a `<wbr>` before the break counts, as its U+200B is in the text.
+    // A `<wbr>` before the break counts: its U+200B is in the text.
     let layout = build(|b| {
         b.text(key(1), "a");
         b.break_opportunity();
@@ -560,7 +552,7 @@ fn a_segment_break_beside_a_zero_width_space_is_removed() {
     assert_eq!(text(&layout), "a\u{200B}b");
 }
 
-/// A segment break between ideographs is a space, as it is in Chrome. Chrome
+/// A segment break between ideographs is a space, as in Chrome, which
 /// compiles out CSS Text's rule that removes it.
 #[test]
 fn a_segment_break_between_ideographs_is_a_space_as_in_chrome() {
@@ -585,10 +577,9 @@ fn floats_are_opaque_to_collapsing() {
     assert_eq!(shown(&layout), "a {float}b");
 }
 
-/// A `<wbr>` is U+200B in a generated item of its own. Within a text node it
-/// belongs to that node, and the text after it takes an item of its own.
-/// Between nodes it belongs to the box around it. White space collapses
-/// across it.
+/// A `<wbr>` is U+200B in its own generated item. Within a text node it
+/// belongs to that node and splits its items; between nodes it belongs to
+/// the enclosing box. White space collapses across it.
 #[test]
 fn a_break_opportunity_is_text() {
     let layout = build(|b| {
@@ -633,13 +624,13 @@ fn a_break_opportunity_is_text() {
     assert!(generated.flags.contains(ItemFlags::GENERATED));
 }
 
-/// A combined unit collapses its white space on its own: what it starts and
-/// ends with goes, and white space inside collapses to one space.
+/// A combined unit collapses its white space on its own: leading and trailing
+/// white space goes, and inner runs become one space.
 ///
 /// Chrome's `LayoutTextCombine` is an inline block holding the text, so its
-/// own line drops white space at its start and end. Outside, the unit is
-/// content, as an atomic inline is: the space before it stays. Text that is
-/// not combined, outside a vertical line, keeps its spaces as ever.
+/// own line drops white space at its ends. Outside, the unit acts as an
+/// atomic inline: the space before it stays. Outside vertical writing, text
+/// is not combined and keeps its spaces.
 #[test]
 fn a_combined_unit_collapses_its_white_space_on_its_own() {
     let combined = styled(|style| {
@@ -679,9 +670,8 @@ fn a_combined_unit_collapses_its_white_space_on_its_own() {
 
 // white-space-trim ------------------------------------------------------------
 
-/// `white-space-trim` drops the collapsible white space either side of an
-/// element, or what its content starts and ends with. Chrome lacks the
-/// property, and the builder supports it all the same.
+/// `white-space-trim` drops the collapsible white space on either side of an
+/// element, or at the ends of its content. Chrome lacks the property.
 #[test]
 fn white_space_trim_discards_the_space_at_an_edge() {
     let trim = |before, after, inner| WhiteSpaceTrim {
@@ -711,7 +701,7 @@ fn white_space_trim_discards_the_space_at_an_edge() {
     );
     assert_eq!(around(&trimmed(trim(false, false, true)), "", " "), "a[b]c");
     assert_eq!(around(&trimmed(trim(true, true, false)), " ", ""), "a[b]c");
-    // Not inherited: a box inside says nothing unless its own style does.
+    // Not inherited: a box inside trims only if its own style says so.
     let layout = build(|b| {
         b.text(key(1), "a ");
         b.open_box(key(2), &trimmed(trim(true, false, false)), None);
@@ -725,8 +715,8 @@ fn white_space_trim_discards_the_space_at_an_edge() {
     assert_eq!(shown(&layout), "a[b [c] d]");
 }
 
-/// `discard-inner` on a box drops a run that began inside it, and not one
-/// that began before it.
+/// `discard-inner` on a box drops a run begun inside it, not one begun
+/// before it.
 #[test]
 fn discard_inner_drops_only_the_run_inside() {
     let inner = trimmed(WhiteSpaceTrim {
@@ -740,8 +730,8 @@ fn discard_inner_drops_only_the_run_inside() {
         b.text(key(3), "c");
     });
     assert_eq!(shown(&layout), "a []c");
-    // With `discard-before` too, the run before it goes. The white space its
-    // content starts with does not begin another run.
+    // With `discard-before` too, the run before it goes, and the content's
+    // leading white space begins no new run.
     let both = trimmed(WhiteSpaceTrim {
         discard_before: true,
         discard_inner: true,
@@ -757,9 +747,8 @@ fn discard_inner_drops_only_the_run_inside() {
     assert_eq!(shown(&layout), "a[b]c");
 }
 
-/// `discard-inner` on a block of kept text trims through the segment break
-/// it starts with, and from the one it ends with. It keeps the indent after a
-/// break.
+/// `discard-inner` on a block of kept text trims through its leading segment
+/// break and from its trailing one, keeping the indent after the break.
 #[test]
 fn the_block_trims_kept_white_space_through_its_segment_breaks() {
     let root = styled(|style| {
@@ -789,8 +778,8 @@ fn the_block_trims_kept_white_space_through_its_segment_breaks() {
 
 // Nodes and items -------------------------------------------------------------
 
-/// Every box puts both its edges in the items, whatever it draws. A box with
-/// nothing to show can still be found, hit and decorated on hover.
+/// Every box puts both edges in the items, so a box with nothing to show can
+/// still be found, hit and decorated.
 #[test]
 fn every_box_has_both_edges() {
     let layout = build(|b| {
@@ -801,7 +790,7 @@ fn every_box_has_both_edges() {
     assert_eq!(shown(&layout), "[plain]");
 }
 
-/// A float is an anchor in the flow, where it was written, with no text.
+/// A float is a textless anchor where it was written.
 #[test]
 fn a_float_is_an_anchor_in_the_flow() {
     let layout = build(|b| {
@@ -833,7 +822,7 @@ fn finishing_closes_what_is_open() {
     assert_eq!(shown(&layout), "<ruby>a<rt>b</rt></ruby>");
 }
 
-/// A builder dropped without finishing closes its content too.
+/// Dropping a builder without finishing closes its content too.
 #[test]
 fn a_dropped_builder_leaves_whole_content() {
     let mut layout = Layout::new();
@@ -850,7 +839,7 @@ fn a_dropped_builder_leaves_whole_content() {
     assert_eq!(shown(&layout), "[left open]");
 }
 
-/// A close with no box to close is ignored. So is one that would close a box
+/// A close with no open box is ignored, as is one that would close a box
 /// around an open ruby container or annotation.
 #[test]
 fn an_unbalanced_close_is_ignored() {
@@ -896,12 +885,11 @@ fn nodes_record_their_keys() {
     );
 }
 
-/// A key reused by a later node makes a new node, never a merge with the
-/// last node of the same key and kind.
+/// A key reused by a later node makes a new node, never a merge.
 ///
-/// Every call that opens something makes a node, and so does text under a
-/// new key. A key the caller uses twice, for a box and the text in it or for
-/// text either side of a box, is two nodes. Each keeps its own items.
+/// Every opening call makes a node, and so does text under a new key. A key
+/// used for a box and its text, or for text on both sides of a box, is two
+/// nodes, each with its own items.
 #[test]
 fn a_key_reused_by_a_later_node_is_a_new_node() {
     let layout = build(|b| {
@@ -932,8 +920,8 @@ fn a_key_reused_by_a_later_node_is_a_new_node() {
     assert_eq!(node_item_kinds(&layout, NodeId::new(5)), [ItemKind::Text]);
 }
 
-/// A node's items are `first_item..end`. A box's run from its open to its
-/// close. The last text in a box does not take the box's close.
+/// A node's items are a contiguous range. A box's run from its open to its
+/// close; the last text in a box does not take the box's close.
 #[test]
 fn a_nodes_items_are_its_own() {
     let layout = build(|b| {
@@ -964,9 +952,9 @@ fn a_nodes_items_are_its_own() {
     assert_eq!(node_item_kinds(&layout, NodeId::new(5)), [Text]);
 }
 
-/// White space alone after an atomic inline stays in its own node. The space
-/// a run owes is in the item of the node the run began in, not the next node
-/// that writes anything, so that node's offsets do not shift.
+/// White space alone after an atomic inline stays in its own node. A run's
+/// space goes in the item of the node where it began, so the next node's
+/// offsets do not shift.
 #[test]
 fn white_space_after_an_atomic_stays_in_its_own_node() {
     let layout = build(|b| {
@@ -991,8 +979,7 @@ fn white_space_after_an_atomic_stays_in_its_own_node() {
     );
 }
 
-/// A white space run that comes to nothing leaves its node with an empty item
-/// at most, and never text.
+/// A white space run that collapses away writes no text.
 #[test]
 fn a_run_that_comes_to_nothing_writes_nothing() {
     let layout = build(|b| {
@@ -1008,7 +995,7 @@ fn a_run_that_comes_to_nothing_writes_nothing() {
 // Ruby --------------------------------------------------------------------------
 
 /// A ruby container's items bracket its base and annotations. An
-/// annotation's items, its marks included, are flagged out of the main line.
+/// annotation's items, marks included, carry the annotation flag.
 #[test]
 fn ruby_marks_bracket_and_annotations_are_flagged() {
     let layout = build(|b| {
@@ -1031,8 +1018,8 @@ fn ruby_marks_bracket_and_annotations_are_flagged() {
     assert!(layout.content().flags.contains(ContentFlags::RUBY));
 }
 
-/// A second annotation on the same base closes the first, as `<rtc>` levels
-/// follow one another. Ending the ruby closes what is open inside it.
+/// A second annotation on the same base closes the first, as successive
+/// `<rtc>` levels do. Ending the ruby closes what is open inside it.
 #[test]
 fn annotations_follow_one_another() {
     let layout = build(|b| {
@@ -1049,9 +1036,8 @@ fn annotations_follow_one_another() {
 }
 
 /// An annotation outside any ruby container opens in an anonymous one over
-/// an empty base, as Chrome wraps a `ruby-text` box whose parent is no
-/// ruby. Ending the annotation closes both, so the text after it is the
-/// block's.
+/// an empty base, as Chrome wraps an orphan `ruby-text` box. Ending the
+/// annotation closes both.
 #[test]
 fn an_annotation_outside_ruby_opens_an_anonymous_container() {
     let layout = build(|b| {
@@ -1064,13 +1050,12 @@ fn an_annotation_outside_ruby_opens_an_anonymous_container() {
     assert_eq!(shown(&layout), "a<ruby><rt>b</rt></ruby>c");
 }
 
-/// A forced break inside a ruby container is a space, as Blink makes it
-/// (`kDisableForcedBreakInRubyColumn`). A column is one unit of its line, and
-/// no paragraph ends inside one.
+/// A forced break inside a ruby container is a space, as in Blink
+/// (`kDisableForcedBreakInRubyColumn`): no paragraph ends inside a column.
 ///
-/// The break keeps its node. The white space after it collapses into it. The
-/// white space before it stays, as Blink appends its space as a text item of
-/// its own.
+/// The break keeps its node. White space after it collapses into it; white
+/// space before it stays, since Blink appends the break's space as a text
+/// item of its own.
 #[test]
 fn a_forced_break_in_ruby_is_a_space() {
     let layout = build(|b| {
@@ -1090,10 +1075,9 @@ fn a_forced_break_in_ruby_is_a_space() {
     assert!(nodes(&layout).contains(&(NodeKind::LineBreak, 3)));
 }
 
-/// A segment break inside a ruby container ends no paragraph either:
-/// - where white space collapses, it is a space;
-/// - where breaks alone are kept, it collapses as white space;
-/// - where spaces are kept, it is one.
+/// A segment break inside a ruby container ends no paragraph either. It
+/// collapses as white space under `collapse` and `preserve-breaks`, and is a
+/// kept space under `preserve`.
 #[test]
 fn a_newline_in_ruby_ends_no_paragraph() {
     use crate::style::WhiteSpaceCollapse;
@@ -1118,8 +1102,8 @@ fn a_newline_in_ruby_ends_no_paragraph() {
     }
 }
 
-/// A ruby in another's base keeps its own container and annotation. Its
-/// closing call leaves the outer base open for the outer annotation.
+/// A ruby in another's base keeps its own container and annotation. Closing
+/// it leaves the outer base open for the outer annotation.
 #[test]
 fn a_ruby_in_a_base_keeps_its_container_and_annotations() {
     let plain = ComputedStyle::initial();
@@ -1141,9 +1125,8 @@ fn a_ruby_in_a_base_keeps_its_container_and_annotations() {
         shown(&layout),
         "<ruby><ruby>a<rt>x</rt></ruby><rt>y</rt></ruby>b"
     );
-    // Malformed ruby builds without a panic and closes what it opened. It
-    // covers annotations with no ruby, a ruby left open, empty bases, and
-    // levels many deep.
+    // Malformed ruby builds without a panic and closes what it opened:
+    // annotations with no ruby, a ruby left open, empty bases, deep levels.
     let layout = build(|b| {
         b.close_ruby();
         b.open_annotation(key(1), &plain, None);
@@ -1205,8 +1188,8 @@ static SANS: [FontFamilyName<'static>; 2] = [
     FontFamilyName::Generic(GenericFamily::SansSerif),
 ];
 
-/// Equal styles lower into the same facts, however the caller holds their
-/// lists. The builder interns by value.
+/// Equal styles lower into the same facts, whether their lists are borrowed
+/// or owned: the builder interns by value.
 #[test]
 fn styles_are_interned_once() {
     let named = [
@@ -1262,11 +1245,10 @@ fn styles_are_interned_once() {
 
 /// Interning stays exact as a table grows past a few values.
 ///
-/// A table of a few values finds one by comparing each. A larger table finds
-/// one through its index, made when the table first holds more than a few.
-/// Either way, an equal style's facts, family list, settings list, language
-/// or hyphenation string are one id, before the crossing and after it. Each
-/// id still names what was interned under it.
+/// A small table finds a value by comparing each; a larger one builds a hash
+/// index. On both sides of that switch, equal facts, family lists, settings
+/// lists, languages and hyphenation strings share one id, and each id names
+/// what was interned under it.
 #[test]
 fn many_styles_and_lists_intern_once_past_a_few() {
     const MANY: usize = 20;
@@ -1316,8 +1298,8 @@ fn many_styles_and_lists_intern_once_past_a_few() {
     let content = layout.content();
     let lists = cx.content_lists();
     let fonts = cx.font_context();
-    // The block's and twenty, and each family list once, the initial one
-    // never stored.
+    // The block's facts and twenty more; each family list once, the initial
+    // one never stored.
     assert_eq!(content.facts.text_count(), MANY + 1);
     assert_eq!(fonts.counts()[0], MANY);
     for n in 0..MANY {
@@ -1342,10 +1324,9 @@ fn many_styles_and_lists_intern_once_past_a_few() {
     }
 }
 
-/// A style's floats compare by their bits. A style with a NaN in it is still
-/// one key of the builder's memo, and the sign of a zero tells two apart. On
-/// the grid either spacing is nothing, and every node's facts are the
-/// block's.
+/// A style's floats compare by their bits: a NaN equals itself as a memo
+/// key, and `-0.0` differs from `0.0`. On the grid both spacings are zero, so
+/// every node's text facts are the block's.
 #[test]
 fn a_style_compares_its_floats_by_bits() {
     let nan = styled(|style| style.text.letter_spacing = LengthPercentage::from_px(f32::NAN));
@@ -1403,10 +1384,10 @@ fn languages_and_hyphenation_strings_are_interned() {
     assert_eq!(hyphen, Some("‐"));
 }
 
-/// No settings and `und` take the first ids of their tables. They are stored
-/// only once something is stored after them. A layout that sets no feature,
-/// variation or language keeps nothing for them. One that sets some still
-/// answers the initial ids.
+/// Empty settings and `und` take the first ids of their tables but are
+/// stored only once another entry follows. A layout that sets no feature,
+/// variation or language stores nothing; one that sets some still answers
+/// the initial ids.
 #[test]
 fn the_empty_lists_and_und_are_stored_only_before_another() {
     let mut cx = no_fonts();
@@ -1462,8 +1443,8 @@ fn the_empty_lists_and_und_are_stored_only_before_another() {
     assert_eq!(Some(languages.get(boxed.language)), japanese);
 }
 
-/// The one initial style is CSS's, with Chrome's values where Chrome computes
-/// another. `Default` gives it.
+/// The initial style is CSS's, with Chrome's values where Chrome computes
+/// another, and equals `Default`.
 #[test]
 fn there_is_one_initial_style() {
     let initial = ComputedStyle::initial();
@@ -1473,9 +1454,9 @@ fn there_is_one_initial_style() {
     assert!(initial.font.families.is_empty(), "the Standard font alone");
 }
 
-/// A close names its own box's node, never its parent's. The node holds the
-/// facts of the box's own first-line style, limited to what `::first-line`
-/// may change.
+/// A close names its own box's node, never its parent's. The node's
+/// first-line facts take only what `::first-line` may change from the box's
+/// first-line style.
 #[test]
 fn a_close_names_its_own_box_and_first_line_style() {
     let plain = ComputedStyle::initial();
@@ -1556,8 +1537,8 @@ fn a_close_names_its_own_box_and_first_line_style() {
     assert!(content.flags.contains(ContentFlags::FIRST_LINE_RESTYLE));
 }
 
-/// Without `::first-line`, every node's first-line style is its own,
-/// whatever a call passes.
+/// Without a block `::first-line`, every node's first-line facts are its
+/// own, whatever a call passes.
 #[test]
 fn without_first_line_every_node_is_its_own_on_the_first_line() {
     let layout = build(|b| {
@@ -1581,10 +1562,11 @@ fn without_first_line_every_node_is_its_own_on_the_first_line() {
     );
 }
 
-/// The flags say what the content holds. A plain block sets none of them.
+/// The flags say what the content holds. A plain block sets only
+/// `TRIMS_PUNCTUATION`.
 #[test]
 fn the_flags_say_what_the_content_holds() {
-    // The initial style's `text-spacing-trim`, `normal`, trims punctuation.
+    // The initial `text-spacing-trim: normal` trims punctuation.
     let plain = build(|b| b.text(key(1), "plain"));
     assert_eq!(plain.content().flags, ContentFlags::TRIMS_PUNCTUATION);
     let spaced = styled(|style| style.text.spacing_trim = TextSpacingTrim::SpaceAll);
@@ -1599,8 +1581,8 @@ fn the_flags_say_what_the_content_holds() {
     )
     .0;
     assert_eq!(untrimmed.content().flags, ContentFlags::INLINE_BOXES);
-    // A style that sets each flag's property, on a box and on a float. No
-    // line holds the float, but its style is the content's all the same.
+    // Each flag's property, set on a box or a float. No line holds the float,
+    // but its style still counts.
     let set = build(|b| {
         b.open_box(key(1), &nowrap(), None);
         b.close_box();
@@ -1670,8 +1652,8 @@ fn the_flags_say_what_the_content_holds() {
     assert!(!flags.contains(ContentFlags::RUBY));
 }
 
-/// An atomic inline's and a float's sizes are kept as given. A size that is
-/// not finite, or is negative, is taken as zero.
+/// Atomic inline and float sizes are kept as given, except that a negative
+/// or non-finite size becomes zero (and such a baseline, `None`).
 #[test]
 fn box_sizes_are_kept_and_made_sane() {
     let layout = build(|b| {
@@ -1709,8 +1691,8 @@ fn box_sizes_are_kept_and_made_sane() {
 
 // Limits ------------------------------------------------------------------------
 
-/// Text past the limit is dropped, whole characters at a time, and reported.
-/// Nothing panics, and the content is valid for what was kept.
+/// Text past the limit is dropped in whole characters and reported, without
+/// a panic, leaving valid content.
 #[test]
 fn text_past_the_limit_is_dropped_and_reported() {
     let limits = ContentLimits::MAX.with_text(10);
@@ -1734,9 +1716,8 @@ fn text_past_the_limit_is_dropped_and_reported() {
     assert!(!built.is_complete());
 }
 
-/// Nodes past the limit are dropped with what they hold. A box the builder
-/// drops still takes its own close, so the box around it closes where it
-/// should.
+/// Nodes past the limit are dropped with their contents. A dropped box still
+/// consumes its own close, so the enclosing box closes in the right place.
 #[test]
 fn nodes_past_the_limit_are_dropped_and_reported() {
     let limits = ContentLimits::MAX.with_nodes(3);
@@ -1754,8 +1735,8 @@ fn nodes_past_the_limit_are_dropped_and_reported() {
     assert_eq!(built.dropped_bytes, "dropped".len() + "also dropped".len());
 }
 
-/// Items past the limit are refused. A box that opened always has room for
-/// its close.
+/// Items past the limit are refused, but an open box always has room for its
+/// close.
 #[test]
 fn items_past_the_limit_leave_every_box_closed() {
     let limits = ContentLimits::MAX.with_items(5);
@@ -1772,9 +1753,8 @@ fn items_past_the_limit_leave_every_box_closed() {
 
 // Sizes -------------------------------------------------------------------------
 
-/// An item is 16 bytes, and a node 32 with its four fact ids. The builder's
-/// key of a style is about 244 bytes, its margins and padding with their
-/// percentages. Each kind of facts stays within the size asserted below.
+/// An item is 16 bytes and a node, with its four fact ids, 32. A style key is
+/// at most 244 bytes, mostly margins and padding with their percentages.
 #[test]
 fn the_records_are_the_size_the_design_says() {
     assert_eq!(size_of::<Item>(), 16);
@@ -1791,13 +1771,12 @@ fn the_records_are_the_size_the_design_says() {
     assert!(facts <= 48, "box facts are {facts} bytes");
 }
 
-/// Past what their ids name, a node's text facts are its parent's. Its box
-/// facts are the initial ones, never its parent's. Each counts as a style
-/// replaced. The layout is valid for the rest, and its oracle holds.
+/// Once the fact tables are full, a node takes its parent's text facts and
+/// the initial box facts, each counted as a replaced style. The content stays
+/// valid.
 #[test]
 fn full_fact_tables_take_stand_ins_and_say_so() {
-    // Sizes and paddings a 64th of a pixel apart give each box new text facts
-    // and new box facts.
+    // Sizes and paddings 1/64 px apart give each box new text and box facts.
     let mut step = 0.0;
     let styles: Vec<ComputedStyle<'static>> = (0..TextFactsId::MAX + 10)
         .map(|_| {
@@ -1854,8 +1833,8 @@ fn break_spaces_keeps_what_preserve_keeps() {
     );
 }
 
-/// A generated break opportunity stays when the run it was made for comes to
-/// nothing, as Blink's does.
+/// A generated break opportunity stays even when its run collapses away, as
+/// in Blink.
 #[test]
 fn a_generated_opportunity_outlives_its_run() {
     let layout = build(|b| {
@@ -1867,12 +1846,11 @@ fn a_generated_opportunity_outlives_its_run() {
     assert_eq!(shown(&layout), "[a]\u{200B}");
 }
 
-/// Calls in any order, with any text, never panic. The limits are small
-/// enough to be reached. The content's items tile the text, and its nodes'
-/// items are their own. Finishing checks both in debug builds.
+/// Calls in any order with any text never panic, under limits small enough
+/// to reach. The content stays whole and the offset map round-trips.
 #[test]
 fn any_calls_in_any_order_leave_whole_content() {
-    // A small generator, the same on every run.
+    // A deterministic generator.
     struct Lcg(u64);
     impl Lcg {
         fn next(&mut self, below: usize) -> usize {
@@ -1960,8 +1938,8 @@ fn any_calls_in_any_order_leave_whole_content() {
             options,
             limits,
         );
-        // Some rounds give every call a key of its own, and check the offset
-        // map's round trips.
+        // Some rounds give every call its own key, so the map's round trips
+        // can be checked exactly.
         let unique = round % 8 == 1;
         for call in 0..random.next(40) {
             let reused = key(u64::try_from(random.next(4)).unwrap_or(0));
@@ -2001,18 +1979,18 @@ fn any_calls_in_any_order_leave_whole_content() {
     }
 }
 
-/// A ruby's calls find the container they close past any depth of boxes,
-/// without looking at the boxes.
+/// Ruby calls find the container they close past any depth of boxes without
+/// visiting the boxes.
 ///
 /// Each ruby container and annotation on the builder's stack links to the
-/// next one out. `annotation`, `end_annotation` and `end_ruby` close what
-/// they would by walking the stack. A thousand of them that close nothing,
-/// inside a thousand boxes, take a step or two each, not a thousand.
+/// next one out. `open_annotation`, `close_annotation` and `close_ruby`
+/// follow those links, so a thousand calls that close nothing inside a
+/// thousand boxes take a few steps each.
 ///
-/// A ruby container opened inside another's annotation is a box. No
-/// annotation of its own is open, so `end_annotation` closes nothing. Its
-/// annotation is the column's next level, which closes the box. Its
-/// `end_ruby` then closes nothing.
+/// A ruby container opened inside another's annotation is a box there. With
+/// no annotation of its own open, `close_annotation` closes nothing. Its
+/// annotation is the column's next level and closes the box, so its
+/// `close_ruby` then closes nothing.
 #[test]
 fn ruby_calls_look_past_no_box() {
     let plain = ComputedStyle::initial();
@@ -2027,14 +2005,14 @@ fn ruby_calls_look_past_no_box() {
         b.text(key(7), "b");
         // No annotation is open in the innermost ruby: nothing closes.
         b.close_annotation();
-        // The inner ruby's annotation: the column's second level, the inner
-        // ruby's box, and the outer annotation, closed first.
+        // The column's second level: closes the inner boxes and the first
+        // annotation, then opens.
         b.open_annotation(key(8), &plain, None);
         b.text(key(9), "c");
-        // The inner ruby, which the annotation closed already.
+        // The inner ruby is already closed: nothing closes.
         b.close_ruby();
         b.text(key(10), "d");
-        // The annotation, and then the ruby.
+        // Closes the annotation, then the ruby.
         b.close_annotation();
         b.close_ruby();
         b.text(key(11), "e");
@@ -2294,10 +2272,11 @@ fn masked_text_stops_at_the_text_limit() {
     }
 }
 
-/// A case mapping or `full-width` takes room for three bytes a byte, not the
-/// four `math-auto` takes, so text whose transform just fits is written whole.
-/// - Lowercased whole, a final sigma knows it ends its word.
-/// - The first line draws its own full-width text.
+/// A case mapping or `full-width` needs room for three bytes per source byte,
+/// not the four `math-auto` needs, so text whose transform just fits is
+/// written whole:
+/// - lowercased whole, a final sigma knows it ends its word;
+/// - the first line draws its own full-width text.
 #[test]
 fn a_case_transform_at_the_text_limit_is_written_whole() {
     let within = |block: &ComputedBlockStyle<'_>, limit: usize, text_: &str| {
@@ -2418,13 +2397,11 @@ fn capitalize_titlecases_the_first_letter_of_each_word() {
 /// - With the `dictionaries` feature, so does one after `々`. ICU hands `々`
 ///   to its dictionary with the ideograph before it, and breaks after the
 ///   run, as Chrome 153 does.
-/// - ICU4C's word rules count Thai as a letter, which joins the Latin after
-///   it, so Chrome leaves `ghi` as it is. The test records this rather than
-///   working around it.
-/// - Without dictionaries, UAX #29's own rules find Chinese and Japanese
-///   words. Under them `々` is a letter (ALetter) and carries its word on
-///   into the Latin after it. This holds within a call and across two, where
-///   the character before is stood in for too.
+/// - ICU4C's word rules count Thai as a letter joining the Latin after it,
+///   so Chrome leaves `ghi` as it is. This test pins the difference.
+/// - Without dictionaries, UAX #29's rules find Chinese and Japanese words.
+///   Under them `々` is a letter (ALetter) and carries its word into the
+///   Latin after it, within one call and across two.
 #[test]
 fn capitalize_finds_words_as_word_motion_does() {
     let style = cased(TextCase::Capitalize, "en");
@@ -2473,9 +2450,9 @@ fn capitalize_reads_the_last_character_of_the_text_before() {
     assert_eq!(text(&layout), "Alpha O'brien \u{FFFC}Bravo\nCharlie");
 }
 
-/// `full-width` sets ASCII in its full-width forms, after the case. It sets a
-/// space as U+3000 only where white space is kept. A space that collapses is
-/// left to collapsing, as CSS says and Blink's `ApplyFullwidthTransform`
+/// `full-width` maps ASCII to its full-width forms after the case mapping. A
+/// space becomes U+3000 only where white space is kept; a collapsible space
+/// is left to collapse, as CSS says and Blink's `ApplyFullwidthTransform`
 /// does.
 #[test]
 fn full_width_leaves_collapsible_spaces_to_collapsing() {
@@ -2501,9 +2478,8 @@ fn full_width_leaves_collapsible_spaces_to_collapsing() {
     );
 }
 
-/// A transform that grows the text still stops at the text's limit. It stops
-/// after the last of the caller's characters whose transform fits, and
-/// reports how much of the caller's text it left out.
+/// A transform that grows the text stops after the last source character
+/// whose transform fits the limit, and reports the source bytes dropped.
 #[test]
 fn a_transform_that_grows_the_text_stops_at_its_limit() {
     let limits = ContentLimits::MAX.with_text(10);
@@ -2556,8 +2532,8 @@ fn white_space_collapses_across_a_transformed_box() {
 
 // The first line's text ------------------------------------------------------------
 
-/// Returns the first line's text, and where each content offset of the text
-/// is in it.
+/// Returns the first line's text and, for each char boundary of the content
+/// text, the matching offset in it.
 fn first_line_text(layout: &Layout) -> (String, Vec<usize>) {
     let content = layout.content();
     let none = FirstLineSource::default();
@@ -2569,12 +2545,12 @@ fn first_line_text(layout: &Layout) -> (String, Vec<usize>) {
     (source.text.to_string(), offsets)
 }
 
-/// The first line's transform replaces the element's, as the cascade gives a
-/// text one value.
+/// The first line's transform replaces the element's, since the cascade
+/// gives a text one value.
 ///
-/// Where a first line capitalizes what the element sets in lower case, the
-/// first line's text is the caller's text capitalized, not the element's.
-/// Chrome composes the two, a limitation its own source marks as such.
+/// A first line that capitalizes a lowercased element transforms the source
+/// text, not the lowercased text. Chrome composes the two, a limitation its
+/// source marks as such.
 #[test]
 fn a_first_line_transform_replaces_the_elements() {
     use crate::style::TextCase::{Capitalize, Lowercase};
@@ -2600,8 +2576,8 @@ fn a_first_line_transform_replaces_the_elements() {
     );
 }
 
-/// A character the two transforms make differently long maps as a whole. Its
-/// first cluster draws all of it, and a cluster inside it draws nothing.
+/// A character the two transforms make different lengths maps as a whole:
+/// its first cluster draws all of it, and a cluster inside it draws nothing.
 #[test]
 fn a_character_made_differently_long_maps_as_a_whole() {
     use crate::style::TextCase::Uppercase;
@@ -2642,7 +2618,7 @@ fn a_character_made_differently_long_maps_as_a_whole() {
 }
 
 /// A cursor over the first line's text maps each offset as the map does,
-/// asked in order, backwards, and in jumps either way.
+/// queried forwards, backwards and in jumps.
 #[test]
 fn the_first_lines_cursor_maps_as_its_map_does() {
     let upper = cased(TextCase::Uppercase, "de");
@@ -2675,10 +2651,9 @@ fn the_first_lines_cursor_maps_as_its_map_does() {
     }
 }
 
-/// The first line's text starts as the text so far, where the first text it
-/// transforms its own way comes. It takes the collapsed space where its run
-/// began. It ends with the first paragraph: no first line reaches past a
-/// forced break.
+/// The first line's text copies the text so far when the first differently
+/// transformed text arrives, puts a collapsed space where its run began, and
+/// ends with the first paragraph: no first line reaches past a forced break.
 #[test]
 fn the_first_lines_text_follows_the_first_paragraph() {
     use crate::style::TextCase::Uppercase;
@@ -2708,11 +2683,11 @@ fn the_first_lines_text_follows_the_first_paragraph() {
     assert_eq!(first, "ab CD ef\n");
 }
 
-/// A first line whose transforms are its elements' keeps no text of its own.
+/// A first line that transforms as its elements do keeps no text of its own.
 #[test]
 fn a_first_line_that_transforms_alike_keeps_no_text() {
     let upper = cased(TextCase::Uppercase, "en");
-    // The first line's style inherits the block's transform, as a cascade
+    // The first-line style inherits the block's transform, as a cascade
     // would.
     let mut first_line = upper;
     first_line.font.size = 30.0;

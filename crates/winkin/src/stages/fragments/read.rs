@@ -3,8 +3,8 @@
 //! The layout's `TextRun` wraps these walks, and the tests read positions
 //! through them.
 //!
-//! **Where a glyph stands:** the item's exact `inline`, plus the exact
-//! advances of the clusters before it, plus the glyph's own offsets.
+//! A glyph stands at the item's exact `inline`, plus the exact advances of
+//! the clusters before it, plus the glyph's own offsets.
 //! - A cluster's advance is its prefix step, so its left is one subtraction
 //!   from its prefix entry. A paint walk reads a word and a sum per glyph.
 //! - Where reshaped line edges hold some clusters, their advances and
@@ -13,35 +13,34 @@
 //! - Right to left, clusters are drawn from the item's right end back. Their
 //!   glyphs are already in drawing order.
 //!
-//! **A glyph's advance** is the shaper's, except a cluster's last glyph,
+//! A glyph's advance is the shaper's, except a cluster's last glyph,
 //! which takes the rest of the cluster's advance. So the glyphs add up to
 //! the cluster, spacing and justification included, as Chrome adds letter
 //! spacing and justification room to a cluster's last glyph.
 //!
-//! **On a justified line** a cluster's advance adds `per` for each of its
-//! opportunities, counted by the same rule line layout used. The last
+//! On a justified line a cluster's advance adds `per` for each of its
+//! opportunities, counted by the same rule line layout uses. The last
 //! opportunity also takes the leftover. A cluster with an opportunity before
 //! it moves its glyphs by that room, as Chrome offsets an ideograph after a
 //! letter. The line's item names its record; nothing is stored per cluster.
 //!
-//! **No item searches for its run or items.** Its record names its shaping
-//! run and its content item, and its line names its paragraph.
+//! No item searches for its run or items: the item names its shaping run
+//! and its content item, and its line names its paragraph.
 //!
-//! **An item's advance** is the same sum over all its clusters, stored on
-//! the item. The walks add up to it, and a right-to-left walk starts from
-//! it.
+//! An item's advance is the same sum over all its clusters, stored on the
+//! item. The walks add up to it, and a right-to-left walk starts from it.
 //!
 //! Nothing is allocated and nothing restarts. Each walk holds a few words of
 //! state and hands out each glyph or cluster once.
 //!
-//! **On a line `text-fit` scales,** a cluster's place is its unscaled place
+//! On a line `text-fit` scales, a cluster's place is its unscaled place
 //! from the item's start, less the fixed spacing before it, times the scale,
 //! plus that spacing back ([`FitText`]). Each place is worked out from the
 //! item's start, so the steps add up to the item's advance, which line
 //! layout scaled the same way. Glyph offsets and a multi-glyph cluster's own
 //! advances scale too.
 //!
-//! **A ruby annotation's text** is on a line of its own, and the prefix sums
+//! A ruby annotation's text is on a line of its own, and the prefix sums
 //! give it nothing. Its clusters step by their glyphs' own advances, which
 //! shaping keeps for it, plus spacing, with a running sum.
 
@@ -61,11 +60,11 @@ use crate::work;
 use core::fmt;
 use core::ops::Range;
 
-/// What a reader reads a text item back through: the prepared tables, the
-/// lines and the fragment items.
+/// The input for reading a text item back: the prepared tables, the lines
+/// and the fragment items.
 ///
-/// A reader borrows a finished layout, which keeps no area and no config, so
-/// this is not line layout's input.
+/// A reader borrows a finished layout, which keeps no area and no config,
+/// so this is separate from line layout's input.
 pub(crate) struct ReadInput<'a> {
     stages: Stages<'a>,
     lines: &'a Lines,
@@ -612,8 +611,8 @@ impl<'a> Steps<'a> {
 /// The clusters of one text item in logical order, each with its exact
 /// left and advance.
 ///
-/// Carets, selection and decorations read it. It is a view over the
-/// prepared tables, so a clone walks on from where it was.
+/// Carets, selection and decorations read it. A view over the prepared
+/// tables, so a clone continues from where it was.
 #[derive(Clone)]
 pub(crate) struct ClusterWalk<'a> {
     steps: Steps<'a>,
@@ -686,8 +685,8 @@ impl ExactSizeIterator for ClusterWalk<'_> {}
 /// The glyphs of one text item in drawing order, placed exactly, for a
 /// painter.
 ///
-/// It is a view over the prepared tables, so a clone walks on from where it
-/// was. A renderer that needs the glyphs twice clones the walk instead of
+/// A view over the prepared tables, so a clone continues from where it was.
+/// A renderer that needs the glyphs twice clones the walk instead of
 /// copying them.
 #[derive(Clone)]
 pub(crate) struct GlyphWalk<'a> {

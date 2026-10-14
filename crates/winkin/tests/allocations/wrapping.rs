@@ -20,9 +20,8 @@ fn collection() -> Collection {
 /// The ways a block's lines are chosen here.
 #[derive(Copy, Clone, Debug)]
 enum How {
-    /// Balanced, each paragraph by the scorer where it is six lines or
-    /// fewer, and by halving the room where it is more or holds a
-    /// float.
+    /// Balanced: by the scorer for a paragraph of six lines or fewer, and by
+    /// halving the room for a longer one or one holding a float.
     Balanced,
     /// Balanced with a restyled first line and an initial letter, and
     /// clamped.
@@ -97,11 +96,12 @@ fn document(layout: &mut Layout, cx: &mut Context, how: How, paragraphs: u64) {
     assert!(b.finish().is_complete());
 }
 
-/// Balanced and pretty text, under either rule for pretty, breaks again
-/// allocating nothing once warm, at any width broken at before (plan
-/// step 26): the trials the driver takes back, their reshaped edges and
-/// floats, the scorer's candidates and the plan keep their capacity,
-/// and so does the host.
+/// Balanced and pretty text, under either rule for pretty, breaks again at
+/// any width used before allocating nothing.
+///
+/// The trials the driver takes back, their reshaped edges and floats, the
+/// scorer's candidates and its plan keep their capacity, and so does the
+/// host.
 #[test]
 fn balanced_and_pretty_text_allocates_nothing_warm() {
     let widths = [120.0, 300.0, 61.5, 900.0, 17.0, 180.0];

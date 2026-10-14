@@ -1,8 +1,8 @@
 //! The intrinsic sizes, added up as the scan goes.
 //!
-//! Min-content is the widest min-content line: the content between two
-//! break opportunities, which Chrome's breaker in min-content mode sets as a
-//! line of its own. Max-content is the widest paragraph.
+//! Min-content is the widest content between two break opportunities, set
+//! as a line of its own as by Chrome's breaker in min-content mode.
+//! Max-content is the widest paragraph.
 
 use super::LinePay;
 use super::ends::AnchoredFloats;
@@ -12,11 +12,8 @@ use crate::stages::measure::IntrinsicWidths;
 use crate::stages::measure::tabs::{TabReach, TabStops, tab_advance_reached};
 use crate::unit::{InlineLayoutUnit, LayoutUnit};
 
-/// How far a tab reaches where the intrinsic widths set it.
-///
-/// `paragraph_reach` is its reach on its paragraph's line, set whole from the
-/// content edge. `min_line_reach` is its reach on its min-content line, set
-/// on a line of its own.
+/// How far a tab reaches on its paragraph's line, set from the content
+/// edge, and on its own min-content line.
 #[derive(Copy, Clone, Debug, Default)]
 pub(super) struct Tab {
     paragraph_reach: InlineLayoutUnit,
@@ -36,15 +33,11 @@ impl Tab {
     }
 }
 
-/// `text-indent` as the intrinsic sizes read it, and which lines it applies
-/// to.
+/// `text-indent` as the intrinsic sizes read it.
 ///
-/// Only its length counts. A percentage is of a width the content doesn't
-/// have yet, so Chrome's breaker resolves it to zero in its min- and
-/// max-content modes (`ComputeTextIndent`).
-///
-/// A first line that opens an initial letter takes it twice, the second
-/// inside the letter's box, as line layout does.
+/// Only a length counts: Chrome's breaker resolves a percentage to zero in
+/// its min- and max-content modes (`ComputeTextIndent`). A first line that
+/// opens an initial letter takes it twice, as line layout does.
 #[derive(Copy, Clone, Debug, Default)]
 pub(super) struct Indent {
     amount: InlineLayoutUnit,
@@ -54,9 +47,9 @@ pub(super) struct Indent {
 }
 
 impl Indent {
-    /// Returns the block's indent in `content`, truncated onto the grid as
-    /// Chrome's `MinimumValueForLength` converts it. `letter` says the first
-    /// line opens an initial letter.
+    /// Returns the block's indent in `content`, truncated to the grid as by
+    /// Chrome's `MinimumValueForLength`. `letter` says the first line opens an
+    /// initial letter.
     pub(super) fn new(content: &Content, letter: bool) -> Self {
         let indent = content.block.text_indent;
         Self {
@@ -83,37 +76,28 @@ impl Indent {
 /// The intrinsic widths, added up as the scan goes: the widest min-content
 /// line and the widest paragraph.
 ///
-/// - **Fitting:** every width is read as fitting reads it, from the
-///   paragraph's start, each end rounded up to the grid. A min-content line
-///   ends after the closing edges at its break and before what hangs at its
-///   end. What hangs is taken off by the clusters' own advances. So a box
-///   closing after a hanging space still counts, while the space doesn't.
-/// - **Tabs:** a tab takes nothing in the prefix, so each is sized where it
-///   lands and added. For max-content it lands on the paragraph's line, from
-///   its start at the content edge. For min-content it lands on its own
-///   min-content line, from that line's start, as Chrome's breaker sets it
-///   in min-content mode. A tab that hangs comes off as a hanging space
-///   does.
-/// - **Hanging:** a min-content line leaves out everything it ends with that
-///   hangs. A paragraph leaves out its trailing white space only where all
-///   of it hangs. White space that is kept and wraps (`pre-wrap`) hangs only
-///   where it overflows, and a max-content line has room for it, so it
-///   counts (CSS Text 3, "white-space processing"). Kept white space that
-///   doesn't wrap (`pre`) never hangs, so it counts in both. The white space
-///   that ends the run decides for all of it, as it does for a line the
-///   breaker ends there. A punctuation mark that hangs comes off where the
-///   line-edge costs say: under `first`, `last` and `force-end` from both
-///   sizes, under `allow-end` from min-content alone (CSS Text 4, "hanging
-///   glyphs").
-/// - **Line edges:** each line pays the line-edge costs at its ends: a
-///   cloned box's edges where it starts or ends inside one, and the line
-///   padding. A min-content line pays them at each of its ends. A paragraph
-///   pays them at forced breaks and the text's ends.
-/// - **Indent:** `text-indent` moves where a line starts. A paragraph is a
-///   max-content line, so the block's first is indented, and every one under
-///   `each-line`. A min-content line is indented where it is the block's
-///   first, or under `each-line` its paragraph's first. `hanging` inverts
-///   both. A tab lands past the indent of its line.
+/// - **Fitting:** widths are read from the paragraph's start, each end
+///   rounded up to the grid. A min-content line ends after the closing
+///   edges at its break and before what hangs, taken off by the clusters'
+///   own advances.
+/// - **Tabs:** a tab takes nothing in the prefix, so it is sized where it
+///   lands: on the paragraph's line for max-content, on its own min-content
+///   line for min-content, as Chrome's breaker sets it. A hanging tab comes
+///   off like a hanging space.
+/// - **Hanging:** a min-content line leaves out all it ends with that hangs.
+///   A paragraph leaves out trailing white space only where all of it
+///   hangs: `pre-wrap` space hangs only where it overflows, so max-content
+///   counts it (CSS Text 3, "white-space processing"), and `pre` space
+///   never hangs. The run's last white space decides for all of it. A
+///   hanging mark comes off both sizes under `first`, `last` and
+///   `force-end`, and min-content alone under `allow-end` (CSS Text 4,
+///   "hanging glyphs").
+/// - **Line edges:** a min-content line pays the line-edge costs at both
+///   ends; a paragraph at forced breaks and the text's ends.
+/// - **Indent:** the block's first paragraph is indented, or every one
+///   under `each-line`. A min-content line is indented where it is the
+///   block's first, or under `each-line` its paragraph's first. `hanging`
+///   inverts both. A tab lands past its line's indent.
 #[derive(Default)]
 pub(crate) struct IntrinsicScan {
     /// `text-indent`, and which lines it applies to.
@@ -122,28 +106,26 @@ pub(crate) struct IntrinsicScan {
     first_paragraph: bool,
     /// The current min-content line is its paragraph's first.
     first_min_line: bool,
-    /// The current paragraph, as its max-content line. Fitting reads every
-    /// width from its start.
+    /// The current paragraph, as its max-content line.
     paragraph: OpenLine,
     /// The current min-content line.
     min_line: OpenLine,
-    /// The last white space in the paragraph's tail hangs only where it
-    /// overflows, so the paragraph's max-content line counts the tail.
+    /// The paragraph's trailing white space hangs only where it overflows, so
+    /// max-content counts it.
     tail_conditional: bool,
-    /// The margin boxes of the floats anchored in the current paragraph,
-    /// which its max-content line sets beside it.
+    /// The margin boxes of the floats anchored in the current paragraph.
     floats: InlineLayoutUnit,
-    /// The last cluster offers an opportunity, so the min-content line ends
-    /// at the next boundary, after its closing edges.
+    /// The last cluster offers an opportunity: the min-content line ends at the
+    /// next boundary, after its closing edges.
     pending: bool,
     /// The widest min-content lines, and floats among the others.
     min: Widest,
-    /// `min` as the current paragraph started, and the widest float
-    /// anchored in it since, which measuring its lines again starts from.
+    /// `min` as the current paragraph started, and the paragraph's widest
+    /// float: where measuring its lines again starts.
     min_before: Widest,
     paragraph_floats: InlineLayoutUnit,
-    /// The current paragraph's min-content lines are measured again whole,
-    /// so its end ends none.
+    /// The current paragraph's min-content lines are measured again whole, so
+    /// its end ends none.
     redone: bool,
     /// The widest paragraphs.
     max: Widest,
@@ -157,8 +139,7 @@ struct OpenLine {
     start: InlineLayoutUnit,
     /// What it pays at its start.
     cost: InlineLayoutUnit,
-    /// What the clusters hanging at its end add so far, tabs as this line
-    /// sets them.
+    /// What the clusters hanging at its end add so far, with its tabs.
     tail: InlineLayoutUnit,
     /// How far its tabs reach on it so far.
     tabs: InlineLayoutUnit,
@@ -175,8 +156,8 @@ impl OpenLine {
     }
 }
 
-/// The widest lines of one intrinsic size: the block's first line, which
-/// the first line's variant may measure, and the widest other.
+/// The widest lines of one intrinsic size: the block's first, which may be
+/// measured in the first line's styles, and the widest other.
 #[derive(Copy, Clone, Debug, Default)]
 struct Widest {
     first: InlineLayoutUnit,
@@ -196,9 +177,7 @@ impl Widest {
 }
 
 impl IntrinsicScan {
-    /// Returns an empty scan, indented as `indent` says.
-    ///
-    /// The block's first paragraph and min-content line come next.
+    /// Returns an empty scan at the block's first paragraph and min-content line.
     pub(super) fn new(indent: Indent) -> Self {
         Self {
             indent,
@@ -222,8 +201,8 @@ impl IntrinsicScan {
             .line_indent(self.first_paragraph, !self.first_paragraph)
     }
 
-    /// Returns what turns a running sum into a place along the current
-    /// paragraph's line: past its indent and its tabs so far.
+    /// Returns the offset from a running sum to a position on the current
+    /// paragraph's line, past its indent and tabs.
     pub(super) fn paragraph_offset(&self) -> InlineLayoutUnit {
         self.paragraph.tabs - (self.paragraph.start - self.paragraph_indent())
     }
@@ -233,8 +212,7 @@ impl IntrinsicScan {
         (at - self.paragraph.start).ceil_to_grid()
     }
 
-    /// Starts the text. Its first min-content line and paragraph pay `cost`
-    /// at their start.
+    /// Starts the text, whose first lines pay `cost` at their start.
     pub(super) fn start_text(&mut self, cost: LinePay) {
         self.paragraph.cost = cost.edges.start;
         self.min_line.cost = cost.edges.start;
@@ -251,11 +229,10 @@ impl IntrinsicScan {
         self.first_min_line = false;
     }
 
-    /// Records a boundary. Its leading closing edges bring the sum to `at`,
-    /// and a line starting or ending there pays `cost`.
+    /// Records a boundary at sum `at`, after its leading closes, where a line
+    /// starting or ending pays `cost`.
     ///
-    /// Inlined, so a cluster that ends no min-content line costs the scan
-    /// one test and no call.
+    /// Inlined, so a boundary that ends no min-content line costs one test.
     #[inline]
     pub(super) fn boundary(&mut self, at: InlineLayoutUnit, cost: LinePay) {
         if self.pending {
@@ -263,8 +240,7 @@ impl IntrinsicScan {
         }
     }
 
-    /// Ends the min-content line owed a break at boundary `at`, and starts
-    /// the next there.
+    /// Ends the min-content line owed a break at `at`, and starts the next.
     #[inline(never)]
     fn break_min_line(&mut self, at: InlineLayoutUnit, cost: LinePay) {
         self.end_min_line(at, cost.edges.end - cost.min_end_hang);
@@ -274,8 +250,8 @@ impl IntrinsicScan {
 
     /// Replaces a whole ruby column in the min-content lines by its pieces.
     ///
-    /// The first and last pieces stay glued to the text beside them. The
-    /// widest piece is a min-content line of its own.
+    /// The first and last pieces stay glued to the text beside them; the
+    /// widest is a min-content line of its own.
     pub(super) fn ruby(
         &mut self,
         at: InlineLayoutUnit,
@@ -292,12 +268,11 @@ impl IntrinsicScan {
         self.min_line = OpenLine::new(start, InlineLayoutUnit::ZERO);
     }
 
-    /// Returns how far a tab reaches on the paragraph's line and on the
-    /// min-content line.
+    /// Returns how far a tab at `pen` reaches on the paragraph's line and on
+    /// the min-content line.
     ///
-    /// The pen stands at `pen`, and `stops` are its style's. Each line
-    /// measures from its start, past its indent, after the tabs before it on
-    /// that line. A ruby column's overhang may reach into it by `reach`.
+    /// Each line measures from its start, past its indent and earlier tabs. A
+    /// ruby column's overhang may reach into it by `reach`.
     pub(super) fn tab(
         &self,
         pen: InlineLayoutUnit,
@@ -315,10 +290,8 @@ impl IntrinsicScan {
         }
     }
 
-    /// Records a cluster with `attrs`.
-    ///
-    /// It added `own` to the prefix and, as a tab, `tab` to the lines it is
-    /// set on. `text` is its text facts' flags.
+    /// Records a cluster with `attrs` that adds `own` to the prefix and, as a
+    /// tab, `tab` to its lines. `text` is its text facts' flags.
     pub(super) fn cluster(
         &mut self,
         attrs: Option<ClusterAttrs>,
@@ -332,8 +305,7 @@ impl IntrinsicScan {
         if has(ClusterAttrs::HANGS) {
             self.min_line.tail += own + tab.min_line_reach;
             self.paragraph.tail += own + tab.paragraph_reach;
-            // A separator or a generated opportunity takes no room, so it
-            // decides nothing.
+            // A separator or generated opportunity takes no room, so decides nothing.
             if attrs.is_some_and(|attrs| attrs.class().is_breaking_space()) {
                 self.tail_conditional = text.contains(TextFlags::HANGS_CONDITIONALLY);
             }
@@ -346,14 +318,11 @@ impl IntrinsicScan {
             || (text.contains(TextFlags::ANYWHERE) && has(ClusterAttrs::EMERGENCY_AFTER));
     }
 
-    /// Records the floats anchored in the current paragraph, with
-    /// `anchored` their margin boxes.
+    /// Records the floats anchored at a boundary of the current paragraph.
     ///
-    /// A max-content line sets them all beside it, and no line can be
-    /// narrower than the widest. Chrome's breaker counts them this way in
-    /// its min- and max-content modes. Their `clear` is the host's concern:
-    /// Chrome reads it to start another line of floats, but here every float
-    /// of a paragraph sits beside it.
+    /// A max-content line sets them all beside it, and no line is narrower
+    /// than the widest, as in Chrome's breaker's min- and max-content modes.
+    /// `clear` is the host's concern, so every float sits beside the paragraph.
     pub(super) fn floats(&mut self, anchored: AnchoredFloats) {
         self.floats += anchored.sum;
         self.min.other = self.min.other.max(anchored.widest);
@@ -361,7 +330,7 @@ impl IntrinsicScan {
     }
 
     /// Ends the paragraph at `at`, after its closing edges, and starts the
-    /// next there. A line either side pays `cost`.
+    /// next. A line either side pays `cost`.
     pub(super) fn end_paragraph(&mut self, at: InlineLayoutUnit, cost: LinePay) {
         if !self.redone {
             self.end_min_line(at, cost.edges.end - cost.min_end_hang);
@@ -390,17 +359,16 @@ impl IntrinsicScan {
         self.redone = false;
     }
 
-    /// Starts the current paragraph's min-content lines again, from the
-    /// widest before it and its floats: it measures them whole.
+    /// Restarts the current paragraph's min-content lines, from the widest
+    /// before it and its floats, to measure them again whole.
     pub(super) fn restart_min_lines(&mut self) {
         self.min = self.min_before;
         self.min.other = self.min.other.max(self.paragraph_floats);
         self.redone = true;
     }
 
-    /// Returns the width of a min-content line of the current paragraph
-    /// from `start` to `end`, the sum where its content ends, its
-    /// paragraph's first where `first`.
+    /// Returns the width of a min-content line from `start` to `end`, where its
+    /// content ends; its paragraph's first where `first`.
     pub(super) fn min_line_width(
         &self,
         start: InlineLayoutUnit,
@@ -420,15 +388,12 @@ impl IntrinsicScan {
         (self.min).take(self.first_paragraph && first, width);
     }
 
-    /// Returns the sizes, taking the first line's widths from `first` where
-    /// the block's first line has a variant of its own.
+    /// Returns the sizes, taking the block's first-line widths from `first`
+    /// where the first line has a variant of its own.
     ///
     /// Neither size is negative, and max-content is never under min-content.
-    /// Chrome's breaker measures the first line of min-content and of
-    /// max-content in the first line's styles, as it does any first line,
-    /// and every other line in the text's. The first line of min-content is
-    /// the block's first min-content line, and of max-content its first
-    /// paragraph.
+    /// As in Chrome's breaker, the block's first min-content line and first
+    /// paragraph are measured in the first line's styles.
     pub(crate) fn finish(&self, first: Option<&IntrinsicScan>) -> IntrinsicWidths {
         let first = first.unwrap_or(self);
         let min = (first.min.first.max(self.min.other))

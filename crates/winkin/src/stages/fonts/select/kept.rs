@@ -1,5 +1,5 @@
-//! Keeps the candidate a cluster took for the clusters after it that the
-//! list would give it too, without asking the list.
+//! Keeps a cluster's candidate for the clusters after it that the list would
+//! give the same candidate, without asking the list.
 
 #[cfg(test)]
 use core::cell::Cell;
@@ -13,7 +13,7 @@ use crate::stages::fonts::coverage;
 use crate::stages::fonts::lists::{CandidateId, CandidateList};
 use crate::work;
 
-/// Whether the run loop takes its shortcut, [`KeptCandidate`].
+/// Returns whether the run loop takes its shortcut, [`KeptCandidate`].
 ///
 /// Always true, except in tests that compare it with the walk that asks
 /// the list at every cluster.
@@ -35,16 +35,16 @@ std::thread_local! {
     pub(crate) static PER_CLUSTER: Cell<bool> = const { Cell::new(false) };
 }
 
-/// The clusters after one the text list just set in a candidate, which keep
-/// that candidate without asking the list.
+/// The clusters after one that the text list just set in a candidate, which
+/// keep that candidate without asking the list.
 ///
 /// The list gives a cluster the first candidate that the memo does not rule
-/// out and that covers it. If every earlier candidate is ruled out until
+/// out and that covers it. Where every earlier candidate is ruled out until
 /// `limit` (or is unusable), and this one covers a cluster as written, the
-/// list would give it this one. Walking a miss would change nothing either,
-/// since a found candidate memoizes nothing. So text in its requested font
-/// costs a bit test per character. A cluster that draws nothing takes the font
-/// before it, as in the walk.
+/// list would give the cluster this one. A found candidate memoizes nothing,
+/// so walking the list would change nothing either. So text in its requested
+/// font costs a bit test per character. A cluster that draws nothing takes
+/// the font before it, as in the walk.
 ///
 /// The walk asks the list again at the first cluster that:
 /// - this candidate does not cover as written;
@@ -56,10 +56,10 @@ pub(super) struct KeptCandidate<'l> {
     /// The candidate's charset, and the page of it last found.
     charset: &'l Charset,
     page: Option<CharsetPage<'l>>,
-    /// The first cluster an earlier candidate may be asked about again.
+    /// The first cluster at which an earlier candidate may be asked again.
     limit: ClusterId,
-    /// The style's `font-variant-emoji` forces a presentation, which a
-    /// keycap base takes: `#`, `*` or a digit, whose cluster is text.
+    /// Whether the style's `font-variant-emoji` forces a presentation on a
+    /// keycap base: `#`, `*` or a digit, whose cluster is text.
     keycaps: bool,
 }
 
@@ -69,9 +69,10 @@ impl<'l> KeptCandidate<'l> {
     ///
     /// `memo` and `pages` are the list's memo and pages. `keycaps` says the
     /// style's `font-variant-emoji` forces a presentation on a keycap base.
-    /// Returns `None` where it holds nothing, or where the memo does not
-    /// rule out an earlier candidate past `cluster`. That happens for a
-    /// pending face or a font a forced presentation passed over.
+    /// Returns `None` where no cluster would be kept, or where the memo does
+    /// not rule out an earlier candidate past `cluster`. The memo leaves in
+    /// a font whose colour the presentation passed over, and one that
+    /// covered only a sequence's base.
     pub(super) fn new(
         list: &'l CandidateList,
         memo: &Table<CandidateId, ClusterId>,
@@ -85,7 +86,7 @@ impl<'l> KeptCandidate<'l> {
         let mut limit = end;
         for (before, candidate) in list.iter().take(at.get()) {
             work::step();
-            // Never asked: the list passes over it wherever it stands.
+            // The list never tries such a candidate.
             if candidate.is_unusable() || candidate.font().is_none() {
                 continue;
             }
@@ -105,14 +106,16 @@ impl<'l> KeptCandidate<'l> {
 
 impl SpanText<'_> {
     /// Returns the first cluster from `from` that `kept` does not hold.
-    /// The clusters before it keep the font of the one before `from`.
+    ///
+    /// The clusters before it keep the font of the cluster before `from`.
     pub(super) fn kept_end(&self, kept: &mut KeptCandidate<'_>, from: ClusterId) -> ClusterId {
         let clusters = self.clusters;
-        // A grapheme's later part, which an item boundary divided from the
-        // part before it, and so starts a span: inside one, none is.
+        // A grapheme's later part divided from the part before it by an item
+        // boundary. It starts an item, so none falls inside a span's kept
+        // clusters.
         let divided = |cluster: ClusterId| clusters.is_continuation(cluster);
         // Each cluster starts where the one before it ends, so each end is
-        // read once, with what it says of a selector.
+        // read once, with its selector flag.
         let mut start = clusters.start(from);
         for cluster in (from..kept.limit).ids() {
             work::step();
@@ -130,16 +133,17 @@ impl SpanText<'_> {
                 continue;
             }
             // An emoji or a pictograph asks for its presentation, and a
-            // variation selector for a presentation or a sequence. The list
-            // must answer those.
+            // variation selector for a presentation or a sequence. Only the
+            // list answers those.
             if matches!(class, ClusterClass::Emoji | ClusterClass::Symbol)
                 || end.is_variation_selector()
             {
                 return cluster;
             }
-            // One ASCII character, most of a Latin text's, read as a byte:
-            // no default-ignorable is ASCII, so the font covers it as
-            // written where it maps it, as `covers_as_written` would say.
+            // A cluster of one ASCII character, most of Latin text, is read
+            // as a byte. No default-ignorable is ASCII, so the font covers it
+            // as written exactly where it maps it, as `covers_as_written`
+            // would say.
             if let Some(ch) = self.source.ascii(range.clone())
                 && !(kept.keycaps && coverage::is_keycap_base(ch))
                 && work::fast_paths()
@@ -157,9 +161,9 @@ impl SpanText<'_> {
                 return cluster;
             }
         }
-        // The part after the kept clusters may be the last cluster's own,
-        // where an item boundary divides a grapheme: that cluster is chosen
-        // for with it, and so is asked about again.
+        // Where an item boundary divides a grapheme at `limit`, the cluster
+        // before it chooses with the later part, so the list is asked again
+        // there.
         if divided(kept.limit) {
             return ClusterId::new(kept.limit.get() - 1).max(from);
         }

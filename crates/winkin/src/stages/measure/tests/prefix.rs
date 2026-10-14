@@ -1,16 +1,15 @@
 //! Prefix tests. They pin:
 //! - the prefix against shaping's advances, exact at 16.16;
-//! - fitting positions as Chrome's ceiling of the running sum from each
-//!   paragraph's start;
-//! - differences exact past layout's range;
-//! - the paragraphs whose prefix goes back, and no other, marked as such.
+//! - fitting positions as Chrome's ceiling of the sum from each paragraph's
+//!   start;
+//! - exact differences past the 26.6 range;
+//! - `NONMONOTONE` exactly on paragraphs whose prefix goes back.
 
 use super::*;
 use crate::style::FirstLineVariant;
 
-/// Ahem's advances land in the prefix exactly: every boundary is the size
-/// times the clusters before it, at every size shaping sets exactly, and
-/// fitting reads the same, the running sums being on the grid already.
+/// Ahem's advances land in the prefix exactly: each boundary is the size
+/// times the clusters before it, and fitting reads the same values.
 #[test]
 fn ahem_advances_land_exactly() {
     let mut fixture = fixture();
@@ -32,11 +31,10 @@ fn ahem_advances_land_exactly() {
     }
 }
 
-/// Fitting reads each position rounded up to the 1/64 grid, as Chrome's
-/// cached character positions round the running sum (`ToCeil`), measured
-/// from the paragraph's start, where Chrome's start again; painting reads
-/// the differences exactly. A third of an em at 16 px falls between the
-/// grid's lines, so the two readings differ.
+/// Fitting rounds each position from the paragraph's start up to the 1/64
+/// grid, as Chrome's cached character positions do (`ToCeil`); painting
+/// reads exact differences. A third of an em at 16 px is off the grid, so
+/// the two differ.
 #[test]
 fn fitting_rounds_the_running_sum_up_from_the_paragraph() {
     let mut fixture = fixture();
@@ -56,8 +54,8 @@ fn fitting_rounds_the_running_sum_up_from_the_paragraph() {
         let range = paragraphs.clusters(id);
         let mut sum = InlineLayoutUnit::ZERO;
         let check_at = |b: usize, sum: InlineLayoutUnit| {
-            // Chrome's position: the running sum from the paragraph's start,
-            // rounded up.
+            // Chrome's position: the sum from the paragraph's start, rounded
+            // up.
             assert_eq!(
                 text.prefix.fit_position(range.start, at(b)),
                 sum.ceil_to_grid(),
@@ -72,7 +70,7 @@ fn fitting_rounds_the_running_sum_up_from_the_paragraph() {
         }
         check_at(range.end.get(), sum);
     }
-    // A line's fitting width is a difference of rounded positions.
+    // A fitting width is a difference of rounded positions.
     let sum = |n: usize| {
         advances[..n]
             .iter()
@@ -82,8 +80,7 @@ fn fitting_rounds_the_running_sum_up_from_the_paragraph() {
         text.prefix.fit_width(at(0), at(1), at(4)),
         (sum(4).ceil_to_grid() - sum(1).ceil_to_grid()).to_layout()
     );
-    // The second paragraph fits from its own start, wherever the first
-    // ended: its first cluster measures as Chrome's first item would.
+    // The second paragraph fits from its own start.
     let second = layout
         .analysis()
         .paragraphs
@@ -99,9 +96,8 @@ fn fitting_rounds_the_running_sum_up_from_the_paragraph() {
     );
 }
 
-/// Painting reads the prefix's differences exactly: each is the cluster's
-/// advance as shaping handed it on, ligatures, splits, raised glyphs and
-/// kerns included, with nothing lost to rounding.
+/// Each prefix difference is exactly the cluster's shaped advance, with
+/// ligatures, split and raised glyphs, and kerns.
 #[test]
 fn painting_differences_are_exact() {
     let mut fixture = fixture();
@@ -122,7 +118,7 @@ fn painting_differences_are_exact() {
                 advance,
                 "{size} px, {c}"
             );
-            // And where no edge stands, the pen is the position.
+            // Without box edges, the pen is the prefix.
             assert_eq!(pen(&stages, at(c)), sum, "{size} px, {c}");
             sum += advance;
         }
@@ -130,10 +126,9 @@ fn painting_differences_are_exact() {
     }
 }
 
-/// A very long paragraph keeps exact differences: ten thousand clusters of
-/// Ahem at ten thousand pixels reach a hundred million pixels, three times
-/// past what layout's grid holds, and every difference is still the em.
-/// Only a width read on the grid saturates, as Chrome's does.
+/// A paragraph reaching 1e8 px, about three times the 26.6 range, keeps
+/// exact differences. Only a width read on the grid saturates, as Chrome's
+/// does.
 #[test]
 fn a_very_long_paragraph_is_exact() {
     let mut fixture = fixture();
@@ -149,7 +144,7 @@ fn a_very_long_paragraph_is_exact() {
     let end = text.prefix.get(at(count));
     assert_eq!(end.raw(), em.raw() * 10_000);
     assert_eq!(end.to_px(), 1e8);
-    // A thousand clusters, ten million pixels, fit the grid exactly.
+    // A thousand clusters, 1e7 px, fit the grid exactly.
     assert_eq!(
         text.prefix.fit_width(at(0), at(9_000), at(count)),
         lu(10_000_000.0)
@@ -163,9 +158,8 @@ fn a_very_long_paragraph_is_exact() {
 
 // Monotonicity -------------------------------------------------------------
 
-/// `NONMONOTONE` marks the paragraphs whose prefix goes back -- here one with
-/// a negative margin, and one where a kern takes a letter back past its own
-/// advance -- and no other, so the breaker searches every paragraph it can.
+/// `NONMONOTONE` marks only paragraphs whose prefix goes back: here through
+/// a negative margin and through a large negative kern.
 #[test]
 fn only_a_prefix_that_goes_back_is_marked() {
     let mut fixture = fixture();
@@ -195,7 +189,6 @@ fn only_a_prefix_that_goes_back_is_marked() {
         })
         .collect();
     assert_eq!(marked, [false, true, true, false]);
-    // Plain text never is.
     fixture.text(&mut layout, &ahem, "plain\ttext at any size");
     let text = layout.measured().text(FirstLineVariant::Standard);
     assert!(
@@ -205,13 +198,9 @@ fn only_a_prefix_that_goes_back_is_marked() {
     );
 }
 
-/// The breaker reads the prefix at boundaries only, so what goes back
-/// between two and comes forward again before the next marks nothing: an
-/// initial letter set in a font whose ink stands in from its advance gives
-/// what of the advance lies outside the ink back at its box's edges, and
-/// its paragraph is still searched, as Chrome's breaker takes the letter's
-/// box whole. Walked instead, a drop-capped article takes twice as long to
-/// break.
+/// An initial letter's negative edge room, which recovers before the next
+/// boundary, leaves its paragraph unmarked, since the breaker reads only
+/// boundaries. Walking it would double a drop-capped article's break time.
 #[test]
 fn an_initial_letters_edges_leave_its_paragraph_searched() {
     let mut fixture = fixture();

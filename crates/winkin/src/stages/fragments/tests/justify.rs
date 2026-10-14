@@ -777,7 +777,7 @@ fn line_padding_pads_both_ends_of_every_line() {
         [5.0, 15.0, 25.0, 35.0, 45.0],
         "from the line box"
     );
-    // Every line pays for both ends, so 50 no longer fits `XX XX`.
+    // Every line pays for both ends, so `XX XX` does not fit in 50.
     fixture.block_text(&mut layout, &ComputedBlockStyle::new(&padded), "XX XX");
     fixture.lay_out(&mut layout, 50.0);
     assert_eq!(texts(&layout), ["XX ", "XX"]);

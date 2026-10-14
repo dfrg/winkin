@@ -39,7 +39,7 @@ std = ["fontwich/std", "read-fonts/std", "harfrust/std"]
 dictionaries = []
 
 # Runtime dependencies are limited to fontwich (and what it brings), parlance,
-# harfrust, read-fonts, icu_*, writeable and hashbrown. The versions of the font
+# harfrust, read-fonts, icu_* and hashbrown. The versions of the font
 # crates are the workspace's.
 [dependencies]
 # The fonts a context sets text in. Only its core: no platform
@@ -101,20 +101,12 @@ read-fonts = { workspace = true, features = ["libm"] }
 # older icu_properties than the crate's.
 harfrust = { workspace = true, features = ["libm"] }
 
-# Full case mapping, with the language tailorings CSS asks for (Turkish and
-# Azerbaijani dotted and dotless i, Lithuanian dots, Greek accents dropped in
-# capitals, Dutch IJ) and the contexts (final sigma), for `text-transform`,
-# with its data compiled in. icu_properties's version, and no
-# `std`. The word segmenter capitalize finds words with is icu_segmenter's,
-# already here.
+[dev-dependencies]
+# ICU4X's full case mapping, with its data compiled in: the oracle the tests
+# hold the crate's own case mapping to (`unicode/case.rs`), whose tables are
+# generated from it. icu_properties's version. Nothing at runtime reads it.
 icu_casemap = { version = "2.3.0", default-features = false, features = ["compiled_data"] }
 
-# The trait icu_casemap hands its mappings back as, which writes them into the
-# content's own text rather than a string of their own: ICU4X's, already in
-# the build through icu_locale_core at this version.
-writeable = { version = "0.6.4", default-features = false }
-
-[dev-dependencies]
 # ICU's own normalizers to NFD and NFC, with their data compiled in: the
 # oracle the tests hold harfrust's canonical decomposition, composition and
 # combining classes to, built up into whole forms, on which font coverage

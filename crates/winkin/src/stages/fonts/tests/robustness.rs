@@ -3,8 +3,8 @@
 
 use super::*;
 
-/// With no fonts at all every cluster still has a used font, one with no
-/// instance, which draws nothing and measures by the documented defaults.
+/// With no fonts at all, every cluster still has a used font. It has no
+/// instance, draws nothing and measures by the documented defaults.
 #[test]
 fn an_empty_collection_gives_every_cluster_a_font_that_draws_nothing() {
     let mut fixture = fixture_over(Collection::new(), &[]);
@@ -22,8 +22,8 @@ fn an_empty_collection_gives_every_cluster_a_font_that_draws_nothing() {
     assert_eq!(font.metrics.line_gap.to_px(), 0.0);
 }
 
-/// A font whose metric tables cannot be read still draws what its cmap maps,
-/// and measures by the defaults.
+/// A font whose metric tables cannot be read still draws what its `cmap`
+/// maps, and measures by the defaults.
 #[test]
 fn a_font_with_broken_tables_measures_by_the_defaults() {
     let mut broken = TestFont::new("Test Broken", &[(0x20, 0x7E)]);
@@ -38,8 +38,8 @@ fn a_font_with_broken_tables_measures_by_the_defaults() {
     assert_eq!(metrics.descent.to_px(), 3.0);
 }
 
-/// Bytes that are no font at all are refused as the layer is built, and a
-/// family that did not make it in is skipped like any missing family.
+/// Bytes that are no font are refused as the layer is built. A family that
+/// did not make it in is skipped like any missing family.
 #[test]
 fn bytes_that_are_no_font_are_skipped() {
     let mut layer = LayerBuilder::new(Role::Application);
@@ -58,17 +58,18 @@ fn bytes_that_are_no_font_are_skipped() {
     assert_eq!(fixture.families(&layout), ["Ahem"; 3]);
 }
 
-/// More distinct used fonts than a layout's table holds: the rest take a font
-/// already there, the layout is still whole, and the build says how many.
+/// Where a build asks for more used fonts than a layout's table holds, the
+/// rest take a font already there. The layout is still whole, and the build
+/// reports how many were replaced.
 #[test]
 fn a_full_table_of_used_fonts_falls_back_and_says_so() {
     let mut fixture = fixture_with(&[]);
     let mut layout = Layout::new();
     let ahem = [FontFamilyName::named("Ahem")];
     let root = families_style(&ahem);
-    // Sizes a 64th of a pixel apart, each two used fonts of its own, its
-    // capitals synthesized: the used fonts fill before the font requests,
-    // of which there are as many ids (`BuildReport::replaced_styles`).
+    // Sizes a 64th of a pixel apart, each with synthesized capitals and so
+    // two used fonts of its own. The used fonts fill before the font
+    // requests, which have as many ids (`BuildReport::replaced_styles`).
     let mut size = 1.0;
     let styles: Vec<ComputedStyle<'_>> = (0..UsedFontId::MAX / 2 + 10)
         .map(|_| {

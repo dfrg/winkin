@@ -274,8 +274,8 @@ fn check(layout: &Layout) {
             ellipses <= usize::from(line.flags.contains(LineFlags::ELLIPSIS)),
             "{id:?}"
         );
-        // The box items are linked in paint order from the line's item.
-        // Boxes go in tree order, each box's items left to right, each once.
+        // The box items are linked in box order from the line's item:
+        // boxes in tree order, each box's items left to right, each once.
         let mut painted: Vec<(NodeId, usize)> = own
             .iter()
             .enumerate()

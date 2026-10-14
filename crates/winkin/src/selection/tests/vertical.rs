@@ -4,7 +4,8 @@
 
 use super::*;
 
-/// In a vertical line, carets, hits and selections are line-relative, in both vertical modes.
+/// In a vertical line, carets, hits and selections are line-relative, in
+/// both vertical modes.
 ///
 /// A caret spans its font box, centred on the central baseline. A point hits
 /// by the halves of the character along the line. A selection is as tall as
@@ -82,7 +83,8 @@ fn combined() -> Layout {
     })
 }
 
-/// Inside combined text a caret runs along the line over the unit's em, between two characters.
+/// Inside combined text a caret runs along the line over the unit's em,
+/// between two characters.
 ///
 /// Chrome 153, in MS Gothic at 40 px with `12` combined in `vertical-rl`,
 /// draws carets at 20, 40 and 60 px across an 80 px line box, each 40 px
@@ -106,7 +108,8 @@ fn a_caret_in_combined_text_runs_along_the_line() {
     assert_eq!(caret(4, Downstream), ((60.0, 60.0), (0.0, 20.0)));
 }
 
-/// A point on combined text hits the nearer character boundary across the line, as Chrome's click does.
+/// A point on combined text hits the nearer character boundary across the
+/// line, as Chrome's click does.
 ///
 /// Past the unit's text across, it hits the nearer end. Chrome jumps to the
 /// block's start there, a bug not matched. Line motion lands before or after
@@ -139,7 +142,8 @@ fn a_point_on_combined_text_hits_across_it() {
     assert_eq!(walk(&layout, 6, back), [6, 5, 4, 3, 2, 1, 0]);
 }
 
-/// A selection over combined text paints the unit's em along the line and the selected characters across it.
+/// A selection over combined text paints the unit's em along the line and
+/// the selected characters across it.
 ///
 /// Chrome 153 in MS Gothic at 40 px paints the first character 20 to 40 px
 /// across and the whole 20 to 60, never the line box. Text beside the unit

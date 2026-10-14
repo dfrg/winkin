@@ -1,24 +1,16 @@
 //! `text-autospace`: the room added where an ideograph meets a narrow letter
 //! or digit, as Chrome's `TextAutoSpace::Apply` adds it.
 //!
-//! The room is an eighth of the ideograph advance and goes after the cluster
-//! before the seam. A seam reaches across items and box edges. An atomic
-//! inline, a float, a forced break or a `unicode-bidi` box ends it, since
-//! Chrome writes each as a character. A line ending at a seam gives the room
-//! back (`UnapplyAutoSpacing`), even where Chrome keeps it after a
-//! right-to-left item.
+//! The room is an eighth of the ideographic advance, in 16.16 `TextUnit`,
+//! after the cluster before the seam. A seam reaches across items and box
+//! edges. An atomic inline, a float, an absolutely positioned box's anchor,
+//! a forced break or a `unicode-bidi` box ends it, as Chrome writes each as
+//! a character. A line ending at a seam gives the room back
+//! (`UnapplyAutoSpacing`), even where Chrome keeps it after right-to-left
+//! text. A seam inside one cluster is not looked for.
 //!
-//! Where the side before a seam reads right to left and the side after reads
-//! left to right, Chrome writes the room before the later item's first
-//! glyph. The prefix still holds it before the boundary. Line layout draws it
-//! with the later text instead ([`AutospaceRules::room_before`]), so it
-//! stands on that text's side of the right-to-left run.
-//!
-//! The measure scan finds seams with [`Seams`]; the breaker asks about one
-//! line edge with [`AutospaceRules::gap_after`], and about each cluster of a
-//! reshaped piece with [`AutospaceRules::gap_after_near`]. Each sizes the
-//! room with [`AutospaceRules::gap`]. A seam inside one cluster is not looked
-//! for.
+//! The scan finds seams with [`Seams`]; the breaker and line layout ask
+//! [`AutospaceRules`].
 
 use crate::data::Id;
 use crate::stages::analysis::{BidiLevel, ClusterId, Paragraph, ParagraphFlags};
@@ -47,11 +39,11 @@ enum Kind {
 }
 
 impl Kind {
-    /// What `ch` is to a seam, `chinese` where the block's language is
-    /// Chinese, or `None` for a mark, which is stepped over.
+    /// Returns what `ch` is to a seam, or `None` for a mark, which is
+    /// stepped over. `chinese` says the block's language is Chinese.
     fn from_char(ch: char, chinese: bool) -> Option<Self> {
-        // Below U+00AA nothing is wide and nothing a mark: letters, digits
-        // and conditional punctuation are the ASCII ones.
+        // No ASCII character is wide or a mark, so the ASCII letters, digits
+        // and conditional punctuation are classed here.
         if ch.is_ascii() {
             return Some(if ch.is_ascii_alphabetic() {
                 Self::Letter
@@ -68,9 +60,11 @@ impl Kind {
         Self::from_spacing(unicode::rare_props(ch).east_asian_spacing(), chinese)
     }
 
-    /// What a character of East_Asian_Spacing `spacing` is to a seam,
-    /// conditional punctuation a letter where `chinese` and neither side
-    /// elsewhere, or `None` for a mark.
+    /// Returns what a character of East_Asian_Spacing `spacing` is to a
+    /// seam, or `None` for a mark.
+    ///
+    /// Conditional punctuation is a letter where `chinese`, and neither side
+    /// elsewhere.
     fn from_spacing(spacing: EastAsianSpacing, chinese: bool) -> Option<Self> {
         Some(match spacing {
             EastAsianSpacing::Mark => return None,
@@ -82,16 +76,14 @@ impl Kind {
         })
     }
 
-    /// Whether it is either side of some seam: an ideograph, or a narrow
-    /// letter or digit.
+    /// Returns whether it is either side of some seam: an ideograph, or a
+    /// narrow letter or digit.
     fn takes_seams(self) -> bool {
         self != Self::Other
     }
 
-    /// Returns the narrow side's kind if a seam falls between it and `after`.
-    ///
-    /// A seam is an ideograph beside a narrow letter or digit, either way
-    /// round. The narrow side's kind says which style value takes the seam.
+    /// Returns the narrow side's kind where a seam falls between it and
+    /// `after`: an ideograph beside a narrow letter or digit, either way.
     fn seam(self, after: Self) -> Option<Self> {
         match (self, after) {
             (Self::Ideograph, narrow @ (Self::Letter | Self::Digit))
@@ -114,7 +106,7 @@ pub(super) struct SeamSide {
     rtl: bool,
 }
 
-/// Item facts and direction held for one measurement segment.
+/// The item, text facts and direction of one segment of the measure scan.
 #[derive(Copy, Clone, Debug)]
 pub(super) struct SeamContext {
     item: ItemId,
@@ -123,6 +115,7 @@ pub(super) struct SeamContext {
 }
 
 impl SeamContext {
+    /// Returns the context of item `id`, or `None` for ruby annotation text.
     pub(super) fn new(
         id: ItemId,
         item: &Item,
@@ -146,7 +139,7 @@ impl SeamContext {
     }
 }
 
-/// Both sides of a cluster, classified once and reused at the next boundary.
+/// The kinds a cluster offers before and after it, classified once.
 #[derive(Copy, Clone, Debug)]
 struct ClusterSides {
     at: ClusterId,
@@ -156,8 +149,8 @@ struct ClusterSides {
 
 impl ClusterSides {
     fn new(at: ClusterId, text: &str, chinese: bool) -> Self {
-        // Stop at each nearest non-mark character. The remaining iterator
-        // excludes the first, so a single-character cluster is classified once.
+        // The last is looked for after the first, so a cluster of one
+        // character is classified once.
         let mut chars = text.chars();
         let first = chars.find_map(|ch| Kind::from_char(ch, chinese));
         let last = chars
@@ -169,11 +162,9 @@ impl ClusterSides {
 }
 
 impl SeamSide {
-    /// Returns the side a cluster with characters `text` offers a seam.
-    ///
-    /// The side reads the first character where `first`, else the last.
-    /// Returns `None` where the cluster is stepped over: every character is a
-    /// mark, or the cluster is ruby annotation text.
+    /// Returns the side a cluster of characters `text` offers before it
+    /// where `first`, else after it. `None` where every character is a mark
+    /// or the cluster is ruby annotation text.
     fn new(
         rules: AutospaceRules,
         text: &str,
@@ -199,20 +190,18 @@ impl SeamSide {
     }
 }
 
-/// What every seam of a block reads: whether any style sets the property at
-/// all, and the block's language.
+/// The block-wide facts every seam reads: whether any style sets
+/// `text-autospace`, and whether the block's language is Chinese.
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct AutospaceRules {
-    /// Some style of the content takes a seam: without one no cluster is
-    /// looked at.
+    /// Some style takes a seam.
     any: bool,
-    /// The block's language is Chinese, under which conditional punctuation
-    /// is narrow.
+    /// Conditional punctuation is narrow.
     chinese: bool,
 }
 
 impl AutospaceRules {
-    /// The rules of `content`'s block.
+    /// Returns the rules of `content`'s block.
     pub(crate) fn new(content: &Content) -> Self {
         let any = content.flags.contains(ContentFlags::AUTOSPACE);
         // The builder resolves the block's language (`BlockFacts`).
@@ -220,14 +209,13 @@ impl AutospaceRules {
         Self { any, chinese }
     }
 
-    /// Whether some style takes a seam.
+    /// Returns whether some style takes a seam.
     pub(super) fn any(self) -> bool {
         self.any
     }
 
-    /// The room at a seam from `left` to `right`, their text facts among
-    /// `facts`, set in `fonts`, or nothing where the two make none (see the
-    /// module documentation).
+    /// Returns the room at a seam from `left` to `right`, or zero where they
+    /// make no seam or a side's style doesn't take it.
     fn gap(facts: &Facts, fonts: &Fonts, left: SeamSide, right: SeamSide) -> TextUnit {
         let none = TextUnit::from_raw(0);
         let Some(narrow) = left.kind.seam(right.kind) else {
@@ -236,8 +224,8 @@ impl AutospaceRules {
         if !takes(facts, left.facts, narrow) || !takes(facts, right.facts, narrow) {
             return none;
         }
-        // Written into the earlier item where it reads left to right, else
-        // the later, and inside one item into it: its font sizes the room.
+        // The item the room is written into sizes it: the one item, or the
+        // earlier where it reads left to right, else the later.
         let owner = if left.item == right.item || !left.rtl {
             left.facts
         } else {
@@ -246,16 +234,9 @@ impl AutospaceRules {
         fonts.autospace_gap(facts.text_request(owner))
     }
 
-    /// Returns the room `text-autospace` puts after `cluster` of `paragraph`.
-    ///
-    /// This is what the measure scan added to the prefix there, sized by the
-    /// same [`gap`](Self::gap). The breaker takes it off a line that ends at
-    /// the seam. Returns zero past a paragraph's end or where no style sets
-    /// the property.
-    ///
-    /// Where the characters either side leave a seam possible, it seeks the
-    /// first item after `cluster`, and the shaping runs either side only
-    /// where the paragraph's levels differ.
+    /// Returns the room `text-autospace` puts after `cluster` of `paragraph`,
+    /// as the scan added it to the prefix. The breaker takes it off a line
+    /// that ends there. Zero at the text's last cluster.
     pub(crate) fn gap_after(
         self,
         stages: &LineStages<'_>,
@@ -270,14 +251,9 @@ impl AutospaceRules {
         .map_or(TextUnit::from_raw(0), |(_, _, room)| room)
     }
 
-    /// Returns the room [`gap_after`](Self::gap_after) does, for a walk
-    /// forward over the clusters of `paragraph`.
-    ///
-    /// `near` is where the walk stands, at or before the cluster after
-    /// `cluster`, or `None` before it has stood anywhere. It moves to the
-    /// cluster after `cluster` only where the characters leave a seam
-    /// possible, stepping from where it stood, or seeking the first time.
-    /// The breaker adds the room to each cluster of a line edge it reshapes.
+    /// Returns the room [`gap_after`](Self::gap_after) does, for a forward
+    /// walk that stands at `near`, `None` before its first seek. `near` moves
+    /// to the cluster after `cluster` only where a seam is possible.
     pub(crate) fn gap_after_near(
         self,
         stages: &LineStages<'_>,
@@ -298,21 +274,12 @@ impl AutospaceRules {
             .map_or(TextUnit::from_raw(0), |(_, _, room)| room)
     }
 
-    /// Returns the room of the seam at boundary `at` that line layout draws
-    /// before the text after it rather than after the text before it.
+    /// Returns the room of the seam at boundary `at` where the side before
+    /// reads right to left and the side after left to right.
     ///
-    /// That is the room where the side before reads right to left and the
-    /// side after left to right. Chrome's `TextAutoSpace` writes it into the
-    /// later item, as an offset before its first glyph. The prefix holds it
-    /// before `at`, as for every seam.
-    ///
-    /// `at` is a boundary inside `paragraph`, past its first cluster. It is
-    /// zero unless some style sets the property and the paragraph has text
-    /// at another level. Otherwise it asks as [`gap_after`](Self::gap_after)
-    /// does.
-    ///
-    /// The tests of the property and the text's levels are inlined, so a
-    /// reader of text that sets neither makes no call.
+    /// Chrome's `TextAutoSpace` writes that room before the later item's
+    /// first glyph, so line layout draws it with the later text. The prefix
+    /// still holds it before `at`. Zero unless `paragraph` mixes levels.
     #[inline]
     pub(crate) fn room_before(
         self,
@@ -326,9 +293,8 @@ impl AutospaceRules {
         self.mixed_room_before(stages, paragraph, at)
     }
 
-    /// Returns whether [`room_before`](Self::room_before) may find room in
-    /// `stages`: some style sets the property and some paragraph reads right
-    /// to left.
+    /// Returns whether [`room_before`](Self::room_before) may find room:
+    /// some style sets the property and some paragraph reads right to left.
     #[inline]
     pub(crate) fn may_have_room_before(self, stages: &LineStages<'_>) -> bool {
         self.any
@@ -338,8 +304,8 @@ impl AutospaceRules {
                 .contains(ParagraphFlags::RIGHT_TO_LEFT)
     }
 
-    /// Returns [`room_before`](Self::room_before)'s room where some style
-    /// sets the property and some paragraph reads right to left.
+    /// Returns [`room_before`](Self::room_before)'s room past its inlined
+    /// tests.
     #[inline(never)]
     fn mixed_room_before(
         self,
@@ -367,15 +333,10 @@ impl AutospaceRules {
     /// Returns both sides of the seam after `cluster` of `paragraph` and
     /// its room, or `None` where there is no seam.
     ///
-    /// The characters either side decide nearly every boundary. Where they
-    /// do not, it asks `next` for the first item after `cluster`, and the
-    /// shaping run of the cluster after it where the caller holds it. It
-    /// walks back from that item, item by item, for the side before.
-    ///
-    /// A side's level comes from its shaping run's script run, read only
-    /// where the paragraph's levels differ. The run after the seam is the
-    /// one `next` gives, or else found by its rank. The walk back steps back
-    /// the runs from it.
+    /// Where the characters alone don't decide, `next` gives the first item
+    /// after `cluster` and, where known, the shaping run after it. A side's
+    /// level is read from its shaping run only where the paragraph's levels
+    /// differ.
     fn seam_after(
         self,
         stages: &LineStages<'_>,
@@ -390,12 +351,9 @@ impl AutospaceRules {
             return none;
         }
         let after = ClusterId::new(cluster.get() + 1);
-        // The characters alone first, which nearly every boundary is decided
-        // by: most of a CJK line's ends fall between two ideographs, and no
-        // item need be looked for there. Where no annotation text can stand
-        // between, the cluster before is the seam's other side where it has
-        // a character that is not a mark. Each side reads the one character
-        // nearest the seam.
+        // The characters alone decide nearly every boundary, such as most
+        // CJK line ends. Without ruby, no annotation text stands between, so
+        // the cluster before is the other side unless it is all marks.
         let source = stages.text();
         let text_of = |at: ClusterId| analysis.clusters.text(source, at);
         let Some(right_kind) = first_kind(text_of(after), self.chinese) else {
@@ -413,8 +371,8 @@ impl AutospaceRules {
         let items = &analysis.item_clusters;
         let runs = &stages.shaped.runs;
         let mixed = paragraph.flags.contains(ParagraphFlags::MIXED_LEVELS);
-        // The run shaping `at`, stepped back from `near`, or else ranked:
-        // read only where the levels differ.
+        // The run shaping `at`, stepped back from `near`, or else found by
+        // halving. Read only where the levels differ.
         let run_back = |at: ClusterId, near: Option<ShapedRunId>| {
             if !mixed {
                 return None;
@@ -437,8 +395,7 @@ impl AutospaceRules {
         };
         let (mut id, near) = next();
         let mut run = run_back(after, near);
-        // The side after: the next cluster's first character, where no item
-        // at the boundary between ends the seam.
+        // The side after, unless an item at the boundary ends the seam.
         let right = loop {
             work::step();
             let Some(item) = content.items.get(id) else {
@@ -456,7 +413,7 @@ impl AutospaceRules {
             return none;
         };
         // The side before: the last cluster not stepped over, back to the
-        // paragraph's start, where no item passed between ends the seam.
+        // paragraph's start, unless an item between ends the seam.
         let mut at = cluster;
         loop {
             work::step();
@@ -489,29 +446,24 @@ impl AutospaceRules {
     }
 }
 
-/// The kind of the first character of `text` that is not a mark, or `None`
-/// where every one is: the side a cluster offers a seam before it.
+/// Returns the kind of the first character of `text` that is not a mark, or
+/// `None` where every one is: the side a cluster offers a seam before it.
 fn first_kind(text: &str, chinese: bool) -> Option<Kind> {
     text.chars().find_map(|ch| Kind::from_char(ch, chinese))
 }
 
-/// The kind of the last character of `text` that is not a mark, or `None`
-/// where every one is: the side a cluster offers a seam after it. Each side
-/// is asked of the one end it offers, so a cluster of one character, as
-/// nearly every CJK one is, is classified once and not twice.
+/// Returns the kind of the last character of `text` that is not a mark, or
+/// `None` where every one is: the side a cluster offers a seam after it.
 fn last_kind(text: &str, chinese: bool) -> Option<Kind> {
     text.chars()
         .rev()
         .find_map(|ch| Kind::from_char(ch, chinese))
 }
 
-/// Returns whether text with the facts `text` takes the seam whose narrow
-/// side is `narrow`.
-///
-/// A letter takes it under `ideograph-alpha`, and a digit under
-/// `ideograph-numeric`. Neither does where the text is set upright in a
-/// vertical line, as Chrome ends a seam at an upright item
-/// (`kVerticalUpright`). The builder folds uprightness into both flags.
+/// Returns whether text with the facts `text` takes a seam whose narrow side
+/// is `narrow`: a letter under `ideograph-alpha`, a digit under
+/// `ideograph-numeric`. The builder clears both for upright text, as Chrome
+/// ends a seam at a `kVerticalUpright` item.
 fn takes(facts: &Facts, text: TextFactsId, narrow: Kind) -> bool {
     let text = facts.text(text);
     match narrow {
@@ -524,10 +476,8 @@ fn takes(facts: &Facts, text: TextFactsId, narrow: Kind) -> bool {
 /// Returns whether `item`, at a boundary with no text of its own, ends any
 /// seam across it.
 ///
-/// A float or an absolutely positioned box's anchor ends one, since Chrome
-/// writes each as a U+FFFC. So does a box whose `unicode-bidi` opens and
-/// closes bidi controls, which Chrome writes into the text. The box facts
-/// decide, and `::first-line` doesn't change them.
+/// A float or an absolutely positioned box's anchor ends one, as Chrome's
+/// U+FFFC does. So does a box whose `unicode-bidi` writes bidi controls.
 pub(super) fn ends_seams(content: &Content, item: &Item) -> bool {
     match item.kind {
         ItemKind::Float | ItemKind::Absolute => true,
@@ -549,11 +499,12 @@ pub(super) struct Seams {
     /// The side the last cluster that is not stepped over offers after it,
     /// or `None` where something since ends any seam.
     last: Option<SeamSide>,
+    /// The last cluster classified, kept for its other side.
     classified: Option<ClusterSides>,
 }
 
 impl Seams {
-    /// No seam yet, under `rules`.
+    /// Returns a pass with no seam yet, under `rules`.
     pub(super) fn new(rules: AutospaceRules) -> Self {
         Self {
             rules,
@@ -562,8 +513,9 @@ impl Seams {
         }
     }
 
-    /// Classifies a cluster only on its first visit. Look-ahead copies this
-    /// cache with the seam state, so its reads do not change the main scan.
+    /// Returns the side cluster `at`, of characters `text`, offers in
+    /// `context`: before it where `first`, else after it. `None` where
+    /// `context` is `None` or every character is a mark.
     pub(super) fn side(
         &mut self,
         context: Option<SeamContext>,
@@ -583,11 +535,9 @@ impl Seams {
         context.side(if first { sides.first } else { sides.last })
     }
 
-    /// Returns the room after a cluster and moves the scan past it.
-    ///
-    /// `here` is the cluster's side after it, `None` where it is stepped
-    /// over. `next` is the following cluster's side before it. `ended` says
-    /// something between them ends any seam.
+    /// Returns the room after a cluster whose side after it is `here`, before
+    /// a cluster whose side is `next`, and moves past it. `ended` says
+    /// something between ends any seam.
     pub(super) fn after(
         &mut self,
         content: &Content,

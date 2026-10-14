@@ -1,13 +1,12 @@
 //! Relayout tests. They pin:
 //! - a relayout equal to a fresh layout;
-//! - a layout breaking the same in a new context, the context being a cache.
+//! - a layout breaking the same in a new context, since the context is a
+//!   cache.
 
 use super::*;
 
-/// A relayout at another width equals a fresh layout, record for record and
-/// glyph for glyph, reshaped edges included.
-///
-/// A rebuild leaves no lines from the content before.
+/// A relayout at another width equals a fresh layout, reshaped edges
+/// included, and a rebuild clears the lines.
 #[test]
 fn a_relayout_equals_a_fresh_layout() {
     let mut fixture = fixture();
@@ -34,10 +33,7 @@ fn a_relayout_equals_a_fresh_layout() {
 
 // The context is a cache -----------------------------------------------------
 
-/// Returns everything two breaks that should agree must agree in.
-///
-/// That is the line records, the reshaped edges, and every glyph as a
-/// painter reads it: its line, id, place and advance.
+/// The results two equivalent breaks must share, down to every drawn glyph.
 #[derive(PartialEq, Debug)]
 struct Broken {
     lines: Vec<LineRecord>,
@@ -52,7 +48,7 @@ struct Broken {
 /// A glyph as a painter reads it.
 #[derive(PartialEq, Debug)]
 struct DrawnGlyph {
-    /// The index of its line.
+    /// The position of its line in the layout.
     line: usize,
     id: u32,
     x: f32,
@@ -89,11 +85,8 @@ impl Broken {
     }
 }
 
-/// Shapes and breaks text in two other fonts, so a new context's tables
-/// hold their data first.
-///
-/// A layout that named a font by its table place would then name one of
-/// these.
+/// Shapes and breaks text in two other fonts, so they fill a new context's
+/// first table slots.
 fn other_fonts(fixture: &mut Fixture) {
     let arabic_style = break_all(&sized(&ARABIC, 20.0));
     let rtl = ComputedBlockStyle {
@@ -115,16 +108,12 @@ fn other_fonts(fixture: &mut Fixture) {
     fixture.lay_out(&mut narrow, 26.0);
 }
 
-/// The context is a cache: a layout names nothing of it, so it breaks the
-/// same in any context.
+/// A layout breaks the same in any context, since it refers to nothing in
+/// the context.
 ///
-/// A new context over the same fonts is filled with two other fonts' data
-/// first, so its ids differ. It breaks an old layout:
-/// - at the old width into the same lines and glyphs, its unsafe edges
-///   reshaped from the layout's own record of its font;
-/// - at new widths into what a fresh layout in a fresh context makes.
-///
-/// A context with no fonts at all breaks it the same too.
+/// A new context whose ids differ breaks an existing layout as before at the
+/// same width, and as a fresh layout at new widths. So does a context with
+/// no fonts.
 #[test]
 fn a_layout_breaks_the_same_in_a_new_context() {
     let mut fixture = fixture();
@@ -145,8 +134,8 @@ fn a_layout_breaks_the_same_in_a_new_context() {
     let others = fixture.cx.shaping().plan_count();
     fixture.lay_out(&mut layout, 12.0);
     assert_eq!(Broken::new(&layout), warm);
-    // The misses are made again from the layout's own record of its font,
-    // beside the other fonts'.
+    // The missing shaping plans are rebuilt from the layout's own record of
+    // its font, beside the other fonts' plans.
     assert!(fixture.cx.shaping().plan_count() > others);
 
     for width in [28.0, 40.0, 60.0, 90.0] {

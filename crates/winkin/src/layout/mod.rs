@@ -14,6 +14,8 @@
 //! The views, one module each:
 //! - `line`: the lines and the items on each, in visual order;
 //! - `run`: the text runs, with their fonts, glyphs and clusters;
+//! - `places`: the walk of a run's cluster places, for carets and marks;
+//! - `emphasis`: a run's emphasis marks;
 //! - `boxes`: the inline boxes and atomic inlines;
 //! - `ruby`: the ruby annotations;
 //! - `floats`: the floats;
@@ -24,17 +26,19 @@
 //! - Readers borrow the frozen stages, write nothing and allocate nothing.
 //!   Each walk holds a few words of state. Fragment items carry their final
 //!   positions, so reading them back is a scan.
-//! - Positions leave as `f32` pixels, converted here and nowhere else: along
-//!   the line from the exact 48.16 sums, across it from 26.6.
+//! - Public positions are `f32` pixels: along the line from the exact 48.16
+//!   sums, across it from 26.6.
 //! - Positions are line-relative: along the line from the line box's left
 //!   edge, across it from its top. [`LineMetrics`] places the line box in the
 //!   [`Area`]'s coordinates.
 //! - A culled box keeps no fragment. [`Layout::box_fragments`] finds its
 //!   pieces from its descendants' items, as Blink answers a culled inline,
 //!   so `getClientRects` and hover work for any box without a relayout.
-//! - [`Line::paints`] yields the background, boxes, decorations and text in
-//!   the phases Chrome paints them, each decoration cut where Chrome cuts it.
-//!   It draws nothing: the caller looks each paint up by key.
+//! - [`Line::paints`] yields a line's paint item by item in Chrome's order:
+//!   the block background, then each item with its box background,
+//!   decorations, text and marks, then the ruby annotations. Only the block
+//!   and boxes whose style sets `decorates` are asked for decorations. It
+//!   draws nothing; the host looks each paint up by key.
 //!
 //! [`Layout::box_fragments`]: crate::Layout::box_fragments
 
@@ -90,8 +94,8 @@ use positioned::StaticPositions;
 pub use ruby::Annotation;
 pub(crate) use ruby::AnnotationRuns;
 pub use run::{Cluster, FontInstance, Glyph, TextRun};
-// The walk a text run's carets and marks read, and the walks of a run's
-// glyphs and clusters, which the path and the selection hold as they read.
+// The walk of a run's cluster places, and the walks of its glyphs and
+// clusters that the path and selection modules hold.
 use places::Places;
 pub(crate) use run::{RunClusters, RunGlyphs};
 
@@ -100,23 +104,22 @@ pub(crate) use run::{RunClusters, RunGlyphs};
 /// Stores content and layout results. Rebuilding retains allocations,
 /// so similar content can be rebuilt without allocating.
 pub struct Layout {
-    /// What does not depend on the width: the content, and the stages
-    /// preparing makes from it.
+    /// The content, independent of the width.
     content: Content,
+    /// The stages prepared from the content, from analysis to measurement.
     stages: PreparedStages,
-    /// The lines breaking makes at a width, with every decision about their
+    /// The lines broken at the last width, with the decisions about their
     /// ends and the block's result.
     lines: lines::Lines,
     /// The fragment items, with their final positions.
     fragments: Fragments,
 }
 
-/// The stages preparing makes after the content, from analysis to
-/// measurement.
+/// The stages prepared from the content, from analysis to measurement.
 ///
 /// The first line's measure is part of [`Measured`], as the first line's
-/// shaping is part of [`Shaped`]. A builder holds them mutably beside its
-/// writer, and its [`finish`](LayoutBuilder::finish) fills them with
+/// shaping is part of [`Shaped`]. A builder borrows them mutably beside its
+/// writer, and [`finish`](LayoutBuilder::finish) fills them with
 /// [`prepare`](Self::prepare).
 pub(crate) struct PreparedStages {
     analysis: Analysis,
@@ -139,8 +142,7 @@ impl PreparedStages {
         }
     }
 
-    /// Borrows the stages whole, with `content`, the content they were
-    /// prepared from.
+    /// Borrows every stage, with the `content` they were prepared from.
     fn view<'a>(&'a self, content: &'a Content) -> Stages<'a> {
         Stages {
             content,
@@ -158,6 +160,7 @@ impl PreparedStages {
     /// buffers pass to measurement, which turns them into prefix sums. The
     /// stages keep the advances only where the content has something
     /// [`measure`](Self::measure) can change.
+    ///
     /// Records in `report` how many fonts and glyphs were dropped because a
     /// table was full.
     pub(crate) fn prepare(
@@ -217,8 +220,9 @@ impl PreparedStages {
         self.measure_stage(content, cx, provider, false);
     }
 
-    /// Runs measurement from the shaped advances. Where `new_fonts` says the
-    /// fonts are new, it also measures the text metrics and shapes the
+    /// Runs measurement from the shaped advances.
+    ///
+    /// Where `new_fonts`, also measures the text metrics and shapes the
     /// hyphens and ellipses.
     fn measure_stage(
         &mut self,
@@ -369,9 +373,8 @@ impl Layout {
                 found = true;
                 match self.content.set_atomic_size(atomic, size) {
                     SizeChange::None => {}
-                    // Its extent alone is measured again, now. Measuring
-                    // again whole, if a later pair asks for it, writes
-                    // every extent over.
+                    // Remeasures this extent at once. A later full
+                    // remeasurement overwrites every extent anyway.
                     SizeChange::Across if in_place => {
                         across = true;
                         if !again {
@@ -395,8 +398,8 @@ impl Layout {
         true
     }
 
-    /// Gives every float keyed `key` the border box of `size`, a sanitized
-    /// size, and returns whether any size changed.
+    /// Gives every float keyed `key` the sanitized border box `size`, and
+    /// returns whether any size changed.
     fn set_float_sizes(&mut self, key: NodeKey, size: BoxSize) -> bool {
         let mut changed = false;
         let floats = self.content.floats().len();
@@ -471,7 +474,7 @@ impl Layout {
         self.break_with_provider(cx, area, exclusions, Some(provider), true);
     }
 
-    /// Breaks the content in `area` to size it, without positioning items.
+    /// Breaks the content in `area` to size it, without positioning the items.
     ///
     /// The lines are those [`break_lines`](Self::break_lines) makes, and
     /// floats are placed through `exclusions` alike. [`metrics`](Self::metrics),
@@ -481,8 +484,8 @@ impl Layout {
     /// paints, box fragments, static positions, hit tests and carets see
     /// no items until the next `break_lines`.
     ///
-    /// A host that sizes a block before it places it calls this first: it
-    /// skips the positioning that `break_lines` does again.
+    /// Use this to size a block before placing it; it skips the positioning
+    /// that `break_lines` repeats.
     pub fn size_lines(&mut self, cx: &mut Context, area: Area, exclusions: &mut dyn Exclusions) {
         self.break_with_provider(cx, area, exclusions, None, false);
     }
@@ -502,7 +505,8 @@ impl Layout {
         self.break_with_provider(cx, area, exclusions, Some(provider), false);
     }
 
-    /// Returns pending `@font-face` faces needed by this content, without duplicates.
+    /// Returns pending `@font-face` faces this content needs, without
+    /// duplicates.
     ///
     /// After loading a face, update the context collection and rebuild layouts
     /// that requested it. Until then, text uses available fallback fonts.
@@ -660,7 +664,8 @@ impl Layout {
         selection::hit_test(self, inline, block, past_lines)
     }
 
-    /// Returns caret geometry for `position`, or `None` if there are no lines.
+    /// Returns the caret geometry for `position`, or `None` if there are no
+    /// lines.
     ///
     /// At a wrap, affinity selects the line. At a box edge with margin,
     /// border or padding, it selects the side of the edge, and at a bidi
@@ -673,11 +678,12 @@ impl Layout {
         self.carets(position).map(|carets| carets.strong)
     }
 
-    /// Returns both possible caret positions at `position`.
+    /// Returns the strong caret at `position` and, at a bidi boundary, the
+    /// weak one.
     ///
-    /// The second position supports split carets at bidi boundaries, where
-    /// the affinity selects the first. Chrome draws one caret, on the side
-    /// of the paragraph direction.
+    /// The weak caret supports split carets; the affinity selects the strong
+    /// side. Chrome draws one caret, on the side of the paragraph direction.
+    /// Returns `None` if there are no lines.
     #[inline]
     pub fn carets(&self, position: Position) -> Option<Carets> {
         selection::carets(self, position)
@@ -699,13 +705,14 @@ impl Layout {
     /// Returns selection rectangles for `range` in line order.
     ///
     /// `range` contains byte offsets into [`Layout::text`]. Rectangles cover
-    /// selected text in each item and span the line-box height. Selections
-    /// continuing past a line end include an extra space width, matching Chrome.
+    /// the selected text in each item and span at least the line-box height.
+    /// A selection continuing past a line end adds a space-wide mark there,
+    /// matching Chrome.
     pub fn selection_rects(&self, range: Range<usize>) -> impl Iterator<Item = SelectionRect> {
         SelectionRects::new(self, range.start, range.end)
     }
 
-    /// Returns source text slices for copying the selection `range`.
+    /// Returns the text that copying the selection `range` yields, in slices.
     ///
     /// Slices borrow from [`Layout::text`] and omit inserted U+FFFC atomic
     /// inline placeholders and U+200B break opportunities. Forced breaks
@@ -784,13 +791,12 @@ impl Layout {
     }
 }
 
-// What the crate reaches inside a layout: the building and breaking behind
-// the public calls, and the prepared stages the views read.
+// Crate-internal access: the building and breaking behind the public calls,
+// and the prepared stages the views read.
 impl Layout {
     /// Starts building as [`builder`](Self::builder) does, within `limits`.
     ///
-    /// Tests pass limits below what the ids and the text allow to reach
-    /// every limit.
+    /// Tests pass small limits to reach each one.
     pub(crate) fn builder_within<'a>(
         &'a mut self,
         cx: &'a mut Context,
@@ -799,7 +805,7 @@ impl Layout {
         options: BuildOptions,
         limits: ContentLimits,
     ) -> LayoutBuilder<'a> {
-        // Lines broken from the content before would name its clusters.
+        // Lines broken from the previous content name its clusters.
         self.clear_lines();
         cx.start_build();
         LayoutBuilder::new(
@@ -814,8 +820,7 @@ impl Layout {
         self.fragments.clear();
     }
 
-    /// Breaks the content in `area`, and positions its items where `place`
-    /// says.
+    /// Breaks the content in `area`, and positions its items where `place`.
     fn break_with_provider(
         &mut self,
         cx: &mut Context,
@@ -830,7 +835,7 @@ impl Layout {
         let stages = self.stages.view(&self.content);
         let (lines, fragments) = (&mut self.lines, &mut self.fragments);
         let config = *cx.config();
-        // The lines.
+        // Line breaking.
         let input = BreakInput {
             stages,
             area,
@@ -846,8 +851,8 @@ impl Layout {
             exclusions,
             lines,
         );
-        // Line layout: place items using breaking's block result, their tabs
-        // sized in the area the breaker sized them in.
+        // Line layout, from the breaker's placements, with tabs sized in the
+        // same area.
         let (placements, scratch) = cx.placing();
         if !place {
             placements.clear();
@@ -906,8 +911,8 @@ impl Layout {
         &self.fragments
     }
 
-    /// Returns what line layout read and wrote, which a line's views read a
-    /// text item back through, as a painter does.
+    /// Returns the input for reading a text item back, as the line views and
+    /// paint do.
     pub(crate) fn read_input(&self) -> ReadInput<'_> {
         ReadInput::new(self.stages(), &self.lines, &self.fragments)
     }

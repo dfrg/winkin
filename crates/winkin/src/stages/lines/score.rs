@@ -1,24 +1,18 @@
-//! The scorer of `text-wrap-style: balance` and `pretty`, as Blink's
-//! `ScoreLineBreaker` after Minikin's `OptimalLineBreaker`.
+//! The line scorer for `text-wrap-style: balance` and `pretty`, after
+//! Blink's `ScoreLineBreaker` and Minikin's `OptimalLineBreaker`.
 //!
-//! It chooses the ends of a paragraph's scored lines. Each line scores
-//! the room it leaves squared, plus what its end costs.
+//! A line scores its leftover room squared plus what its end costs. Each
+//! [`BreakPoint`] is measured once from the paragraph's prefix, so a line
+//! between two points is one subtraction, and the best way to a point
+//! extends the best way to an earlier one. The scored lines are few: six for
+//! `balance` and `Pretty::Even`, four for `pretty`, as in Chrome.
 //!
-//! Every place a line may end, a [`BreakPoint`], is measured once from
-//! the paragraph's prefix. A line between two points is then one
-//! subtraction. The best way to each point is the best way to an
-//! earlier one plus the line between. The scored lines are few: six for
-//! `balance` and four for `pretty`, as in Chrome, and six for `Pretty::Even`
-//! (beyond Chrome). So the pass costs what Chrome's does.
-//!
-//! The rules differ in what the last line costs:
-//! - Under `balance` its slack counts like any line's, so the lines come out
-//!   as even as the count allows.
-//! - Under `pretty` its slack counts nothing. Only a line that leaves the
-//!   last word alone pays, Blink's orphan penalty.
+//! The rules differ on the last line:
+//! - `balance` counts its slack like any line's.
+//! - `pretty` counts none of its slack; only a line leaving the last word
+//!   alone pays (Blink's orphan penalty).
 //! - `Pretty::Even` (beyond Chrome) also makes a last line under a fifth of
-//!   its room cost more than any other choice. The lines before then give it
-//!   the words it needs.
+//!   its room cost more than any other choice.
 
 use crate::config::Pretty;
 use crate::data::IdRange;
@@ -29,9 +23,8 @@ use crate::unit::LayoutUnit;
 use crate::work;
 
 define_id! {
-    /// Names a [`BreakPoint`] in the scorer's table.
-    ///
-    /// The scored lines' start is first and their end last.
+    /// Names a [`BreakPoint`]; the scored lines' start is first and their
+    /// end last.
     struct BreakPointId(u32);
 }
 
@@ -42,21 +35,18 @@ define_id! {
 
 /// How many lines `balance` scores, as Chrome's `kMaxLinesForBalance`.
 ///
-/// A longer paragraph is balanced by bisecting the room instead.
+/// A longer paragraph is balanced by bisecting the room.
 pub(super) const BALANCE_LINES: usize = 6;
 
-/// The score of a line that does not fit, past any fitting line's, as
-/// Blink's `kScoreOverfull`.
+/// The score of a line that does not fit, as Blink's `kScoreOverfull`.
 const OVERFULL: f32 = 1e12;
 
-/// The cost of a line that leaves the last word alone, as Blink's
-/// `kOrphansPenalty`, in square pixels.
+/// The cost of a line that leaves the last word alone, in square pixels, as
+/// Blink's `kOrphansPenalty`.
 const ORPHAN: f32 = 10000.0;
 
-/// The multiplier on the penalty of the line before the last under
+/// The multiplier on the penalty of the break before the last line under
 /// `pretty`, as Blink's `kLastLinePenaltyMultiplier`.
-///
-/// A hyphen on the line before the last costs four times another line's.
 const LAST_LINE: f32 = 4.0;
 
 /// How a block's paragraphs choose their lines, from `text-wrap-style` and
@@ -66,16 +56,15 @@ pub(super) enum LineChoice {
     /// The greedy fit alone, for `auto`, `stable` and blocks that do not
     /// wrap.
     Greedy,
-    /// `balance`: every line's slack as even as the count allows.
+    /// `balance`.
     Balance,
     /// `pretty`, by the config's rule.
     Pretty(Pretty),
 }
 
 impl LineChoice {
-    /// Returns the choice for `style`, with `pretty` as the config's rule.
-    ///
-    /// A block that does not wrap has no choice to make, per CSS Text 4.
+    /// Returns the choice for `style`; a block that does not wrap has none
+    /// to make, per CSS Text 4.
     pub(super) fn new(style: TextWrapStyle, pretty: Pretty, wraps: bool) -> Self {
         match style {
             _ if !wraps => Self::Greedy,
@@ -85,11 +74,11 @@ impl LineChoice {
         }
     }
 
-    /// Returns how many of a paragraph's last lines `pretty` scores.
+    /// Returns how many of a paragraph's last lines are scored.
     ///
-    /// Chrome scores four, `kMaxLinesForOptimal`. `Pretty::Even` (beyond
-    /// Chrome) scores six, so a short last line takes its words from more
-    /// lines. `balance` scores a whole paragraph of up to [`BALANCE_LINES`].
+    /// Chrome's `pretty` scores four (`kMaxLinesForOptimal`). `Pretty::Even`
+    /// (beyond Chrome) scores six, so a short last line can take words from
+    /// more lines.
     pub(super) fn scored(self) -> usize {
         match self {
             Self::Pretty(Pretty::Limited) => 4,
@@ -100,17 +89,17 @@ impl LineChoice {
 
 /// A place a line may end, as Blink's `LineBreakCandidate`.
 ///
-/// Positions are from the paragraph's start, as the fit measures a line. A
-/// line from `a` to `b` is `b.end − a.start` wide, edge costs included.
+/// Positions are from the paragraph's start. A line from `a` to `b` is
+/// `b.end âˆ’ a.start` wide, edge costs included.
 #[derive(Copy, Clone, Debug)]
 pub(super) struct BreakPoint {
-    /// The boundary where one line ends, hanging content included, and the
-    /// next starts.
+    /// The boundary where one line ends, what hangs included, and the next
+    /// starts.
     at: ClusterId,
-    /// Where a line starting here starts, less what the start costs, as
-    /// Blink's `pos_no_break`.
+    /// Where a line starting here starts, less its start cost, as Blink's
+    /// `pos_no_break`.
     start: LayoutUnit,
-    /// Where a line ending here ends, plus what the end costs, as Blink's
+    /// Where a line ending here ends, plus its end cost, as Blink's
     /// `pos_if_break`.
     end: LayoutUnit,
     /// What ending a line here costs besides its slack: a hyphen and the
@@ -121,7 +110,7 @@ pub(super) struct BreakPoint {
 }
 
 impl BreakPoint {
-    /// Returns the point at `at`; a shown hyphen costs `hyphen`.
+    /// Returns the point at `at`, where a shown hyphen costs `hyphen`.
     pub(super) fn new(
         at: ClusterId,
         start: LayoutUnit,
@@ -139,10 +128,8 @@ impl BreakPoint {
     }
 }
 
-/// The best way found to a point.
-///
-/// `prev` is where the line ending here starts. `line` is which paragraph
-/// line starts here.
+/// The best way found to a point: `prev` starts the line ending here, and
+/// `line` is the paragraph line starting here.
 #[derive(Copy, Clone, Debug)]
 struct BreakScore {
     score: f32,
@@ -150,26 +137,22 @@ struct BreakScore {
     line: WrapLineId,
 }
 
-/// The weights the scorer uses, as Blink's `SetupParameters` after
-/// Minikin's `computePenalties`.
+/// The scorer's weights, as Blink's `SetupParameters` after Minikin's
+/// `computePenalties`.
 #[derive(Copy, Clone, Debug)]
 pub(super) struct ScoreRule {
     /// Whether the last line's slack counts, as under `balance`.
     ///
-    /// Under `pretty` it counts nothing, and the last line pays four times
-    /// the penalty of the line before.
+    /// Otherwise the last line pays four times the penalty of the break
+    /// before it.
     balanced: bool,
-    /// Whether the text is justified.
-    ///
-    /// Then a line may be overfull only where it is the last, a hyphen
-    /// costs less, and a line costs nothing.
+    /// Whether the text is justified: a hyphen costs less and a line costs
+    /// nothing.
     justified: bool,
     /// What a hyphen costs: twice the room times the font size, or half the
-    /// product where the text is justified.
+    /// product where justified.
     pub(super) hyphen: f32,
     /// What every line costs: twice a hyphen, or nothing where justified.
-    ///
-    /// The line count is held to the greedy fit's anyway.
     line: f32,
     /// Whether a last line under a fifth of its room pays extra, as under
     /// `Pretty::Even`.
@@ -202,18 +185,15 @@ impl ScoreRule {
     }
 }
 
-/// The scorer's working memory: the scored lines' rooms, their break
-/// points and the best way to each.
+/// The scorer's scratch: the scored lines' rooms, their break points and
+/// the best way to each.
 ///
-/// The breaker keeps it as scratch. It is cleared and never freed, so a
-/// warm relayout allocates nothing.
+/// It is cleared and never freed, so a warm relayout allocates nothing.
 pub(super) struct Scoring {
     /// The first scored line, among the paragraph's.
     first: WrapLineId,
-    /// Each scored line's room: its band less its indent, as its greedy
-    /// line had it.
-    ///
-    /// A line past them has the last's room.
+    /// Each scored line's room, its band less its indent as its greedy line
+    /// had it.
     rooms: [LayoutUnit; BALANCE_LINES],
     /// How many lines are scored.
     lines: usize,
@@ -222,7 +202,6 @@ pub(super) struct Scoring {
 }
 
 impl Scoring {
-    /// Returns empty scratch, allocating nothing.
     pub(super) const fn new() -> Self {
         Self {
             first: WrapLineId(0),
@@ -233,8 +212,8 @@ impl Scoring {
         }
     }
 
-    /// Forgets the last scored lines and begins scoring from the
-    /// paragraph's line `first`.
+    /// Forgets the last scoring and begins from the paragraph's line
+    /// `first`.
     pub(super) fn begin(&mut self, first: WrapLineId) {
         self.first = first;
         self.lines = 0;
@@ -242,9 +221,8 @@ impl Scoring {
         self.scores.clear();
     }
 
-    /// Takes the room of the next scored line.
-    ///
-    /// Returns `false` past the most lines the scorer weighs.
+    /// Takes the room of the next scored line, or returns `false` past the
+    /// most lines the scorer weighs.
     pub(super) fn push_room(&mut self, room: LayoutUnit) -> bool {
         let Some(slot) = self.rooms.get_mut(self.lines) else {
             return false;
@@ -254,10 +232,8 @@ impl Scoring {
         true
     }
 
-    /// Takes the next break point, from the scored lines' start to their
-    /// end.
-    ///
-    /// Returns `false` where the table is full.
+    /// Takes the next break point, or returns `false` where the table is
+    /// full.
     pub(super) fn push(&mut self, point: BreakPoint) -> bool {
         self.points.push(point).is_some()
     }
@@ -280,20 +256,19 @@ impl Scoring {
     /// Returns the best ends of the scored lines under `rule`, as Blink's
     /// `Optimize`.
     ///
-    /// Returns `None` where the scored lines have fewer than three
-    /// opportunities.
-    /// Also returns `None` where the best has another line count than the
-    /// greedy fit, which Chrome falls back to the greedy fit from.
+    /// `None` where the scored lines have fewer than three opportunities,
+    /// or where the best has another line count than the greedy fit, which
+    /// Chrome then keeps.
     pub(super) fn best_ends(&mut self, rule: &ScoreRule) -> Option<PlannedEnds> {
-        // The scored lines' start and end, and at least three opportunities, as
-        // Blink's `kMinCandidates`.
+        // The start, the end, and at least three opportunities, as Blink's
+        // `kMinCandidates`.
         let count = self.points.len();
         if count < 5 {
             return None;
         }
-        // A line ending at the last opportunity leaves the last word alone
-        // and pays for it. Where that is a hyphen inside the last word, the
-        // ones before it back to the word's start pay too.
+        // A line ending at the last opportunity leaves the last word alone.
+        // Where that is a hyphen, the opportunities back to the word's start
+        // pay too.
         for point in self.points.as_mut_slice().iter_mut().take(count - 1).rev() {
             point.penalty += ORPHAN;
             if !point.hyphenated {
@@ -318,8 +293,8 @@ impl Scoring {
     /// Returns what a short last line costs under `Pretty::Even`, and zero
     /// under the other rules.
     ///
-    /// It exceeds all the slack the scored lines could leave squared. So a
-    /// choice with a long enough last line always wins where one exists.
+    /// It exceeds all the slack the scored lines could leave squared, so a
+    /// long enough last line wins where one exists.
     fn short_penalty(&self, rule: &ScoreRule) -> f32 {
         if !rule.short_last {
             return 0.0;
@@ -335,12 +310,12 @@ impl Scoring {
         f32::from(count) * widest * widest
     }
 
-    /// Returns the best way to a line ending at point `end`, as the
-    /// inner loop of Blink's `ComputeScores`.
+    /// Returns the best way to a line ending at point `end`, as the inner
+    /// loop of Blink's `ComputeScores`.
     ///
     /// It tries starts from `active`, the first whose line here is not
-    /// overfull. `active` moves on as earlier starts stop fitting. It prunes
-    /// as Blink does, so ties go the same way.
+    /// overfull, and moves `active` on. It prunes as Blink does, so ties go
+    /// the same way.
     fn best_to(
         &self,
         rule: &ScoreRule,
@@ -391,8 +366,8 @@ impl Scoring {
                 width = OVERFULL;
             } else if last && !rule.balanced {
                 extra = LAST_LINE * start_point.penalty;
-                // Under `Pretty::Even`, a last line under a fifth of its
-                // room pays extra.
+                // `Pretty::Even` charges a last line under a fifth of its
+                // room.
                 if short > 0.0 && end_point.end - start_point.start < room.divided(5) {
                     extra += short;
                 }
@@ -426,8 +401,7 @@ impl Scoring {
     /// Follows the best way back from the scored lines' end into a plan, as
     /// Blink's `ComputeBreakPoints`.
     ///
-    /// Returns `None` where the plan has another line count than the scored
-    /// lines.
+    /// `None` where the plan has another line count than the scored lines.
     fn trace(&self) -> Option<PlannedEnds> {
         let last = self.scores.last_id()?;
         let made = self
@@ -437,7 +411,6 @@ impl Scoring {
         if made != self.lines {
             return None;
         }
-        // Ends are pushed from the last back, then reversed.
         let mut plan = PlannedEnds::new(self.first);
         let mut at = last;
         while at.get() > 0 {
@@ -464,21 +437,20 @@ heap_bytes! {
 
 /// The line ends the scorer chose for a paragraph's scored lines.
 ///
-/// Lines it did not score are fitted as the greedy fit fitted them. The
-/// few ends live on the stack.
+/// Lines it did not score are fitted greedily.
 #[derive(Copy, Clone, Debug)]
 pub(super) struct PlannedEnds {
     /// The first scored line, among the paragraph's.
     first: WrapLineId,
     /// Each scored line's end, from the first.
     ends: [ClusterId; BALANCE_LINES],
-    /// How many of `ends` it has.
+    /// How many of `ends` are set.
     len: usize,
 }
 
 impl PlannedEnds {
-    /// Returns a plan with no ends, for lines scored from the paragraph's
-    /// line `first`.
+    /// Returns a plan with no ends, scoring from the paragraph's line
+    /// `first`.
     fn new(first: WrapLineId) -> Self {
         Self {
             first,
@@ -487,9 +459,7 @@ impl PlannedEnds {
         }
     }
 
-    /// Takes the next line's end.
-    ///
-    /// Returns `false` past the most lines the scorer weighs.
+    /// Takes the next line's end, or returns `false` when full.
     fn push(&mut self, end: ClusterId) -> bool {
         let Some(slot) = self.ends.get_mut(self.len) else {
             return false;
@@ -499,8 +469,7 @@ impl PlannedEnds {
         true
     }
 
-    /// Returns where the plan ends the paragraph's `line`, if it is
-    /// scored.
+    /// Returns where the plan ends the paragraph's `line`, if it is scored.
     pub(super) fn get(&self, line: WrapLineId) -> Option<ClusterId> {
         let at = line.get().checked_sub(self.first.get())?;
         self.ends.get(..self.len)?.get(at).copied()

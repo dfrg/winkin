@@ -1,50 +1,42 @@
-//! `hanging-punctuation` and `line-padding`: what hangs past a line's edges
-//! and what pads them.
+//! `hanging-punctuation`: which marks hang past a line's edges.
 //!
-//! Chrome parses neither, so a caller that leaves them at their initial
-//! values gets Chrome's lines. A hanging mark stays on the line and draws,
-//! but its width does not count against the room (CSS Text 4, "hanging
-//! glyphs"). The measure stage writes each hang into the line-edge costs,
-//! and the breaker records how much hung by the same rules:
-//! - `first`: a negative start cost only the block's first line can pay.
-//! - `last` at the text's end and `force-end`: a flex the breaker always
+//! Chrome parses neither `hanging-punctuation` nor `line-padding`, so their
+//! initial values give Chrome's lines. A hanging mark draws, but its width
+//! doesn't count against the line (CSS Text 4, "hanging glyphs"). The scan
+//! writes each hang into the line-edge costs:
+//! - `first`: a negative start cost only the block's first line pays.
+//! - `force-end`, and `last` at the text's end: a flex the breaker always
 //!   takes (`HANG_FORCED`).
-//! - `allow-end`: a flex the breaker takes only where the line does not fit
-//!   without it.
+//! - `allow-end`: a flex the breaker takes only where the line doesn't fit.
 //!
-//! The intrinsic sizes leave out a mark that hangs, as CSS Text 4 says: one
-//! under `first`, `last` or `force-end` from both, and one under `allow-end`,
-//! which hangs only conditionally, from min-content alone.
+//! Intrinsic sizes leave out a hanging mark, as CSS Text 4 says: under
+//! `allow-end` from min-content only, otherwise from both.
 //!
-//! A mark hangs only at the edge. A box edge with room between the mark and
-//! the line's edge stops it hanging. White space hangs first, so a comma
-//! before a space still hangs.
+//! A mark hangs only at the line's edge: a box edge with room in between
+//! stops it. White space hangs first, so a comma before a space still hangs.
 //!
-//! `line-padding` comes from the innermost box at each end of the line. The
-//! breaker pays it as a line-edge cost, and line layout puts the room inside
-//! that box.
+//! `line-padding` comes from the innermost text at each end of the line, and
+//! the breaker pays it as a line-edge cost.
 //!
-//! The marks are CSS Text 4's lists, written out by hand, since the crate
-//! carries no general categories. A test sweeps them against Unicode's.
+//! The marks are CSS Text 4's lists, written out since the crate has no
+//! general categories. A test checks them against Unicode's.
 
 use super::LineEdgeFlags;
 use crate::style::{HangEnd, HangingPunctuation};
 
-/// Whether `ch`, the block's first character, its text's
-/// `hanging-punctuation` being `hanging`, hangs at the start of the block's
-/// first line.
+/// Returns whether `ch`, the block's first character, hangs at the start of
+/// the first line under `hanging`.
 pub(super) fn hangs_first(hanging: HangingPunctuation, ch: char) -> bool {
     hanging.first && opens(ch)
 }
 
-/// Returns how `ch`, last on a line before any hanging white space, hangs at
-/// the line's end.
+/// Returns the line-edge cost flags for `ch` hanging at a line's end, or
+/// `None` where it doesn't hang.
 ///
-/// The result is the flags of its line-edge cost, or `None` where it does
-/// not hang. [`LineEdgeFlags::HANG_FORCED`] means it always hangs
-/// (`force-end`, and `last` at the text's end). No flags means it hangs only
-/// where the line would not fit with it (`allow-end`). `at_text_end` says the
-/// line ends the text.
+/// `ch` is the line's last character before any hanging white space;
+/// `at_text_end` marks a line that ends the text. [`LineEdgeFlags::HANG_FORCED`]
+/// means it always hangs; no flags means it hangs only where the line
+/// wouldn't fit with it (`allow-end`).
 pub(super) fn hangs_end(
     hanging: HangingPunctuation,
     ch: char,
@@ -63,11 +55,8 @@ pub(super) fn hangs_end(
     }
 }
 
-/// An opening bracket or quote, or the ideographic space, which `first`
-/// hangs.
-///
-/// CSS Text 4 lists every character of Unicode's Ps, Pi and Pf, the two
-/// straight quotes and U+3000.
+/// Returns whether `ch` is an opening bracket or quote, or U+3000, which
+/// `first` hangs: Unicode's Ps, Pi and Pf, and the two straight quotes.
 pub(super) fn opens(ch: char) -> bool {
     matches!(
         ch,
@@ -161,10 +150,8 @@ pub(super) fn opens(ch: char) -> bool {
     )
 }
 
-/// A closing bracket or quote, which `last` hangs.
-///
-/// CSS Text 4 lists every character of Unicode's Pe, Pi and Pf, and the two
-/// straight quotes.
+/// Returns whether `ch` is a closing bracket or quote, which `last` hangs:
+/// Unicode's Pe, Pi and Pf, and the two straight quotes.
 pub(super) fn closes(ch: char) -> bool {
     matches!(
         ch,
@@ -259,8 +246,8 @@ pub(super) fn closes(ch: char) -> bool {
     )
 }
 
-/// A stop or comma, which `allow-end` and `force-end` hang: CSS Text 4's
-/// list.
+/// Returns whether `ch` is a stop or comma in CSS Text 4's list, which
+/// `allow-end` and `force-end` hang.
 fn stop_or_comma(ch: char) -> bool {
     matches!(
         ch,

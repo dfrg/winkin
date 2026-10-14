@@ -1,7 +1,7 @@
 //! A lock that blocks with `std` and spins without it.
 //!
-//! With `std`, a thread waiting for another to parse a font sleeps rather
-//! than taking a core. Without it there is nothing to sleep on, so it spins.
+//! With `std`, a thread waiting for another to parse a font sleeps instead of
+//! taking a core.
 
 use core::ops::DerefMut;
 #[cfg(feature = "std")]
@@ -13,7 +13,7 @@ use spin::Mutex as Blocking;
 /// A mutual exclusion lock: `std`'s with the `std` feature, a spin lock
 /// without it.
 ///
-/// A panic while the lock is held does not poison it. Every value it guards
+/// A panic while the lock is held does not poison it. Every guarded value
 /// stays consistent at each point a panic could unwind from.
 pub(crate) struct Mutex<T>(Blocking<T>);
 

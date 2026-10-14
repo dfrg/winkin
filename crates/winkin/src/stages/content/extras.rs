@@ -1,6 +1,5 @@
-//! What the content keeps only where a build has it: the atomic inlines,
-//! the floats, the absolutely positioned boxes' anchors, the clearing
-//! breaks, the offset map and the first line's side text.
+//! The content's rare tables, boxed and made only where a build has them,
+//! and the atomic inline, float and anchor rows they hold.
 
 use super::first_line::FirstLineSource;
 use super::map::Map;
@@ -14,7 +13,7 @@ use crate::style::{ComputedStyle, LengthPercentage, Sides, WritingMode};
 use crate::unit::LayoutUnit;
 use crate::work;
 
-/// An atomic inline's size, found from its item.
+/// An atomic inline's size and margins, keyed by its item.
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub(crate) struct Atomic {
     /// Its item, which holds its U+FFFC.
@@ -22,22 +21,22 @@ pub(crate) struct Atomic {
     /// Its border box and baseline as the host laid it out: finite and not
     /// negative.
     pub(crate) size: BoxSize,
-    /// Its style's margins, which `margin_inline` and `margins_across` are
-    /// resolved from against the content's percentage basis.
+    /// Its style's margins, from which `margin_inline` and `margins_across`
+    /// resolve against the content's percentage basis.
     margin: Sides<LengthPercentage>,
-    /// Its margin box along the line. This is its border box, truncated
-    /// onto the grid as Chrome holds a box's lengths, plus its style's
-    /// margins along the line on either side, on the grid.
+    /// Its margin box along the line: the border box truncated onto the
+    /// grid, as Chrome holds a box's lengths, plus the line-direction
+    /// margins on the grid.
     pub(crate) margin_inline: LayoutUnit,
-    /// Its style's margins across the line, `(over, under)`, on the grid,
-    /// which its extent reaches past its border box.
+    /// Its margins across the line, `(over, under)`, on the grid. Its
+    /// extent reaches this far past its border box.
     pub(crate) margins_across: (LayoutUnit, LayoutUnit),
 }
 
 impl Atomic {
-    /// Makes the atomic inline of `item`, `size` as the host laid it out,
-    /// set in `style` in a block of `writing_mode` whose percentages are of
-    /// `basis` pixels. The writer lowers its margin box here.
+    /// Creates the atomic inline of `item`, with `size` as the host laid it
+    /// out and margins from `style`, resolved in `writing_mode` against
+    /// `basis` pixels.
     pub(super) fn new(
         item: ItemId,
         size: BoxSize,
@@ -56,20 +55,20 @@ impl Atomic {
         atomic
     }
 
-    /// Lowers its margin box again from its size and margins, their
-    /// percentages taken of `basis` pixels.
+    /// Recomputes its margin box from its size and margins, resolving
+    /// percentages against `basis` pixels.
     pub(super) fn resolve(&mut self, writing_mode: WritingMode, basis: f32) {
         (self.margin_inline, self.margins_across) =
             margin_box(self.size, &self.margin, writing_mode, basis);
     }
 }
 
-/// Returns a box's margin box along the line, and its margins across the
+/// Returns a box's margin box along the line and its margins across the
 /// line, `(over, under)`, all on the grid.
 ///
 /// The margin box is the border box `size`, truncated onto the grid as
-/// Chrome holds a box's lengths, plus `margin` on either side. The margins'
-/// percentages are taken of `basis` pixels, in a block of `writing_mode`.
+/// Chrome holds a box's lengths, plus `margin` on either side. Percentages
+/// resolve against `basis` pixels, in a block of `writing_mode`.
 fn margin_box(
     size: BoxSize,
     margin: &Sides<LengthPercentage>,
@@ -85,7 +84,7 @@ fn margin_box(
 /// How setting a box's size changed it.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub(crate) enum SizeChange {
-    /// It kept its size.
+    /// No change.
     None,
     /// Only its block size or baseline changed.
     Across,
@@ -96,36 +95,37 @@ pub(crate) enum SizeChange {
 impl Keyed for Atomic {
     type Key = ItemId;
 
-    /// Its item: the content's atomic inlines are in item order.
+    /// Returns its item, which orders the content's atomic inlines.
     #[inline]
     fn key(&self) -> ItemId {
         self.item
     }
 }
 
-/// A search of the atomic inlines for those with one key, round from a
+/// A search of the atomic inlines for one key, wrapping round from a
 /// cursor: from it to the last, then from the first up to it.
 ///
-/// Where no two atomic inlines share a key, it ends at the first it finds.
-/// A search started where the last ended then costs the distance between
-/// the two, so keys in reading order cost one pass in total.
+/// Where keys are unique, it stops at the first match. A search started
+/// where the last one ended then costs the distance between them, so
+/// looking up keys in reading order costs one pass in total.
 pub(crate) struct KeyedAtomics {
     pub(super) key: NodeKey,
-    /// Where the search started, and stops on coming round to it.
+    /// Where the search started; it stops on coming back round to it.
     pub(super) start: AtomicId,
     /// The next atomic inline to look at.
     pub(super) next: AtomicId,
-    /// Whether the search has come round past the last.
+    /// Whether the search has wrapped past the last.
     pub(super) wrapped: bool,
     /// Whether no two atomic inlines share a key.
     pub(super) unique: bool,
-    /// The last atomic inline found.
+    /// The last match.
     pub(super) last: Option<AtomicId>,
 }
 
 impl KeyedAtomics {
     /// Returns the next atomic inline of `content` with the key, or `None`
-    /// once the search has come round.
+    /// once the search has wrapped round (or, with unique keys, after the
+    /// first match).
     pub(crate) fn next_match(&mut self, content: &Content) -> Option<AtomicId> {
         if self.unique && self.last.is_some() {
             return None;
@@ -153,43 +153,39 @@ impl KeyedAtomics {
         }
     }
 
-    /// Returns where the next search starts: after the last atomic inline
-    /// found, or where this one started if it found none.
+    /// Returns where the next search starts: after the last match, or where
+    /// this one started if it found none.
     pub(crate) fn cursor(&self) -> AtomicId {
         self.last
             .map_or(self.start, |last| AtomicId::new(last.get() + 1))
     }
 }
 
-/// A float's size and side, found from its anchor item.
+/// A float's size and side, keyed by its anchor item.
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub(crate) struct Float {
     /// Its anchor: an item with no text, where the float was written.
     pub(crate) item: ItemId,
     /// Its border box as the host laid it out: finite and not negative.
     pub(super) size: BoxSize,
-    /// The side it floats to.
     pub(crate) side: FloatSide,
-    /// Its style's margins, which `margin_box` is resolved from against
-    /// the content's percentage basis.
+    /// Its style's margins, from which `margin_box` resolves against the
+    /// content's percentage basis.
     margin: Sides<LengthPercentage>,
-    /// Its margin box, as `(along the line, across it)`, never negative.
+    /// Its margin box, `(along the line, across it)`, never negative.
     ///
-    /// It is the border box as the host laid it out plus its style's
-    /// margins on either side. Each is truncated onto layout's grid, as
-    /// Chrome holds a box's lengths. The writer lowers it.
-    ///
-    /// This is the one size a float takes. The breaker asks the host to
-    /// place it, and the intrinsic sizes count it. Negative margins that
-    /// leave less than nothing take nothing, as Chrome clamps a float's
-    /// contribution (`ClampNegativeToZero`).
+    /// It is the border box plus the margins on either side, each truncated
+    /// onto the grid as Chrome holds a box's lengths. It is the only size a
+    /// float has: the breaker asks the host to place it, and intrinsic
+    /// sizes count it. Negative margins clamp the result at zero, as
+    /// Chrome's `ClampNegativeToZero` does for a float's contribution.
     pub(crate) margin_box: (LayoutUnit, LayoutUnit),
 }
 
 impl Float {
-    /// Makes the float anchored at `item`, `size` as the host laid it out, on
-    /// `side`, set in `style` in a block of `writing_mode` whose percentages
-    /// are of `basis` pixels.
+    /// Creates the float anchored at `item` on `side`, with `size` as the
+    /// host laid it out and margins from `style`, resolved in
+    /// `writing_mode` against `basis` pixels.
     pub(super) fn new(
         item: ItemId,
         size: BoxSize,
@@ -209,8 +205,8 @@ impl Float {
         float
     }
 
-    /// Lowers its margin box again from its size and margins, their
-    /// percentages taken of `basis` pixels.
+    /// Recomputes its margin box from its size and margins, resolving
+    /// percentages against `basis` pixels.
     pub(super) fn resolve(&mut self, writing_mode: WritingMode, basis: f32) {
         let (along, (over, under)) = margin_box(self.size, &self.margin, writing_mode, basis);
         let across = LayoutUnit::from_px_truncated(self.size.block) + over + under;
@@ -218,8 +214,8 @@ impl Float {
     }
 }
 
-/// An absolutely positioned box's anchor and its outer display, found from
-/// its item.
+/// An absolutely positioned box's anchor and outer display, keyed by its
+/// item.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub(crate) struct Absolute {
     /// Its anchor: an item with no text, where the box was written.
@@ -231,7 +227,7 @@ pub(crate) struct Absolute {
 impl Keyed for Absolute {
     type Key = ItemId;
 
-    /// Its item: the content's anchors are in item order.
+    /// Returns its item, which orders the content's anchors.
     #[inline]
     fn key(&self) -> ItemId {
         self.item
@@ -250,12 +246,14 @@ pub(crate) struct BreakClearance {
 ///
 /// - The offset map, where the build records one.
 /// - The first paragraph as its first line draws it, where that line
-///   transforms some text its own way.
-/// - The atomic inlines, the floats and the absolutely positioned boxes.
+///   transforms text differently.
+/// - The atomic inlines, floats, absolutely positioned boxes' anchors and
+///   clearing breaks.
+/// - The keyed boxes and the block's `text-fit`.
 ///
-/// It is boxed, and made the first time a build keeps any, so a plain
-/// layout holds only the box's pointer. Once made, it is cleared with the
-/// content and never dropped. A layout that gains and loses them keeps
+/// It is boxed and made the first time a build keeps any, so a plain
+/// layout holds only a null pointer. Once made, it is cleared with the
+/// content and never dropped, so a layout that gains and loses these keeps
 /// their capacity.
 pub(super) struct ContentExtras {
     pub(super) map: Map,
@@ -269,9 +267,9 @@ pub(super) struct ContentExtras {
     /// The forced breaks that clear floats, in reading order.
     pub(super) clearances: Table<BreakClearanceId, BreakClearance>,
     /// The inline boxes, annotations and ruby containers, sorted by key and
-    /// then node, which a box query by key reads.
+    /// then node, for box queries by key.
     ///
-    /// The writer pushes each as its node is made, and sorts them as it
+    /// The writer pushes each as its node is made and sorts them as it
     /// finishes.
     pub(super) keyed_boxes: SortedTable<KeyedBox>,
     /// The block's `text-fit`.
@@ -284,11 +282,11 @@ impl Default for ContentExtras {
     }
 }
 
-/// What content that keeps no extras reads them as: none of each.
+/// The extras that content without a box reads: empty tables.
 pub(super) static NO_EXTRAS: ContentExtras = ContentExtras::NONE;
 
 impl ContentExtras {
-    /// None of each, allocating nothing.
+    /// Empty tables, allocating nothing.
     pub(super) const NONE: Self = Self {
         map: Map::new(),
         first_line_source: FirstLineSource::new(),
@@ -300,7 +298,7 @@ impl ContentExtras {
         text_fit: TextFitFacts::NONE,
     };
 
-    /// The offset map, where this build records it.
+    /// Returns the offset map if this build records it.
     pub(super) fn recorded_map(&mut self) -> Option<&mut Map> {
         self.map.recording.then_some(&mut self.map)
     }
