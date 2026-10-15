@@ -440,7 +440,7 @@ impl ScriptId {
     pub(crate) const UNKNOWN: Self = Self(tables::SCRIPT_UNKNOWN);
     /// Han (`Hani`): the ideographs, and the radicals and marks that go with
     /// them.
-    const HAN: Self = Self(tables::SCRIPT_HAN);
+    pub(crate) const HAN: Self = Self(tables::SCRIPT_HAN);
     /// Hiragana (`Hira`).
     pub(crate) const HIRAGANA: Self = Self(tables::SCRIPT_HIRAGANA);
     /// Katakana (`Kana`).

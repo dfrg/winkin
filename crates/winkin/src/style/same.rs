@@ -21,7 +21,7 @@ use core::mem;
 
 use parlance::{
     BaseDirection, FontFamilyName, FontFeature, FontStyle, FontVariation, FontWeight, FontWidth,
-    GenericFamily, Language, OverflowWrap, Tag, TextWrapMode, WordBreak,
+    GenericFamily, Language, OverflowWrap, Tag, TextWrapMode,
 };
 
 /// Equality and hashing by bits, for the values a style holds.
@@ -165,7 +165,7 @@ macro_rules! same_by_discriminant {
     )*};
 }
 
-same_by_discriminant!(WordBreak, OverflowWrap, TextWrapMode, BaseDirection);
+same_by_discriminant!(OverflowWrap, TextWrapMode, BaseDirection);
 
 impl Same for FontWeight {
     #[inline]

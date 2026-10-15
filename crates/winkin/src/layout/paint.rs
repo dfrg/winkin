@@ -23,7 +23,9 @@
 //! A run's text shadows go under its decorations and its text, and over
 //! what is painted before the run.
 //!
-//! Each decoration bar spans one run of text. Hanging white space has none.
+//! Each decoration bar spans one run of text, or one piece of it between
+//! the spaces `text-decoration-skip-spaces` leaves out. Tabs and hanging
+//! white space have none.
 //! An initial letter's text has the decorations of its own box and of the
 //! boxes inside it only.
 //!
@@ -53,6 +55,7 @@ use crate::stages::lines::InlineExtents;
 use crate::unit::{self, InlineLayoutUnit, LayoutUnit};
 
 use super::boxes::Atomic;
+use super::spaces::{BarPieces, LineSpaces};
 use crate::work;
 
 /// Decoration lines grouped by when they paint.
@@ -99,7 +102,10 @@ pub enum Paint<'a> {
     /// A decoration line painted before the text: an underline or overline.
     ///
     /// The underline or overline of one decorating box or the block over the
-    /// [`Text`](Self::Text) run that follows.
+    /// [`Text`](Self::Text) run that follows, or over one piece of it
+    /// between the spaces
+    /// [`TextGroup::decoration_skip_spaces`](crate::style::TextGroup::decoration_skip_spaces)
+    /// leaves out.
     DecorationBeforeText(Decoration),
     /// A run of a ruby annotation's text, on its annotation's baseline.
     ///
@@ -119,8 +125,8 @@ pub enum Paint<'a> {
     Generated(TextRun<'a>),
     /// A decoration line painted after the text: a line through it.
     ///
-    /// The line through the [`Text`](Self::Text) run before it, of one
-    /// decorating box or the block.
+    /// The line through the [`Text`](Self::Text) run before it, or one piece
+    /// of it, of one decorating box or the block.
     DecorationAfterText(Decoration),
 }
 
@@ -399,6 +405,8 @@ pub(super) struct PaintWalk<'a, F> {
     /// The bars made last, each with the node it decorates for: a run's bars
     /// differ from the run before's only in where they lie.
     held: [Option<(NodeId, Decoration)>; 2],
+    /// The bar being split around spaces, and its pieces still to hand out.
+    pieces: Option<(Decoration, BarPieces<'a>)>,
 }
 
 /// The line a paint walks, and what its bars read.
@@ -419,6 +427,8 @@ struct PaintedLine<'a> {
     /// The initial letter's box: the decorations of the boxes around it do
     /// not reach its text.
     letter: Option<NodeId>,
+    /// The spaces its bars leave out.
+    spaces: LineSpaces,
 }
 
 impl<'a, F: Fn(NodeKey) -> Decorates> PaintWalk<'a, F> {
@@ -432,11 +442,15 @@ impl<'a, F: Fn(NodeKey) -> Decorates> PaintWalk<'a, F> {
             .head()
             .is_some_and(|head| head.flags.contains(FragmentItemFlags::BOXED));
         let block = decorates(content.nodes.key(NodeId::BLOCK));
+        let own = fragments.line_item_ids(line.id());
+        let decorated =
+            block != Decorates::None || content.flags.contains(ContentFlags::DECORATED_BOXES);
+        let spaces = LineSpaces::new(line, &fragments.items, own.clone(), decorated);
         Self {
             painted: PaintedLine {
                 line: *line,
                 items: &fragments.items,
-                own: fragments.line_item_ids(line.id()),
+                own,
                 annotations: fragments.annotation_ids(line.id()),
                 block,
                 boxes: content.flags.contains(ContentFlags::DECORATED_BOXES)
@@ -446,11 +460,27 @@ impl<'a, F: Fn(NodeKey) -> Decorates> PaintWalk<'a, F> {
                     .measured()
                     .initial_letter()
                     .map(|letter| letter.node),
+                spaces,
             },
             decorates,
             marks: None,
             phase: Phase::Background,
             held: [None; 2],
+            pieces: None,
+        }
+    }
+}
+
+/// Returns the next piece of the bar `pieces` splits, or `None`, emptying
+/// `pieces`, once it has handed out every piece.
+#[inline]
+fn next_piece(pieces: &mut Option<(Decoration, BarPieces<'_>)>) -> Option<Decoration> {
+    let (bar, split) = pieces.as_mut()?;
+    match split.next() {
+        Some(inline) => Some(Decoration { inline, ..*bar }),
+        None => {
+            *pieces = None;
+            None
         }
     }
 }
@@ -552,7 +582,11 @@ impl<'a> PaintedLine<'a> {
         held: &mut [Option<(NodeId, Decoration)>; 2],
     ) -> Option<Decoration> {
         let item = self.line_item(run)?;
-        if item.flags.contains(FragmentItemFlags::HANGS) {
+        // Chrome draws no decoration over a tab, under any
+        // `text-decoration-skip-spaces`.
+        if item.flags.contains(FragmentItemFlags::HANGS)
+            || item.flags.contains(FragmentItemFlags::TAB)
+        {
             return None;
         }
         let draws = |sides: Decorates| {
@@ -652,6 +686,15 @@ impl<'a> PaintedLine<'a> {
             end: after(run),
             ..bar
         }
+    }
+
+    /// Returns the pieces a bar over text run `run` splits into around the
+    /// spaces it leaves out, or `None` where it spans the run whole.
+    #[inline]
+    fn pieces(&self, run: FragmentItemId) -> Option<BarPieces<'a>> {
+        let item = self.line_item(run)?;
+        let skipped = self.spaces.skipped(&self.line, run, item)?;
+        Some(BarPieces::new(self.line, item, skipped))
     }
 
     /// Returns the bar of `node`'s decoration, with its box's font, on its
@@ -779,10 +822,19 @@ impl<'a, F: Fn(NodeKey) -> Decorates> Iterator for PaintWalk<'a, F> {
                 },
                 Phase::BeforeText { run, last } => {
                     let run = *run;
+                    // The pieces of a bar split around spaces come before
+                    // the next bar.
+                    if let Some(bar) = next_piece(&mut self.pieces) {
+                        return Some(Paint::DecorationBeforeText(bar));
+                    }
                     if let Some(bar) =
                         painted.next_bar(run, last, false, &self.decorates, &mut self.held)
                     {
-                        return Some(Paint::DecorationBeforeText(bar));
+                        match painted.pieces(run) {
+                            None => return Some(Paint::DecorationBeforeText(bar)),
+                            Some(pieces) => self.pieces = Some((bar, pieces)),
+                        }
+                        continue;
                     }
                     self.phase = Phase::AfterText { run, last: None };
                     if let Some(item) = painted.line_item(run) {
@@ -796,8 +848,14 @@ impl<'a, F: Fn(NodeKey) -> Decorates> Iterator for PaintWalk<'a, F> {
                 }
                 Phase::AfterText { run, last } => {
                     let run = *run;
+                    if let Some(bar) = next_piece(&mut self.pieces) {
+                        return Some(Paint::DecorationAfterText(bar));
+                    }
                     match painted.next_bar(run, last, true, &self.decorates, &mut self.held) {
-                        Some(bar) => return Some(Paint::DecorationAfterText(bar)),
+                        Some(bar) => match painted.pieces(run) {
+                            None => return Some(Paint::DecorationAfterText(bar)),
+                            Some(pieces) => self.pieces = Some((bar, pieces)),
+                        },
                         None => self.phase = Phase::Items(after(run)),
                     }
                 }

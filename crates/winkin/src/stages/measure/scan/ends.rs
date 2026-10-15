@@ -22,7 +22,8 @@ pub(super) struct LineEndState {
     /// cluster is not at a line's end.
     blocked: bool,
     /// The width of the hyphen a line ending at the boundary owes, snapped to
-    /// the grid. Set after a breakable soft hyphen.
+    /// the grid. Set after a breakable soft hyphen or a hyphenation
+    /// opportunity.
     pub(super) hyphen_owed: Option<LayoutUnit>,
     /// The room the last seam put before the boundary.
     pub(super) seam_given: InlineLayoutUnit,
@@ -49,7 +50,8 @@ impl LineEndState {
     ///
     /// A line pays only where it may start or end at `at`. It pays the cloned
     /// edges open across a break, the line padding at each end, a ruby
-    /// column's overhang, the hyphen after a soft hyphen, and gives back a mark
+    /// column's overhang, the hyphen after a soft hyphen or a hyphenation
+    /// opportunity, and gives back a mark
     /// that hangs. `room` is what the items at `at` take; the cluster after
     /// `at` adds `step`.
     ///
@@ -92,7 +94,7 @@ impl LineEndState {
         if can_end {
             across.end += room.overhang.end;
         }
-        // A line ending at a break after a soft hyphen pays for the hyphen, as
+        // A line ending at a hyphenated break pays for the hyphen, as
         // Chrome's breaker adds it to its last item. Never at the text's end.
         let hyphen = self.hyphen_owed.take().filter(|_| breaks && at < end);
         if let Some(width) = hyphen {

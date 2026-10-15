@@ -47,7 +47,7 @@ pub use line::*;
 pub use orientation::*;
 pub use parlance::{
     BaseDirection, FontFamilyName, FontFeature, FontStyle, FontVariation, FontWeight, FontWidth,
-    GenericFamily, Language, OverflowWrap, Tag, TextWrapMode, WordBreak,
+    GenericFamily, Language, OverflowWrap, Tag, TextWrapMode,
 };
 pub use ruby::*;
 pub use text::*;
@@ -150,7 +150,7 @@ pub(crate) fn sanitized_font_size(px: f32) -> f32 {
 
 style_struct! {
     /// The text properties: white space, wrapping, breaking, transforms,
-    /// spacing, justification and emphasis.
+    /// spacing, justification, emphasis and the spaces decorations skip.
     ///
     /// Borrows `hyphenate-character` for the builder call.
     pub struct TextGroup<'a> {
@@ -206,6 +206,11 @@ style_struct! {
         pub justify: TextJustify,
         /// `text-emphasis`, as far as layout reads it.
         pub emphasis: TextEmphasis,
+        /// `text-decoration-skip-spaces`.
+        ///
+        /// Applies to the decorations drawn over this text, whichever box
+        /// sets them.
+        pub decoration_skip_spaces: TextDecorationSkipSpaces,
     }
 }
 
@@ -231,6 +236,7 @@ impl TextGroup<'_> {
         hanging_punctuation: HangingPunctuation::NONE,
         justify: TextJustify::Auto,
         emphasis: TextEmphasis::NONE,
+        decoration_skip_spaces: TextDecorationSkipSpaces::StartEnd,
     };
 }
 

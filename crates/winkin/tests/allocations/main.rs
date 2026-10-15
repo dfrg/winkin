@@ -7,8 +7,8 @@
 //! This file holds the shared helpers. Each child covers one stage or
 //! feature: the builder, analysis, font selection, shaping, measurement,
 //! line breaking, line layout and reading back, mixed directions, fonts in
-//! full, shifts, CJK typography, ruby, the first line, cut lines,
-//! `text-wrap-style`, vertical text and text on paths.
+//! full, hyphenation and phrases, shifts, CJK typography, ruby, the first
+//! line, cut lines, `text-wrap-style`, vertical text and text on paths.
 //!
 //! The one exception is ICU, which allocates for Thai and the other scripts
 //! whose line breaks and words need its dictionaries or LSTM, and, with the
@@ -153,6 +153,7 @@ mod cjk_typography;
 mod cut;
 mod first_line;
 mod fonts_in_full;
+mod hyphenating;
 mod laying_out;
 mod measuring;
 mod ruby_and_emphasis;

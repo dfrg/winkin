@@ -287,11 +287,11 @@ fn check(layout: &Layout) {
         // A link is the next box item's id, which maps to its place among
         // the line's own items.
         let place = |next: FragmentItemId| next.get().checked_sub(head.get() + 1);
-        let mut link = item.painted_next().and_then(place);
+        let mut link = item.next_box_item().and_then(place);
         while let Some(k) = link {
             assert!(linked.len() < painted.len(), "{id:?}: the links end");
             linked.push((own[k].node, k));
-            link = own[k].painted_next().and_then(place);
+            link = own[k].next_box_item().and_then(place);
         }
         assert_eq!(linked, painted, "{id:?}: the boxes in paint order");
         // The leaves hold the line's clusters, apart and in order. They cover

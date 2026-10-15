@@ -110,12 +110,33 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         let shaped_across = wrapped
             && self.shaped.contains(ShapedFlags::HAS_UNSAFE)
             && self.stages.shaped.glyphs.word(start).is_unsafe_to_break();
-        let (window, head) = if shaped_across || trims {
+        // The marks after a space take the space's spacing in the prefix, and
+        // their own where they start a line.
+        let space_marks = wrapped
+            && self
+                .stages
+                .content
+                .flags
+                .contains(ContentFlags::NONZERO_SPACING)
+            && self.starts_with_space_marks(start);
+        let (window, head) = if shaped_across || trims || space_marks {
             self.start_window(out, para, start, trims).unzip()
         } else {
             (None, None)
         };
         (window, LineHead { mark, shaped: head })
+    }
+
+    /// Returns whether cluster `start` is the marks after a space
+    /// ([`Clusters::is_space_marks`]).
+    ///
+    /// [`Clusters::is_space_marks`]: crate::stages::analysis::Clusters::is_space_marks
+    #[inline(never)]
+    fn starts_with_space_marks(&self, start: ClusterId) -> bool {
+        let clusters = &self.stages.analysis.clusters;
+        clusters
+            .first_char(self.stages.text(), start)
+            .is_some_and(|ch| clusters.is_space_marks(start, ch))
     }
 
     /// Returns the piece of the start `window`, reshaping it if a one-piece line
@@ -330,6 +351,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             // ligature the piece forms is spaced as the piece has it. Seam room follows
             // every cluster but the last of a piece that ends a line.
             let spaced = LetterWordSpacing::from_shaping(&content.facts, run.shaping, self.words);
+            let line_start = edges.line_start;
             let paragraph = analysis.paragraphs.get(para.id);
             let source = self.stages.text();
             let edges = out.edges_mut();
@@ -339,9 +361,13 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             if let (Some(words), Some(advances)) = (words, advances) {
                 for (i, (word, advance)) in words.iter().zip(advances.iter_mut()).enumerate() {
                     let cluster = ClusterId::new(range.start.get() + i);
-                    let mut spacing = spaced
-                        .after_cluster(analysis, source, cluster, word.is_continuation())
-                        .raw();
+                    let continuation = word.is_continuation();
+                    let mut spacing = if i == 0 && line_start {
+                        spaced.after_line_start(analysis, source, cluster, continuation)
+                    } else {
+                        spaced.after_cluster(analysis, source, cluster, continuation)
+                    }
+                    .raw();
                     if seams
                         && !(i + 1 == count && ends_line)
                         && let Some(paragraph) = paragraph

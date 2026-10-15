@@ -898,6 +898,28 @@ fn japanese_and_chinese_tailor_normal() {
     assert_eq!(breaks_cut(text, &[(3, &ja), (6, &en)]), [] as [usize; 0]);
 }
 
+/// Chinese reads `“` as an opening bracket and `”` as a closing one, as ICU's
+/// Chinese and Japanese line rules do. Chrome 155 breaks `国国国国“` before
+/// the `“` in a 4em column in Chinese, and `国国国”a` after the `”`. It
+/// breaks neither between a letter and the `“` that follows it nor inside
+/// `“a`. In English, and in Chinese under `strict`, it breaks around neither.
+#[test]
+fn chinese_breaks_before_an_opening_and_after_a_closing_curly_quote() {
+    let zh = language("zh-Hans");
+    assert_eq!(breaks(&root_text(&zh, "国国国国“")), [3, 6, 9, 12]);
+    assert_eq!(breaks(&root_text(&zh, "国国国国“a")), [3, 6, 9, 12]);
+    assert_eq!(breaks(&root_text(&zh, "国国国”a")), [3, 6, 12]);
+    assert_eq!(breaks(&root_text(&zh, "国国国a“国")), [3, 6, 9]);
+    let en = language("en");
+    assert_eq!(breaks(&root_text(&en, "国国国国“")), [3, 6, 9]);
+    assert_eq!(breaks(&root_text(&en, "国国国”a")), [3, 6]);
+    let strict_zh = styled(|s| {
+        s.text.language = Language::parse("zh-Hans").ok();
+        s.text.line_break = LineBreak::Strict;
+    });
+    assert_eq!(breaks(&root_text(&strict_zh, "国国国国“")), [3, 6, 9]);
+}
+
 /// `overflow-wrap: anywhere` and `break-word` allow an emergency break after
 /// every cluster of text that wraps. They allow none after a paragraph's last
 /// cluster or inside a divided grapheme.
@@ -955,4 +977,166 @@ fn spaces_and_separators_hang_and_a_no_break_space_does_not() {
     });
     assert_eq!(layout.content().text, "a \u{200B}b \u{200B}cd \u{200B}e");
     assert_eq!(hanging(&layout), [" ", " ", "\u{200B}", " ", "\u{200B}"]);
+}
+
+/// Returns the pieces of `layout`'s text between its opportunities: its
+/// lines at a width of zero.
+fn pieces_between_breaks(layout: &Layout) -> Vec<&str> {
+    let text = layout.content().text.as_str();
+    let mut from = 0;
+    let mut out: Vec<&str> = breaks(layout)
+        .into_iter()
+        .map(|at| {
+            let piece = &text[from..at];
+            from = at;
+            piece
+        })
+        .collect();
+    out.push(&text[from..]);
+    out
+}
+
+/// A quotation mark breaks on the side it faces where East Asian characters
+/// stand either side of it (UAX #14 LB19a, Unicode 15.1): before an initial
+/// mark, after a final one. Chrome 155's lines at `width: 0`, measured with
+/// `getClientRects` on each character in Yu Gothic. The rules beside LB19
+/// still hold (`「“`, `”。`, `”々`), and a mark goes with its base (LB9).
+#[test]
+fn a_quotation_mark_between_east_asian_characters_breaks_as_chrome_breaks_it() {
+    let root = ComputedStyle::initial();
+    for (text, expected) in [
+        ("字“満字", &["字", "“満", "字"][..]),
+        ("字”で字", &["字”", "で", "字"]),
+        ("字‘満’字", &["字", "‘満’", "字"]),
+        ("字«満»字", &["字", "«満»", "字"]),
+        ("ｶ“ｶ”ｶ", &["ｶ", "“ｶ”", "ｶ"]),
+        ("가“가”가", &["가", "“가”", "가"]),
+        ("字　“満", &["字　", "“満"]),
+        ("」“満", &["」", "“満"]),
+        ("￥“満", &["￥", "“満"]),
+        ("字”（字", &["字”", "（字"]),
+        ("字”％", &["字”", "％"]),
+        ("字”ー", &["字”", "ー"]),
+        ("字”\u{301}満", &["字”\u{301}", "満"]),
+        ("字\u{301}“満", &["字\u{301}", "“満"]),
+        ("字“\u{301}満", &["字", "“\u{301}満"]),
+        // Not East Asian on both sides.
+        ("ab“満字", &["ab“満", "字"]),
+        ("字“ab", &["字“ab"]),
+        ("字”ab", &["字”ab"]),
+        ("ab”で", &["ab”で"]),
+        ("字“", &["字“"]),
+        ("”満", &["”満"]),
+        // Neither initial nor final, or facing the other way.
+        ("字\"満", &["字\"満"]),
+        ("字““満", &["字““満"]),
+        ("字””満", &["字””満"]),
+        // Held by the other rules.
+        ("「“満", &["「“満"]),
+        ("字”。", &["字”。"]),
+        ("字”々", &["字”々"]),
+        ("字”・", &["字”・"]),
+        ("字”…", &["字”…"]),
+        ("字”！", &["字”！"]),
+        ("字”」", &["字”」"]),
+        ("字”\u{A0}字", &["字”\u{A0}字"]),
+    ] {
+        let layout = root_text(&root, text);
+        assert_eq!(pieces_between_breaks(&layout), expected, "{text}");
+    }
+}
+
+/// The options still decide what follows the mark: `line-break: strict`
+/// holds `ー` (CJ) to it, `loose` does not. `keep-all` and `break-all` keep
+/// the breaks beside the marks, and `anywhere` breaks everywhere. Chrome 155
+/// at `width: 0`, in Japanese.
+#[test]
+fn a_quotation_mark_breaks_under_each_option_as_chrome_breaks_it() {
+    let japanese = |line_break: LineBreak, word_break: WordBreak| {
+        styled(|s| {
+            s.text.language = Language::parse("ja").ok();
+            s.text.line_break = line_break;
+            s.text.word_break = word_break;
+        })
+    };
+    let quoted = "字“満”で";
+    for (style, text, expected) in [
+        (
+            japanese(LineBreak::Normal, WordBreak::Normal),
+            quoted,
+            &["字", "“満”", "で"][..],
+        ),
+        (
+            japanese(LineBreak::Strict, WordBreak::Normal),
+            quoted,
+            &["字", "“満”", "で"],
+        ),
+        (
+            japanese(LineBreak::Loose, WordBreak::Normal),
+            quoted,
+            &["字", "“満”", "で"],
+        ),
+        (
+            japanese(LineBreak::Strict, WordBreak::Normal),
+            "字”ー",
+            &["字”ー"],
+        ),
+        (
+            japanese(LineBreak::Loose, WordBreak::Normal),
+            "字”ー",
+            &["字”", "ー"],
+        ),
+        (
+            word_break(WordBreak::KeepAll),
+            quoted,
+            &["字", "“満”", "で"],
+        ),
+        (
+            word_break(WordBreak::BreakAll),
+            quoted,
+            &["字", "“満”", "で"],
+        ),
+        (
+            line_break(LineBreak::Anywhere),
+            quoted,
+            &["字", "“", "満", "”", "で"],
+        ),
+    ] {
+        let layout = root_text(&style, text);
+        assert_eq!(pieces_between_breaks(&layout), expected, "{text}");
+    }
+}
+
+/// The quotation marks and East Asian widths the tailoring reads match
+/// Unicode's: Line_Break QU with General_Category Pi or Pf, and
+/// East_Asian_Width F, W or H.
+#[test]
+fn the_quotation_tailoring_reads_unicodes_classes() {
+    use icu_properties::CodePointMapData;
+    use icu_properties::props::{EastAsianWidth, GeneralCategory, LineBreak as Lb};
+    let lb = CodePointMapData::<Lb>::new();
+    let gc = CodePointMapData::<GeneralCategory>::new();
+    let ea = CodePointMapData::<EastAsianWidth>::new();
+    for ch in (0..=0x10_FFFF).filter_map(char::from_u32) {
+        let quote = lb.get(ch) == Lb::Quotation;
+        let (initial, final_, east_asian) = super::super::breaks::quotation_classes(ch);
+        assert_eq!(
+            initial,
+            quote && gc.get(ch) == GeneralCategory::InitialPunctuation,
+            "{ch:?}"
+        );
+        assert_eq!(
+            final_,
+            quote && gc.get(ch) == GeneralCategory::FinalPunctuation,
+            "{ch:?}"
+        );
+        assert_eq!(
+            east_asian,
+            matches!(
+                ea.get(ch),
+                EastAsianWidth::Fullwidth | EastAsianWidth::Wide | EastAsianWidth::Halfwidth
+            ),
+            "{ch:?}"
+        );
+    }
 }

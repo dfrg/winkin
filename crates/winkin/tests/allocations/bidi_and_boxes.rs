@@ -64,10 +64,15 @@ fn document(layout: &mut Layout, cx: &mut Context, direction: BaseDirection, rep
         ..root
     };
     // Two of them neither paint nor take room, so they are culled and read
-    // back from their descendants.
+    // back from their descendants. Their text splits its decorations at
+    // every space.
     let culled = |unicode_bidi, rtl: bool| ComputedStyle {
         edges: EdgesGroup::INITIAL,
         paints: false,
+        text: winkin::style::TextGroup {
+            decoration_skip_spaces: winkin::style::TextDecorationSkipSpaces::All,
+            ..root.text
+        },
         ..with(unicode_bidi, rtl, false)
     };
     let styles = [

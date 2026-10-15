@@ -649,6 +649,18 @@ impl<'a> ClusterWalk<'a> {
             },
         }
     }
+
+    /// Returns how many clusters it has handed out, and its pen: what
+    /// [`resumed`](Self::resumed) takes to go on from here.
+    pub(crate) fn position(&self) -> (usize, InlineLayoutUnit) {
+        (self.done, self.x)
+    }
+
+    /// Returns a new walk of the same item gone on to `position`, which an
+    /// earlier walk of it returned.
+    pub(crate) fn resumed(self, (done, x): (usize, InlineLayoutUnit)) -> Self {
+        Self { done, x, ..self }
+    }
 }
 
 impl Iterator for ClusterWalk<'_> {

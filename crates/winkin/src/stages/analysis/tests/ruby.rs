@@ -63,6 +63,39 @@ fn no_line_breaks_inside_a_ruby_column() {
     assert_eq!(outer, [3, 14, 16, 25, 31]);
 }
 
+/// The break after a ruby column reads a curly quote after it, or ending its
+/// base, as the Chinese line rules do. In a 4em column, Chrome 155 moves a
+/// `“` after `国国国<ruby>国<rt>x</rt></ruby>` to the next line alone in
+/// Chinese, and so the `a` after `国国<ruby>国”<rt>x</rt></ruby>`. In
+/// English it breaks after neither column.
+#[test]
+fn a_ruby_column_breaks_before_a_curly_quote_in_chinese() {
+    let breaks_after_column = |language: &str, base: &str, after: &str| {
+        let style = super::language(language);
+        let layout = build_with(&ComputedBlockStyle::new(&style), |b| {
+            b.text(key(1), "国国");
+            b.open_ruby(key(2), &style, None);
+            b.text(key(3), base);
+            b.open_annotation(key(4), &style, None);
+            b.text(key(5), "x");
+            b.close_annotation();
+            b.close_ruby();
+            b.text(key(6), after);
+        });
+        let analysis = layout.analysis();
+        let clusters = &analysis.clusters;
+        let end = 6 + base.len() + 1;
+        clusters.ids().any(|id| {
+            clusters.attrs(id).unwrap().has(ClusterAttrs::BREAK_AFTER)
+                && clusters.end(id).unwrap().end().get() == end
+        })
+    };
+    assert!(breaks_after_column("zh-Hans", "国", "“"));
+    assert!(!breaks_after_column("en", "国", "“"));
+    assert!(breaks_after_column("zh-Hans", "国”", "a"));
+    assert!(!breaks_after_column("en", "国”", "a"));
+}
+
 /// Every ruby part keeps the same internal soft and emergency decisions as
 /// ordinary text under its own style. Its last boundary, and boundaries
 /// between annotation levels, offer no internal opportunity.
@@ -447,4 +480,30 @@ fn nested_base_queries_use_child_closing_opportunities() {
             }
         }
     }
+}
+
+/// A ruby column whose base ends with a final quotation mark breaks before
+/// an East Asian character after it, and one before a column starting with
+/// an initial mark, as Chrome 155's `CanBreakAfterRubyColumn` asks ICU (UAX
+/// #14 LB19a). After `ab”` it does not. Measured at `width: 0` with
+/// `getClientRects`.
+#[test]
+fn a_column_beside_a_quotation_mark_breaks_as_chrome_breaks_it() {
+    let plain = ComputedStyle::initial();
+    let column = |before: &str, base: &str, after: &str| {
+        let layout = build(|b| {
+            b.text(key(1), before);
+            b.open_ruby(key(2), &plain, None);
+            b.text(key(3), base);
+            b.open_annotation(key(4), &plain, None);
+            b.text(key(5), "じ");
+            b.close_annotation();
+            b.close_ruby();
+            b.text(key(6), after);
+        });
+        breaks(&layout)
+    };
+    assert_eq!(column("", "字”", "で"), [9]);
+    assert_eq!(column("字", "“満", ""), [3]);
+    assert_eq!(column("", "ab”", "で"), [] as [usize; 0]);
 }

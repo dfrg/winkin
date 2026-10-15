@@ -424,6 +424,9 @@ struct RubyNesting {
     flattened: usize,
     /// Real ruby containers open, bounded by `MAX_RUBY_DEPTH`.
     depth: usize,
+    /// The next item, where `start_column` asked the annotation opening
+    /// there for an empty base of its own.
+    empty_base: Option<ItemId>,
 }
 
 /// The state of `::first-letter` and the initial letter.
@@ -524,6 +527,7 @@ impl<'a> ContentWriter<'a> {
                 annotations: 0,
                 flattened: 0,
                 depth: 0,
+                empty_base: None,
             },
             letters: Letters {
                 first_letter: FirstLetter::Unarmed,

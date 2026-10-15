@@ -1825,6 +1825,90 @@ fn an_annotation_outside_ruby_keeps_its_own_style() {
     assert_eq!(lefts(&layout), [(NodeKey(1), 0.0), (NodeKey(4), 53.0)]);
 }
 
+/// Annotations set beside one another rather than stacked. Chrome 155, 20px
+/// Ahem with 10px annotations:
+/// - `<ruby>A<rt>XX</rt><rt>yy</rt></ruby>C`, the second over an empty base
+///   that `start_column` asks for: from 0 to 20 and from 20 to 40, `C` at 40,
+///   the line 30 tall. An empty base overhangs nothing, and no line breaks
+///   after it: in 40px the line still holds `C`;
+/// - an annotation in a box in a base,
+///   `<ruby><span>A<rt>XXXX</rt>B</span></ruby>C`, which CSS Ruby wraps in an
+///   anonymous container over an empty base: from 20 to 60 over the line,
+///   `B` at 60 and `C` at 80. Chrome puts it from 20 to 60 too, but inside
+///   the line.
+#[test]
+fn annotations_with_bases_of_their_own_sit_side_by_side() {
+    let mut cx = context();
+    let mut layout = Layout::new();
+    let root = sized(&AHEM_FAMILY, 20.0);
+    let small = sized(&AHEM_FAMILY, 10.0);
+    type Found = Vec<(NodeKey, (f32, f32), f32)>;
+    let found = |layout: &Layout| -> Found {
+        let line = layout.line(0).expect("a line");
+        line.annotations()
+            .map(|annotation| {
+                (
+                    annotation.key(),
+                    ends(annotation.inline()),
+                    annotation.baseline(),
+                )
+            })
+            .collect()
+    };
+    let lefts = |layout: &Layout| -> Vec<(NodeKey, f32)> {
+        runs(layout, 0)
+            .iter()
+            .filter(|run| run.inline().right > run.inline().left)
+            .map(|run| (run.key(), run.inline().left))
+            .collect()
+    };
+    build(&mut cx, &mut layout, &ComputedBlockStyle::new(&root), |b| {
+        b.open_ruby(NodeKey(1), &root, None);
+        b.text(NodeKey(2), "A");
+        b.open_annotation(NodeKey(3), &small, None);
+        b.text(NodeKey(4), "XX");
+        b.close_annotation();
+        b.start_column();
+        b.open_annotation(NodeKey(5), &small, None);
+        b.text(NodeKey(6), "yy");
+        b.close_annotation();
+        b.close_ruby();
+        b.text(NodeKey(7), "C");
+    });
+    layout.break_lines(&mut cx, Area::new(400.0), &mut NoExclusions);
+    let metrics = layout.line(0).expect("a line").metrics();
+    assert_eq!((metrics.ascent, metrics.height()), (26.0, 30.0));
+    assert_eq!(
+        found(&layout),
+        [
+            (NodeKey(3), (0.0, 20.0), 8.0),
+            (NodeKey(5), (20.0, 40.0), 8.0)
+        ]
+    );
+    assert_eq!(lefts(&layout), [(NodeKey(2), 0.0), (NodeKey(7), 40.0)]);
+    layout.break_lines(&mut cx, Area::new(40.0), &mut NoExclusions);
+    assert_eq!(layout.lines().len(), 1);
+    assert_eq!(lefts(&layout), [(NodeKey(2), 0.0), (NodeKey(7), 40.0)]);
+    build(&mut cx, &mut layout, &ComputedBlockStyle::new(&root), |b| {
+        b.open_ruby(NodeKey(1), &root, None);
+        b.open_box(NodeKey(2), &root, None);
+        b.text(NodeKey(3), "A");
+        b.open_annotation(NodeKey(4), &small, None);
+        b.text(NodeKey(5), "XXXX");
+        b.close_annotation();
+        b.text(NodeKey(6), "B");
+        b.close_box();
+        b.close_ruby();
+        b.text(NodeKey(7), "C");
+    });
+    layout.break_lines(&mut cx, Area::new(400.0), &mut NoExclusions);
+    assert_eq!(found(&layout), [(NodeKey(4), (20.0, 60.0), 8.0)]);
+    assert_eq!(
+        lefts(&layout),
+        [(NodeKey(3), 0.0), (NodeKey(6), 60.0), (NodeKey(7), 80.0)]
+    );
+}
+
 /// A forced break beside a ruby that clears floats moves the next line,
 /// or the block's end, below them; inside a ruby it is a space and clears
 /// nothing. Chrome 153, a 100px square float on the left from a block

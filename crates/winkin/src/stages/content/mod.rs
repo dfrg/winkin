@@ -256,6 +256,10 @@ define_flags! {
         /// those of a container written as a box do. The writer sets the
         /// flag as each annotation opens.
         pub(crate) const ANNOTATION_FOLLOWS = 1 << 2;
+        /// An annotation's open item that starts its container's next column
+        /// over an empty base, where it would otherwise stack on the last
+        /// column as another level. The builder's `start_column` asks for it.
+        pub(crate) const EMPTY_BASE = 1 << 3;
     }
 }
 
@@ -627,6 +631,12 @@ define_flags! {
         /// A margin or padding of a box, atomic inline or float has a
         /// percentage, resolved against the content's basis.
         pub(crate) const PERCENTAGES = 1 << 25;
+        /// Some style sets `text-decoration-skip-spaces: all`, so a
+        /// decorated run may split at its spaces.
+        pub(crate) const SKIPS_ALL_SPACES = 1 << 26;
+        /// Some style sets `hyphens: auto` or `word-break: auto-phrase`, so
+        /// analysis may ask the host's hyphenator or phrase segmenter.
+        pub(crate) const HOSTED_BREAKS = 1 << 27;
     }
 }
 

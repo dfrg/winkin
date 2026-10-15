@@ -248,6 +248,9 @@ pub struct TestFont {
     /// `locl` under this language system of `latn`: the character takes a
     /// glyph of its own, half an em wide.
     pub localized: Option<([u8; 4], char)>,
+    /// The script tags `GSUB` and `GPOS` list, ascending, each with every
+    /// feature in its default language system: `DFLT` and `latn` unless set.
+    pub scripts: Vec<[u8; 4]>,
     /// `GSUB` and `GPOS` are there but hold offsets past their own ends, so
     /// no lookup in them can be read.
     pub broken_layout: bool,
@@ -316,6 +319,7 @@ impl TestFont {
             raised: Vec::new(),
             kerning: Vec::new(),
             localized: None,
+            scripts: vec![*b"DFLT", *b"latn"],
             broken_layout: false,
             alternates: Vec::new(),
             contextual: Vec::new(),
@@ -729,7 +733,7 @@ impl TestFont {
             features.push((*tag, vec![lookups.len() as u16]));
             lookups.push(lookup(5, context_subst(coverage(glyphs), single)));
         }
-        (!features.is_empty()).then(|| layout_table(&features, lookups, localized))
+        (!features.is_empty()).then(|| layout_table(&self.scripts, &features, lookups, localized))
     }
 
     /// `GPOS`, or `None` where nothing is positioned.
@@ -790,7 +794,7 @@ impl TestFont {
         if lookups.is_empty() {
             return None;
         }
-        Some(layout_table(&features, lookups, None))
+        Some(layout_table(&self.scripts, &features, lookups, None))
     }
 }
 
@@ -1218,12 +1222,14 @@ fn lang_sys(indices: &[u16]) -> Vec<u8> {
 }
 
 /// A `GSUB` or `GPOS` table, version 1.0, with `features` (each a tag and
-/// its lookups, in tag order) and `lookups`, under `DFLT` and `latn`.
+/// its lookups, in tag order) and `lookups`, under the script tags
+/// `scripts`, ascending.
 ///
-/// Every feature is in both scripts' default language system but the one
+/// Every feature is in each script's default language system but the one
 /// `localized` names, which is only in its own language system of `latn`,
 /// with the rest.
 fn layout_table(
+    scripts: &[[u8; 4]],
     features: &[([u8; 4], Vec<u16>)],
     lookups: Vec<Vec<u8>>,
     localized: Option<([u8; 4], u16)>,
@@ -1255,13 +1261,17 @@ fn layout_table(
         }
         parent(head, &slots, children)
     };
-    let mut scripts = Vec::new();
-    push16(&mut scripts, 2);
-    scripts.extend_from_slice(b"DFLT");
-    push16(&mut scripts, 0);
-    scripts.extend_from_slice(b"latn");
-    push16(&mut scripts, 0);
-    let scripts = parent(scripts, &[6, 12], vec![script(false), script(true)]);
+    let mut list = Vec::new();
+    push16(&mut list, scripts.len() as u16);
+    let mut slots = Vec::new();
+    let mut children = Vec::new();
+    for tag in scripts {
+        list.extend_from_slice(tag);
+        slots.push(list.len());
+        push16(&mut list, 0);
+        children.push(script(tag == b"latn"));
+    }
+    let scripts = parent(list, &slots, children);
 
     let mut feature_list = Vec::new();
     push16(&mut feature_list, features.len() as u16);

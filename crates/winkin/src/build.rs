@@ -360,7 +360,8 @@ impl<'a> LayoutBuilder<'a> {
     /// Opens a ruby container with `key` and `style`.
     ///
     /// Content forms the base until an annotation opens. Base content after
-    /// an annotation starts the next column.
+    /// an annotation starts the next column;
+    /// [`start_column`](Self::start_column) starts one over an empty base.
     ///
     /// The container is an inline box: its edges take room, `unicode-bidi`
     /// applies, and [`Layout::box_fragments`](crate::Layout::box_fragments)
@@ -386,9 +387,12 @@ impl<'a> LayoutBuilder<'a> {
     /// [`open_annotation_with_position`](Self::open_annotation_with_position)
     /// sets another side.
     ///
-    /// Closes any boxes or annotations open inside the container first.
-    /// Outside ruby, opens an anonymous container with an empty base, which
-    /// [`close_annotation`](Self::close_annotation) closes with the annotation.
+    /// Closes any annotation open inside the container first, with the boxes
+    /// inside it. Outside ruby, or inside a box in a base, opens an anonymous
+    /// container with an empty base, as CSS Ruby wraps an annotation whose
+    /// parent is no ruby container.
+    /// [`close_annotation`](Self::close_annotation) closes it with the
+    /// annotation.
     pub fn open_annotation(
         &mut self,
         key: NodeKey,
@@ -413,6 +417,18 @@ impl<'a> LayoutBuilder<'a> {
     ) {
         self.writer
             .annotation(key, style, first_line, Some(position));
+    }
+
+    /// Starts the next column of the innermost ruby container.
+    ///
+    /// Base text after an annotation starts a column by itself. With none,
+    /// the next annotation would stack on the last column as another level;
+    /// after this call it sits beside it, over an empty base, as CSS Ruby
+    /// pairs an annotation that has no base of its own. Does nothing unless
+    /// the innermost open container is a ruby container with an annotation
+    /// closed in it.
+    pub fn start_column(&mut self) {
+        self.writer.start_column();
     }
 
     /// Closes the innermost annotation and its open descendants.

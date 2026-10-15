@@ -19,10 +19,20 @@
 //!   ASCII text runs no segmenter except under `anywhere`. Where the options allow, the stream reads Latin-1
 //!   opportunities from a pair table of ICU's answers (`pairs`), handing
 //!   over to ICU and back at opportunities.
+//! - **Curly double quotes** under the Japanese and Chinese options are read
+//!   as brackets, as ICU4C's rules for those languages read them
+//!   ([`fill_cj_text`]).
 //!
 //! The opportunities are ICU's either way. The tests hold the table to ICU
 //! for every pair it covers, and the stream to ICU over UAX #14's test
-//! strings and text that switches back and forth.
+//! strings and text that switches back and forth. The writer adds one
+//! tailoring over them: ICU4X keeps the LB19 of Unicode 15.0, so the breaks
+//! LB19a allows beside a quotation mark in East Asian text come from
+//! [`is_quotation_break`].
+
+use core::str;
+
+use alloc::string::String;
 
 use icu_locale_core::{LanguageIdentifier, langid};
 use icu_segmenter::LineSegmenterBorrowed;
@@ -31,7 +41,7 @@ use icu_segmenter::options::{LineBreakOptions, LineBreakStrictness, LineBreakWor
 use icu_segmenter::scaffold::Utf8;
 
 use crate::style::{LineBreak, WordBreak};
-use crate::work;
+use crate::{unicode, work};
 
 /// The language passed for Japanese or Chinese text. The segmenter tailors
 /// only for those two, alike.
@@ -61,8 +71,14 @@ impl LineKey {
     /// Returns the key for `line-break: strictness` and `word-break: word`.
     ///
     /// `cjk` says the language is Japanese or Chinese
-    /// (`TextFlags::CJK_LINE_BREAKS`).
+    /// (`TextFlags::CJK_LINE_BREAKS`). `auto-phrase` segments as `normal`,
+    /// as Blink's `kPhrase` does; the writer then keeps only the phrase
+    /// boundaries between ideographs and kana.
     pub(super) fn new(strictness: LineBreak, word: WordBreak, cjk: bool) -> Self {
+        let word = match word {
+            WordBreak::AutoPhrase => WordBreak::Normal,
+            word => word,
+        };
         match strictness {
             LineBreak::Anywhere => Self {
                 strictness,
@@ -131,6 +147,17 @@ impl LineKey {
             .unwrap_or_else(fallback)
     }
 
+    /// Returns whether ICU reads the text with U+201C as an opening bracket
+    /// and U+201D as a closing one ([`fill_cj_text`]).
+    ///
+    /// It does under the Japanese and Chinese tailoring, as ICU's `_cj` line
+    /// rules do. Chrome 155 breaks before `“` and after `”` beside ideographs
+    /// wherever it also breaks before U+301C `〜`: in Chinese under `normal`
+    /// and `loose`, and in no language under `strict`.
+    pub(super) fn reads_cj_quotes(self) -> bool {
+        self.ja_zh
+    }
+
     /// Returns whether the key is `line-break: normal`, under which a small
     /// kana may start a line unless the config holds it.
     pub(super) fn is_normal(self) -> bool {
@@ -140,7 +167,7 @@ impl LineKey {
     /// Returns the key's slot among the context's segmenters.
     pub(super) fn index(self) -> usize {
         let word = match self.word {
-            WordBreak::Normal => 0,
+            WordBreak::Normal | WordBreak::AutoPhrase => 0,
             WordBreak::BreakAll => 1,
             WordBreak::KeepAll => 2,
         };
@@ -192,13 +219,13 @@ impl From<LineBreak> for LineBreakStrictness {
     }
 }
 
-/// Returns ICU's word option for `word-break: word`; the three values match
-/// one to one.
+/// Returns ICU's word option for `word-break: word`. Three values match one
+/// to one, and `auto-phrase` segments as `normal`.
 ///
 /// A function rather than a `From`, since both types are foreign.
 fn word_option(word: WordBreak) -> LineBreakWordOption {
     match word {
-        WordBreak::Normal => LineBreakWordOption::Normal,
+        WordBreak::Normal | WordBreak::AutoPhrase => LineBreakWordOption::Normal,
         WordBreak::BreakAll => LineBreakWordOption::BreakAll,
         WordBreak::KeepAll => LineBreakWordOption::KeepAll,
     }
@@ -218,6 +245,10 @@ fn word_option(word: WordBreak) -> LineBreakWordOption {
 /// needs its dictionaries or LSTM, since the table covers none of it.
 pub(super) struct LineStream<'t> {
     text: &'t str,
+    /// The text as ICU reads it under a key that reads CJ quotes
+    /// ([`LineKey::reads_cj_quotes`]): `text` with its curly double quotes
+    /// swapped, or `text` itself where it has none.
+    cj_text: &'t str,
     segmenter: LineSegmenterBorrowed<'static>,
     /// ICU's iterator, over the text from `base`; `None` while the table
     /// answers.
@@ -238,14 +269,18 @@ pub(super) struct LineStream<'t> {
 impl<'t> LineStream<'t> {
     /// Creates a stream over `text` under `key`, from `at`, a paragraph's
     /// start.
+    ///
+    /// `cj_text` is `text` as [`fill_cj_text`] swaps it, or `text` itself.
     pub(super) fn new(
         text: &'t str,
+        cj_text: &'t str,
         at: usize,
         segmenter: LineSegmenterBorrowed<'static>,
         key: LineKey,
     ) -> Self {
         let mut stream = Self {
             text,
+            cj_text,
             segmenter,
             iter: None,
             base: at,
@@ -276,9 +311,14 @@ impl<'t> LineStream<'t> {
 
     /// Starts ICU at `from`, which is `ahead`.
     fn start_icu(&mut self, from: usize) {
+        let text = if self.key.reads_cj_quotes() {
+            self.cj_text
+        } else {
+            self.text
+        };
         let mut iter = self
             .segmenter
-            .segment_str(self.text.get(from..).unwrap_or_default());
+            .segment_str(text.get(from..).unwrap_or_default());
         // Skips ICU's first answer, 0, which is `from`.
         iter.next();
         self.iter = Some(iter);
@@ -353,6 +393,38 @@ impl<'t> LineStream<'t> {
     }
 }
 
+/// Writes `text` into `out` with U+201C swapped for U+2045 `⁅`, an opening
+/// bracket, and U+201D for U+2046 `⁆`, a closing one. Returns whether it
+/// swapped any; where it swapped none, `out` is left empty.
+///
+/// ICU's Japanese and Chinese line rules (`line_cj.txt` and its `normal`
+/// and `loose` variants) class the two quotes so, which lets a line break
+/// before `“` and after `”`. ICU4X's segmenter does not, so a stream under
+/// such a key reads the swapped text. Each stand-in is three bytes long, as
+/// the quote is, and not East Asian wide, as the quote is not, so every
+/// offset and every other rule stay as they were.
+pub(super) fn fill_cj_text(text: &str, out: &mut String) -> bool {
+    out.clear();
+    // Each single-character search runs `memchr`; the two-character pattern
+    // would decode every character.
+    if !text.contains('\u{201C}') && !text.contains('\u{201D}') {
+        return false;
+    }
+    let mut from = 0;
+    for (at, quote) in text.match_indices(['\u{201C}', '\u{201D}']) {
+        work::step();
+        out.push_str(text.get(from..at).unwrap_or_default());
+        out.push(if quote == "\u{201C}" {
+            '\u{2045}'
+        } else {
+            '\u{2046}'
+        });
+        from = at + quote.len();
+    }
+    out.push_str(text.get(from..).unwrap_or_default());
+    true
+}
+
 /// Returns whether a line may break at byte `at` of `text` under
 /// `segmenter`; never at the text's start or end.
 ///
@@ -376,6 +448,134 @@ pub(super) fn is_break_opportunity(
     false
 }
 
+/// Returns whether a cluster starting with `before_first` and one starting
+/// with `after_first` may meet at a quotation mark UAX #14's LB19a breaks
+/// beside: an initial quotation mark after, or a final one before.
+///
+/// A cheap test before [`is_quotation_break`], which decides.
+#[inline]
+pub(super) fn may_break_beside_quotation(before_first: char, after_first: char) -> bool {
+    is_initial_quotation(after_first) || is_final_quotation(before_first)
+}
+
+/// Returns whether UAX #14 breaks between `before` and `after` beside a
+/// quotation mark East Asian characters surround, where the segmenter
+/// holds the pair together.
+///
+/// `before` is the text up to the boundary and `after` the text from it.
+/// ICU4X's line segmenter keeps the LB19 of Unicode 15.0: no break on either
+/// side of any quotation mark. Unicode 15.1 narrows LB19 to the side a
+/// quotation mark faces and adds LB19a, which breaks on that side where East
+/// Asian characters (East_Asian_Width F, W or H) stand either side of the
+/// mark, as Chrome's ICU does:
+/// - before an initial (Pi) mark, where the character before it and the one
+///   after it are East Asian;
+/// - after a final (Pf) mark, where the character before it and the one
+///   after it are East Asian.
+///
+/// Marks and joiners after a character go with it (LB9). The rules before
+/// and after LB19 still hold the pair where they apply (`「“`, `”。`). They
+/// read the mark as a class with no rules of its own, so the segmenter
+/// answers for the East Asian neighbour beside U+2014 (B2), which none of
+/// them names next to an East Asian character.
+#[inline(never)]
+pub(super) fn is_quotation_break(
+    segmenter: LineSegmenterBorrowed<'static>,
+    before: &str,
+    after: &str,
+) -> bool {
+    /// Stands in for the quotation mark: B2, ruled only beside B2.
+    const STAND_IN: char = '\u{2014}';
+    let mut back = before.chars().rev().filter(|&ch| !is_attached(ch));
+    let mut ahead = after.chars();
+    let (Some(near), Some(first)) = (back.next(), ahead.next()) else {
+        return false;
+    };
+    let mut ahead = ahead.filter(|&ch| !is_attached(ch));
+    let mut pair = [0u8; 8];
+    let (left, right, at) = if is_initial_quotation(first) {
+        // [^EA] × QU and × QU ([^EA] | eot).
+        if !is_uax14_east_asian(near) || !ahead.next().is_some_and(is_uax14_east_asian) {
+            return false;
+        }
+        (near, STAND_IN, near.len_utf8())
+    } else if is_final_quotation(near) {
+        // (sot | [^EA]) QU × and QU × [^EA].
+        if !back.next().is_some_and(is_uax14_east_asian) || !is_uax14_east_asian(first) {
+            return false;
+        }
+        (STAND_IN, first, STAND_IN.len_utf8())
+    } else {
+        return false;
+    };
+    let length = left.encode_utf8(&mut pair).len();
+    let length = length + right.encode_utf8(&mut pair[length..]).len();
+    let text = str::from_utf8(&pair[..length]).unwrap_or_default();
+    is_break_opportunity(segmenter, text, at)
+}
+
+/// Returns whether `ch` goes with the character before it under UAX #14's
+/// LB9: a mark, a variation selector or a zero width joiner.
+fn is_attached(ch: char) -> bool {
+    ch == '\u{200D}' || unicode::is_mark(ch) || unicode::is_variation_selector(ch)
+}
+
+/// Returns whether `ch` is East_Asian_Width Fullwidth, Wide or Halfwidth,
+/// UAX #14's `$EastAsian`.
+fn is_uax14_east_asian(ch: char) -> bool {
+    unicode::rare_props(ch).is_wide()
+        || matches!(
+            ch,
+            '\u{20A9}'
+                | '\u{FF61}'..='\u{FFBE}'
+                | '\u{FFC2}'..='\u{FFC7}'
+                | '\u{FFCA}'..='\u{FFCF}'
+                | '\u{FFD2}'..='\u{FFD7}'
+                | '\u{FFDA}'..='\u{FFDC}'
+                | '\u{FFE8}'..='\u{FFEE}'
+        )
+}
+
+/// Returns whether `ch` is an initial quotation mark: Line_Break QU and
+/// General_Category Pi.
+#[inline]
+fn is_initial_quotation(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{AB}'
+            | '\u{2018}'
+            | '\u{201B}'
+            | '\u{201C}'
+            | '\u{201F}'
+            | '\u{2039}'
+            | '\u{2E02}'
+            | '\u{2E04}'
+            | '\u{2E09}'
+            | '\u{2E0C}'
+            | '\u{2E1C}'
+            | '\u{2E20}'
+    )
+}
+
+/// Returns whether `ch` is a final quotation mark: Line_Break QU and
+/// General_Category Pf.
+#[inline]
+fn is_final_quotation(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{BB}'
+            | '\u{2019}'
+            | '\u{201D}'
+            | '\u{203A}'
+            | '\u{2E03}'
+            | '\u{2E05}'
+            | '\u{2E0A}'
+            | '\u{2E0D}'
+            | '\u{2E1D}'
+            | '\u{2E21}'
+    )
+}
+
 #[cfg(test)]
 impl LineKey {
     /// The key UAX #14's conformance tests assume: `strict`, `normal` words,
@@ -390,4 +590,15 @@ impl LineKey {
     pub(super) fn round_trips() -> bool {
         (0..Self::COUNT).all(|index| Self::from_index(index).index() == index)
     }
+}
+
+/// Returns whether `ch` is an initial quotation mark, a final one, and East
+/// Asian, as [`is_quotation_break`] reads them.
+#[cfg(test)]
+pub(super) fn quotation_classes(ch: char) -> (bool, bool, bool) {
+    (
+        is_initial_quotation(ch),
+        is_final_quotation(ch),
+        is_uax14_east_asian(ch),
+    )
 }

@@ -317,3 +317,33 @@ fn any_spacing_or_indent_gives_valid_lines() {
         }
     }
 }
+
+/// A line starting at the marks after a space gives them their own
+/// letter-spacing and not the space's word-spacing, as Chrome 155 does: in
+/// Arial at 20 px, 60 px wide, `aa \u{301}bb` under `letter-spacing: 10px`
+/// and `word-spacing: 100px` sets the mark at the second line's start with
+/// 10 px after it. A test font with a zero-width mark at 10 px, 2 px letter-
+/// and 3 px word-spacing.
+#[test]
+fn a_line_starting_at_a_spaces_marks_spaces_them_as_chrome_does() {
+    let mut font = TestFont::new("Test Space Marks", &[(0x20, 0x7E), (0x301, 0x301)]);
+    font.advances = vec![('\u{301}', 0)];
+    let mut fixture = Fixture::new(
+        &[font],
+        han_fallback("Test Space Marks"),
+        StageCheck::Placed(check),
+    );
+    let mut layout = Layout::new();
+    let family = [FontFamilyName::named("Test Space Marks")];
+    let mut style = sized(&family, 10.0);
+    style.text.letter_spacing = LengthPercentage::from_px(2.0);
+    style.text.word_spacing = LengthPercentage::from_px(3.0);
+    fixture.text(&mut layout, &style, "XX \u{301}XX");
+    fixture.lay_out(&mut layout, 20.0);
+    assert_eq!(texts(&layout), ["XX ", "\u{301}XX"]);
+    let widths: Vec<f32> = records(&layout)
+        .iter()
+        .map(|line| line.width.to_px())
+        .collect();
+    assert_eq!(widths, [14.0, 16.0]);
+}

@@ -185,6 +185,25 @@ pub enum LineBreak {
     Anywhere,
 }
 
+/// `word-break`: where lines may break between letters.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
+pub enum WordBreak {
+    /// The customary rules for each script. The initial value.
+    #[default]
+    Normal,
+    /// An opportunity between any two letters, as for ideographs.
+    BreakAll,
+    /// No opportunity between letters, ideographs included.
+    KeepAll,
+    /// Japanese text breaks only between phrases, where a
+    /// [`PhraseSegmenter`](crate::segment::PhraseSegmenter) finds them.
+    ///
+    /// A line that no phrase boundary lets fit breaks as under `normal`.
+    /// Text in another language, or with no segmenter on the
+    /// [`Context`](crate::Context), breaks as under `normal`.
+    AutoPhrase,
+}
+
 /// `hyphens`.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub enum Hyphens {
@@ -193,7 +212,12 @@ pub enum Hyphens {
     /// Breaks at soft hyphens only. The initial value.
     #[default]
     Manual,
-    /// Breaks at soft hyphens and where a dictionary for the language allows.
+    /// Breaks at soft hyphens and where a
+    /// [`Hyphenator`](crate::segment::Hyphenator) finds a break in a word of
+    /// the text's language.
+    ///
+    /// With no hyphenator on the [`Context`](crate::Context), or text with no
+    /// language, behaves as `manual`.
     Auto,
 }
 
@@ -389,13 +413,55 @@ pub enum TextJustify {
     InterCharacter,
 }
 
+/// `text-decoration-skip-spaces`: the spaces that underlines, overlines and
+/// lines through leave out.
+///
+/// The spaces are U+0020, the tab, the no-break spaces and the other space
+/// separators (Unicode category Zs), with any word-spacing after them. A tab
+/// has no decoration under any value.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
+pub enum TextDecorationSkipSpaces {
+    /// `none`: decorations run under every space.
+    None,
+    /// `all`: decorations leave out the spaces at a line's ends and the
+    /// spaces between two characters of one text run.
+    ///
+    /// They also leave out the letter-spacing at the right end of the line's
+    /// content. Spaces at either end of a text run inside the line keep their
+    /// decoration.
+    All,
+    /// `start`: decorations leave out the spaces at a line's start.
+    Start,
+    /// `end`: decorations leave out the spaces at a line's end.
+    End,
+    /// `start end`: decorations leave out the spaces at both ends of a line.
+    ///
+    /// The initial value.
+    #[default]
+    StartEnd,
+}
+
+impl TextDecorationSkipSpaces {
+    /// Returns whether the spaces at a line's start are left out.
+    pub(crate) fn skips_start(self) -> bool {
+        matches!(self, Self::All | Self::Start | Self::StartEnd)
+    }
+
+    /// Returns whether the spaces at a line's end are left out.
+    pub(crate) fn skips_end(self) -> bool {
+        matches!(self, Self::All | Self::End | Self::StartEnd)
+    }
+}
+
 same_by_value!(
+    TextDecorationSkipSpaces,
     WhiteSpaceCollapse,
     WhiteSpaceTrim,
     TextCase,
     TextTransform,
     TextSecurity,
     LineBreak,
+    WordBreak,
     Hyphens,
     TextAutospace,
     TextSpacingTrim,

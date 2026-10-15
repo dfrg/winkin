@@ -711,6 +711,17 @@ impl<'a> Sizing<'_, 'a> {
             let annotation = item.flags.contains(ItemFlags::ANNOTATION);
             match item.kind {
                 ItemKind::RubyOpen if item.node != self.container && !annotation => break,
+                // An annotation over an empty base of its own starts the next
+                // column.
+                ItemKind::AnnotationOpen
+                    if state.level.is_none()
+                        && state.count > 0
+                        && item.flags.contains(ItemFlags::EMPTY_BASE) =>
+                {
+                    state.close = Some(state.after_close);
+                    state.ended = true;
+                    break;
+                }
                 ItemKind::AnnotationOpen if state.level.is_none() => {
                     if state.count == 0 {
                         state.levels = out.rare_mut().rubies.levels.next_id();

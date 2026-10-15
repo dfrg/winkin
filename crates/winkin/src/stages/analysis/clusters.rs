@@ -119,7 +119,7 @@ impl ClusterClass {
         match self {
             Self::Tab => ParagraphFlags::HAS_TABS.union(ParagraphFlags::HAS_SHAPING_STOPS),
             Self::Object | Self::BreakOpportunity => ParagraphFlags::HAS_SHAPING_STOPS,
-            Self::SoftHyphen => ParagraphFlags::HAS_SOFT_HYPHEN,
+            Self::SoftHyphen => ParagraphFlags::HAS_HYPHENS,
             _ => ParagraphFlags::NONE,
         }
     }
@@ -169,6 +169,33 @@ impl ClusterClass {
     #[inline]
     pub(crate) fn is_breaking_space(self) -> bool {
         matches!(self, Self::Space | Self::Tab | Self::OtherSpace)
+    }
+
+    /// Returns whether the class is a space `text-decoration-skip-spaces`
+    /// leaves out: a space, a tab, a no-break space or another space
+    /// separator, the document white space and category Zs that draw.
+    #[inline]
+    pub(crate) fn is_decoration_space(self) -> bool {
+        matches!(
+            self,
+            Self::Space | Self::NoBreakSpace | Self::Tab | Self::OtherSpace
+        )
+    }
+
+    /// Returns whether the class draws nothing and takes no room of its own,
+    /// so it joins whatever spaces or text stand around it: a separator, a soft
+    /// hyphen, a zero-width space, another default-ignorable or a generated
+    /// break opportunity.
+    #[inline]
+    pub(crate) fn is_invisible(self) -> bool {
+        matches!(
+            self,
+            Self::Separator
+                | Self::SoftHyphen
+                | Self::ZeroWidthSpace
+                | Self::Control
+                | Self::BreakOpportunity
+        )
     }
 }
 
@@ -367,14 +394,21 @@ impl Clusters {
             && text
                 .get(start..)
                 .and_then(|rest| rest.chars().next())
-                .is_some_and(|ch| {
-                    matches!(
-                        unicode::rare_props(ch).grapheme_cluster_break(),
-                        GraphemeClusterBreak::Extend
-                            | GraphemeClusterBreak::SpacingMark
-                            | GraphemeClusterBreak::Zwj
-                    )
-                })
+                .is_some_and(extends_grapheme)
+    }
+
+    /// Returns whether `cluster`, whose first character is `first`, is the
+    /// marks after a space: the cluster before is a space, and `first`
+    /// extends its grapheme.
+    #[inline]
+    pub(crate) fn is_space_marks(&self, cluster: ClusterId, first: char) -> bool {
+        !first.is_ascii()
+            && cluster
+                .get()
+                .checked_sub(1)
+                .and_then(|before| self.class(ClusterId::new(before)))
+                == Some(ClusterClass::Space)
+            && extends_grapheme(first)
     }
 
     /// Returns where `cluster` starts, the end of the cluster before.
@@ -597,4 +631,15 @@ impl Clusters {
 
 heap_bytes! {
     Clusters { ends, attrs, stops }
+}
+
+/// Returns whether `ch` goes on with the grapheme before it: Grapheme_Cluster_Break
+/// Extend, SpacingMark or ZWJ.
+fn extends_grapheme(ch: char) -> bool {
+    matches!(
+        unicode::rare_props(ch).grapheme_cluster_break(),
+        GraphemeClusterBreak::Extend
+            | GraphemeClusterBreak::SpacingMark
+            | GraphemeClusterBreak::Zwj
+    )
 }

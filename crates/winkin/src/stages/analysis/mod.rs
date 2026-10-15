@@ -23,6 +23,7 @@ mod classify;
 mod clusters;
 mod context;
 mod graphemes;
+mod hosted;
 mod items;
 mod pairs;
 mod paragraphs;
@@ -35,6 +36,7 @@ mod walk;
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::mem;
 use core::ops::Range;
 
 use crate::config::SmallKana;
@@ -73,8 +75,14 @@ pub(crate) struct AnalysisScratch {
     /// A ruby column's base and the text after the column, which decide a
     /// break after the column.
     column_text: String,
+    /// The text with its curly double quotes swapped, which the line
+    /// segmenter reads under the Japanese and Chinese options
+    /// (`breaks::fill_cj_text`). Empty outside a call.
+    cj_text: String,
     /// See [`AnalysisScratch::hyphen_nodes`].
     hyphen_nodes: Vec<(NodeId, ClusterId)>,
+    /// The break opportunities the host found in the text item being walked.
+    hosted: hosted::HostedPoints,
 }
 
 impl AnalysisScratch {
@@ -84,12 +92,15 @@ impl AnalysisScratch {
             pending_runs: Vec::new(),
             bidi: bidi::BidiInput::new(),
             column_text: String::new(),
+            cj_text: String::new(),
             hyphen_nodes: Vec::new(),
+            hosted: hosted::HostedPoints::new(),
         }
     }
 
-    /// Returns the nodes whose text holds a breakable soft hyphen, each with
-    /// its first such cluster, in text order, from the last analysis.
+    /// Returns the nodes whose text holds a breakable soft hyphen or a
+    /// hyphenation opportunity, each with its first such cluster, in text
+    /// order, from the last analysis.
     ///
     /// A node repeats only where another node's text comes between. Font
     /// selection reads this to choose the hyphen's font.
@@ -97,8 +108,8 @@ impl AnalysisScratch {
         &self.hyphen_nodes
     }
 
-    /// Records `cluster` as a breakable soft hyphen in `node`, unless `node`
-    /// is the last node recorded.
+    /// Records `cluster` as a breakable soft hyphen or a hyphenation
+    /// opportunity in `node`, unless `node` is the last node recorded.
     fn push_hyphen_node(&mut self, node: NodeId, cluster: ClusterId) {
         let nodes = &mut self.hyphen_nodes;
         if nodes.last().is_none_or(|&(last, _)| last != node) {
@@ -108,7 +119,7 @@ impl AnalysisScratch {
 }
 
 heap_bytes! {
-    AnalysisScratch { pending_runs, bidi, column_text, hyphen_nodes }
+    AnalysisScratch { pending_runs, bidi, column_text, cj_text, hyphen_nodes, hosted }
 }
 
 impl Default for AnalysisScratch {
@@ -157,16 +168,23 @@ pub(crate) fn analyze(
     out.clear();
     scratch.pending_runs.clear();
     scratch.hyphen_nodes.clear();
+    scratch.hosted.clear();
     scratch.bidi.begin();
     // A text has at most one cluster per character, and Latin and CJK text
     // has exactly one.
     out.clusters.reserve(content.text.as_str().chars().count());
     out.item_clusters.reserve(content.items.len());
-    let mut writer = ClusterWriter::new(input, cx, scratch, out);
+    // Taken out of scratch for the walk, which borrows the rest of it.
+    let mut cj_text = mem::take(&mut scratch.cj_text);
+    let swapped = breaks::fill_cj_text(content.text.as_str(), &mut cj_text);
+    let mut writer =
+        ClusterWriter::new(input, cx, scratch, out, swapped.then_some(cj_text.as_str()));
     for (id, item) in content.items.iter() {
         writer.visit_item(id, item);
     }
     writer.finish();
+    cj_text.clear();
+    scratch.cj_text = cj_text;
 }
 
 define_id! {
@@ -229,8 +247,43 @@ impl Analysis {
         self.runs.clear();
         if let Some(extras) = &mut self.extras {
             extras.control_levels.clear();
+            extras.hyphens.clear();
         }
         self.flags = ParagraphFlags::NONE;
+    }
+
+    /// Returns whether a line that breaks after `cluster`, with attributes
+    /// `attrs`, ends in a generated hyphen.
+    ///
+    /// It does after a soft hyphen a line may break after, and after a
+    /// hyphenation opportunity the host found.
+    #[inline]
+    pub(crate) fn breaks_with_hyphen(&self, cluster: ClusterId, attrs: ClusterAttrs) -> bool {
+        (attrs.class() == ClusterClass::SoftHyphen && attrs.has(ClusterAttrs::BREAK_AFTER))
+            || (self.extras.is_some() && self.is_hosted_hyphen(cluster))
+    }
+
+    /// Returns whether a break after `cluster` draws a hosted hyphen
+    /// ([`Analysis::hosted_hyphens`]).
+    #[inline(never)]
+    pub(crate) fn is_hosted_hyphen(&self, cluster: ClusterId) -> bool {
+        self.hosted_hyphens().binary_search(&cluster).is_ok()
+    }
+
+    /// Returns the clusters after which a break draws a hyphen though their
+    /// class says nothing of one, in order. Empty unless the host
+    /// hyphenated some text or a soft hyphen broke under `auto-phrase`.
+    #[inline]
+    pub(crate) fn hosted_hyphens(&self) -> &[ClusterId] {
+        self.extras
+            .as_deref()
+            .map_or(&[], |extras| extras.hyphens.as_slice())
+    }
+
+    /// Records that a break after `cluster`, the last cluster written,
+    /// draws a hyphen, boxing the extras on first use.
+    fn push_hyphen(&mut self, cluster: ClusterId) {
+        self.extras.get_or_insert_default().hyphens.push(cluster);
     }
 
     /// Returns the levels of the bidi controls that line layout reorders
@@ -284,10 +337,15 @@ struct AnalysisExtras {
     /// clusters on both sides, and every absolutely positioned box's anchor.
     /// Only paragraphs with right-to-left text and mixed levels keep any.
     control_levels: Vec<ControlLevel>,
+    /// The clusters after which a break draws a hyphen though their class
+    /// says nothing of one, in order: the host's hyphenation opportunities,
+    /// and the soft hyphens of `auto-phrase` text, which break only where
+    /// nothing else fits.
+    hyphens: Vec<ClusterId>,
 }
 
 heap_bytes! {
-    AnalysisExtras { control_levels }
+    AnalysisExtras { control_levels, hyphens }
 }
 
 impl Default for Analysis {

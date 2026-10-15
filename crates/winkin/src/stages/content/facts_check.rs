@@ -23,9 +23,9 @@ use crate::data::{Id, IdRange};
 use crate::style::{
     BaseDirection, BoxDecorationBreak, ComputedStyle, Direction, DominantBaseline,
     FirstLineVariant, FontVariantPosition, HangingPunctuation, Hyphens, LengthPercentage,
-    LineHeight, OverflowWrap, Sides, TextBoxEdge, TextBoxTrim, TextCombineUpright, TextEdgeOver,
-    TextEdgeUnder, TextJustify, TextOrientation, TextWrapMode, UnicodeBidi, VerticalAlign,
-    WritingMode,
+    LineHeight, OverflowWrap, Sides, TextBoxEdge, TextBoxTrim, TextCombineUpright,
+    TextDecorationSkipSpaces, TextEdgeOver, TextEdgeUnder, TextJustify, TextOrientation,
+    TextWrapMode, UnicodeBidi, VerticalAlign, WordBreak, WritingMode,
 };
 use crate::unit::{LayoutUnit, TextUnit};
 
@@ -76,6 +76,8 @@ pub(crate) fn lowered(
         ContentFlags::TRIMS_PUNCTUATION,
         ContentFlags::VARIANT_POSITION,
         ContentFlags::TEXT_JUSTIFY,
+        ContentFlags::SKIPS_ALL_SPACES,
+        ContentFlags::HOSTED_BREAKS,
     ] {
         assert!(
             !wanted.contains(flag) || flags.contains(flag),
@@ -199,8 +201,16 @@ fn noted_text(flags: &mut ContentFlags, style: &StyleKey) {
         autospace.ideograph_alpha || autospace.ideograph_numeric,
     );
     flags.set(
+        ContentFlags::SKIPS_ALL_SPACES,
+        style.text.decoration_skip_spaces == TextDecorationSkipSpaces::All,
+    );
+    flags.set(
         ContentFlags::VARIANT_POSITION,
         style.font.variant_position != FontVariantPosition::Normal,
+    );
+    flags.set(
+        ContentFlags::HOSTED_BREAKS,
+        style.text.hyphens == Hyphens::Auto || style.text.word_break == WordBreak::AutoPhrase,
     );
 }
 
@@ -286,6 +296,7 @@ fn text_is(
             && flag(TextFlags::WRAPS) == wraps
             && flag(TextFlags::WHITE_SPACE_HANGS) == text_group.white_space_hangs()
             && flag(TextFlags::HYPHENS_NONE) == (text_group.hyphens == Hyphens::None)
+            && flag(TextFlags::HYPHENS_AUTO) == (text_group.hyphens == Hyphens::Auto)
             && flag(TextFlags::EMERGENCY)
                 == (wraps && text_group.overflow_wrap != OverflowWrap::Normal)
             && flag(TextFlags::CJK_LINE_BREAKS) == matches!(language.language(), "ja" | "zh")
@@ -313,6 +324,11 @@ fn text_is(
             && flag(TextFlags::ANYWHERE) == (text_group.overflow_wrap == OverflowWrap::Anywhere)
             && flag(TextFlags::RTL) == (style.bidi.direction == Direction::Rtl)
             && flag(TextFlags::EMPHASIS) == text_group.emphasis.marks
+            && flag(TextFlags::SKIPS_START_SPACES)
+                == text_group.decoration_skip_spaces.skips_start()
+            && flag(TextFlags::SKIPS_END_SPACES) == text_group.decoration_skip_spaces.skips_end()
+            && flag(TextFlags::SKIPS_ALL_SPACES)
+                == (text_group.decoration_skip_spaces == TextDecorationSkipSpaces::All)
             && text.emphasis_side == text_group.emphasis.position.side(writing_mode)
             && text.emphasis_skip == text_group.emphasis.skip
             && flag(TextFlags::AUTOSPACE_ALPHA)

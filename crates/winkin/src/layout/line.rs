@@ -189,7 +189,8 @@ impl<'a> Line<'a> {
         self.record.level(&self.layout.stages().analysis.paragraphs)
     }
 
-    /// Returns `true` if the line ends with a visible soft hyphen.
+    /// Returns `true` if the line ends with a generated hyphen, at a soft
+    /// hyphen or a hyphenation opportunity.
     ///
     /// The generated hyphen follows the text in the item sequence.
     pub fn is_hyphenated(&self) -> bool {

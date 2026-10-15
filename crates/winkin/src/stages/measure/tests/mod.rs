@@ -205,7 +205,7 @@ fn check(layout: &Layout, cx: &Context) {
     let soft_hyphens = layout
         .analysis()
         .flags
-        .contains(ParagraphFlags::HAS_SOFT_HYPHEN);
+        .contains(ParagraphFlags::HAS_HYPHENS);
     if !flags.contains(ContentFlags::CLONE_BOXES)
         && !flags.contains(ContentFlags::LINE_PADDING)
         && !flags.contains(ContentFlags::RUBY)

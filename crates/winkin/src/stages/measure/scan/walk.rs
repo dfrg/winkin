@@ -137,11 +137,17 @@ impl<'a> ScanWalk<'a> {
         if spacing.is_none() || self.combined || !spacing.may_space(class) {
             return InlineLayoutUnit::ZERO;
         }
-        let text = scan.input.analysis.clusters.text(scan.source, at);
+        let clusters = &scan.input.analysis.clusters;
+        let text = clusters.text(scan.source, at);
         let continuation = scan.shaped.glyphs.word(at).is_continuation();
-        // The text's first cluster is the one at its offset 0.
-        let first = at == ClusterId::new(0);
-        InlineLayoutUnit::from_text(spacing.after(class, text, continuation, first))
+        InlineLayoutUnit::from_text(spacing.after_text(
+            clusters,
+            scan.source,
+            class,
+            text,
+            at,
+            continuation,
+        ))
     }
 
     /// Returns the room of an autospace seam after cluster `at`, and moves

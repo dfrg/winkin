@@ -10,6 +10,7 @@
 //! [`Context::finish_build`] and [`Context::start_break`] release scratch
 //! far bigger than the last calls needed.
 
+use alloc::boxed::Box;
 #[cfg(test)]
 use alloc::vec::Vec;
 use core::mem;
@@ -18,6 +19,7 @@ use fontwich::Collection;
 
 use crate::config::Config;
 use crate::data::HeapBytes;
+use crate::segment::{Hyphenator, PhraseSegmenter};
 use crate::stages::analysis::{AnalysisContext, AnalysisScratch, ClusterId};
 use crate::stages::content::{ContentScratch, Lists, NodeId};
 #[cfg(test)]
@@ -82,7 +84,8 @@ pub struct Context {
     content_scratch: ContentScratch,
     /// Font selection's working memory.
     font_scratch: FontScratch,
-    /// The segmenters analysis runs.
+    /// The segmenters analysis runs, and the host's hyphenator and phrase
+    /// segmenter.
     analysis: AnalysisContext,
     /// Analysis's working memory.
     analysis_scratch: AnalysisScratch,
@@ -176,6 +179,26 @@ impl Context {
         &self.config
     }
 
+    /// Sets what finds the hyphenation opportunities of `hyphens: auto`
+    /// text, or removes it with `None`.
+    ///
+    /// Without a hyphenator, `hyphens: auto` breaks only at soft hyphens, as
+    /// `manual` does. Existing layouts keep the opportunities found when
+    /// they were built until rebuilt.
+    pub fn set_hyphenator(&mut self, hyphenator: Option<Box<dyn Hyphenator>>) {
+        self.analysis.hyphenator = hyphenator;
+    }
+
+    /// Sets what finds the phrases of `word-break: auto-phrase` text, or
+    /// removes it with `None`.
+    ///
+    /// Without a phrase segmenter, `auto-phrase` breaks as `normal` does.
+    /// Existing layouts keep the opportunities found when they were built
+    /// until rebuilt.
+    pub fn set_phrase_segmenter(&mut self, segmenter: Option<Box<dyn PhraseSegmenter>>) {
+        self.analysis.phrases = segmenter;
+    }
+
     /// Sets how many entries each cache keeps.
     ///
     /// A cache above its new limit drops its least recently used entries
@@ -195,7 +218,8 @@ impl Context {
     /// Drops every cached font, plan and list, and releases all working
     /// memory.
     ///
-    /// Keeps the collection, the configuration and the cache limits.
+    /// Keeps the collection, the configuration, the cache limits, and any
+    /// hyphenator and phrase segmenter.
     /// Existing layouts stay valid. Later builds and line breaking fill the
     /// caches again and give the same results.
     pub fn clear_caches(&mut self) {

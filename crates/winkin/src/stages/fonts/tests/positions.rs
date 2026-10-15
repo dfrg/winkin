@@ -236,3 +236,53 @@ fn a_feature_only_a_context_reaches_covers_nothing() {
     assert_eq!(coverages.len(), 1);
     assert!(coverages.first().is_some_and(Charset::is_empty));
 }
+
+/// A font over ASCII and the characters of `block` whose features are
+/// listed only under the script tags `tags`, its `sups` covering `chars`.
+fn superscripts_under(
+    family: &str,
+    block: (u32, u32),
+    tags: &[[u8; 4]],
+    chars: &[char],
+) -> TestFont {
+    let mut font = TestFont::new(family, &[(0x20, 0x7E), block]);
+    font.alternates = vec![(*b"sups", chars.iter().map(|&ch| (ch, 300)).collect())];
+    font.scripts = tags.to_vec();
+    font
+}
+
+/// A font that lists its features only under a newer Indic or Myanmar
+/// script tag (`dev2`, `dev3`, `mym2`) has them for that script's text, as
+/// Chrome's HarfBuzz tries those tags before the first-generation one
+/// (`hb_ot_tags_from_script`). One listing them under another script's tag
+/// has none for it, and the run is synthesized.
+#[test]
+fn a_font_with_only_a_newer_indic_script_tag_has_its_features() {
+    let devanagari = ['\u{915}', '\u{916}'];
+    let myanmar = ['\u{1000}', '\u{1001}'];
+    let fonts = [
+        superscripts_under("Test Dev2", (0x900, 0x97F), &[*b"dev2"], &devanagari),
+        superscripts_under("Test Dev3", (0x900, 0x97F), &[*b"dev3"], &devanagari),
+        superscripts_under("Test Mym2", (0x1000, 0x109F), &[*b"mym2"], &myanmar),
+        superscripts_under("Test Tml2", (0x900, 0x97F), &[*b"tml2"], &devanagari),
+    ];
+    let mut fixture = fixture_with(&fonts);
+    let mut layout = Layout::new();
+    for (name, text, offered) in [
+        ("Test Dev2", "\u{915}\u{916}", true),
+        ("Test Dev3", "\u{915}\u{916}", true),
+        ("Test Mym2", "\u{1000}\u{1001}", true),
+        ("Test Tml2", "\u{915}\u{916}", false),
+    ] {
+        let family = [FontFamilyName::named(name)];
+        fixture.span(&mut layout, &style_super(&family), text);
+        if offered {
+            assert!(
+                all_set(&layout, UsedSynthesis::None, &[("sups", 1)]),
+                "{name}"
+            );
+        } else {
+            assert!(all_set(&layout, super_30px(), &[]), "{name}");
+        }
+    }
+}

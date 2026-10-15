@@ -79,7 +79,7 @@ pub(super) struct Scan<'a> {
     baseline: LineBaseline,
     /// Which clusters take word-spacing.
     words: WordSpacingRule,
-    /// The shaped hyphens, which a line ending at a soft hyphen pays.
+    /// The shaped hyphens, which a line ending at a hyphenated break pays.
     generated: &'a GeneratedTexts,
     /// Each text's primary-font metrics.
     metrics: &'a Table<TextFactsId, TextMetrics>,
@@ -108,9 +108,14 @@ pub(super) struct Scan<'a> {
     /// Some text is combined (`text-combine-upright`). Combined text takes
     /// no spacing and ends every autospace seam.
     has_combined: bool,
-    /// Some paragraph has a soft hyphen. Without one, no line ending owes a
-    /// hyphen, and the plain fast path skips its two hyphen tests a cluster.
-    has_soft_hyphens: bool,
+    /// Some paragraph has a soft hyphen or a hyphenation opportunity.
+    /// Without one, no line ending owes a hyphen, and the plain fast path
+    /// skips its two hyphen tests a cluster.
+    has_hyphens: bool,
+    /// The host hyphenated some text, or a soft hyphen broke under
+    /// `auto-phrase` ([`Analysis::hosted_hyphens`]). Without either, the
+    /// plain fast path looks for soft hyphens alone.
+    has_hosted_hyphens: bool,
     /// The plain fast path is open ([`Walking::plain_fast_path`]): no style
     /// makes a text cluster pay beyond its advance.
     plain_fast_path_open: bool,
@@ -363,7 +368,8 @@ impl<'a> Scan<'a> {
             has_hanging,
             has_ruby,
             has_combined: analysis.flags.contains(ParagraphFlags::HAS_COMBINED),
-            has_soft_hyphens: analysis.flags.contains(ParagraphFlags::HAS_SOFT_HYPHEN),
+            has_hyphens: analysis.flags.contains(ParagraphFlags::HAS_HYPHENS),
+            has_hosted_hyphens: !analysis.hosted_hyphens().is_empty(),
             plain_fast_path_open: work::fast_paths() && !has_ruby && !has_padding && !has_hanging,
         }
     }
@@ -626,7 +632,7 @@ impl<'w, 'a> Walking<'w, 'a> {
             }
         });
         (self.widths).cluster(outer_attrs, step, tab, self.walk.facts.flags);
-        self.record_line_end(at, class, (attrs, outer_attrs), gap, step);
+        self.record_line_end(at, (attrs, outer_attrs), gap, step);
         // The gate: the content allows the fast path, the item is plain, and the
         // paragraph has no seams.
         if scan.plain_fast_path_open
@@ -635,7 +641,7 @@ impl<'w, 'a> Walking<'w, 'a> {
             && held.is_some()
             && !self.walk.has_seams
         {
-            return if scan.has_soft_hyphens {
+            return if scan.has_hyphens {
                 self.plain_fast_path::<true>(next_at)
             } else {
                 self.plain_fast_path::<false>(next_at)
@@ -795,8 +801,9 @@ impl<'w, 'a> Walking<'w, 'a> {
     /// Records what a line ending after the cluster at `at` ends with.
     ///
     /// - `gap`, the seam's room after the cluster, which the line gives back.
-    /// - After a breakable soft hyphen, the hyphen, snapped to the grid as
-    ///   Chrome's `HyphenResult::InlineSize` is.
+    /// - After a breakable soft hyphen or a hyphenation opportunity, the
+    ///   hyphen, snapped to the grid as Chrome's `HyphenResult::InlineSize`
+    ///   is.
     /// - Where the cluster doesn't hang, its padding and the mark that may
     ///   hang. `step` is its advance with `gap`.
     ///
@@ -805,16 +812,16 @@ impl<'w, 'a> Walking<'w, 'a> {
     fn record_line_end(
         &mut self,
         at: ClusterId,
-        class: ClusterClass,
         (attrs, outer_attrs): (Option<ClusterAttrs>, Option<ClusterAttrs>),
         gap: InlineLayoutUnit,
         step: InlineLayoutUnit,
     ) {
         let (scan, walk, ends) = (self.scan, &self.walk, &mut self.ends);
         ends.seam_given = gap;
-        if class == ClusterClass::SoftHyphen
+        let analysis = scan.input.analysis;
+        if scan.has_hyphens
             && !walk.annotation()
-            && outer_attrs.is_some_and(|attrs| attrs.has(ClusterAttrs::BREAK_AFTER))
+            && outer_attrs.is_some_and(|attrs| analysis.breaks_with_hyphen(at, attrs))
         {
             let generated = scan.generated;
             ends.hyphen_owed =
@@ -823,7 +830,7 @@ impl<'w, 'a> Walking<'w, 'a> {
         let hangs = attrs.is_some_and(|attrs| attrs.has(ClusterAttrs::HANGS));
         if (scan.has_padding || scan.has_hanging) && !hangs {
             // A mark hangs its own advance; the seam's room is given back already.
-            let clusters = &scan.input.analysis.clusters;
+            let clusters = &analysis.clusters;
             ends.content(walk, step - gap, || clusters.first_char(scan.source, at));
         }
     }
@@ -832,12 +839,15 @@ impl<'w, 'a> Walking<'w, 'a> {
     /// cluster pays only its advance.
     ///
     /// It runs to the end of the current item, its paragraph, or the scan,
-    /// entering the item's next segment where a shaping run ends inside it. A
-    /// breakable soft hyphen's hyphen is charged at the next boundary
+    /// entering the item's next segment where a shaping run ends inside it.
+    /// The hyphen of a breakable soft hyphen or a hyphenation opportunity is
+    /// charged at the next boundary
     /// ([`LineEndState::take_plain_hyphen`]).
     ///
-    /// With `HYPHENS` false the text has no soft hyphen and the loop skips
-    /// the hyphen tests.
+    /// With `HYPHENS` false the text has no soft hyphen or hyphenation
+    /// opportunity, and the loop skips the hyphen tests. Hosted hyphens
+    /// ([`Analysis::hosted_hyphens`]) are looked up only where the analysis
+    /// lists some.
     ///
     /// Returns where it stopped: the end, or before a sized tab or an atomic
     /// inline's U+FFFC, which the general body handles.
@@ -848,7 +858,8 @@ impl<'w, 'a> Walking<'w, 'a> {
     #[inline(always)]
     fn plain_fast_path<const HYPHENS: bool>(&mut self, from: ClusterId) -> ClusterId {
         let scan = self.scan;
-        let clusters = &scan.input.analysis.clusters;
+        let analysis = scan.input.analysis;
+        let clusters = &analysis.clusters;
         let mut at = from;
         loop {
             let fast_end = self.walk.until.min(scan.end);
@@ -892,8 +903,9 @@ impl<'w, 'a> Walking<'w, 'a> {
                 writer.sum += advance;
                 widths.cluster(attrs, advance, Tab::NONE, text);
                 if HYPHENS
-                    && class == ClusterClass::SoftHyphen
-                    && attrs.is_some_and(|attrs| attrs.has(ClusterAttrs::BREAK_AFTER))
+                    && ((class == ClusterClass::SoftHyphen
+                        && attrs.is_some_and(|attrs| attrs.has(ClusterAttrs::BREAK_AFTER)))
+                        || (scan.has_hosted_hyphens && analysis.is_hosted_hyphen(at)))
                 {
                     let generated = scan.generated;
                     ends.hyphen_owed =

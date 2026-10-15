@@ -404,7 +404,7 @@ fn check(layout: &Layout, cx: &Context) {
     let soft_hyphens = layout
         .analysis()
         .flags
-        .contains(ParagraphFlags::HAS_SOFT_HYPHEN);
+        .contains(ParagraphFlags::HAS_HYPHENS);
     let cuts = layout.content().block.may_cut_lines();
     let mut last = None;
     for (style, kind, text) in cx.generated_fonts().iter() {

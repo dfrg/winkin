@@ -24,6 +24,7 @@ use super::classify::{
     first_class, glues, hangs, is_latin1_fast, latin1_fast_char, latin1_fast_class,
 };
 use super::graphemes::GraphemeCursor;
+use super::hosted::{self, Hosted, ItemWords};
 use super::scripts::{self, RunBuilder, Setting};
 use super::{
     Analysis, AnalysisContext, AnalysisInput, AnalysisScratch, BidiLevel, ClusterAttrs,
@@ -35,7 +36,9 @@ use crate::stages::content::{
     BoxFacts, Content, ContentFlags, Item, ItemFlags, ItemId, ItemKind, LanguageId, MAX_RUBY_DEPTH,
     NodeId, TextFlags, TextSetting,
 };
-use crate::style::{Direction, FirstLineVariant, TextCombineUpright, WhiteSpaceCollapse};
+use crate::style::{
+    Direction, FirstLineVariant, Language, TextCombineUpright, WhiteSpaceCollapse, WordBreak,
+};
 use crate::unicode::{self, CoreProps, RareProps};
 use crate::unit::LayoutUnit;
 use crate::work;
@@ -429,6 +432,24 @@ impl RubyState {
         self.part = self.part.saturating_add(1);
     }
 
+    /// Starts the innermost container's next column over an empty base, at
+    /// an annotation that opened.
+    ///
+    /// A root column takes the next number, and no line breaks after it, as
+    /// after Chrome's empty base. A nested base starts again, empty.
+    fn empty_base(&mut self) {
+        if self.containers == 1 {
+            self.serial = self.serial.saturating_add(1);
+            self.column = self.serial;
+            self.bases[0].after_annotation = false;
+        } else if let Some(base) = self.innermost() {
+            *base = RubyBase {
+                annotation_follows: base.annotation_follows,
+                ..RubyBase::default()
+            };
+        }
+    }
+
     /// Closes an annotation. Once none is open, base text after it starts
     /// the base again, and a nested base decides the next boundary.
     /// `annotation_follows` is true if another annotation of the container
@@ -530,6 +551,9 @@ const COLUMN_LOOKAHEAD: usize = 8;
 pub(super) struct ClusterWriter<'a> {
     content: &'a Content,
     text: &'a str,
+    /// The text as the line segmenter reads it under the Japanese and Chinese
+    /// options: `text` with its curly double quotes swapped, or `text`.
+    cj_text: &'a str,
     cx: &'a AnalysisContext,
     scratch: &'a mut AnalysisScratch,
     out: &'a mut Analysis,
@@ -545,6 +569,15 @@ pub(super) struct ClusterWriter<'a> {
     item: ItemInfo,
     /// The item being walked.
     item_id: ItemId,
+    /// The byte where the text item being walked starts.
+    item_start: usize,
+    /// What the host's segmenters change in the opportunities of the text
+    /// item being walked ([`ClusterWriter::begin_hosted`]).
+    hosted: Hosted,
+    /// Some style asks for `hyphens: auto` or `auto-phrase`, and the context
+    /// has a hyphenator or a phrase segmenter. Without both, no item asks the
+    /// host.
+    asks_host: bool,
     /// The byte where the text item being walked ends.
     item_end: usize,
     /// Whether the last character was U+FFFC.
@@ -577,11 +610,15 @@ pub(super) struct ClusterWriter<'a> {
 
 impl<'a> ClusterWriter<'a> {
     /// Starts the writer over the content of `input`, writing into `out`.
+    ///
+    /// `cj_text` is the content's text with its curly double quotes swapped
+    /// (`breaks::fill_cj_text`), or `None` where it has none.
     pub(super) fn new(
         input: &AnalysisInput<'a>,
         cx: &'a AnalysisContext,
         scratch: &'a mut AnalysisScratch,
         out: &'a mut Analysis,
+        cj_text: Option<&'a str>,
     ) -> Self {
         let AnalysisInput {
             content,
@@ -594,6 +631,7 @@ impl<'a> ClusterWriter<'a> {
         Self {
             content,
             text,
+            cj_text: cj_text.unwrap_or(text),
             cx,
             scratch,
             out,
@@ -604,6 +642,10 @@ impl<'a> ClusterWriter<'a> {
             pending: None,
             item,
             item_id: ItemId::default(),
+            item_start: 0,
+            hosted: Hosted::None,
+            asks_host: content.flags.contains(ContentFlags::HOSTED_BREAKS)
+                && (cx.hyphenator.is_some() || cx.phrases.is_some()),
             item_end: 0,
             after_object: false,
             paragraph: ParagraphState::default(),
@@ -662,6 +704,9 @@ impl ClusterWriter<'_> {
             ItemKind::AnnotationOpen => {
                 self.bidi_edge(item);
                 self.ruby.annotation_open(self.pending, item.start);
+                if item.flags.contains(ItemFlags::EMPTY_BASE) {
+                    self.ruby.empty_base();
+                }
                 self.stop_shaping();
             }
             ItemKind::AnnotationClose => {
@@ -746,19 +791,25 @@ impl ClusterWriter<'_> {
             self.combine.all = 0;
         }
         let start = item.start.get();
+        self.item_start = start;
         self.item_end = item.end.get();
         let Some(text) = self.text.get(start..item.end.get()) else {
             debug_assert!(false, "items fall on character boundaries");
             return;
         };
+        if self.asks_host {
+            self.begin_hosted();
+        }
         // An atomic inline is its own cluster on both sides, so it is never
         // a continuation of what precedes it.
         let object = self.item.kind == ItemKind::Atomic;
-        // The Latin-1 fast path runs only in horizontal text outside ruby.
+        // The Latin-1 fast path runs only in horizontal text outside ruby,
+        // where the host's segmenters change nothing.
         let fast_path = work::fast_paths()
             && self.item.kind == ItemKind::Text
             && self.item.setting == TextSetting::Horizontal
-            && self.ruby.containers == 0;
+            && self.ruby.containers == 0
+            && self.hosted == Hosted::None;
         let mut chars = text.char_indices();
         // The offset of `chars` in the item's text, which the fast path
         // advances.
@@ -808,6 +859,63 @@ impl ClusterWriter<'_> {
                 base = self.latin1_fast_path(text, start, from, next);
                 chars = text.get(base..).unwrap_or_default().char_indices();
             }
+        }
+    }
+
+    /// Asks the host's segmenters about the text item being walked, and sets
+    /// what its opportunities take from them.
+    ///
+    /// Phrases need a phrase segmenter, which is asked only about Japanese
+    /// text; without one, `auto-phrase` text takes hyphens as other text
+    /// does. Hyphens need a hyphenator and a language. Ruby and annotations
+    /// take neither. Out of line: few texts ask.
+    #[inline(never)]
+    fn begin_hosted(&mut self) {
+        self.hosted = Hosted::None;
+        self.scratch.hosted.clear();
+        let item = &self.item;
+        if item.kind != ItemKind::Text
+            || !item.wraps
+            || item.annotation
+            || self.ruby.containers != 0
+        {
+            return;
+        }
+        let content = self.content;
+        let cx = self.cx;
+        let id = content
+            .nodes
+            .text_facts(item.node, FirstLineVariant::Standard);
+        let text = content.facts.text(id);
+        let language = content.languages.get(item.language);
+        let range = TextOffset::new(self.item_start)..TextOffset::new(self.item_end);
+        if text.word_break == WordBreak::AutoPhrase
+            && let Some(segmenter) = cx.phrases.as_deref()
+        {
+            if language.language().eq_ignore_ascii_case("ja") {
+                self.hosted = Hosted::Phrases;
+                let points = &mut self.scratch.hosted;
+                hosted::segment_phrases(points, self.text, range, language, segmenter);
+            } else {
+                self.hosted = Hosted::Unsegmented;
+            }
+            return;
+        }
+        if text.has(TextFlags::HYPHENS_AUTO)
+            && language != Language::UND
+            && let Some(hyphenator) = cx.hyphenator.as_deref()
+        {
+            self.hosted = Hosted::Hyphens;
+            let key = self.item.key;
+            let words = ItemWords {
+                text: self.text,
+                cj_text: self.cj_text,
+                range,
+                key,
+                segmenter: cx.line(key),
+                language,
+            };
+            hosted::hyphenate(&mut self.scratch.hosted, &words, hyphenator);
         }
     }
 
@@ -933,7 +1041,7 @@ impl ClusterWriter<'_> {
     /// Out of line, so the fast path's loop pays one test for it.
     #[inline(never)]
     fn write_soft_hyphen(&mut self, node: NodeId, id: ClusterId, breaks: bool) {
-        self.paragraph.flags.insert(ParagraphFlags::HAS_SOFT_HYPHEN);
+        self.paragraph.flags.insert(ParagraphFlags::HAS_HYPHENS);
         if breaks {
             self.scratch.push_hyphen_node(node, id);
         }
@@ -1089,7 +1197,13 @@ impl ClusterWriter<'_> {
         if !self.paragraph.open {
             self.open_paragraph();
             let key = self.item.key;
-            self.stream = Some(LineStream::new(self.text, at, self.cx.line(key), key));
+            self.stream = Some(LineStream::new(
+                self.text,
+                self.cj_text,
+                at,
+                self.cx.line(key),
+                key,
+            ));
         }
         self.paragraph.controls |= mem::take(&mut self.controls);
         if starts_part {
@@ -1141,6 +1255,9 @@ impl ClusterWriter<'_> {
     fn finish_cluster(&mut self, pending: Pending, next: Option<&Pending>, end: usize) {
         let class = pending.class();
         let mut attrs = ClusterAttrs::new(class);
+        // Whether a break after the cluster draws a hyphen that its class
+        // does not imply.
+        let mut hyphen = false;
         // No opportunity at a paragraph's end, or before a separator, which
         // ends the line anyway. A filter that adds opportunities
         // (`break-spaces`, an atomic inline's) could otherwise leave the
@@ -1154,6 +1271,12 @@ impl ClusterWriter<'_> {
             // of text that allows `overflow-wrap`.
             let either = pending.item.emergency || next.item.emergency;
             let (breaks, emergency) = match self.boundary(&pending, next) {
+                Boundary::Text if self.hosted != Hosted::None => {
+                    let breaks = self.stream_breaks(false, &pending, class, next);
+                    let hosted = self.hosted_break(&pending, class, next, breaks);
+                    hyphen = hosted.2;
+                    (hosted.0, either || hosted.1)
+                }
                 Boundary::Text => (self.stream_breaks(false, &pending, class, next), either),
                 Boundary::InsidePart => (self.stream_breaks(true, &pending, class, next), either),
                 Boundary::AfterColumn => (self.breaks_after_base(next, self.ruby.bases[0]), either),
@@ -1206,6 +1329,11 @@ impl ClusterWriter<'_> {
         if class == ClusterClass::SoftHyphen && attrs.has(ClusterAttrs::BREAK_AFTER) {
             self.scratch.push_hyphen_node(pending.item.node, id);
         }
+        if hyphen {
+            self.out.push_hyphen(id);
+            self.scratch.push_hyphen_node(pending.item.node, id);
+            self.paragraph.flags.insert(ParagraphFlags::HAS_HYPHENS);
+        }
         let started = self.script_runs.cluster(
             &mut self.scratch.pending_runs,
             id,
@@ -1224,6 +1352,52 @@ impl ClusterWriter<'_> {
         }
         if class.is_forced_break() {
             self.end_paragraph();
+        }
+    }
+
+    /// Returns what the host's segmenters make of the boundary after
+    /// `pending`, of `class`, before `next`, both in the text item being
+    /// walked: whether a line may break there, whether only where nothing
+    /// else fits, and whether a break there draws a hyphen.
+    ///
+    /// `breaks` is the answer without them. A boundary the item shares with
+    /// the text before keeps it. Out of line: few texts ask.
+    #[inline(never)]
+    fn hosted_break(
+        &mut self,
+        pending: &Pending,
+        class: ClusterClass,
+        next: &Pending,
+        breaks: bool,
+    ) -> (bool, bool, bool) {
+        if pending.start < self.item_start {
+            return (breaks, false, false);
+        }
+        let at = next.start;
+        let points = &mut self.scratch.hosted;
+        match self.hosted {
+            Hosted::Hyphens => match points.take(at) {
+                // The text's last word breaks only where nothing else fits.
+                Some(true) if !breaks => (false, true, true),
+                Some(false) if !breaks => (true, false, true),
+                _ => (breaks, false, false),
+            },
+            // A soft hyphen breaks, with its hyphen, only where nothing else
+            // fits.
+            Hosted::Phrases | Hosted::Unsegmented
+                if class == ClusterClass::SoftHyphen && breaks =>
+            {
+                (false, true, true)
+            }
+            Hosted::Phrases
+                if breaks
+                    && hosted::is_phrase_letter(pending.last)
+                    && hosted::is_phrase_letter(next.first)
+                    && points.take(at).is_none() =>
+            {
+                (false, true, false)
+            }
+            _ => (breaks, false, false),
         }
     }
 
@@ -1271,6 +1445,12 @@ impl ClusterWriter<'_> {
             return false;
         }
         let start = start.get();
+        let key = next.item.key;
+        let text = if key.reads_cj_quotes() {
+            self.cj_text
+        } else {
+            self.text
+        };
         // Gathers the base text, without any nested annotation, in scratch.
         let scratch = &mut self.scratch.column_text;
         scratch.clear();
@@ -1283,11 +1463,11 @@ impl ClusterWriter<'_> {
             let from = item.start.get().max(start);
             let to = item.end.get().min(base_end);
             if from < to {
-                scratch.push_str(self.text.get(from..to).unwrap_or_default());
+                scratch.push_str(text.get(from..to).unwrap_or_default());
             }
         }
         let base = scratch.as_str();
-        let following = self.text.get(next.start..).unwrap_or_default();
+        let following = text.get(next.start..).unwrap_or_default();
         // Reads a few characters of the following text, stopping at a
         // paragraph's end.
         let mut reach = 0;
@@ -1302,7 +1482,6 @@ impl ClusterWriter<'_> {
         // asks them before ICU.
         let mut base_chars = base.chars().rev();
         let (last_char, before) = (base_chars.next(), base_chars.next());
-        let key = next.item.key;
         let segmenter = self.cx.line(key);
         let answer = match (last_char, following.chars().next()) {
             (Some(last), Some(first)) => key.ascii_or(
@@ -1313,6 +1492,11 @@ impl ClusterWriter<'_> {
                     let length = scratch.len();
                     scratch.push_str(following.get(..reach).unwrap_or_default());
                     super::breaks::is_break_opportunity(segmenter, scratch, length)
+                        || super::breaks::is_quotation_break(
+                            segmenter,
+                            scratch.get(..length).unwrap_or_default(),
+                            following,
+                        )
                 },
             ),
             // With no base text or nothing after it, there is no pair.
@@ -1346,11 +1530,22 @@ impl ClusterWriter<'_> {
         // The character before the cluster's last, which the hyphen rule
         // reads; found only when asked.
         let before = self.text.get(from..next.start).unwrap_or_default();
-        let breaks = next.item.key.ascii_or(
+        let cx = self.cx;
+        let text = self.text;
+        let key = next.item.key;
+        let breaks = key.ascii_or(
             || before.chars().rev().nth(1),
             pending.last,
             next.first,
-            || stream.as_mut().is_some_and(|stream| stream.at(next.start)),
+            || {
+                stream.as_mut().is_some_and(|stream| stream.at(next.start))
+                    || (super::breaks::may_break_beside_quotation(pending.first, next.first)
+                        && super::breaks::is_quotation_break(
+                            cx.line(key),
+                            before,
+                            text.get(next.start..).unwrap_or_default(),
+                        ))
+            },
         );
         self.filter_break(&pending.item, pending.last, class, next, breaks)
     }
@@ -1380,6 +1575,7 @@ impl ClusterWriter<'_> {
             .map_or(self.text.len(), |item| item.start.get());
         self.inner_stream = Some(LineStream::new(
             self.text.get(..end).unwrap_or(self.text),
+            self.cj_text.get(..end).unwrap_or(self.cj_text),
             at,
             self.cx.line(self.item.key),
             self.item.key,

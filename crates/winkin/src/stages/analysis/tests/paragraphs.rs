@@ -139,7 +139,7 @@ fn a_paragraphs_flags_say_what_it_holds() {
             rtl,
             mixed,
             F::HAS_TABS.union(F::HAS_SHAPING_STOPS),
-            F::HAS_SOFT_HYPHEN,
+            F::HAS_HYPHENS,
             F::HAS_EAST_ASIAN,
             F::NONE,
             F::NONE,

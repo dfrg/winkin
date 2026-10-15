@@ -38,7 +38,7 @@ fn line_break_strings() -> Option<Vec<String>> {
 /// The opportunities a stream from `from` finds at each character boundary
 /// after it.
 fn stream_breaks(text: &str, from: usize, cx: &AnalysisContext, key: LineKey) -> Vec<usize> {
-    let mut stream = LineStream::new(text, from, cx.line(key), key);
+    let mut stream = LineStream::new(text, text, from, cx.line(key), key);
     text.char_indices()
         .map(|(at, _)| at)
         .chain([text.len()])
@@ -111,7 +111,7 @@ fn resuming_under_the_same_key_changes_nothing() {
             .chain([text.len()])
             .collect();
         for &seam in boundaries.iter().filter(|&&at| at > 0) {
-            let mut stream = LineStream::new(&text, 0, cx.line(key), key);
+            let mut stream = LineStream::new(&text, &text, 0, cx.line(key), key);
             let mut found = Vec::new();
             for &at in boundaries.iter().filter(|&&at| at > 0) {
                 if at == seam {

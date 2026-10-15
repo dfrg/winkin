@@ -29,8 +29,8 @@ use crate::style::{
     FontSizeAdjust, FontStyle, FontSynthesis, FontVariantCaps, FontVariantEmoji,
     FontVariantPosition, FontVariants, FontWeight, FontWidth, HangingPunctuation, Hyphens,
     LengthPercentage, LineBreak, LineGroup, OrientationGroup, OverflowWrap, RubyGroup, TabSize,
-    TextAutospace, TextEmphasis, TextGroup, TextJustify, TextSecurity, TextSpacingTrim,
-    TextTransform, TextWrapMode, WhiteSpaceCollapse, WhiteSpaceTrim, WordBreak,
+    TextAutospace, TextDecorationSkipSpaces, TextEmphasis, TextGroup, TextJustify, TextSecurity,
+    TextSpacingTrim, TextTransform, TextWrapMode, WhiteSpaceCollapse, WhiteSpaceTrim, WordBreak,
     sanitized_font_size,
 };
 
@@ -157,6 +157,7 @@ style_struct! {
         pub(super) hanging_punctuation: HangingPunctuation,
         pub(super) justify: TextJustify,
         pub(super) emphasis: TextEmphasis,
+        pub(super) decoration_skip_spaces: TextDecorationSkipSpaces,
     }
 }
 
@@ -193,6 +194,7 @@ impl TextKey {
             hanging_punctuation,
             justify,
             emphasis,
+            decoration_skip_spaces,
         } = *group;
         Self {
             language,
@@ -214,6 +216,7 @@ impl TextKey {
             hanging_punctuation,
             justify,
             emphasis,
+            decoration_skip_spaces,
         }
     }
 

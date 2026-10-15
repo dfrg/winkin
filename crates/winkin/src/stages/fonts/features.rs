@@ -249,7 +249,8 @@ pub(super) fn merge_features(
 /// script `script` turns on, and the feature list it is in.
 ///
 /// These are the default language system's features and its required one.
-/// The script falls back to `DFLT`, `dflt` and `latn`, as HarfBuzz's
+/// The script's tags are tried in HarfBuzz's order ([`script_tags`]), then
+/// `DFLT`, `dflt` and `latn`, as HarfBuzz's
 /// `hb_ot_layout_table_select_script` does. The offers and the feature
 /// coverages (`positions`) both read this one language system, so they
 /// agree. A record an index does not reach, or a table that cannot be read,
@@ -263,8 +264,10 @@ pub(super) fn script_features<'a>(
         return;
     };
     let records = scripts.script_records();
-    let chosen = [script, *b"DFLT", *b"dflt", *b"latn"]
+    let chosen = script_tags(script)
         .into_iter()
+        .flatten()
+        .chain([*b"DFLT", *b"dflt", *b"latn"])
         .find_map(|wanted| {
             let wanted = types::Tag::new(&wanted);
             records.iter().find(|record| record.script_tag() == wanted)
@@ -298,10 +301,9 @@ pub(super) fn script_features<'a>(
 ///
 /// It is the code lowercased, except for the scripts OpenType names
 /// otherwise. Common, inherited and unknown text asks for the default
-/// script. HarfBuzz tries the Indic scripts' second-generation tags first;
-/// this does not. Only capitals and positions are read here. No Indic
-/// script has case, so only `sups` and `subs` can differ: a font that names
-/// only `dev2` is read through the fallbacks of [`script_features`].
+/// script. This is the first-generation tag, which keys the context's
+/// caches; [`script_features`] tries the newer tags of the Indic scripts and
+/// Myanmar before it ([`script_tags`]).
 pub(super) fn opentype_script(script: parlance::Script) -> [u8; 4] {
     let code = script.to_bytes();
     match &code {
@@ -315,6 +317,32 @@ pub(super) fn opentype_script(script: parlance::Script) -> [u8; 4] {
         b"Kore" => *b"hang",
         _ => code.map(|byte| byte.to_ascii_lowercase()),
     }
+}
+
+/// Returns the OpenType script tags a font's layout tables are searched for,
+/// in order, for the first-generation tag `script`.
+///
+/// As HarfBuzz's `hb_ot_all_tags_from_script` orders them: an Indic script's
+/// third- and second-generation tags (`dev3`, `dev2`), then `script`
+/// (`deva`). Myanmar has `mym2` and no third. Every other script has
+/// `script` alone. A slot past the last tag is `None`.
+fn script_tags(script: [u8; 4]) -> [Option<[u8; 4]>; 3] {
+    let second = match &script {
+        b"beng" => *b"bng2",
+        b"deva" => *b"dev2",
+        b"gujr" => *b"gjr2",
+        b"guru" => *b"gur2",
+        b"knda" => *b"knd2",
+        b"mlym" => *b"mlm2",
+        b"orya" => *b"ory2",
+        b"taml" => *b"tml2",
+        b"telu" => *b"tel2",
+        b"mymr" => return [Some(*b"mym2"), Some(script), None],
+        _ => return [Some(script), None, None],
+    };
+    let mut third = second;
+    third[3] = b'3';
+    [Some(third), Some(second), Some(script)]
 }
 
 /// How a font sets a style's capitals, for each kind of letter.

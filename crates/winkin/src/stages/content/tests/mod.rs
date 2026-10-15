@@ -1026,6 +1026,7 @@ fn annotations_follow_one_another() {
         b.open_ruby(key(1), &ComputedStyle::initial(), None);
         b.open_box(key(2), &ComputedStyle::initial(), None);
         b.text(key(3), "a");
+        b.close_box();
         b.open_annotation(key(4), &ComputedStyle::initial(), None);
         b.text(key(5), "x");
         b.open_annotation(key(6), &ComputedStyle::initial(), None);
@@ -1033,6 +1034,69 @@ fn annotations_follow_one_another() {
         b.close_ruby();
     });
     assert_eq!(shown(&layout), "<ruby>[a]<rt>x</rt><rt>y</rt></ruby>");
+}
+
+/// An annotation in a box in a base opens an anonymous container in the box,
+/// over an empty base, as CSS Ruby wraps an annotation whose parent is no
+/// ruby container (`<ruby><span>a<rt>x</rt></span></ruby>`). Ending the
+/// annotation closes both, and the box goes on.
+#[test]
+fn an_annotation_in_a_base_box_opens_an_anonymous_container() {
+    let layout = build(|b| {
+        b.open_ruby(key(1), &ComputedStyle::initial(), None);
+        b.open_box(key(2), &ComputedStyle::initial(), None);
+        b.text(key(3), "a");
+        b.open_annotation(key(4), &ComputedStyle::initial(), None);
+        b.text(key(5), "x");
+        b.close_annotation();
+        b.text(key(6), "b");
+        b.close_box();
+        b.close_ruby();
+    });
+    assert_eq!(shown(&layout), "<ruby>[a<ruby><rt>x</rt></ruby>b]</ruby>");
+}
+
+/// `start_column` flags the next annotation's open item `EMPTY_BASE` where
+/// no base text came since the last annotation, so it starts a column rather
+/// than stacking. With base text since, before the first annotation, or with
+/// anything written between, it flags nothing.
+#[test]
+fn start_column_flags_an_empty_base_only_where_none_came() {
+    let plain = ComputedStyle::initial();
+    let layout = build(|b| {
+        b.open_ruby(key(1), &plain, None);
+        b.start_column();
+        b.text(key(2), "a");
+        b.open_annotation(key(3), &plain, None);
+        b.text(key(4), "x");
+        b.close_annotation();
+        b.start_column();
+        b.open_annotation(key(5), &plain, None);
+        b.text(key(6), "y");
+        b.close_annotation();
+        b.text(key(7), "b");
+        b.start_column();
+        b.open_annotation(key(8), &plain, None);
+        b.text(key(9), "z");
+        b.close_annotation();
+        b.start_column();
+        b.open_box(key(10), &plain, None);
+        b.close_box();
+        b.open_annotation(key(11), &plain, None);
+        b.close_ruby();
+    });
+    assert_eq!(
+        shown(&layout),
+        "<ruby>a<rt>x</rt><rt>y</rt>b<rt>z</rt>[]<rt></rt></ruby>"
+    );
+    let content = layout.content();
+    let empty: Vec<u64> = content
+        .items
+        .iter()
+        .filter(|(_, item)| item.flags.contains(ItemFlags::EMPTY_BASE))
+        .map(|(_, item)| content.nodes.key(item.node).0)
+        .collect();
+    assert_eq!(empty, [5]);
 }
 
 /// An annotation outside any ruby container opens in an anonymous one over
@@ -1987,10 +2051,11 @@ fn any_calls_in_any_order_leave_whole_content() {
 /// follow those links, so a thousand calls that close nothing inside a
 /// thousand boxes take a few steps each.
 ///
-/// A ruby container opened inside another's annotation is a box there. With
-/// no annotation of its own open, `close_annotation` closes nothing. Its
-/// annotation is the column's next level and closes the box, so its
-/// `close_ruby` then closes nothing.
+/// An annotation in a box in a base opens an anonymous container there. A
+/// ruby container opened inside its annotation is a box. With no annotation
+/// of its own open, `close_annotation` closes nothing. Its annotation is the
+/// anonymous column's next level and closes the box, so its `close_ruby`
+/// then closes nothing.
 #[test]
 fn ruby_calls_look_past_no_box() {
     let plain = ComputedStyle::initial();
@@ -1998,7 +2063,7 @@ fn ruby_calls_look_past_no_box() {
         b.open_ruby(key(1), &plain, None);
         b.open_box(key(2), &plain, None);
         b.text(key(3), "a");
-        // Closes the box in the base.
+        // Opens an anonymous container in the box.
         b.open_annotation(key(4), &plain, None);
         b.open_ruby(key(5), &plain, None);
         b.open_box(key(6), &plain, None);
@@ -2012,7 +2077,8 @@ fn ruby_calls_look_past_no_box() {
         // The inner ruby is already closed: nothing closes.
         b.close_ruby();
         b.text(key(10), "d");
-        // Closes the annotation, then the ruby.
+        // Closes the annotation and its anonymous container, then the box
+        // and the ruby.
         b.close_annotation();
         b.close_ruby();
         b.text(key(11), "e");
@@ -2020,7 +2086,10 @@ fn ruby_calls_look_past_no_box() {
         b.close_ruby();
         b.close_annotation();
     });
-    assert_eq!(shown(&layout), "<ruby>[a]<rt>[[b]]</rt><rt>cd</rt></ruby>e");
+    assert_eq!(
+        shown(&layout),
+        "<ruby>[a<ruby><rt>[[b]]</rt><rt>cd</rt></ruby>]</ruby>e"
+    );
     let depth = 1000;
     for in_ruby in [true, false] {
         let mut layout = Layout::new();

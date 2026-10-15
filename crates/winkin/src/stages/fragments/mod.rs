@@ -480,6 +480,7 @@ impl FragmentItem {
 
     /// Returns the clusters a leaf holds, in logical order; none for a line
     /// or a box.
+    #[inline]
     pub(crate) fn clusters(&self) -> Range<ClusterId> {
         match self.kind() {
             FragmentItemKind::Text | FragmentItemKind::Atomic => {
@@ -525,7 +526,7 @@ impl FragmentItem {
     /// Line layout links the items as it writes them, so
     /// [`Fragments::culled_baseline`] visits every box item without
     /// searching the line.
-    pub(crate) fn painted_next(&self) -> Option<FragmentItemId> {
+    pub(crate) fn next_box_item(&self) -> Option<FragmentItemId> {
         (matches!(self.kind(), FragmentItemKind::Line | FragmentItemKind::Box) && self.b > 0)
             .then(|| FragmentItemId::new(u32_to_index(self.b)))
     }
@@ -907,7 +908,7 @@ impl Fragments {
         let own = self.line_item_ids(line);
         let head = self.items.get(self.line_span_ids(line).start)?;
         let mut innermost: Option<&FragmentItem> = None;
-        let mut next = head.painted_next();
+        let mut next = head.next_box_item();
         while let Some(at) = next.filter(|at| own.contains(at))
             && let Some(item) = self.items.get(at)
         {
@@ -915,7 +916,7 @@ impl Fragments {
             if around(item) && innermost.is_none_or(|found| found.node < item.node) {
                 innermost = Some(item);
             }
-            next = item.painted_next();
+            next = item.next_box_item();
         }
         innermost.map(|item| item.block)
     }

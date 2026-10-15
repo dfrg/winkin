@@ -362,6 +362,53 @@ fn a_space_starting_the_text_is_spaced_as_chrome_spaces_it() {
     );
 }
 
+/// A space's letter- and word-spacing goes after the marks set on it, once,
+/// though the marks are a cluster of their own. Chrome's HarfBuzz cluster
+/// holds the space and its marks, and `ShapeResultSpacing` spaces it once,
+/// after the marks: in Chrome 155, Arial at 20 px with `letter-spacing:
+/// 10px` and `word-spacing: 100px`, the `b` of `a \u{301}b` and of `a b`
+/// both start at 136.67 px, and the mark stays on its space (WPT
+/// `word-spacing-combining-mark-001`). A test font with a zero-width mark
+/// at 10 px, 2 px letter- and 3 px word-spacing.
+#[test]
+fn a_spaces_spacing_goes_after_its_marks_as_chrome_spaces_them() {
+    let mut font = TestFont::new("Test Space Marks", &[(0x20, 0x7E), (0x301, 0x301)]);
+    font.advances = vec![('\u{301}', 0)];
+    let mut fixture = Fixture::new(
+        &[font],
+        han_fallback("Test Space Marks"),
+        StageCheck::BuiltWithContext(check),
+    );
+    let mut layout = Layout::new();
+    let family = [FontFamilyName::named("Test Space Marks")];
+    let mut style = sized(&family, 10.0);
+    style.text.letter_spacing = LengthPercentage::from_px(2.0);
+    style.text.word_spacing = LengthPercentage::from_px(3.0);
+    fixture.text(&mut layout, &style, "X X");
+    assert_eq!(positions(&layout), [0.0, 7.0, 17.0, 24.0]);
+    // The mark starts where the space's advance ends, and the room follows
+    // it.
+    fixture.text(&mut layout, &style, "X \u{301}X");
+    assert_eq!(positions(&layout), [0.0, 7.0, 12.0, 17.0, 24.0]);
+    fixture.text(&mut layout, &style, "X \u{301}\u{301}X");
+    assert_eq!(positions(&layout), [0.0, 7.0, 12.0, 17.0, 24.0]);
+    // A joiner after a space draws nothing and takes no room, so the space
+    // keeps its own (WPT `letter-spacing-control-chars-001`).
+    fixture.text(&mut layout, &style, "X \u{200C}X");
+    assert_eq!(positions(&layout), [0.0, 7.0, 17.0, 17.0, 24.0]);
+    // A mark on a letter or a no-break space is in its cluster already.
+    fixture.text(&mut layout, &style, "X\u{301} X");
+    assert_eq!(positions(&layout), [0.0, 7.0, 17.0, 24.0]);
+    fixture.text(&mut layout, &style, "X\u{A0}\u{301}X");
+    assert_eq!(positions(&layout), [0.0, 7.0, 17.0, 24.0]);
+    // A space starting a block that keeps its spaces takes word-spacing,
+    // after its marks.
+    let mut pre = style;
+    pre.text.white_space_collapse = WhiteSpaceCollapse::Preserve;
+    fixture.text(&mut layout, &pre, " \u{301}X");
+    assert_eq!(positions(&layout), [0.0, 5.0, 10.0, 17.0]);
+}
+
 /// Spacing that makes a cluster's step negative marks the paragraph
 /// `NONMONOTONE`; spacing that only narrows it doesn't.
 #[test]

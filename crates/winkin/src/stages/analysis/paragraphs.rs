@@ -15,9 +15,10 @@ define_flags! {
     pub(crate) struct ParagraphFlags(u8) {
         /// A tab.
         pub(crate) const HAS_TABS = 1 << 0;
-        /// A soft hyphen, whose hyphen needs a font and shaping. Without one,
-        /// the measure scan's plain fast path skips its hyphen tests.
-        pub(crate) const HAS_SOFT_HYPHEN = 1 << 1;
+        /// A soft hyphen or a hyphenation opportunity the host found, whose
+        /// hyphen needs a font and shaping. Without one, the measure scan's
+        /// plain fast path skips its hyphen tests.
+        pub(crate) const HAS_HYPHENS = 1 << 1;
         /// East Asian text, as `classify::is_east_asian` defines it.
         pub(crate) const HAS_EAST_ASIAN = 1 << 2;
         /// Upright or combined text in a vertical line: runs set down the

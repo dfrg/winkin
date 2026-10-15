@@ -13,6 +13,9 @@
 //!   that starts the text unless the block keeps its spaces.
 //!   [`WordSeparators`](crate::config::WordSpacing::WordSeparators) uses CSS
 //!   Text 3's separator list instead.
+//! - A space's room goes after the marks set on it, which are a cluster of
+//!   their own, as Chrome's HarfBuzz cluster holds both. Where a line starts
+//!   at the marks, they take their own room.
 //! - A percentage resolves against the computed font size (CSS Text 4,
 //!   Chrome 153).
 //!
@@ -21,7 +24,7 @@
 
 use crate::config::WordSpacing;
 use crate::data::Id;
-use crate::stages::analysis::{Analysis, ClusterClass, ClusterId};
+use crate::stages::analysis::{Analysis, ClusterClass, ClusterId, Clusters};
 use crate::stages::content::{Content, Facts, FixedSpacing, NodeId, ShapingFactsId, VariantText};
 use crate::style::FirstLineVariant;
 use crate::unicode::{self, ScriptId};
@@ -172,7 +175,73 @@ impl LetterWordSpacing {
         let clusters = &analysis.clusters;
         let class = clusters.class(cluster).unwrap_or(ClusterClass::Text);
         let text = clusters.text(source, cluster);
+        self.after_text(clusters, source, class, text, cluster, continuation)
+    }
+
+    /// Returns the room after `cluster` where it starts a line.
+    ///
+    /// As [`after_cluster`](Self::after_cluster), but the marks after a space
+    /// take their own room and not the space's: Chrome reshapes them alone
+    /// there, and spaces them as the marks they are.
+    pub(crate) fn after_line_start(
+        self,
+        analysis: &Analysis,
+        source: VariantText<'_>,
+        cluster: ClusterId,
+        continuation: bool,
+    ) -> TextUnit {
+        if self.is_none() {
+            return TextUnit::from_raw(0);
+        }
+        let clusters = &analysis.clusters;
+        let class = clusters.class(cluster).unwrap_or(ClusterClass::Text);
+        let text = clusters.text(source, cluster);
         self.after(class, text, continuation, cluster == ClusterId::new(0))
+    }
+
+    /// Returns the room after `cluster`, of `class` and with text `text` in
+    /// `source`.
+    ///
+    /// As [`after`](Self::after), but a space's room goes after the marks
+    /// set on it, which start a cluster of their own
+    /// ([`Clusters::is_space_marks`]). Chrome's HarfBuzz cluster holds the
+    /// space and its marks, and `ShapeResultSpacing` spaces the whole once,
+    /// after the marks, as the space would be spaced.
+    #[inline]
+    pub(super) fn after_text(
+        self,
+        clusters: &Clusters,
+        source: VariantText<'_>,
+        class: ClusterClass,
+        text: &str,
+        cluster: ClusterId,
+        continuation: bool,
+    ) -> TextUnit {
+        let first = cluster == ClusterId::new(0);
+        match class {
+            ClusterClass::Space => {
+                let next = ClusterId::new(cluster.get() + 1);
+                // Only marks of class `Text` take the room on.
+                let marks = clusters.class(next) == Some(ClusterClass::Text)
+                    && clusters
+                        .first_char(source, next)
+                        .is_some_and(|ch| clusters.is_space_marks(next, ch));
+                if marks {
+                    return TextUnit::from_raw(0);
+                }
+            }
+            ClusterClass::Text
+                if text
+                    .chars()
+                    .next()
+                    .is_some_and(|ch| clusters.is_space_marks(cluster, ch)) =>
+            {
+                let space = ClusterId::new(cluster.get().saturating_sub(1));
+                return self.after(ClusterClass::Space, " ", false, space == ClusterId::new(0));
+            }
+            _ => {}
+        }
+        self.after(class, text, continuation, first)
     }
 
     /// Returns whether it adds nothing after any cluster.

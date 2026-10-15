@@ -86,7 +86,7 @@ See [Config at a glance](#config-at-a-glance).
 | `tab-size` | a number of spaces, a length | Supported | Tab stops are measured from the content box's start edge; a tab starting before it, under a negative `text-indent`, reaches the stop the floored remainder gives. A number counts the block container's space, with its `letter-spacing` and `word-spacing`, as Chrome sizes a tab. Where the primary font has no space, the space comes from the first listed font that maps one. At `tab-size: 0` a tab is as wide as the letter-spacing. | `tab_justification` |
 | Segment breaks | — | Supported | Under `collapse`, a segment break becomes a space, and is removed beside a U+200B, as Chrome does. | — |
 | Trailing white space | — | Supported | Spaces at a line's end hang. Under `pre-wrap` (and `preserve-spaces` with wrapping), white space before a forced break or the block's end hangs only where it overflows. Under `pre` it is content and overflows. Under `break-spaces` it wraps. A space before a hanging U+3000 hangs with it, and U+3000 before preserved spaces ending a paragraph hangs only where they all overflow, as in Chrome. Other space separators (U+2000 to U+200A) hang too, where Chrome hangs none. Spaces at a line's end take their kerning with them only where the line needs its exact end: at the paragraph's end for collapsible spaces, under an alignment other than `start` or `left`, or where the text's box paints a background, border or box shadow, or decorates (`ComputedStyle::paints`, `decorates`); an outline does not count. Elsewhere the letter before them stays kerned against them, as in Chrome. Spaces that hang keep their own kerning, as in Chrome; under `break-spaces` a space at a line's end loses its kerning where the line needs its exact end. | — |
-| Control characters | — | Supported | As CSS Text 3 has them. A lone CR is a space in every mode. CRLF is one segment break. VT, FF, NEL, U+2028 and U+2029 are forced breaks in every mode and take the collapsible spaces on both sides. VT, FF and NEL draw as glyphs and take room. Chrome drops CR and FF under preserved white space and draws FF with no break under `collapse`: winkin does not copy this. | — |
+| Control characters | — | Supported | As CSS Text 3 has them. A lone CR is a space in every mode. CRLF is one segment break. VT, FF, NEL, U+2028 and U+2029 are forced breaks in every mode and take the collapsible spaces on both sides. VT, FF and NEL draw as glyphs and take room. Chrome forces no break at any of the five: it sets VT, FF and NEL on the line and draws U+2028 and U+2029 as spaces; under preserved white space it drops CR and FF. winkin keeps the forced break, as CSS Text 3 and UAX #14 ask. | — |
 | `<br>` | — | Supported | `LayoutBuilder::line_break`. It is `\n` in the layout's text and ends the paragraph. Inside ruby it is a space, as in Chrome. | — |
 | `<br clear>`, `clear` on a `<br>` | `left`, `right`, `both` | Supported | `LayoutBuilder::line_break_clearing`. The next line, or the block's end, moves below the host's floats on those sides, as Chrome applies a break's clearance after its line. Inside ruby the break is a space and clears nothing, as in Chrome. | — |
 | `<wbr>` | — | Supported | `LayoutBuilder::break_opportunity`. It is U+200B in the layout's text. White space collapses across it. A U+200B the builder generates, for a `<wbr>` or where wrapping white space collapses into a `nowrap` run, wraps by its own box's `text-wrap-mode`, as Chrome does. | — |
@@ -117,13 +117,14 @@ letter or digit.
 |---|---|---|---|---|
 | `word-break` | `normal`, `break-all`, `keep-all` | Supported | Under `break-all`, a pair of printable ASCII characters breaks as Chrome's table says. `keep-all` follows CSS's character classes. Chrome breaks before an emoji under `keep-all`; winkin does not. | — |
 | `word-break` | `break-word` | Supported | The host maps it to `word-break: normal` with `overflow-wrap: anywhere`, as CSS defines it. | — |
-| `word-break` | `auto-phrase` | Not supported | No value in the API. | — |
+| `word-break` | `auto-phrase` | Supported | `WordBreak::AutoPhrase`, with a host segmenter. Japanese text asks the host's `PhraseSegmenter` (`Context::set_phrase_segmenter`) for its phrases, as Chrome segments it with ICU's `lw=phrase`. Between two ideographs or kana a line breaks only between phrases, and elsewhere as under `normal`. A line that no phrase boundary lets fit breaks as under `normal`, and a soft hyphen is a break only there, as Chrome retries such a line without phrases. Min-content is the widest phrase. Without a segmenter, or in another language, it breaks as `normal`. | — |
 | `line-break` | `loose`, `normal`, `strict`, `anywhere` | Supported | The host resolves `auto` to `normal`. The strictness applies even without a `lang`, where Chrome drops it (a Chrome bug, fixed upstream). | `small_kana` |
 | `overflow-wrap` (`word-wrap`) | `normal`, `anywhere`, `break-word` | Supported | Both break an overflowing word anywhere, and between two items where either side allows it, as Chrome's retry after an overflow does. `anywhere` also lets min-content break there; `break-word` does not. | — |
 | Thai, Lao, Khmer, Myanmar | — | Supported | Broken by ICU's dictionaries, as Chrome breaks them. Without the `dictionaries` Cargo feature, an LSTM model breaks them instead, and the binary is about 3.5 MB smaller. | Cargo feature `dictionaries` (on by default) |
 | Chinese and Japanese words | — | Supported | For word motion and `capitalize`: ICU's dictionary with the `dictionaries` feature; UAX #29's own rules without it. Line breaking uses the CJK rules either way. | Cargo feature `dictionaries` |
 | Breaks beside atomic inlines | — | Supported | As CSS now says: no break beside a non-breaking glue character other than U+00A0, WJ or ZWJ. Chrome breaks beside every character here, a lag winkin does not copy. | — |
 | Marks after a space | — | Supported | A line may break between a space and the combining marks after it, inside the grapheme the two make, as UAX #14, Chrome and Firefox break there. The marks then start the next line; carets and word motion still treat the space and its marks as one grapheme. | — |
+| Quotation marks in East Asian text | — | Supported | A line may break before an opening quotation mark (`“`, `‘`, `«`) and after a closing one (`”`, `’`, `»`) where East Asian characters stand on both sides of the mark, as UAX #14 has done since Unicode 15.1 (LB19a) and as Chrome breaks. `字“満”で` breaks before `“` and after `”`; `ab“満` does not. | — |
 | Small kana | — | Supported | Under `line-break: normal`, Chrome lets a small kana start a line. `Held` holds it to the character before, as `strict` does and as CSS Text now asks. | `small_kana` |
 
 ## Hyphenation
@@ -131,9 +132,9 @@ letter or digit.
 | Property | Values | Status | Notes and caveats | Config |
 |---|---|---|---|---|
 | `hyphens` | `none`, `manual` | Supported | Under `none`, a soft hyphen is no break opportunity. Under `manual`, a line may break at a soft hyphen. | — |
-| `hyphens` | `auto` | Not supported | Accepted, and treated as `manual`: lines break at soft hyphens only. There is no dictionary hyphenation. | — |
+| `hyphens` | `auto` | Supported | With a host hyphenator; winkin has no dictionaries. With a `Hyphenator` on the context (`Context::set_hyphenator`), each word of text with a language is asked about in that language, as Chrome asks its `Hyphenation`: a word runs between break opportunities within one text node's run, trimmed of leading opening punctuation and quotes and trailing punctuation, of five or more characters, not capitalized in English. A break keeps two characters on each side, draws the `hyphenate-character`, and counts in min-content. The text's last word breaks only where it starts a line it overflows, as in Chrome. Lengths count characters, where Chrome counts UTF-16 units. Without a hyphenator, or text with no language, `auto` is `manual`. Not inside ruby, and not under `word-break: auto-phrase` with a segmenter. | — |
 | `hyphenate-character` | `auto`, a string | Supported | `auto` draws U+2010 where the primary font maps it and `-` where it does not, as Chrome does. The string may be empty. The hyphen is set in the style's fonts with fallback, as the text would be. Its width counts where the line is measured, in min-content and in justification. No hyphen shows at the text's end or before a forced break. | — |
-| `hyphenate-limit-*` | — | Not supported | | — |
+| `hyphenate-limit-*` | — | Not supported | `hyphens: auto` takes CSS's defaults, as Chrome does without the property: five characters a word, two before and two after a break. | — |
 
 ## Bidi and direction
 
@@ -201,7 +202,7 @@ goal, and fontwich mirrors each platform's Chrome rules to reach it.
 | `font-variant-east-asian` | all keywords | Supported | | — |
 | `font-variant-alternates` | `normal`, `historical-forms` | Partial | The other values need `@font-feature-values`, which a layout is not given. | — |
 | `font-variant-caps` | `normal`, `small-caps`, `all-small-caps`, `petite-caps`, `all-petite-caps`, `unicase`, `titling-caps` | Supported | Where the font lacks the feature and `font-synthesis-small-caps` allows, small capitals are synthesized at 0.7 of the font size, rounded, as Chrome does. Petite capitals and unicase fall back to small capitals as Chrome's table says. | — |
-| `font-variant-position` | `normal`, `sub`, `super` | Supported | By default a run the font's `subs` or `sups` does not cover whole is synthesized whole, sized and raised by the font's own `OS/2` metrics, as CSS Fonts 4 asks. The line does not grow for it. Chrome applies the feature only and synthesizes nothing (a Chrome bug); `FeaturesOnly` reproduces that. | `position_synthesis` |
+| `font-variant-position` | `normal`, `sub`, `super` | Supported | By default a run the font's `subs` or `sups` does not cover whole is synthesized whole, sized and raised by the font's own `OS/2` metrics, as CSS Fonts 4 asks. The line does not grow for it. Chrome applies the feature only and synthesizes nothing (a Chrome bug); `FeaturesOnly` reproduces that. Whether a font has `subs`, `sups` or small capitals is read under the script's OpenType tags in HarfBuzz's order, so an Indic or Myanmar font listing its features only under `dev2`, `dev3` or `mym2` has them. | `position_synthesis` |
 | `font-variant-emoji` | `normal`, `text`, `emoji`, `unicode` | Supported | Chooses text or emoji presentation where the text has no variation selector, as Chrome does. | — |
 | `font-synthesis` | `weight`, `style`, `small-caps`, `position` | Supported | Faux bold widens nothing, as in Chrome. The host draws the embolden and skew it reads from each run's font. | — |
 | `font-size-adjust` | `none`; a number with `ex-height`, `cap-height`, `ch-width`, `ic-width` or `ic-height` | Supported | One used size per style from the primary font's metric. A missing metric counts as one em, as in Chrome. Sizes are floored to 1/100 px. At `0` the text is set at size zero, as in Chrome. | — |
@@ -231,7 +232,7 @@ goal, and fontwich mirrors each platform's Chrome rules to reach it.
 | Property | Values | Status | Notes and caveats | Config |
 |---|---|---|---|---|
 | `letter-spacing` | a length and a percentage | Supported | Not applied in cursive scripts such as Arabic, as in Chrome. It goes once after each cluster as shaped: where the font joins two graphemes, as a Bengali ya-phala does, the pair takes it once, as in Chrome. The percentage is of the element's own font size, resolved per element and inherited as a percentage, as CSS Text 4 specifies. Under `text-fit` the percentage scales with the text; the length does not. | — |
-| `word-spacing` | a length and a percentage | Supported | The percentage is of the element's own font size, as CSS Text 4 specifies. By default it widens U+0020 and U+00A0 only, and not a U+0020 at the text's start unless the block keeps its spaces, as Chrome does. `WordSeparators` widens every word separator CSS lists, wherever it is. | `word_spacing` |
+| `word-spacing` | a length and a percentage | Supported | The percentage is of the element's own font size, as CSS Text 4 specifies. By default it widens U+0020 and U+00A0 only, and not a U+0020 at the text's start unless the block keeps its spaces, as Chrome does. `WordSeparators` widens every word separator CSS lists, wherever it is. A space's letter- and word-spacing go after the combining marks set on it, once, as Chrome spaces the space and its marks as one cluster; where a line starts at those marks, they take only their own letter-spacing. | `word_spacing` |
 | `text-autospace` | `no-autospace`, `normal`, `ideograph-alpha`, `ideograph-numeric` | Supported | The initial value is `no-autospace`, as Chrome computes it. The space is an eighth of the primary font's `ic`, and works across element boundaries. After right-to-left text it is drawn before the later text, as in Chrome. In the sideways modes text is horizontal, so upright text there ends no space. | — |
 | `text-autospace` | `punctuation`, `insert`, `replace`, `auto` | Not supported | No value in the API. | — |
 | `text-spacing-trim` | `normal`, `space-all`, `space-first`, `trim-start` | Supported | Trimming goes through the font's `halt`, as in Chrome. In a font without `halt` Chrome trims nothing; `Always` trims by halving the mark's own advance. A neighbour is classed in the font it is shaped in, so a pair set in two fallback fonts trims as in Chrome. A trimmed pair broken across lines is reshaped. A closing mark at a line's end, the paragraph's end included, is trimmed where that makes it fit. | `punctuation_trim` |
@@ -267,7 +268,8 @@ A box is opened with `LayoutBuilder::open_box` and closed with `close_box`.
 | `margin`, `border-width`, `padding` | lengths per physical side, and percentages for margins and padding | Supported | A percentage is of `BuildOptions::percentage_basis`, which `Layout::measure` changes without building again. The host snaps border widths as CSS does (below 1 px to 1, else down to a whole pixel). Each length is truncated onto the 1/64 px grid, as Chrome holds it. The sides along the line take room on it; the sides across it do not. | — |
 | `box-decoration-break` | `slice`, `clone` | Supported | Under `clone` every fragment takes both edges, and a line holds a cloned box's closing edge. Chrome 153 ships letting that edge overflow, a bug fixed behind a flag; winkin has the fix. | — |
 | Culling | — | Supported | A box with no edges, no `vertical-align`, nothing it paints and its parent's font metrics keeps no fragment, as Chrome culls one. Set `ComputedStyle::paints` for a box with a background, border or box shadow, and `ComputedStyle::outlines` for one with an outline. `Layout::box_fragments` still answers for a culled box, from its descendants. | — |
-| Text decoration | — | Supported | Set `ComputedStyle::decorates` for a box whose text is underlined, overlined or struck through. `Line::paints` asks only those boxes, and the block, which lines they draw, and hands out one bar for each run of text a box or the block decorates, with its baseline and the font's underline metrics; the host draws it. For `auto` a bar gives Chrome's thickness and gap (`underline_thickness`, `underline_gap`). For `text-decoration-thickness: from-font` and `text-underline-position: from-font` it gives the font's `post` underline, falling back to `auto` as Chrome does (`underline_thickness_from_font`, `underline_gap_from_font`), and the font's own lines as they are (`font_underline`, and `font_line_through` from `OS/2`, which Chrome never reads). | — |
+| Text decoration | — | Supported | Set `ComputedStyle::decorates` for a box whose text is underlined, overlined or struck through. `Line::paints` asks only those boxes, and the block, which lines they draw, and hands out one bar for each run of text a box or the block decorates, with its baseline and the font's underline metrics; the host draws it. For `auto` a bar gives Chrome's thickness and gap (`underline_thickness`, `underline_gap`). For `text-decoration-thickness: from-font` and `text-underline-position: from-font` it gives the font's `post` underline, falling back to `auto` as Chrome does (`underline_thickness_from_font`, `underline_gap_from_font`), and the font's own lines as they are (`font_underline`, and `font_line_through` from `OS/2`, which Chrome never reads). A tab takes no bar, as in Chrome. | — |
+| `text-decoration-skip-spaces` | `none`, `all`, `start`, `end`, `start end` | Supported | `TextGroup::decoration_skip_spaces`; the text's own value applies, whichever box draws the bar. The initial `start end` leaves out the spaces at a line's ends, preserved or not, across runs and boxes: U+0020, tabs, no-break spaces and the other space separators. `all` also splits a run's bar at the spaces between two of its characters, word-spacing included, and leaves the positive letter-spacing off the right end of the line's content, as Chrome 155 does. Spaces at a run's own ends inside a line keep their bar under `all`, as in Chrome. In right-to-left runs each space comes off the side it lies on; Chrome 155 takes the leading spaces' width off a right-to-left run's left instead. | — |
 | White space hanging in a box | — | Supported | A box covers the white space that hangs inside it, as Chrome draws it. | — |
 | Empty boxes | — | Supported | A block holding only an empty box with an inline margin, border or padding has a line of the strut's height, as CSS 2 and Chrome make it. An empty box with block-axis edges alone, or none, makes a phantom line of no height. | — |
 | Negative margins | — | Supported | A line fits on past an overflow that a later negative margin takes back, and min-content is measured the same way, as Chrome's breaker does. | — |
@@ -383,17 +385,18 @@ it.
 
 ## Ruby
 
-Ruby is pushed with `LayoutBuilder::open_ruby`, `open_annotation`, `close_annotation`
-and `close_ruby`. Base text follows the container; base text after an
-annotation starts the next column. Annotations are read back with
+Ruby is pushed with `LayoutBuilder::open_ruby`, `open_annotation`, `close_annotation`,
+`start_column` and `close_ruby`. Base text follows the container; base text after an
+annotation starts the next column, and `start_column` starts one over an empty
+base. Annotations are read back with
 `Line::annotations` and painted as `Paint::Annotation`.
 
 | Property or feature | Values | Status | Notes and caveats | Config |
 |---|---|---|---|---|
-| Pairing | — | Supported | Bases pair with annotations in order. | — |
+| Pairing | — | Supported | Bases pair with annotations in order. The host pairs `<rb>`s with `<rt>`s by CSS Ruby's rules and pushes each pair as a column, calling `start_column` before an annotation with no base of its own. Such an annotation sits beside the last one, over an empty base, as Chrome sets two `<rt>`s in a row. | — |
 | Ruby container box | — | Supported | The container is an inline box: its margin, border and padding take room at both ends, with or without annotations, and it keeps a fragment, which `Layout::box_fragments` finds, as Chrome keeps one. Collapsible spaces that end a line inside a base are removed, and the column narrows to what is left. | — |
 | Bidi in ruby | `direction`, `unicode-bidi` | Partial | The container's own controls apply to its base, and an annotation's inside its isolate, so `dir` on either orders its text, as in Chrome. A column's box brackets its base however it reorders. Chrome also isolates each column in the container's direction and resolves an annotation in its column's isolate: winkin sets an annotation as a first-strong isolate, and a container isolated against its paragraph keeps its columns in logical order. | — |
-| Annotations outside ruby | — | Supported | `LayoutBuilder::open_annotation` outside every ruby container opens an anonymous one over an empty base, as Chrome wraps a `ruby-text` box whose parent is no ruby. The annotation keeps its own style and edges; `close_annotation` closes both. | — |
+| Annotations outside ruby | — | Supported | `LayoutBuilder::open_annotation` outside every ruby container, or inside a box in a base, opens an anonymous one over an empty base, as CSS Ruby wraps an annotation whose parent is no ruby container. The annotation keeps its own style and edges; `close_annotation` closes both. Chrome wraps one outside ruby the same way, but sets one in a box in a base inside the line. | — |
 | Empty bases | — | Supported | A base with no text, or holding only a float, keeps its annotations over the ruby container's em box, and nothing overhangs beside it, as in Chrome. | — |
 | `<rtc>` levels | — | Beyond Chrome | Each annotation after the first in a column is the next level, stacked outward. `LayoutBuilder::open_annotation_with_position` opens an `<rt>` inside an `<rtc>`, on the side of the `<rtc>`'s `ruby-position`. Chrome gives `rtc` no box and sets its text as base text. | — |
 | Nested ruby | — | Supported | A ruby inside another's base is its own column, one unit of the outer base. The outer annotation spans the whole nested base, and the inner annotations sit nearer the base, as Chrome stacks them. A ruby inside an annotation, or more than 32 deep, becomes a box whose annotations are the enclosing column's next levels. | — |
@@ -476,9 +479,9 @@ changes.
 
 These have no value in the API, or are accepted and ignored.
 
-- `hyphens: auto`: accepted and treated as `manual`. There is no dictionary
-  hyphenation. `hyphenate-limit-*` is not read.
-- `word-break: auto-phrase`.
+- Hyphenation dictionaries and phrase models: `hyphens: auto` and
+  `word-break: auto-phrase` need the host's (see below).
+  `hyphenate-limit-*` is not read.
 - Breaking inside a ruby base under `text-wrap-style: pretty` or
   `balance`: the column moves or overflows whole.
 - `ruby-merge`.
@@ -544,6 +547,14 @@ winkin lays out lines. The host does everything around them.
   min-content and max-content. Lend `Layout::room_below` to the next block
   as its `Area::room_above` where annotations or marks need it.
 - **Writing modes.** Map line-relative positions onto the page.
+- **Hyphenation and phrases (optional).** For `hyphens: auto`, implement
+  `segment::Hyphenator` with dictionaries for the languages the pages use,
+  for example the `hyphenation` crate's or the platform's, and set it with
+  `Context::set_hyphenator`. For `word-break: auto-phrase`, implement
+  `segment::PhraseSegmenter` with a Japanese phrase model such as BudouX's,
+  and set it with `Context::set_phrase_segmenter`. winkin finds the words
+  and applies the limits; the host says where a word or phrase may break.
+  Without them, `auto` is `manual` and `auto-phrase` is `normal`.
 - **Hinted metrics (optional).** Supply glyph advances and bounds from the
   renderer's rasterizer through `font::FontMetricsProvider`, with
   `LayoutBuilder::finish_with_metrics` and

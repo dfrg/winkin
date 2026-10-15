@@ -5,7 +5,9 @@
 //! - `text_runs`: lines and text runs, their fonts, clusters and glyphs;
 //! - `boxes`: box edges between items, culled boxes and atomic inlines;
 //! - `paint`: paint order and decorations;
+//! - `skip_spaces`: the spaces decorations leave out;
 //! - `generated`: hyphens and ellipses;
+//! - `hosted`: the breaks a host's hyphenator and phrase segmenter find;
 //! - `emphasis`: emphasis marks;
 //! - `ruby`: annotations, nesting and splitting;
 //! - `initial`: initial and first letters;
@@ -235,6 +237,7 @@ mod boxes;
 mod emphasis;
 mod generated;
 mod graphemes;
+mod hosted;
 mod initial;
 mod paint;
 mod positioned;
@@ -242,6 +245,7 @@ mod ruby;
 #[cfg(debug_assertions)]
 mod seeks;
 mod sizing;
+mod skip_spaces;
 mod text_fit;
 mod text_runs;
 mod vertical;

@@ -41,10 +41,10 @@ use crate::style::{
     DominantBaseline, EdgesGroup, EmphasisSide, EmphasisSkip, FirstLineVariant,
     FontVariantPosition, HangingPunctuation, Hyphens, InitialLetter, LengthPercentage, LineBreak,
     LineClamp, LineHeight, OrientationGroup, OverflowWrap, RubyGroup, TabSize, TextAlign,
-    TextAlignLast, TextBoxEdge, TextBoxTrim, TextCombineUpright, TextEdgeOver, TextEdgeUnder,
-    TextFit, TextFitKind, TextFitTarget, TextGroupAlign, TextIndent, TextJustify, TextOrientation,
-    TextOverflow, TextSpacingTrim, TextWrapMode, TextWrapStyle, UnicodeBidi, VerticalAlign,
-    WhiteSpaceCollapse, WordBreak, WritingMode,
+    TextAlignLast, TextBoxEdge, TextBoxTrim, TextCombineUpright, TextDecorationSkipSpaces,
+    TextEdgeOver, TextEdgeUnder, TextFit, TextFitKind, TextFitTarget, TextGroupAlign, TextIndent,
+    TextJustify, TextOrientation, TextOverflow, TextSpacingTrim, TextWrapMode, TextWrapStyle,
+    UnicodeBidi, VerticalAlign, WhiteSpaceCollapse, WordBreak, WritingMode,
 };
 use crate::style::{Same, same_by_value, style_struct};
 use crate::unit::{LayoutUnit, TextUnit};
@@ -272,6 +272,16 @@ define_flags! {
         /// (`ideograph-numeric`). Never set for text upright in a vertical
         /// line.
         pub(crate) const AUTOSPACE_NUMERIC = 1 << 11;
+        /// Decorations leave out the spaces at a line's start
+        /// (`text-decoration-skip-spaces`).
+        pub(crate) const SKIPS_START_SPACES = 1 << 12;
+        /// Decorations leave out the spaces at a line's end.
+        pub(crate) const SKIPS_END_SPACES = 1 << 13;
+        /// Decorations leave out the spaces inside a run and the
+        /// letter-spacing ending a line: `text-decoration-skip-spaces: all`.
+        pub(crate) const SKIPS_ALL_SPACES = 1 << 14;
+        /// `hyphens: auto`.
+        pub(crate) const HYPHENS_AUTO = 1 << 15;
     }
 }
 
@@ -350,6 +360,7 @@ impl TextFacts {
             text.white_space_hangs_conditionally(),
         );
         flags.set(TextFlags::HYPHENS_NONE, text.hyphens == Hyphens::None);
+        flags.set(TextFlags::HYPHENS_AUTO, text.hyphens == Hyphens::Auto);
         flags.set(
             TextFlags::EMERGENCY,
             wraps && text.overflow_wrap != OverflowWrap::Normal,
@@ -367,6 +378,13 @@ impl TextFacts {
         );
         flags.set(TextFlags::RTL, style.bidi.direction == Direction::Rtl);
         flags.set(TextFlags::EMPHASIS, text.emphasis.marks);
+        let skip = text.decoration_skip_spaces;
+        flags.set(TextFlags::SKIPS_START_SPACES, skip.skips_start());
+        flags.set(TextFlags::SKIPS_END_SPACES, skip.skips_end());
+        flags.set(
+            TextFlags::SKIPS_ALL_SPACES,
+            skip == TextDecorationSkipSpaces::All,
+        );
         // `text-orientation` has no effect in the sideways modes, so upright
         // text ends an autospace boundary only in a vertical typographic
         // mode. Chrome's `TextAutoSpace` reads the font's orientation, which
@@ -447,6 +465,12 @@ impl HoldsFlags for TextFacts {
         }
         if self.justify != TextJustify::Auto {
             flags.insert(ContentFlags::TEXT_JUSTIFY);
+        }
+        if self.has(TextFlags::SKIPS_ALL_SPACES) {
+            flags.insert(ContentFlags::SKIPS_ALL_SPACES);
+        }
+        if self.has(TextFlags::HYPHENS_AUTO) || self.word_break == WordBreak::AutoPhrase {
+            flags.insert(ContentFlags::HOSTED_BREAKS);
         }
         flags
     }
@@ -1124,7 +1148,10 @@ pub(super) fn is_chinese(language: &str) -> bool {
 /// for an id the content handed out.
 static INITIAL_TEXT: TextFacts = TextFacts {
     shaping: ShapingFactsId(0),
-    flags: TextFlags::WRAPS.union(TextFlags::WHITE_SPACE_HANGS),
+    flags: TextFlags::WRAPS
+        .union(TextFlags::WHITE_SPACE_HANGS)
+        .union(TextFlags::SKIPS_START_SPACES)
+        .union(TextFlags::SKIPS_END_SPACES),
     line_break: LineBreak::Normal,
     word_break: WordBreak::Normal,
     collapse: WhiteSpaceCollapse::Collapse,

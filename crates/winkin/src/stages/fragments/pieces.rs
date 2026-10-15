@@ -893,8 +893,8 @@ impl<'a> Placer<'a> {
         }
     }
 
-    /// Adds the hyphen after `clusters` of `node`, where the last is a soft
-    /// hyphen, as Blink's `PlaceHyphen` adds it after the item.
+    /// Adds the hyphen after `clusters` of `node`, where a break after the
+    /// last draws one, as Blink's `PlaceHyphen` adds it after the item.
     ///
     /// It uses the soft hyphen's style, at `level`, in the box `owner`,
     /// raised `shift`. Kept out of line, since only a line or two a paragraph
@@ -912,7 +912,10 @@ impl<'a> Placer<'a> {
         let Some(last) = clusters.end.get().checked_sub(1).map(ClusterId::new) else {
             return;
         };
-        if last < clusters.start || !self.is(last, ClusterClass::SoftHyphen) {
+        let analysis = self.stages.analysis;
+        let hyphenated = (analysis.clusters.attrs(last))
+            .is_some_and(|attrs| analysis.breaks_with_hyphen(last, attrs));
+        if last < clusters.start || !hyphenated {
             return;
         }
         let facts = self.stages.text_facts(node);

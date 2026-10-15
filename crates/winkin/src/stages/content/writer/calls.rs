@@ -12,7 +12,7 @@ use crate::data::{TextOffset, hash_one};
 use crate::stages::content::check;
 use crate::stages::content::collapse::{Event, ZWSP};
 use crate::stages::content::{
-    Absolute, Atomic, AtomicId, BreakClearance, Content, ContentFlags, Float, ItemKind,
+    Absolute, Atomic, AtomicId, BreakClearance, Content, ContentFlags, Float, ItemFlags, ItemKind,
     MAX_RUBY_DEPTH, NodeId, NodeKey, NodeKind,
 };
 use crate::style::{ComputedStyle, FirstLineVariant, RubyGroup, RubyPosition, WhiteSpaceTrim};
@@ -174,9 +174,10 @@ impl ContentWriter<'_> {
     }
 
     /// Opens an annotation in the innermost real ruby container, first
-    /// closing whatever is open inside it (a base box, the previous
-    /// annotation, a flattened ruby). Outside any ruby, it opens in an
-    /// anonymous ruby container.
+    /// closing whatever is open inside it (the previous annotation, a
+    /// flattened ruby). Outside any ruby, or inside a box in a base, it opens
+    /// in an anonymous ruby container, as CSS Ruby wraps an annotation whose
+    /// parent is no ruby container (CSS Ruby 1, section 2.2).
     ///
     /// Its `ruby-position` is `side` if given, else that of the innermost
     /// ruby container, flattened or not, read before it closes.
@@ -187,9 +188,15 @@ impl ContentWriter<'_> {
         first_line: Option<&ComputedStyle<'_>>,
         side: Option<RubyPosition>,
     ) {
+        // Nothing written since `start_column` asked for an empty base.
+        let empty_base = self.ruby.empty_base.take() == Some(self.content.items.next_id());
+        // In a box in a base, where a nested container still fits.
+        let in_base_box = self.ruby.annotations == 0
+            && self.ruby.depth < MAX_RUBY_DEPTH
+            && (self.scratch.open.last()).is_some_and(|open| open.kind == ContainerKind::Box);
         let found = match self.annotated_ruby() {
-            Some(found) => Some(found),
-            None => {
+            Some(found) if !in_base_box => Some(found),
+            _ => {
                 self.open_anonymous_ruby(key, style);
                 self.annotated_ruby()
             }
@@ -236,6 +243,36 @@ impl ContentWriter<'_> {
         };
         let style = sided(style, position);
         self.open(ContainerKind::Annotation, key, &style, first_line.as_ref());
+        if empty_base
+            && let Some(open) = self.scratch.open.last()
+            && open.kind == ContainerKind::Annotation
+            && open.node.is_some()
+            && let Some(item) = self.content.items.get_mut(open.item)
+        {
+            item.flags.insert(ItemFlags::EMPTY_BASE);
+        }
+    }
+
+    /// Gives the next annotation an empty base of its own where the
+    /// innermost open container is a ruby container and no base text has
+    /// come since its last annotation closed.
+    ///
+    /// If nothing else is written first, that annotation's opening item
+    /// carries `EMPTY_BASE`, and later stages start a column there.
+    pub(crate) fn start_column(&mut self) {
+        self.end_text();
+        let Some(ruby) = self.scratch.open.last() else {
+            return;
+        };
+        if ruby.kind != ContainerKind::Ruby || ruby.node.is_none() {
+            return;
+        }
+        let close = ruby
+            .annotation_close
+            .and_then(|close| self.content.items.get(close));
+        if close.is_some_and(|close| close.end.get() == self.content.text.len()) {
+            self.ruby.empty_base = Some(self.content.items.next_id());
+        }
     }
 
     /// Returns the stack id of the real ruby container a new annotation

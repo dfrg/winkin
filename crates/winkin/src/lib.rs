@@ -117,6 +117,9 @@
 //! in its block formatting context. [`NoExclusions`] serves a block with
 //! none.
 //!
+//! The host may also supply hyphenation for `hyphens: auto` and phrase
+//! segmentation for `word-break: auto-phrase` ([`segment`]).
+//!
 //! # Fonts
 //!
 //! A [`Context`] holds a [`fontwich::Collection`] and selects fonts from it
@@ -167,6 +170,7 @@ mod context;
 // items, text runs, glyphs, boxes and the block. Its `paint` module is public.
 mod layout;
 pub mod path;
+pub mod segment;
 pub mod selection;
 pub mod style;
 

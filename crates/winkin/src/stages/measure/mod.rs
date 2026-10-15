@@ -239,7 +239,7 @@ define_flags! {
 
 /// What a line pays or gains for starting or ending at one boundary.
 ///
-/// Sources: a soft hyphen's hyphen, cloned box edges, `line-padding`,
+/// Sources: a hyphenated break's hyphen, cloned box edges, `line-padding`,
 /// `hanging-punctuation`, and ruby overhang with no neighbour. None depends
 /// on the width, so the breaker reads them from a sparse table sorted by
 /// boundary, 20 bytes a row. Plain text has none. The default pays nothing.
