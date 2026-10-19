@@ -234,6 +234,7 @@ fn any_area_gives_valid_reads() {
 
 mod align;
 mod boxes;
+mod calc;
 mod emphasis;
 mod generated;
 mod graphemes;

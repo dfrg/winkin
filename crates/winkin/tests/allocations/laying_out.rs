@@ -601,7 +601,8 @@ fn justified_spaced_and_indented_text_allocates_nothing_warm() {
                     amount: LengthPercentage {
                         px: 12.0,
                         fraction: 0.05,
-                    },
+                    }
+                    .into(),
                     hanging: justify == TextJustify::InterWord,
                     each_line: true,
                 },

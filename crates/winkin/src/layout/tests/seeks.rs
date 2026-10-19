@@ -18,6 +18,7 @@ use crate::path::{PagePoint, PastEnds, PathPaint, Polyline, paints as path_paint
 use crate::stages::fragments::{self, Fragments, PlaceInput, PlaceScratch};
 use crate::stages::lines::{self, BreakInput, Lines};
 use crate::stages::shape::ShapeSession;
+use crate::unit::LayoutUnit;
 use crate::work;
 use core::hint::black_box;
 
@@ -234,6 +235,7 @@ fn placing_seeks(cx: &mut Context, layout: &Layout, width: f32) -> u64 {
     let input = BreakInput {
         stages: layout.stages(),
         area,
+        indent: LayoutUnit::ZERO,
         emphasis_room: EmphasisRoom::Shared,
         pretty: Pretty::Limited,
         ruby_break_within: RubyBreakWithin::BaseOpportunities,
@@ -251,6 +253,7 @@ fn placing_seeks(cx: &mut Context, layout: &Layout, width: f32) -> u64 {
         lines: &lines,
         placements: cx.placing().0,
         area,
+        indent: LayoutUnit::ZERO,
         tab_justification: config.tab_justification,
         ellipsis_space: config.ellipsis_space,
     };

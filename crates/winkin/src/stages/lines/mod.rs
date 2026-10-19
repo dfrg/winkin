@@ -91,6 +91,9 @@ pub(crate) struct BreakInput<'a> {
     /// Where the lines go: their two ends, the block's start, the room above
     /// it, and where `line-clamp: auto` ends it.
     pub(crate) area: Area,
+    /// `text-indent`'s length in the area, before `hanging` and `each-line`
+    /// pick the lines that take it.
+    pub(crate) indent: LayoutUnit,
     /// How a line makes room for emphasis marks (`Config::emphasis_room`).
     pub(crate) emphasis_room: EmphasisRoom,
     /// The rule `text-wrap-style: pretty` follows (`Config::pretty`).
@@ -369,7 +372,7 @@ impl LineBand {
     }
 
     /// Returns its length, zero where its ends cross.
-    pub(super) fn width(self) -> LayoutUnit {
+    pub(crate) fn width(self) -> LayoutUnit {
         (self.right - self.left).max(LayoutUnit::ZERO)
     }
 
@@ -1384,6 +1387,8 @@ struct Breaker<'a, 'c, 'm> {
     continued: Option<Continued>,
     /// `text-indent`, and the lines it applies to.
     text_indent: TextIndent,
+    /// `text-indent`'s length in the area.
+    indent: LayoutUnit,
     /// The block wraps, so a line the floats narrow until it overflows
     /// moves down past them, as Chrome's `ShouldWrapLine` decides.
     wraps: bool,

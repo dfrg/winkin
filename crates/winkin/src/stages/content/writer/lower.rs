@@ -113,6 +113,7 @@ impl ContentWriter<'_> {
     /// ones, a culled box's. Each counts as a replaced style.
     fn lower(&mut self, style: &StyleKey, kind: NodeKind, stand_in: TextFactsId) -> NodeFacts {
         let basis = self.content.basis();
+        let calc = self.cx.calc_resolver();
         let Content {
             languages,
             facts,
@@ -133,7 +134,7 @@ impl ContentWriter<'_> {
             lowered.id
         };
         let lower_box = |(facts, lookup, flags): &mut Lowering<'_>| {
-            let lowered = facts.lower_box(lookup, style, kind, writing_mode, basis);
+            let lowered = facts.lower_box(lookup, style, kind, writing_mode, basis, calc);
             flags.insert(lowered.flags);
             lowered.id
         };
@@ -143,7 +144,7 @@ impl ContentWriter<'_> {
             _ => memo.facts(cx, style, kind, lower_text, lower_box),
         };
         #[cfg(any(debug_assertions, test))]
-        facts_check::lowered(self.content, style, kind, text, box_);
+        facts_check::lowered(self.content, calc, style, kind, text, box_);
         let text = text.unwrap_or_else(|| {
             self.room.report.replace_style();
             stand_in
@@ -183,6 +184,7 @@ impl ContentWriter<'_> {
             ..StyleKey::INITIAL
         };
         let basis = self.content.basis();
+        let calc = self.cx.calc_resolver();
         let Content {
             facts,
             block,
@@ -190,10 +192,10 @@ impl ContentWriter<'_> {
             ..
         } = &mut *self.content;
         let lookup = self.scratch.lists.lookup();
-        let box_ = facts.lower_box(lookup, &style, kind, block.writing_mode, basis);
+        let box_ = facts.lower_box(lookup, &style, kind, block.writing_mode, basis, calc);
         flags.insert(box_.flags);
         #[cfg(any(debug_assertions, test))]
-        facts_check::lowered(self.content, &style, kind, None, box_.id);
+        facts_check::lowered(self.content, calc, &style, kind, None, box_.id);
         box_.id.unwrap_or_else(|| {
             self.room.report.replace_style();
             BoxFactsId::INITIAL

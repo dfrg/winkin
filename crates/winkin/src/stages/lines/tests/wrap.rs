@@ -293,7 +293,8 @@ fn balance_takes_the_indent_off_the_first_lines_room() {
             amount: LengthPercentage {
                 px: 50.0,
                 fraction: 0.0,
-            },
+            }
+            .into(),
             hanging: false,
             each_line: false,
         },
@@ -660,7 +661,8 @@ fn pretty_gives_a_lone_last_word_company_as_chrome_does() {
             amount: LengthPercentage {
                 px: 30.0,
                 fraction: 0.0,
-            },
+            }
+            .into(),
             hanging: false,
             each_line: false,
         },

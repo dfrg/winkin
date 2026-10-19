@@ -220,7 +220,7 @@ const DOCUMENTS: [Document; 4] = [
 ];
 const WIDTHS: [f32; 3] = [240.0, 97.5, 600.0];
 
-/// A layout's record, its size apart from its heap, is at most 960 bytes on
+/// A layout's record, its size apart from its heap, is at most 968 bytes on
 /// a 64-bit target.
 ///
 /// - The stages' first-line variants are boxed, made only where a layout
@@ -249,13 +249,15 @@ const WIDTHS: [f32; 3] = [240.0, 97.5, 600.0];
 /// - The lines' floats, `text-fit` scales, settled shifts and the carries
 ///   of annotations and an initial letter are boxed together, made only
 ///   where a layout has one.
+/// - The block's `text-indent` holds its length inline, 12 bytes, as a
+///   length and a percentage or a `calc()` handle.
 ///
 /// A layout's whole size is this record plus its heap.
 #[test]
 #[cfg(target_pointer_width = "64")]
-fn a_layout_record_is_960_bytes_at_most() {
+fn a_layout_record_is_968_bytes_at_most() {
     let record = size_of::<Layout>();
-    assert!(record <= 960, "a layout's record is {record} bytes");
+    assert!(record <= 968, "a layout's record is {record} bytes");
 }
 
 /// A layout never built keeps nothing.

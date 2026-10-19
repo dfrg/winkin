@@ -18,6 +18,11 @@
 //! unitless line heights, percentage letter and word spacing, percentage
 //! vertical alignment and `font-size-adjust` metrics.
 //!
+//! A `calc()` linear in its basis is a [`LengthPercentage`]. Margins,
+//! padding and `text-indent` also take any other `calc()`, as a
+//! [`CalcHandle`] that the [`CalcResolver`] set on the
+//! [`Context`](crate::Context) resolves as layout learns the basis.
+//!
 //! Initial values are those CSS specifies, except for `text-autospace` and
 //! `ruby-position`, whose initial values are those Chrome computes.
 
@@ -28,6 +33,7 @@
 // - `first_line`: the first-line variant and the tables kept for it.
 mod bidi;
 mod block;
+mod calc;
 mod edges;
 mod emphasis;
 mod first_line;
@@ -40,6 +46,7 @@ mod text;
 
 pub use bidi::*;
 pub use block::*;
+pub use calc::*;
 pub use edges::*;
 pub use emphasis::*;
 pub use font::*;
@@ -187,14 +194,16 @@ style_struct! {
         /// A percentage is of the computed font size and inherits as a
         /// percentage. Layout resolves it, as CSS Text 4 specifies. Under
         /// `text-fit`, the percentage scales with the text and the length
-        /// does not.
+        /// does not. Resolve a `calc()` that is not linear in the font size,
+        /// such as `max(1px, 10%)`, to a length before building.
         pub letter_spacing: LengthPercentage,
         /// `word-spacing`, as a length plus a percentage.
         ///
         /// A percentage is of the computed font size, not the space width,
         /// and inherits as a percentage. Layout resolves it, as CSS Text 4
         /// specifies. Under `text-fit`, the percentage scales with the text
-        /// and the length does not.
+        /// and the length does not. Resolve a `calc()` that is not linear in
+        /// the font size to a length before building.
         pub word_spacing: LengthPercentage,
         /// `text-autospace`.
         pub autospace: TextAutospace,
@@ -326,16 +335,18 @@ style_struct! {
     /// [`BuildOptions::percentage_basis`]: crate::BuildOptions::percentage_basis
     /// [`Layout::measure`]: crate::Layout::measure
     pub struct EdgesGroup {
-        /// `margin`, in CSS pixels plus a fraction of the basis.
-        pub margin: Sides<LengthPercentage>,
+        /// `margin`, in CSS pixels plus a fraction of the basis, or a `calc()`.
+        pub margin: Sides<LengthPercentageOrCalc>,
         /// The used `border-width` in CSS pixels, or zero for `border-style: none`.
         ///
         /// Snap widths before building, as Chrome does: a positive width
         /// below 1 px becomes 1 px, and a larger one rounds down to whole
         /// pixels. So 0.5 px becomes 1 px and 2.5 px becomes 2 px.
         pub border: Sides<f32>,
-        /// `padding`, in CSS pixels plus a fraction of the basis.
-        pub padding: Sides<LengthPercentage>,
+        /// `padding`, in CSS pixels plus a fraction of the basis, or a `calc()`.
+        ///
+        /// A side that resolves below zero is zero, as CSS requires.
+        pub padding: Sides<LengthPercentageOrCalc>,
         /// `box-decoration-break`.
         pub decoration_break: BoxDecorationBreak,
     }
@@ -356,17 +367,27 @@ impl EdgesGroup {
         self.margin.any() || self.border.any() || self.padding.any()
     }
 
-    /// Returns whether a margin or padding has a percentage.
+    /// Returns whether a margin or padding has a percentage or a `calc()`.
     pub(crate) fn has_percentage(&self) -> bool {
         self.margin.has_percentage() || self.padding.has_percentage()
     }
 
-    /// Returns the edges in pixels, each percentage taken of `basis` pixels.
-    pub(crate) fn used(&self, basis: f32) -> UsedEdges {
+    /// Returns the edges in pixels, each percentage taken of `basis` pixels
+    /// and each `calc()` resolved by `calc`.
+    ///
+    /// Padding below zero, or NaN, is zero, as CSS clamps it.
+    pub(crate) fn used(&self, basis: f32, calc: Option<&dyn CalcResolver>) -> UsedEdges {
+        let padding = self.padding.resolve(basis, calc);
+        let clamp = |px: f32| px.max(0.0);
         UsedEdges {
-            margin: self.margin.resolve(basis),
+            margin: self.margin.resolve(basis, calc),
             border: self.border,
-            padding: self.padding.resolve(basis),
+            padding: Sides {
+                top: clamp(padding.top),
+                right: clamp(padding.right),
+                bottom: clamp(padding.bottom),
+                left: clamp(padding.left),
+            },
         }
     }
 }

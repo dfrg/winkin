@@ -966,11 +966,11 @@ fn measuring_a_new_percentage_basis_equals_a_fresh_layout() {
     let edged = ComputedStyle {
         edges: EdgesGroup {
             margin: Sides {
-                left: percent(0.05),
-                right: percent(0.0),
+                left: percent(0.05).into(),
+                right: percent(0.0).into(),
                 ..Sides::from_px(0.0)
             },
-            padding: Sides::all(percent(0.1)),
+            padding: Sides::all(percent(0.1).into()),
             ..EdgesGroup::INITIAL
         },
         ..root
@@ -1073,10 +1073,13 @@ fn content_with_something_to_size_keeps_its_advances() {
     };
     let edged = ComputedStyle {
         edges: EdgesGroup {
-            margin: Sides::all(LengthPercentage {
-                px: 0.0,
-                fraction: 0.1,
-            }),
+            margin: Sides::all(
+                LengthPercentage {
+                    px: 0.0,
+                    fraction: 0.1,
+                }
+                .into(),
+            ),
             ..EdgesGroup::INITIAL
         },
         ..root

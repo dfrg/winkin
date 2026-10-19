@@ -47,6 +47,7 @@ fn the_ragged_article_relays_out_and_reads_back() {
         let input = crate::stages::lines::BreakInput {
             stages: layout.stages(),
             area,
+            indent: LayoutUnit::ZERO,
             emphasis_room: EmphasisRoom::Shared,
             pretty: Pretty::Limited,
             ruby_break_within: RubyBreakWithin::BaseOpportunities,
@@ -210,6 +211,7 @@ fn the_ruby_article_relays_out_and_reads_back() {
         let input = crate::stages::lines::BreakInput {
             stages: layout.stages(),
             area,
+            indent: LayoutUnit::ZERO,
             emphasis_room: EmphasisRoom::Shared,
             pretty: Pretty::Limited,
             ruby_break_within: RubyBreakWithin::BaseOpportunities,
@@ -832,6 +834,7 @@ fn a_deep_nesting_lays_out_in_time_with_its_depth() {
                     let input = crate::stages::lines::BreakInput {
                         stages: layout.stages(),
                         area,
+                        indent: LayoutUnit::ZERO,
                         emphasis_room: EmphasisRoom::Shared,
                         pretty: Pretty::Limited,
                         ruby_break_within: RubyBreakWithin::BaseOpportunities,
@@ -851,6 +854,7 @@ fn a_deep_nesting_lays_out_in_time_with_its_depth() {
                         stages: layout.stages(),
                         lines: &lines,
                         area,
+                        indent: LayoutUnit::ZERO,
                         tab_justification: fixture.cx.config().tab_justification,
                         ellipsis_space: fixture.cx.config().ellipsis_space,
                         placements: fixture.cx.placing().0,
@@ -897,6 +901,7 @@ fn steps(fixture: &mut Fixture, nesting: Nesting, depth: u64, width: f32) -> ([u
     let input = crate::stages::lines::BreakInput {
         stages: layout.stages(),
         area,
+        indent: LayoutUnit::ZERO,
         emphasis_room: EmphasisRoom::Shared,
         pretty: Pretty::Limited,
         ruby_break_within: RubyBreakWithin::BaseOpportunities,
@@ -913,6 +918,7 @@ fn steps(fixture: &mut Fixture, nesting: Nesting, depth: u64, width: f32) -> ([u
         stages: layout.stages(),
         lines: &lines,
         area,
+        indent: LayoutUnit::ZERO,
         tab_justification: fixture.cx.config().tab_justification,
         ellipsis_space: fixture.cx.config().ellipsis_space,
         placements: fixture.cx.placing().0,

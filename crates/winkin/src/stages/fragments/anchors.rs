@@ -143,7 +143,7 @@ impl Placer<'_> {
         let indent = self.stages.content.block.text_indent;
         let first = self.lines.lines.is_empty();
         let indent = if (first || indent.each_line) != indent.hanging {
-            indent.length(self.gates.area.width())
+            self.gates.indent
         } else {
             LayoutUnit::ZERO
         };

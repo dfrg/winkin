@@ -43,7 +43,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             first,
             ..
         } = *line;
-        let indent = self.indent(para, start, first, area);
+        let indent = self.indent(para, start, first);
         let mut costs = self.edge_costs(para, start);
         let (start_cost, hang_start) = self.start_cost(&mut costs, start, first);
         // A balanced paragraph's lines fit a narrowed room but keep their

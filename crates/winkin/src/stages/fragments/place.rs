@@ -606,6 +606,7 @@ impl Gates {
             ends_on_a_line: analysis.paragraphs.ends_on_a_line(),
             has_tabs: analysis.flags.contains(ParagraphFlags::HAS_TABS),
             area: LineBand::from(input.area.inline),
+            indent: input.indent,
             justification: input.tab_justification,
             ellipsis_space: input.ellipsis_space,
             has_line_padding: content.flags.contains(ContentFlags::LINE_PADDING),
@@ -943,7 +944,7 @@ impl<'a> Placer<'a> {
         {
             return LayoutUnit::ZERO;
         }
-        indent.length(self.gates.area.width())
+        self.gates.indent
     }
 
     /// Returns where `line` sits in `band` under `align`.

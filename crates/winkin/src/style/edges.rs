@@ -2,7 +2,7 @@
 
 use core::hash::{Hash, Hasher};
 
-use super::{LengthPercentage, WritingMode};
+use super::{CalcResolver, LengthPercentageOrCalc, WritingMode};
 use crate::style::same::{Same, same_by_value};
 use crate::unit::LayoutUnit;
 
@@ -44,10 +44,10 @@ impl Sides<f32> {
 
 /// Lengths and percentages of the containing block's inline size: the
 /// margin and padding of a box.
-impl Sides<LengthPercentage> {
+impl Sides<LengthPercentageOrCalc> {
     /// Returns sides each `px` pixels long, with no percentage.
     pub const fn from_px(px: f32) -> Self {
-        Self::all(LengthPercentage::from_px(px))
+        Self::all(LengthPercentageOrCalc::from_px(px))
     }
 
     /// Returns `true` if any side is nonzero, at any basis.
@@ -58,34 +58,34 @@ impl Sides<LengthPercentage> {
             && self.left.is_zero())
     }
 
-    /// Returns whether any side has a percentage, so its length depends on
-    /// the basis.
+    /// Returns whether any side has a percentage or a `calc()`, so its
+    /// length depends on the basis.
     pub(crate) fn has_percentage(self) -> bool {
         [self.top, self.right, self.bottom, self.left]
             .iter()
-            .any(|side| side.fraction != 0.0)
+            .any(|side| side.has_percentage())
     }
 
     /// Returns the lengths in pixels, each percentage taken of `basis`
-    /// pixels.
-    pub(crate) fn resolve(self, basis: f32) -> Sides<f32> {
+    /// pixels and each `calc()` resolved by `calc`.
+    pub(crate) fn resolve(self, basis: f32, calc: Option<&dyn CalcResolver>) -> Sides<f32> {
         Sides {
-            top: self.top.resolve(basis),
-            right: self.right.resolve(basis),
-            bottom: self.bottom.resolve(basis),
-            left: self.left.resolve(basis),
+            top: self.top.resolve(basis, calc),
+            right: self.right.resolve(basis, calc),
+            bottom: self.bottom.resolve(basis, calc),
+            left: self.left.resolve(basis, calc),
         }
     }
 }
 
-impl From<Sides<f32>> for Sides<LengthPercentage> {
+impl From<Sides<f32>> for Sides<LengthPercentageOrCalc> {
     /// Takes each side's length in pixels, with no percentage.
     fn from(px: Sides<f32>) -> Self {
         Self {
-            top: LengthPercentage::from_px(px.top),
-            right: LengthPercentage::from_px(px.right),
-            bottom: LengthPercentage::from_px(px.bottom),
-            left: LengthPercentage::from_px(px.left),
+            top: LengthPercentageOrCalc::from_px(px.top),
+            right: LengthPercentageOrCalc::from_px(px.right),
+            bottom: LengthPercentageOrCalc::from_px(px.bottom),
+            left: LengthPercentageOrCalc::from_px(px.left),
         }
     }
 }

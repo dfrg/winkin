@@ -462,7 +462,7 @@ fn edges_and_atomic_sizes_are_truncated_onto_the_grid() {
             ..EdgesGroup::INITIAL
         };
         assert_eq!(
-            edges.used(0.0).inline(horizontal),
+            edges.used(0.0, None).inline(horizontal),
             (lu(expected), lu(expected)),
             "margin {margin}, padding {padding}"
         );

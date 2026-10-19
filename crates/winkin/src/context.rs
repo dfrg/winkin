@@ -29,6 +29,7 @@ use crate::stages::fragments::PlaceScratch;
 use crate::stages::lines::{BreakScratch, LinePlacements};
 use crate::stages::measure::{GeneratedInput, MeasureScratch};
 use crate::stages::shape::ShapeContext;
+use crate::style::CalcResolver;
 #[cfg(test)]
 use crate::unit::InlineLayoutUnit;
 
@@ -89,6 +90,8 @@ pub struct Context {
     analysis: AnalysisContext,
     /// Analysis's working memory.
     analysis_scratch: AnalysisScratch,
+    /// The host's resolver for `calc()` values that are not linear.
+    calc: Option<Box<dyn CalcResolver>>,
     /// The shaping caches, shared with the breaker's reshapes.
     ///
     /// They hold the shape plans, each font's `text-spacing-trim` data, the
@@ -132,6 +135,7 @@ impl Context {
             font_scratch: FontScratch::new(),
             analysis: AnalysisContext::new(),
             analysis_scratch: AnalysisScratch::new(),
+            calc: None,
             shaping: ShapeContext::new(&limits),
             measure_scratch: MeasureScratch::default(),
             break_scratch: BreakScratch::new(),
@@ -199,6 +203,21 @@ impl Context {
         self.analysis.phrases = segmenter;
     }
 
+    /// Sets what resolves the [`CalcHandle`](crate::style::CalcHandle)
+    /// values styles hold, or removes it with `None`.
+    ///
+    /// Builds and [`Layout::measure`](crate::Layout::measure) resolve
+    /// margins and padding with it, and line breaking resolves
+    /// `text-indent`. Without a resolver, such a value is zero.
+    pub fn set_calc_resolver(&mut self, resolver: Option<Box<dyn CalcResolver>>) {
+        self.calc = resolver;
+    }
+
+    /// Returns the host's `calc()` resolver, if one is set.
+    pub(crate) fn calc_resolver(&self) -> Option<&dyn CalcResolver> {
+        self.calc.as_deref()
+    }
+
     /// Sets how many entries each cache keeps.
     ///
     /// A cache above its new limit drops its least recently used entries
@@ -219,7 +238,7 @@ impl Context {
     /// memory.
     ///
     /// Keeps the collection, the configuration, the cache limits, and any
-    /// hyphenator and phrase segmenter.
+    /// hyphenator, phrase segmenter and `calc()` resolver.
     /// Existing layouts stay valid. Later builds and line breaking fill the
     /// caches again and give the same results.
     pub fn clear_caches(&mut self) {
@@ -246,6 +265,7 @@ impl Context {
             font_scratch,
             analysis: _,
             analysis_scratch,
+            calc: _,
             shaping,
             measure_scratch,
             break_scratch,

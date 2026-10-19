@@ -269,6 +269,10 @@ style_struct! {
     /// The basis is the computed font size for `letter-spacing` and
     /// `word-spacing`, the line width for `text-indent`, and the containing
     /// block's inline size for margins and padding.
+    ///
+    /// A `calc()` that mixes the two linearly, such as `calc(10px + 5%)`,
+    /// is one too. [`LengthPercentageOrCalc`](crate::style::LengthPercentageOrCalc)
+    /// carries any other `calc()`.
     pub struct LengthPercentage {
         /// The length, in CSS pixels.
         pub px: f32,

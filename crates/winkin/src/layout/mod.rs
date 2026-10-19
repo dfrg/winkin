@@ -77,10 +77,10 @@ use crate::stages::content::{AtomicId, Content, FloatId, NodeKey, SizeChange};
 use crate::stages::content::{ContentLimits, ContentWriter};
 use crate::stages::fonts::{self, FontInput, Fonts};
 use crate::stages::fragments::{self, Fragments, PlaceInput, ReadInput};
-use crate::stages::lines::{self, Area, BreakInput, Exclusions, LineId};
+use crate::stages::lines::{self, Area, BreakInput, Exclusions, LineBand, LineId};
 use crate::stages::measure::{self, IntrinsicSizes, MeasureInput, Measured};
 use crate::stages::shape::{self, ShapeInput, ShapeSession, Shaped};
-use crate::style::{ComputedBlockStyle, Direction, TextAlign, TextAlignLast};
+use crate::style::{CalcResolver, ComputedBlockStyle, Direction, TextAlign, TextAlignLast};
 use crate::unit::LayoutUnit;
 
 use boxes::BoxFragments;
@@ -243,6 +243,10 @@ impl PreparedStages {
             dominant_baseline: config.dominant_baseline,
             ruby_overhang: config.ruby_overhang,
             ruby_break_within: config.ruby_break_within,
+            indent: content
+                .block
+                .text_indent
+                .length(LayoutUnit::ZERO, cx.calc_resolver()),
         };
         let (shaping, scratch, generated) = cx.measuring();
         measure::measure_text(
@@ -362,7 +366,7 @@ impl Layout {
         let basis = if basis.is_finite() { basis } else { 0.0 };
         // Whether measurement runs again whole, and whether some atomic
         // inline's extent alone changed.
-        let mut again = self.content.set_basis(basis);
+        let mut again = self.content.set_basis(basis, cx.calc_resolver());
         let mut across = false;
         let in_place = self.content.can_resize_atomics();
         let mut cursor = AtomicId::new(0);
@@ -372,7 +376,10 @@ impl Layout {
             let mut found = false;
             while let Some(atomic) = search.next_match(&self.content) {
                 found = true;
-                match self.content.set_atomic_size(atomic, size) {
+                match self
+                    .content
+                    .set_atomic_size(atomic, size, cx.calc_resolver())
+                {
                     SizeChange::None => {}
                     // Remeasures this extent at once. A later full
                     // remeasurement overwrites every extent anyway.
@@ -387,7 +394,7 @@ impl Layout {
             }
             cursor = search.cursor();
             if !found {
-                again |= self.set_float_sizes(key, size);
+                again |= self.set_float_sizes(key, size, cx.calc_resolver());
             }
         }
         if again {
@@ -401,7 +408,12 @@ impl Layout {
 
     /// Gives every float keyed `key` the sanitized border box `size`, and
     /// returns whether any size changed.
-    fn set_float_sizes(&mut self, key: NodeKey, size: BoxSize) -> bool {
+    fn set_float_sizes(
+        &mut self,
+        key: NodeKey,
+        size: BoxSize,
+        calc: Option<&dyn CalcResolver>,
+    ) -> bool {
         let mut changed = false;
         let floats = self.content.floats().len();
         for float in (0..floats).map(FloatId::new) {
@@ -411,7 +423,7 @@ impl Layout {
                 .get(float)
                 .is_some_and(|row| self.content.float_key(row) == key);
             if keyed {
-                changed |= self.content.set_float_size(float, size);
+                changed |= self.content.set_float_size(float, size, calc);
             }
         }
         changed
@@ -836,10 +848,15 @@ impl Layout {
         let stages = self.stages.view(&self.content);
         let (lines, fragments) = (&mut self.lines, &mut self.fragments);
         let config = *cx.config();
+        // `text-indent` resolves once per area, the host's `calc()` with it.
+        let width = LineBand::from(area.inline).width();
+        let indent = self.content.block.text_indent;
+        let indent = indent.length(width, cx.calc_resolver());
         // Line breaking.
         let input = BreakInput {
             stages,
             area,
+            indent,
             emphasis_room: config.emphasis_room,
             pretty: config.pretty,
             ruby_break_within: config.ruby_break_within,
@@ -864,6 +881,7 @@ impl Layout {
             lines,
             placements,
             area,
+            indent,
             tab_justification: config.tab_justification,
             ellipsis_space: config.ellipsis_space,
         };

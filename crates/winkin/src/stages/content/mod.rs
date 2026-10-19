@@ -53,7 +53,7 @@ use crate::data::{
     Id, Keyed, SortedTable, Staging, Table, TextOffset, define_flags, define_id, find_sorted,
     heap_bytes,
 };
-use crate::style::FirstLineVariant;
+use crate::style::{CalcResolver, FirstLineVariant};
 
 pub(crate) use extras::{Absolute, Atomic, BreakClearance, Float, KeyedAtomics, SizeChange};
 use extras::{ContentExtras, NO_EXTRAS};
@@ -629,7 +629,7 @@ define_flags! {
         /// line reads each cluster's value.
         pub(crate) const TEXT_JUSTIFY = 1 << 24;
         /// A margin or padding of a box, atomic inline or float has a
-        /// percentage, resolved against the content's basis.
+        /// percentage or a `calc()`, resolved against the content's basis.
         pub(crate) const PERCENTAGES = 1 << 25;
         /// Some style sets `text-decoration-skip-spaces: all`, so a
         /// decorated run may split at its spaces.
@@ -838,7 +838,12 @@ impl Content {
 
     /// Sets atomic inline `atomic`'s border box and baseline to `size`,
     /// already sanitized, and returns how its size changed.
-    pub(crate) fn set_atomic_size(&mut self, atomic: AtomicId, size: BoxSize) -> SizeChange {
+    pub(crate) fn set_atomic_size(
+        &mut self,
+        atomic: AtomicId,
+        size: BoxSize,
+        calc: Option<&dyn CalcResolver>,
+    ) -> SizeChange {
         let writing_mode = self.block.writing_mode;
         let basis = self.basis;
         let Some(atomic) = self
@@ -854,7 +859,7 @@ impl Content {
         let along = atomic.size.inline != size.inline;
         atomic.size = size;
         if along {
-            atomic.resolve(writing_mode, basis);
+            atomic.resolve(writing_mode, basis, calc);
             SizeChange::Along
         } else {
             SizeChange::Across
@@ -863,7 +868,12 @@ impl Content {
 
     /// Sets float `float`'s border box to `size`, already sanitized, and
     /// returns whether its size changed.
-    pub(crate) fn set_float_size(&mut self, float: FloatId, size: BoxSize) -> bool {
+    pub(crate) fn set_float_size(
+        &mut self,
+        float: FloatId,
+        size: BoxSize,
+        calc: Option<&dyn CalcResolver>,
+    ) -> bool {
         let writing_mode = self.block.writing_mode;
         let basis = self.basis;
         let Some(float) = self
@@ -877,7 +887,7 @@ impl Content {
             return false;
         }
         float.size = size;
-        float.resolve(writing_mode, basis);
+        float.resolve(writing_mode, basis, calc);
         true
     }
 
@@ -886,11 +896,12 @@ impl Content {
         self.nodes.key(self.item_node(float.item))
     }
 
-    /// Resolves percentage margins and padding against `basis` pixels, and
-    /// returns whether any length changed.
+    /// Resolves percentage margins and padding against `basis` pixels, each
+    /// `calc()` by `calc`, and returns whether any length changed.
     ///
-    /// Content with no percentage keeps its lengths whatever the basis.
-    pub(crate) fn set_basis(&mut self, basis: f32) -> bool {
+    /// Content with no percentage or `calc()` keeps its lengths whatever the
+    /// basis.
+    pub(crate) fn set_basis(&mut self, basis: f32, calc: Option<&dyn CalcResolver>) -> bool {
         if self.basis.to_bits() == basis.to_bits() {
             return false;
         }
@@ -899,13 +910,13 @@ impl Content {
             return false;
         }
         let writing_mode = self.block.writing_mode;
-        self.facts.resolve_boxes(writing_mode, basis);
+        self.facts.resolve_boxes(writing_mode, basis, calc);
         if let Some(extras) = self.extras.as_deref_mut() {
             for atomic in extras.atomics.as_mut_slice() {
-                atomic.resolve(writing_mode, basis);
+                atomic.resolve(writing_mode, basis, calc);
             }
             for float in extras.floats.as_mut_slice() {
-                float.resolve(writing_mode, basis);
+                float.resolve(writing_mode, basis, calc);
             }
         }
         true

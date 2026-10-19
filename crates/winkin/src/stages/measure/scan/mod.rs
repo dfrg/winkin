@@ -464,7 +464,6 @@ impl<'w, 'a> Walking<'w, 'a> {
         ruby_starts: &'w mut Vec<ClusterId>,
         out: &'w mut MeasuredText,
     ) -> Self {
-        let content = scan.input.content;
         let em_boxes = ItemEmScan::new(scan, out);
         Self {
             scan,
@@ -475,7 +474,7 @@ impl<'w, 'a> Walking<'w, 'a> {
             seams: Seams::new(scan.autospace),
             em_boxes,
             ends: LineEndState::default(),
-            widths: IntrinsicScan::new(Indent::new(content, scan.letter.is_some())),
+            widths: IntrinsicScan::new(Indent::new(scan.input, scan.letter.is_some())),
             paragraph: ParagraphId::new(0),
             flags: MeasureFlags::NONE,
             writer: PrefixWriter::default(),

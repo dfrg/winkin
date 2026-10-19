@@ -315,6 +315,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             continued: None,
             text_align: content.block.text_align,
             text_indent: content.block.text_indent,
+            indent: input.indent,
             line_fonts: height::LineFonts::default(),
             text_fit: fitting,
             line_scale: 1.0,

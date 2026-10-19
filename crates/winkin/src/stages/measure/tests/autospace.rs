@@ -235,8 +235,8 @@ fn a_seam_reaches_across_box_edges_and_not_past_controls_or_floats() {
     let on = spaced(&sized(&PUNCT, 20.0), true, true);
     let block = ComputedBlockStyle::new(&on);
     let mut padded = on;
-    padded.edges.padding.left = LengthPercentage::from_px(10.0);
-    padded.edges.padding.right = LengthPercentage::from_px(10.0);
+    padded.edges.padding.left = LengthPercentage::from_px(10.0).into();
+    padded.edges.padding.right = LengthPercentage::from_px(10.0).into();
     assert_eq!(
         gaps(
             &mut fixture,

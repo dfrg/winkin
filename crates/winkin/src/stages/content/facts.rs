@@ -37,14 +37,15 @@ use super::memo::{FontKey, StyleKey};
 use super::{ContentFlags, NodeId, NodeKind};
 use crate::data::{Id, Staging, Table, define_flags, define_id, heap_bytes};
 use crate::style::{
-    BaseDirection, BoxDecorationBreak, ComputedBlockStyle, ComputedStyle, Direction,
+    BaseDirection, BoxDecorationBreak, CalcResolver, ComputedBlockStyle, ComputedStyle, Direction,
     DominantBaseline, EdgesGroup, EmphasisSide, EmphasisSkip, FirstLineVariant,
-    FontVariantPosition, HangingPunctuation, Hyphens, InitialLetter, LengthPercentage, LineBreak,
-    LineClamp, LineHeight, OrientationGroup, OverflowWrap, RubyGroup, TabSize, TextAlign,
-    TextAlignLast, TextBoxEdge, TextBoxTrim, TextCombineUpright, TextDecorationSkipSpaces,
-    TextEdgeOver, TextEdgeUnder, TextFit, TextFitKind, TextFitTarget, TextGroupAlign, TextIndent,
-    TextJustify, TextOrientation, TextOverflow, TextSpacingTrim, TextWrapMode, TextWrapStyle,
-    UnicodeBidi, VerticalAlign, WhiteSpaceCollapse, WordBreak, WritingMode,
+    FontVariantPosition, HangingPunctuation, Hyphens, InitialLetter, LengthPercentageOrCalc,
+    LineBreak, LineClamp, LineHeight, OrientationGroup, OverflowWrap, RubyGroup, TabSize,
+    TextAlign, TextAlignLast, TextBoxEdge, TextBoxTrim, TextCombineUpright,
+    TextDecorationSkipSpaces, TextEdgeOver, TextEdgeUnder, TextFit, TextFitKind, TextFitTarget,
+    TextGroupAlign, TextIndent, TextJustify, TextOrientation, TextOverflow, TextSpacingTrim,
+    TextWrapMode, TextWrapStyle, UnicodeBidi, VerticalAlign, WhiteSpaceCollapse, WordBreak,
+    WritingMode,
 };
 use crate::style::{Same, same_by_value, style_struct};
 use crate::unit::{LayoutUnit, TextUnit};
@@ -764,8 +765,8 @@ impl BoxFacts {
     };
 
     /// Lowers the box facts of a node of `kind` in `style`, in a block of
-    /// `writing_mode`, resolving percentages against `basis` pixels.
-    /// `edges_id` names the style's edges where they have a percentage.
+    /// `writing_mode`, resolving percentages against `basis` pixels and each
+    /// `calc()` by `calc`. `edges_id` names the style's edges where they have a percentage.
     ///
     /// - A container (an inline box, a ruby container or annotation, a
     ///   `::first-letter` box) has every fact, `vertical-align` only where
@@ -778,6 +779,7 @@ impl BoxFacts {
         kind: NodeKind,
         writing_mode: WritingMode,
         basis: f32,
+        calc: Option<&dyn CalcResolver>,
         edges_id: EdgesId,
     ) -> Self {
         let align = if kind.reads_vertical_align() {
@@ -846,14 +848,21 @@ impl BoxFacts {
             ruby: style.ruby,
             ..Self::INITIAL
         };
-        facts.resolve(edges, writing_mode, basis);
+        facts.resolve(edges, writing_mode, basis, calc);
         facts
     }
 
     /// Resolves `edges`, from its style, onto the grid in a block of
-    /// `writing_mode`, with percentages against `basis` pixels.
-    fn resolve(&mut self, edges: &EdgesGroup, writing_mode: WritingMode, basis: f32) {
-        let edges = edges.used(basis);
+    /// `writing_mode`, with percentages against `basis` pixels and each
+    /// `calc()` by `calc`.
+    fn resolve(
+        &mut self,
+        edges: &EdgesGroup,
+        writing_mode: WritingMode,
+        basis: f32,
+        calc: Option<&dyn CalcResolver>,
+    ) {
+        let edges = edges.used(basis, calc);
         let (padding, border) = (
             edges.padding.across_line_on_grid(writing_mode),
             edges.border.across_line_on_grid(writing_mode),
@@ -1001,7 +1010,7 @@ impl BlockFacts {
         text_align: TextAlign::Start,
         text_align_last: TextAlignLast::Auto,
         text_indent: TextIndent {
-            amount: LengthPercentage::ZERO,
+            amount: LengthPercentageOrCalc::ZERO,
             hanging: false,
             each_line: false,
         },
@@ -1326,7 +1335,8 @@ impl Facts {
     }
 
     /// Lowers the box facts of a node of `kind` in `style`, in a block of
-    /// `writing_mode`, resolving percentages against `basis` pixels.
+    /// `writing_mode`, resolving percentages against `basis` pixels and each
+    /// `calc()` by `calc`.
     ///
     /// Interns them through `lookup` if they are new. The id is `None`
     /// where the table is full.
@@ -1337,6 +1347,7 @@ impl Facts {
         kind: NodeKind,
         writing_mode: WritingMode,
         basis: f32,
+        calc: Option<&dyn CalcResolver>,
     ) -> Lowered<BoxFactsId> {
         let mut flags = ContentFlags::NONE;
         // A container's edges with a percentage, kept for the next basis.
@@ -1350,7 +1361,7 @@ impl Facts {
         } else {
             EdgesId::NONE
         };
-        let facts = BoxFacts::new(style, kind, writing_mode, basis, edges);
+        let facts = BoxFacts::new(style, kind, writing_mode, basis, calc, edges);
         if facts == BoxFacts::INITIAL {
             return Lowered {
                 id: Some(BoxFactsId::INITIAL),
@@ -1369,11 +1380,16 @@ impl Facts {
     }
 
     /// Resolves every box's percentage edges again against `basis` pixels,
-    /// in a block of `writing_mode`.
+    /// each `calc()` by `calc`, in a block of `writing_mode`.
     ///
     /// Rows keep their ids: a row with percentage edges names them, so two
     /// rows that resolve alike at one basis stay distinct at another.
-    pub(super) fn resolve_boxes(&mut self, writing_mode: WritingMode, basis: f32) {
+    pub(super) fn resolve_boxes(
+        &mut self,
+        writing_mode: WritingMode,
+        basis: f32,
+        calc: Option<&dyn CalcResolver>,
+    ) {
         let Some(BoxTables {
             boxes,
             edges: table,
@@ -1386,7 +1402,7 @@ impl Facts {
                 continue;
             }
             if let Some(edges) = table.get(facts.edges) {
-                facts.resolve(edges, writing_mode, basis);
+                facts.resolve(edges, writing_mode, basis, calc);
             }
         }
     }

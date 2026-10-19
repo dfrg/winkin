@@ -84,6 +84,9 @@ pub(crate) struct PlaceInput<'a> {
     /// The area the lines were broken in. Tab stops count from its content
     /// edge.
     pub(crate) area: Area,
+    /// `text-indent`'s length in the area, before `hanging` and `each-line`
+    /// pick the lines that take it.
+    pub(crate) indent: LayoutUnit,
     /// Whether a justified line widens its tabs (`Config::tab_justification`).
     pub(crate) tab_justification: TabJustification,
     /// Whether a cut keeps a space before its ellipsis
@@ -1246,6 +1249,8 @@ struct Gates {
     /// The area the lines were broken in. Tab stops count from its content
     /// edge.
     area: LineBand,
+    /// `text-indent`'s length in the area.
+    indent: LayoutUnit,
     /// Whether a justified line widens its tabs.
     justification: TabJustification,
     /// Whether a space before an ellipsis stays before it.

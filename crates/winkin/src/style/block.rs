@@ -1,6 +1,6 @@
 //! Block writing mode, alignment, indentation, wrapping and clamping values.
 
-use super::LengthPercentage;
+use super::{CalcResolver, LengthPercentageOrCalc};
 use crate::unit::LayoutUnit;
 
 /// `writing-mode`: which way a block's lines run and stack.
@@ -134,8 +134,9 @@ impl TextAlignLast {
 /// `text-indent`.
 #[derive(Copy, Clone, PartialEq, Debug, Default)]
 pub struct TextIndent {
-    /// The indent: a length in CSS pixels plus a fraction of the area's width.
-    pub amount: LengthPercentage,
+    /// The indent: a length in CSS pixels plus a fraction of the area's
+    /// width, or a `calc()` of them.
+    pub amount: LengthPercentageOrCalc,
     /// `hanging`: every line but the first is indented.
     pub hanging: bool,
     /// `each-line`: the first line after each forced break is indented too.
@@ -143,12 +144,14 @@ pub struct TextIndent {
 }
 
 impl TextIndent {
-    /// Returns how far it indents a line in an area `width` wide.
+    /// Returns how far it indents a line in an area `width` wide, a
+    /// `calc()` resolved by `calc`.
     ///
     /// The result is truncated onto the grid, as Chrome's
-    /// `MinimumValueForLength` does.
-    pub(crate) fn length(self, width: LayoutUnit) -> LayoutUnit {
-        LayoutUnit::from_px_truncated(self.amount.resolve(width.to_px()))
+    /// `MinimumValueForLength` does. The intrinsic sizes take a `width` of
+    /// zero, as Chrome's breaker does in its min- and max-content modes.
+    pub(crate) fn length(self, width: LayoutUnit, calc: Option<&dyn CalcResolver>) -> LayoutUnit {
+        LayoutUnit::from_px_truncated(self.amount.resolve(width.to_px(), calc))
     }
 }
 

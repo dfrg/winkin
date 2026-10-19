@@ -293,7 +293,8 @@ pub(super) fn blocks<'a>(
                 amount: LengthPercentage {
                     px: 12.0,
                     fraction: 0.0,
-                },
+                }
+                .into(),
                 hanging: rng.chance(50),
                 each_line: rng.chance(50),
             }
@@ -366,8 +367,8 @@ pub(super) fn spans(root: &ComputedStyle<'static>) -> Vec<ComputedStyle<'static>
         fraction: 0.0,
     };
     let mut edged = *root;
-    edged.edges.padding.left = LengthPercentage::from_px(4.0);
-    edged.edges.padding.right = LengthPercentage::from_px(2.0);
+    edged.edges.padding.left = LengthPercentage::from_px(4.0).into();
+    edged.edges.padding.right = LengthPercentage::from_px(2.0).into();
     let mut raised = *root;
     raised.line.vertical_align = VerticalAlign::Super;
     let mut larger = *root;

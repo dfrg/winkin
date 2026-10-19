@@ -12,7 +12,7 @@ use alloc::vec::Vec;
 use core::ops::Range;
 
 use super::reshape::EdgeEnd;
-use super::{Breaker, BreakerParagraph, Fitting, LineBand, LineStart, Lines, ReshapedPieces};
+use super::{Breaker, BreakerParagraph, Fitting, LineStart, Lines, ReshapedPieces};
 use crate::data::{Id, IdRange, SortedCursor, heap_bytes};
 use crate::stages::analysis::ClusterId;
 use crate::stages::content::{ContentFlags, ItemFlags, ItemId, TextFlags};
@@ -407,14 +407,13 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         para: &BreakerParagraph,
         start: ClusterId,
         first: bool,
-        area: LineBand,
     ) -> LayoutUnit {
         let indent = self.text_indent;
         let after_break = start == para.start && !first;
         if (first || (indent.each_line && after_break)) == indent.hanging {
             return LayoutUnit::ZERO;
         }
-        let length = indent.length(area.width());
+        let length = self.indent;
         let letter = self
             .stages
             .content

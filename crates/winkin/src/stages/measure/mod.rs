@@ -86,6 +86,9 @@ pub(crate) struct MeasureInput<'a> {
     pub(crate) ruby_overhang: RubyOverhangRule,
     /// Whether a ruby column breaks only where every annotation has an opportunity.
     pub(crate) ruby_break_within: RubyBreakWithin,
+    /// `text-indent`'s length as the intrinsic sizes read it: in an area of
+    /// zero width.
+    pub(crate) indent: LayoutUnit,
 }
 
 impl<'a> MeasureInput<'a> {

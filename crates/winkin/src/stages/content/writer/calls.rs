@@ -340,7 +340,8 @@ impl ContentWriter<'_> {
                 if style.edges.margin.has_percentage() {
                     writer.content.flags.insert(ContentFlags::PERCENTAGES);
                 }
-                let atomic = Atomic::new(item, size, style, writing_mode, basis);
+                let calc = writer.cx.calc_resolver();
+                let atomic = Atomic::new(item, size, style, writing_mode, basis, calc);
                 let atomics = &mut writer.content.extras_mut().atomics;
                 let id = atomics.next_id();
                 atomics.push_bounded(atomic, "an atomic has an item, and fits where it does");
@@ -412,7 +413,8 @@ impl ContentWriter<'_> {
                 if style.edges.margin.has_percentage() {
                     writer.content.flags.insert(ContentFlags::PERCENTAGES);
                 }
-                let float = Float::new(item, size, side, style, writing_mode, basis);
+                let calc = writer.cx.calc_resolver();
+                let float = Float::new(item, size, side, style, writing_mode, basis, calc);
                 writer
                     .content
                     .extras_mut()

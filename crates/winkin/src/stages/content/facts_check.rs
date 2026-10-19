@@ -21,11 +21,11 @@ use super::memo::StyleKey;
 use super::{Content, ContentFlags, NodeId, NodeKind};
 use crate::data::{Id, IdRange};
 use crate::style::{
-    BaseDirection, BoxDecorationBreak, ComputedStyle, Direction, DominantBaseline,
+    BaseDirection, BoxDecorationBreak, CalcResolver, ComputedStyle, Direction, DominantBaseline,
     FirstLineVariant, FontVariantPosition, HangingPunctuation, Hyphens, LengthPercentage,
-    LineHeight, OverflowWrap, Sides, TextBoxEdge, TextBoxTrim, TextCombineUpright,
-    TextDecorationSkipSpaces, TextEdgeOver, TextEdgeUnder, TextJustify, TextOrientation,
-    TextWrapMode, UnicodeBidi, VerticalAlign, WordBreak, WritingMode,
+    LengthPercentageOrCalc, LineHeight, OverflowWrap, Sides, TextBoxEdge, TextBoxTrim,
+    TextCombineUpright, TextDecorationSkipSpaces, TextEdgeOver, TextEdgeUnder, TextJustify,
+    TextOrientation, TextWrapMode, UnicodeBidi, VerticalAlign, WordBreak, WritingMode,
 };
 use crate::unit::{LayoutUnit, TextUnit};
 
@@ -36,6 +36,7 @@ use crate::unit::{LayoutUnit, TextUnit};
 /// mismatch, which is a writer bug.
 pub(crate) fn lowered(
     content: &Content,
+    calc: Option<&dyn CalcResolver>,
     style: &StyleKey,
     kind: NodeKind,
     text: Option<TextFactsId>,
@@ -55,6 +56,7 @@ pub(crate) fn lowered(
             kind,
             writing_mode,
             content.basis(),
+            calc,
         );
         noted_box(&mut wanted, style, kind);
     }
@@ -402,6 +404,7 @@ fn box_is(
     kind: NodeKind,
     writing_mode: WritingMode,
     basis: f32,
+    calc: Option<&dyn CalcResolver>,
 ) {
     let at = kind;
     let align = if matches!(
@@ -426,7 +429,7 @@ fn box_is(
         );
         return;
     }
-    let edges = &style.edges.used(basis);
+    let edges = &style.edges.used(basis, calc);
     let across = |sides: Sides<f32>| sides.across_line_on_grid(writing_mode);
     let (padding, border) = (across(edges.padding), across(edges.border));
     let flag = |flag: BoxFlags| facts.has(flag);
@@ -490,7 +493,7 @@ fn edge_breaks_shaping(style: &StyleKey, writing_mode: WritingMode, opens: bool)
         let (start, end) = style.bidi.direction.line_order(left, right);
         if opens { start } else { end }
     };
-    let set = |sides: Sides<LengthPercentage>| Sides {
+    let set = |sides: Sides<LengthPercentageOrCalc>| Sides {
         top: !sides.top.is_zero(),
         right: !sides.right.is_zero(),
         bottom: !sides.bottom.is_zero(),

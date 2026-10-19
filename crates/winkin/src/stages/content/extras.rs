@@ -9,7 +9,7 @@ use super::{
 };
 use crate::build::{BoxSize, Clear, FloatSide, OriginalDisplay};
 use crate::data::{Id, Keyed, SortedTable, Table, heap_bytes};
-use crate::style::{ComputedStyle, LengthPercentage, Sides, WritingMode};
+use crate::style::{CalcResolver, ComputedStyle, LengthPercentageOrCalc, Sides, WritingMode};
 use crate::unit::LayoutUnit;
 use crate::work;
 
@@ -23,7 +23,7 @@ pub(crate) struct Atomic {
     pub(crate) size: BoxSize,
     /// Its style's margins, from which `margin_inline` and `margins_across`
     /// resolve against the content's percentage basis.
-    margin: Sides<LengthPercentage>,
+    margin: Sides<LengthPercentageOrCalc>,
     /// Its margin box along the line: the border box truncated onto the
     /// grid, as Chrome holds a box's lengths, plus the line-direction
     /// margins on the grid.
@@ -36,13 +36,14 @@ pub(crate) struct Atomic {
 impl Atomic {
     /// Creates the atomic inline of `item`, with `size` as the host laid it
     /// out and margins from `style`, resolved in `writing_mode` against
-    /// `basis` pixels.
+    /// `basis` pixels, each `calc()` by `calc`.
     pub(super) fn new(
         item: ItemId,
         size: BoxSize,
         style: &ComputedStyle<'_>,
         writing_mode: WritingMode,
         basis: f32,
+        calc: Option<&dyn CalcResolver>,
     ) -> Self {
         let mut atomic = Self {
             item,
@@ -51,15 +52,20 @@ impl Atomic {
             margin_inline: LayoutUnit::ZERO,
             margins_across: (LayoutUnit::ZERO, LayoutUnit::ZERO),
         };
-        atomic.resolve(writing_mode, basis);
+        atomic.resolve(writing_mode, basis, calc);
         atomic
     }
 
     /// Recomputes its margin box from its size and margins, resolving
-    /// percentages against `basis` pixels.
-    pub(super) fn resolve(&mut self, writing_mode: WritingMode, basis: f32) {
+    /// percentages against `basis` pixels and each `calc()` by `calc`.
+    pub(super) fn resolve(
+        &mut self,
+        writing_mode: WritingMode,
+        basis: f32,
+        calc: Option<&dyn CalcResolver>,
+    ) {
         (self.margin_inline, self.margins_across) =
-            margin_box(self.size, &self.margin, writing_mode, basis);
+            margin_box(self.size, &self.margin, writing_mode, basis, calc);
     }
 }
 
@@ -68,14 +74,16 @@ impl Atomic {
 ///
 /// The margin box is the border box `size`, truncated onto the grid as
 /// Chrome holds a box's lengths, plus `margin` on either side. Percentages
-/// resolve against `basis` pixels, in a block of `writing_mode`.
+/// resolve against `basis` pixels and each `calc()` by `calc`, in a block of
+/// `writing_mode`.
 fn margin_box(
     size: BoxSize,
-    margin: &Sides<LengthPercentage>,
+    margin: &Sides<LengthPercentageOrCalc>,
     writing_mode: WritingMode,
     basis: f32,
+    calc: Option<&dyn CalcResolver>,
 ) -> (LayoutUnit, (LayoutUnit, LayoutUnit)) {
-    let margin = margin.resolve(basis);
+    let margin = margin.resolve(basis, calc);
     let (left, right) = margin.along_line_on_grid(writing_mode);
     let along = LayoutUnit::from_px_truncated(size.inline) + left + right;
     (along, margin.across_line_on_grid(writing_mode))
@@ -171,7 +179,7 @@ pub(crate) struct Float {
     pub(crate) side: FloatSide,
     /// Its style's margins, from which `margin_box` resolves against the
     /// content's percentage basis.
-    margin: Sides<LengthPercentage>,
+    margin: Sides<LengthPercentageOrCalc>,
     /// Its margin box, `(along the line, across it)`, never negative.
     ///
     /// It is the border box plus the margins on either side, each truncated
@@ -185,7 +193,7 @@ pub(crate) struct Float {
 impl Float {
     /// Creates the float anchored at `item` on `side`, with `size` as the
     /// host laid it out and margins from `style`, resolved in
-    /// `writing_mode` against `basis` pixels.
+    /// `writing_mode` against `basis` pixels, each `calc()` by `calc`.
     pub(super) fn new(
         item: ItemId,
         size: BoxSize,
@@ -193,6 +201,7 @@ impl Float {
         style: &ComputedStyle<'_>,
         writing_mode: WritingMode,
         basis: f32,
+        calc: Option<&dyn CalcResolver>,
     ) -> Self {
         let mut float = Self {
             item,
@@ -201,14 +210,19 @@ impl Float {
             margin: style.edges.margin,
             margin_box: (LayoutUnit::ZERO, LayoutUnit::ZERO),
         };
-        float.resolve(writing_mode, basis);
+        float.resolve(writing_mode, basis, calc);
         float
     }
 
     /// Recomputes its margin box from its size and margins, resolving
-    /// percentages against `basis` pixels.
-    pub(super) fn resolve(&mut self, writing_mode: WritingMode, basis: f32) {
-        let (along, (over, under)) = margin_box(self.size, &self.margin, writing_mode, basis);
+    /// percentages against `basis` pixels and each `calc()` by `calc`.
+    pub(super) fn resolve(
+        &mut self,
+        writing_mode: WritingMode,
+        basis: f32,
+        calc: Option<&dyn CalcResolver>,
+    ) {
+        let (along, (over, under)) = margin_box(self.size, &self.margin, writing_mode, basis, calc);
         let across = LayoutUnit::from_px_truncated(self.size.block) + over + under;
         self.margin_box = (along.max(LayoutUnit::ZERO), across.max(LayoutUnit::ZERO));
     }

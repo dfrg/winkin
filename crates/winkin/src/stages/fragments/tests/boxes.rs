@@ -260,7 +260,7 @@ fn a_box_covers_the_white_space_hanging_in_it() {
     };
     let right = aligned(TextAlign::Right, TextAlignLast::Auto);
     let mut padded = painted(&pre_wrap);
-    padded.edges.padding.right = LengthPercentage::from_px(5.0);
+    padded.edges.padding.right = LengthPercentage::from_px(5.0).into();
     // Each case is (block, style, text before, in the box, after, the box
     // on line 0).
     let cases = [

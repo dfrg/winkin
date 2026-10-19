@@ -441,7 +441,7 @@ fn an_indent_widens_the_lines_it_starts() {
     let ahem = sized(&AHEM_FAMILY, 10.0);
     let indented = |px: f32, fraction: f32, hanging: bool, each_line: bool| ComputedBlockStyle {
         text_indent: TextIndent {
-            amount: LengthPercentage { px, fraction },
+            amount: LengthPercentage { px, fraction }.into(),
             hanging,
             each_line,
         },
@@ -702,7 +702,8 @@ fn any_spacing_gives_valid_measurements() {
                 amount: LengthPercentage {
                     px: bad,
                     fraction: bad,
-                },
+                }
+                .into(),
                 hanging: false,
                 each_line: true,
             },

@@ -342,7 +342,8 @@ fn an_anchor_in_an_empty_paragraph_stands_on_an_empty_line() {
             amount: LengthPercentage {
                 px: 7.0,
                 fraction: 0.0,
-            },
+            }
+            .into(),
             hanging: false,
             each_line: false,
         },

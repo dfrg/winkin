@@ -407,7 +407,8 @@ fn an_indent_comes_before_an_initial_letter_and_inside_its_box() {
             amount: LengthPercentage {
                 px: 10.0,
                 fraction: 0.0,
-            },
+            }
+            .into(),
             hanging: false,
             each_line: false,
         },

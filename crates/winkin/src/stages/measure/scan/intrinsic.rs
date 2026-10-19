@@ -7,9 +7,9 @@
 use super::LinePay;
 use super::ends::AnchoredFloats;
 use crate::stages::analysis::ClusterAttrs;
-use crate::stages::content::{Content, TextFlags};
-use crate::stages::measure::IntrinsicWidths;
+use crate::stages::content::TextFlags;
 use crate::stages::measure::tabs::{TabReach, TabStops, tab_advance_reached};
+use crate::stages::measure::{IntrinsicWidths, MeasureInput};
 use crate::unit::{InlineLayoutUnit, LayoutUnit};
 
 /// How far a tab reaches on its paragraph's line, set from the content
@@ -35,9 +35,10 @@ impl Tab {
 
 /// `text-indent` as the intrinsic sizes read it.
 ///
-/// Only a length counts: Chrome's breaker resolves a percentage to zero in
-/// its min- and max-content modes (`ComputeTextIndent`). A first line that
-/// opens an initial letter takes it twice, as line layout does.
+/// It is resolved in an area of zero width, so a percentage counts as zero:
+/// Chrome's breaker resolves it so in its min- and max-content modes
+/// (`ComputeTextIndent`). A first line that opens an initial letter takes it
+/// twice, as line layout does.
 #[derive(Copy, Clone, Debug, Default)]
 pub(super) struct Indent {
     amount: InlineLayoutUnit,
@@ -47,13 +48,12 @@ pub(super) struct Indent {
 }
 
 impl Indent {
-    /// Returns the block's indent in `content`, truncated to the grid as by
-    /// Chrome's `MinimumValueForLength`. `letter` says the first line opens an
-    /// initial letter.
-    pub(super) fn new(content: &Content, letter: bool) -> Self {
-        let indent = content.block.text_indent;
+    /// Returns the block's indent in `input`. `letter` says the first line
+    /// opens an initial letter.
+    pub(super) fn new(input: &MeasureInput<'_>, letter: bool) -> Self {
+        let indent = input.content.block.text_indent;
         Self {
-            amount: InlineLayoutUnit::from_layout(LayoutUnit::from_px_truncated(indent.amount.px)),
+            amount: InlineLayoutUnit::from_layout(input.indent),
             each_line: indent.each_line,
             hanging: indent.hanging,
             letter,

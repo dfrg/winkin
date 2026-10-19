@@ -231,8 +231,8 @@ goal, and fontwich mirrors each platform's Chrome rules to reach it.
 
 | Property | Values | Status | Notes and caveats | Config |
 |---|---|---|---|---|
-| `letter-spacing` | a length and a percentage | Supported | Not applied in cursive scripts such as Arabic, as in Chrome. It goes once after each cluster as shaped: where the font joins two graphemes, as a Bengali ya-phala does, the pair takes it once, as in Chrome. The percentage is of the element's own font size, resolved per element and inherited as a percentage, as CSS Text 4 specifies. Under `text-fit` the percentage scales with the text; the length does not. | — |
-| `word-spacing` | a length and a percentage | Supported | The percentage is of the element's own font size, as CSS Text 4 specifies. By default it widens U+0020 and U+00A0 only, and not a U+0020 at the text's start unless the block keeps its spaces, as Chrome does. `WordSeparators` widens every word separator CSS lists, wherever it is. A space's letter- and word-spacing go after the combining marks set on it, once, as Chrome spaces the space and its marks as one cluster; where a line starts at those marks, they take only their own letter-spacing. | `word_spacing` |
+| `letter-spacing` | a length and a percentage | Supported | A `calc()` not linear in the font size, such as `max(1px, 10%)`, is the host's to resolve to a length, since it knows the font size; such a length does not scale under `text-fit`. Not applied in cursive scripts such as Arabic, as in Chrome. It goes once after each cluster as shaped: where the font joins two graphemes, as a Bengali ya-phala does, the pair takes it once, as in Chrome. The percentage is of the element's own font size, resolved per element and inherited as a percentage, as CSS Text 4 specifies. Under `text-fit` the percentage scales with the text; the length does not. | — |
+| `word-spacing` | a length and a percentage | Supported | A `calc()` not linear in the font size is the host's to resolve to a length, as for `letter-spacing`. The percentage is of the element's own font size, as CSS Text 4 specifies. By default it widens U+0020 and U+00A0 only, and not a U+0020 at the text's start unless the block keeps its spaces, as Chrome does. `WordSeparators` widens every word separator CSS lists, wherever it is. A space's letter- and word-spacing go after the combining marks set on it, once, as Chrome spaces the space and its marks as one cluster; where a line starts at those marks, they take only their own letter-spacing. | `word_spacing` |
 | `text-autospace` | `no-autospace`, `normal`, `ideograph-alpha`, `ideograph-numeric` | Supported | The initial value is `no-autospace`, as Chrome computes it. The space is an eighth of the primary font's `ic`, and works across element boundaries. After right-to-left text it is drawn before the later text, as in Chrome. In the sideways modes text is horizontal, so upright text there ends no space. | — |
 | `text-autospace` | `punctuation`, `insert`, `replace`, `auto` | Not supported | No value in the API. | — |
 | `text-spacing-trim` | `normal`, `space-all`, `space-first`, `trim-start` | Supported | Trimming goes through the font's `halt`, as in Chrome. In a font without `halt` Chrome trims nothing; `Always` trims by halving the mark's own advance. A neighbour is classed in the font it is shaped in, so a pair set in two fallback fonts trims as in Chrome. A trimmed pair broken across lines is reshaped. A closing mark at a line's end, the paragraph's end included, is trimmed where that makes it fit. | `punctuation_trim` |
@@ -265,7 +265,7 @@ A box is opened with `LayoutBuilder::open_box` and closed with `close_box`.
 
 | Property | Values | Status | Notes and caveats | Config |
 |---|---|---|---|---|
-| `margin`, `border-width`, `padding` | lengths per physical side, and percentages for margins and padding | Supported | A percentage is of `BuildOptions::percentage_basis`, which `Layout::measure` changes without building again. The host snaps border widths as CSS does (below 1 px to 1, else down to a whole pixel). Each length is truncated onto the 1/64 px grid, as Chrome holds it. The sides along the line take room on it; the sides across it do not. | — |
+| `margin`, `border-width`, `padding` | lengths per physical side, and percentages and any `calc()` for margins and padding | Supported | A percentage is of `BuildOptions::percentage_basis`, which `Layout::measure` changes without building again. A `calc()` that is not linear in its basis, such as `max(4px, 10%)`, is a `CalcHandle` that the context's `CalcResolver` resolves against each basis; without a resolver it is zero. Padding that resolves below zero is zero, as CSS requires: `calc(10px - 50%)` is 2 px against 16 px and 0 against 400 px, as in Chrome. The host snaps border widths as CSS does (below 1 px to 1, else down to a whole pixel). Each length is truncated onto the 1/64 px grid, as Chrome holds it. The sides along the line take room on it; the sides across it do not. | — |
 | `box-decoration-break` | `slice`, `clone` | Supported | Under `clone` every fragment takes both edges, and a line holds a cloned box's closing edge. Chrome 153 ships letting that edge overflow, a bug fixed behind a flag; winkin has the fix. | — |
 | Culling | — | Supported | A box with no edges, no `vertical-align`, nothing it paints and its parent's font metrics keeps no fragment, as Chrome culls one. Set `ComputedStyle::paints` for a box with a background, border or box shadow, and `ComputedStyle::outlines` for one with an outline. `Layout::box_fragments` still answers for a culled box, from its descendants. | — |
 | Text decoration | — | Supported | Set `ComputedStyle::decorates` for a box whose text is underlined, overlined or struck through. `Line::paints` asks only those boxes, and the block, which lines they draw, and hands out one bar for each run of text a box or the block decorates, with its baseline and the font's underline metrics; the host draws it. For `auto` a bar gives Chrome's thickness and gap (`underline_thickness`, `underline_gap`). For `text-decoration-thickness: from-font` and `text-underline-position: from-font` it gives the font's `post` underline, falling back to `auto` as Chrome does (`underline_thickness_from_font`, `underline_gap_from_font`), and the font's own lines as they are (`font_underline`, and `font_line_through` from `OS/2`, which Chrome never reads). A tab takes no bar, as in Chrome. | — |
@@ -292,7 +292,7 @@ An inline-block or a replaced element is pushed with
 
 | Property | Values | Status | Notes and caveats | Config |
 |---|---|---|---|---|
-| `text-indent` | a length and a percentage, `hanging`, `each-line` | Supported | A percentage is of the line's width, the `Area`'s inline size. Works beside floats and in intrinsic sizes. | — |
+| `text-indent` | a length and a percentage, any `calc()`, `hanging`, `each-line` | Supported | A percentage is of the line's width, the `Area`'s inline size. A `calc()` that is not linear, such as `max(20px, 10%)`, is a `CalcHandle` that the context's `CalcResolver` resolves in each area: 20 px in a 100 px block and 40 px in a 400 px one, as in Chrome. The intrinsic sizes resolve it against zero, as Chrome does, so a percentage counts as zero. Works beside floats and in intrinsic sizes. | — |
 
 ## Floats
 
@@ -512,6 +512,11 @@ winkin lays out lines. The host does everything around them.
   widths snapped to whole pixels. Hand in a `ComputedStyle` for each box and
   a `ComputedBlockStyle` for the block, with its `::first-line` styles where
   it has them.
+- **`calc()`.** Give a `calc()` linear in its basis, such as
+  `calc(10px + 5%)`, as a `LengthPercentage`. Give any other `calc()` of a
+  margin, a padding or `text-indent` as a `CalcHandle`, and set a
+  `CalcResolver` with `Context::set_calc_resolver`. Resolve a
+  `letter-spacing` or `word-spacing` `calc()` against the font size.
 - **Font loading.** Build a `fontwich::Collection`: system fonts (enable
   fontwich's `system` feature), application fonts, and `@font-face` faces.
   Fetch the faces in `Layout::wanted_faces`, add each when it lands, give

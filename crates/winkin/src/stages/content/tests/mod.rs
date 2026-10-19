@@ -1818,13 +1818,14 @@ fn items_past_the_limit_leave_every_box_closed() {
 // Sizes -------------------------------------------------------------------------
 
 /// An item is 16 bytes and a node, with its four fact ids, 32. A style key is
-/// at most 244 bytes, mostly margins and padding with their percentages.
+/// at most 276 bytes, mostly margins and padding, each side 12 bytes: a
+/// length and a percentage, or a `calc()` handle.
 #[test]
 fn the_records_are_the_size_the_design_says() {
     assert_eq!(size_of::<Item>(), 16);
     assert_eq!(size_of::<Node>(), 32);
     let style = size_of::<StyleKey>();
-    assert!(style <= 244, "a style's key is {style} bytes");
+    assert!(style <= 276, "a style's key is {style} bytes");
     let text = size_of::<TextFacts>();
     assert!(text <= 44, "text facts are {text} bytes");
     let shaping = size_of::<ShapingFacts>();
@@ -1847,7 +1848,7 @@ fn full_fact_tables_take_stand_ins_and_say_so() {
             step += 1.0 / 64.0;
             styled(|style| {
                 style.font.size = 1.0 + step;
-                style.edges.padding.left = LengthPercentage::from_px(step);
+                style.edges.padding.left = LengthPercentage::from_px(step).into();
             })
         })
         .collect();

@@ -808,7 +808,8 @@ fn a_hanging_mark_is_drawn_outside_the_line_box() {
             amount: LengthPercentage {
                 px: 20.0,
                 fraction: 0.0,
-            },
+            }
+            .into(),
             hanging: false,
             each_line: false,
         },
@@ -901,7 +902,8 @@ fn any_spacing_or_justification_gives_valid_items() {
                         amount: LengthPercentage {
                             px: bad,
                             fraction: bad,
-                        },
+                        }
+                        .into(),
                         hanging: true,
                         each_line: true,
                     },

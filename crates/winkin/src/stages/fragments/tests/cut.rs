@@ -256,7 +256,8 @@ fn an_indent_narrows_what_is_kept() {
             amount: LengthPercentage {
                 px: 40.0,
                 fraction: 0.0,
-            },
+            }
+            .into(),
             hanging: false,
             each_line: false,
         },

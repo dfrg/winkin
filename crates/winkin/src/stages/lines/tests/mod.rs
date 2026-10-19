@@ -384,7 +384,7 @@ fn bands(layout: &Layout) -> Vec<(f32, f32)> {
 fn indented(px: f32, fraction: f32, hanging: bool, each_line: bool) -> ComputedBlockStyle<'static> {
     ComputedBlockStyle {
         text_indent: TextIndent {
-            amount: LengthPercentage { px, fraction },
+            amount: LengthPercentage { px, fraction }.into(),
             hanging,
             each_line,
         },
