@@ -30,7 +30,7 @@ feature that Chrome does not parse.
 **Values are computed values.** The host runs the cascade and hands winkin a
 `ComputedStyle` for each box and a `ComputedBlockStyle` for the block. The
 tables list the values those types accept. A keyword that the cascade
-resolves to another (`line-break: auto`, `text-align: match-parent`) is the
+resolves to another (`text-align: match-parent`) is the
 host's to resolve. Lengths are CSS pixels.
 
 **Config** is `winkin::config::Config`, set on a `Context` with
@@ -118,14 +118,14 @@ letter or digit.
 | `word-break` | `normal`, `break-all`, `keep-all` | Supported | Under `break-all`, a pair of printable ASCII characters breaks as Chrome's table says. `keep-all` follows CSS's character classes. Chrome breaks before an emoji under `keep-all`; winkin does not. | — |
 | `word-break` | `break-word` | Supported | The host maps it to `word-break: normal` with `overflow-wrap: anywhere`, as CSS defines it. | — |
 | `word-break` | `auto-phrase` | Supported | `WordBreak::AutoPhrase`, with a host segmenter. Japanese text asks the host's `PhraseSegmenter` (`Context::set_phrase_segmenter`) for its phrases, as Chrome segments it with ICU's `lw=phrase`. Between two ideographs or kana a line breaks only between phrases, and elsewhere as under `normal`. A line that no phrase boundary lets fit breaks as under `normal`, and a soft hyphen is a break only there, as Chrome retries such a line without phrases. Min-content is the widest phrase. Without a segmenter, or in another language, it breaks as `normal`. | — |
-| `line-break` | `loose`, `normal`, `strict`, `anywhere` | Supported | The host resolves `auto` to `normal`. The strictness applies even without a `lang`, where Chrome drops it (a Chrome bug, fixed upstream). | `small_kana` |
+| `line-break` | `auto`, `loose`, `normal`, `strict`, `anywhere` | Supported | `auto` breaks as `normal`, but tailors the rules for Chinese only; `normal` and `loose` also tailor Japanese and Korean, as in Chrome. The strictness applies even without a `lang`, where Chrome drops it (a Chrome bug, fixed upstream). | `small_kana` |
 | `overflow-wrap` (`word-wrap`) | `normal`, `anywhere`, `break-word` | Supported | Both break an overflowing word anywhere, and between two items where either side allows it, as Chrome's retry after an overflow does. `anywhere` also lets min-content break there; `break-word` does not. | — |
 | Thai, Lao, Khmer, Myanmar | — | Supported | Broken by ICU's dictionaries, as Chrome breaks them. Without the `dictionaries` Cargo feature, an LSTM model breaks them instead, and the binary is about 3.5 MB smaller. | Cargo feature `dictionaries` (on by default) |
 | Chinese and Japanese words | — | Supported | For word motion and `capitalize`: ICU's dictionary with the `dictionaries` feature; UAX #29's own rules without it. Line breaking uses the CJK rules either way. | Cargo feature `dictionaries` |
 | Breaks beside atomic inlines | — | Supported | As CSS now says: no break beside a non-breaking glue character other than U+00A0, WJ or ZWJ. Chrome breaks beside every character here, a lag winkin does not copy. | — |
 | Marks after a space | — | Supported | A line may break between a space and the combining marks after it, inside the grapheme the two make, as UAX #14, Chrome and Firefox break there. The marks then start the next line; carets and word motion still treat the space and its marks as one grapheme. | — |
 | Quotation marks in East Asian text | — | Supported | A line may break before an opening quotation mark (`“`, `‘`, `«`) and after a closing one (`”`, `’`, `»`) where East Asian characters stand on both sides of the mark, as UAX #14 has done since Unicode 15.1 (LB19a) and as Chrome breaks. `字“満”で` breaks before `“` and after `”`; `ab“満` does not. | — |
-| Small kana | — | Supported | Under `line-break: normal`, Chrome lets a small kana start a line. `Held` holds it to the character before, as `strict` does and as CSS Text now asks. | `small_kana` |
+| Small kana | — | Supported | Under `line-break: normal` and `auto`, Chrome lets a small kana start a line. `Held` holds it to the character before, as `strict` does and as CSS Text now asks. | `small_kana` |
 
 ## Hyphenation
 
@@ -453,7 +453,7 @@ Not CSS, but an integration needs them. Everything is in
 |---|---|---|---|
 | Hit testing | Supported | `Layout::hit_test`. A point past the lines hits its column on Windows and the line's start or end on macOS and Linux. Ellipses and hyphens pass through to the text under them. Annotations can be hit. | per call |
 | Carets | Supported | `Layout::caret` gives the caret Chrome draws, except where the affinity chooses a side: at a box edge with room, at a change of direction and at a wrap after white space (see Affinity). `Layout::carets` adds the caret on the other side of a change of direction, for a host that draws a split caret (beyond Chrome). Works in vertical lines and in combined text. | — |
-| Motion | Supported | `Selection::modify` with a `Motion`: by character, word, line (keeping the column), line start or end, paragraph and text. Word motion stops after the spaces on Windows and at the word's end elsewhere (`WordMotion`, per motion). A run of punctuation and symbols is one word, as in Chrome. `Left` and `Right` move the way they point on the screen, and by `LineBoundary` go to the line's left and right edges whatever its direction (visual Home and End); `Forward` and `Backward` by `LineBoundary` go to its logical start and end. A host that moves as Chrome does maps arrows to `Forward` and `Backward` by `Layout::paragraph_direction`. Character motion stops at both places of an offset drawn twice, where Chrome stops once: at a wrap, at an inline box edge with room, and where the text changes direction. At a wrap after white space, End goes past the space, so typed text follows it; Chrome's End stops before white space the wrap removes, and after the first preserved space. | per motion |
+| Motion | Supported | `Selection::modify` with a `Motion`: by character, word, line (keeping the column), line start or end, paragraph and text. Word motion stops after the spaces on Windows and at the word's end elsewhere (`WordMotion`, per motion). A run of punctuation and symbols is one word, as in Chrome. `Left` and `Right` move the way they point on the screen, and by `LineBoundary` go to the line's left and right edges whatever its direction (visual Home and End); `Forward` and `Backward` by `LineBoundary` go to its logical start and end. A host that moves as Chrome does maps arrows to `Forward` and `Backward` by `Layout::paragraph_direction`. Character motion stops at both places of an offset drawn twice, where Chrome stops once: at a wrap, at an inline box edge with room, and where the text changes direction. At a wrap after white space, End goes past the space, so typed text follows it; Chrome's End stops before white space the wrap removes, and after the first preserved space. `LineEndMotion::BeforeTrailingSpace` (per motion) makes End stop first after the text, before trailing preserved white space, and at the line's end on the next press. | per motion |
 | Affinity | Beyond Chrome | A position's `Affinity` is the side it belongs to: at a boundary between nodes, upstream is the end of the node before and downstream the start of the node after, as `Layout::node_position` reports it. Motion keeps the side it arrives from: moving forward lands upstream, moving backward lands downstream, and a click takes the half of the glyph it hits, so text typed at the caret goes into the node it came from. At an inline box edge with margin, border or padding and text on both sides on one line, the two sides are two caret positions, each drawn on its side of the edge. Chrome draws one caret position at such an edge. Where the text changes direction, upstream is drawn at the edge of the text before and downstream at the edge of the text after; Chrome draws both on the paragraph's side. At a wrap after white space the wrap removes, upstream is the end of the line before, past the space, as if it hung; Chrome draws it at the start of the next line. | — |
 | Selection rectangles | Supported | `Layout::selection_rects`, as tall as the line box, as Chrome paints them. | — |
 | Copying | Supported | `Layout::selected_text`, as `Selection.toString()` gives it, or with `CopyKind::Clipboard` with no-break spaces as spaces, as Chrome's clipboard has it. | per call |
@@ -507,7 +507,7 @@ These have no value in the API, or are accepted and ignored.
 winkin lays out lines. The host does everything around them.
 
 - **The cascade.** Compute every value: inheritance, `em` and percentages
-  against the containing block, `match-parent`, `line-break: auto`,
+  against the containing block, `match-parent`,
   shorthands such as `white-space` and `-webkit-line-clamp`, and border
   widths snapped to whole pixels. Hand in a `ComputedStyle` for each box and
   a `ComputedBlockStyle` for the block, with its `::first-line` styles where
@@ -583,7 +583,7 @@ target: Windows on Windows, macOS on Apple platforms, Linux everywhere else
 | `dominant_baseline` | `Ignored` | `Ignored` | `Ignored` | `Applied` | `Applied` | Whether `dominant-baseline` moves inline boxes. `Applied` is beyond Chrome. |
 | `position_synthesis` | `SynthesizeMissing` | `SynthesizeMissing` | `SynthesizeMissing` | `SynthesizeMissing` | `FeaturesOnly` | Whether `font-variant-position` synthesizes what the font lacks, as CSS asks. `FeaturesOnly` is Chrome's. |
 | `platform_font_variations` | `All` | `All` | `All` | `All` | `MatchingOnly` | Whether system fonts take `font-variation-settings` and `opsz`. `MatchingOnly` is Chrome's on Windows and Linux. |
-| `small_kana` | `MayStartLine` | `MayStartLine` | `MayStartLine` | `Held` | `Held` | Whether a small kana may start a line under `line-break: normal`. `Held` is beyond Chrome. |
+| `small_kana` | `MayStartLine` | `MayStartLine` | `MayStartLine` | `Held` | `Held` | Whether a small kana may start a line under `line-break: normal` and `auto`. `Held` is beyond Chrome. |
 | `punctuation_trim` | `FontFeature` | `FontFeature` | `FontFeature` | `Always` | `Always` | Whether `text-spacing-trim` trims in fonts without `halt`. `Always` is beyond Chrome. |
 | `pretty` | `Limited` | `Limited` | `Limited` | `Limited` | `Even` | The rule `text-wrap-style: pretty` follows. `Even` is beyond Chrome. |
 | `tab_justification` | `Stretch` | `Stretch` | `Stretch` | `KeepStops` | `KeepStops` | Whether justification stretches tabs. `KeepStops` is beyond Chrome. |
@@ -602,6 +602,7 @@ Some choices are made per call, not in `Config`:
 |---|---|---|
 | What a point past the lines hits | `Layout::hit_test` (`PastLines`) | Explicit argument; `PastLines::platform()` selects `Column` on Windows and `LineEnds` elsewhere |
 | Where a word motion stops | `Motion::with_word_motion` (`WordMotion`) | `WordMotion::PLATFORM`: `SkipSpaces` on Windows, `StopAtWordEnd` elsewhere |
+| Where End stops before trailing preserved white space | `Motion::with_line_end_motion` (`LineEndMotion`) | `LineEnd`: past the white space, on every platform |
 | What a copy makes of U+00A0 | `Layout::selected_text` (`CopyKind`) | `Text`, keeping it |
 | Text past a path's ends | `path::paints` (`PastEnds`) | `Hidden` |
 | Dictionaries for Southeast Asian and CJK words | Cargo feature `dictionaries` | on |

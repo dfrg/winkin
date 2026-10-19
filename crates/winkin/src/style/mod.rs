@@ -224,7 +224,7 @@ impl TextGroup<'_> {
         transform: TextTransform::NONE,
         security: TextSecurity::None,
         word_break: WordBreak::Normal,
-        line_break: LineBreak::Normal,
+        line_break: LineBreak::Auto,
         overflow_wrap: OverflowWrap::Normal,
         hyphens: Hyphens::Manual,
         hyphenate_character: None,

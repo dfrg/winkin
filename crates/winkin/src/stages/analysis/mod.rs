@@ -57,7 +57,7 @@ use walk::ClusterWriter;
 pub(crate) struct AnalysisInput<'a> {
     pub(crate) content: &'a Content,
     /// Whether a small kana may start a line under `line-break: normal`
-    /// (`Config::small_kana`).
+    /// and `auto` (`Config::small_kana`).
     pub(crate) small_kana: SmallKana,
 }
 

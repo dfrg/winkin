@@ -45,7 +45,8 @@
 //!   Where that edge is the line's logical end or start, it is End or Home in
 //!   text order. Elsewhere it is the position a point past that end hits.
 //!   White space a wrap removed stands at the line's end in the paragraph's
-//!   direction, so on that side the motion is End, past it.
+//!   direction, so on that side the motion is End, past it. Where it is End,
+//!   `LineEndMotion` sets its stops as in text order.
 //! - An arrow collapses a selection to the end drawn further that way, where
 //!   both ends are at two places on one line. Elsewhere it collapses to the
 //!   end the paragraph's direction maps the arrow to, as Chrome does.
@@ -54,7 +55,7 @@ use core::cmp::Ordering;
 
 use super::place::{self, ClusteredPosition, Leaf};
 use super::words::Words;
-use super::{Affinity, Caret, Position, Selection, WordMotion, hit, motion};
+use super::{Affinity, Caret, LineEndMotion, Position, Selection, WordMotion, hit, motion};
 use crate::data::{Id, IdRange};
 use crate::layout::{Layout, Line};
 use crate::stages::analysis::{ClusterClass, ClusterId, RunOrientation};
@@ -242,12 +243,14 @@ pub(super) fn by_word(
 
 /// Returns the right or left end on the screen of `focus`'s line.
 ///
-/// This is End or Home where the leaf drawn there reaches that end of the
-/// line's text, and elsewhere the position a point past that end hits.
+/// This is End under `rule` or Home where the leaf drawn there reaches that
+/// end of the line's text, and elsewhere the position a point past that end
+/// hits.
 pub(super) fn line_end(
     layout: &Layout,
     focus: ClusteredPosition,
     right: bool,
+    rule: LineEndMotion,
 ) -> ClusteredPosition {
     let Some(line) = place::caret_line(layout, focus, None) else {
         return focus;
@@ -257,7 +260,7 @@ pub(super) fn line_end(
     // side, the leaf drawn there ends the line.
     let wraps = place::wrap_end(layout, &line).is_some();
     if wraps && right != line.level().is_rtl() {
-        return motion::line_edge(layout, &line, true);
+        return motion::line_end_stop(layout, &line, focus, rule);
     }
     let mut end: Option<Leaf<'_>> = None;
     let (mut first, mut last) = (usize::MAX, 0);
@@ -277,7 +280,7 @@ pub(super) fn line_end(
     // and its start where it reads the other way.
     if right != end.is_rtl() {
         if end.end == last && !wraps {
-            return motion::line_edge(layout, &line, true);
+            return motion::line_end_stop(layout, &line, focus, rule);
         }
     } else if end.start == first {
         return motion::line_edge(layout, &line, false);

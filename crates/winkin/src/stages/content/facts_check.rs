@@ -299,7 +299,8 @@ fn text_is(
             && flag(TextFlags::HYPHENS_AUTO) == (text_group.hyphens == Hyphens::Auto)
             && flag(TextFlags::EMERGENCY)
                 == (wraps && text_group.overflow_wrap != OverflowWrap::Normal)
-            && flag(TextFlags::CJK_LINE_BREAKS) == matches!(language.language(), "ja" | "zh")
+            && flag(TextFlags::CJK_LINE_BREAKS)
+                == super::facts::breaks_cj(text_group.line_break, language.language())
             && flag(TextFlags::UPRIGHT_BIDI)
                 == (vertical
                     && (style.orientation.text_orientation == TextOrientation::Upright

@@ -10,6 +10,7 @@
 //! - `caret_motion`: motion by character, line and line end, logical and on
 //!   screen;
 //! - `word_motion`: motion by word, on each platform and in each script;
+//! - `line_end`: End that stops before trailing preserved white space first;
 //! - `rects`: selection rectangles and copied text;
 //! - `offsets`: conversion to and from source nodes and offsets;
 //! - `vertical`: vertical lines and combined text;
@@ -230,6 +231,7 @@ mod carets;
 #[cfg(debug_assertions)]
 mod cost;
 mod hit;
+mod line_end;
 mod offsets;
 mod rects;
 mod ruby;

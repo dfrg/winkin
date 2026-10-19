@@ -37,12 +37,15 @@
 //!   hanging preserved space (Blink's `AdjustForSoftLineWrap`). Elsewhere End
 //!   goes to the end of the line's content, after the first hanging preserved
 //!   space, as Chrome's does, and reaches into text an ellipsis hides.
+//! - Under `LineEndMotion::BeforeTrailingSpace`, End first stops before the
+//!   preserved white space ending the line, upstream, and from there or past
+//!   it goes on to the line's end. Removed white space has no such stop.
 
 use super::place::ClusteredPosition;
 use super::words::Words;
 use super::{
-    Affinity, Granularity, Motion, MotionDirection, Position, Selection, WordMotion, hit, place,
-    visual,
+    Affinity, Granularity, LineEndMotion, Motion, MotionDirection, Position, Selection, WordMotion,
+    hit, place, visual,
 };
 use crate::data::Id;
 use crate::layout::Layout;
@@ -106,11 +109,13 @@ pub(super) fn modify(layout: &Layout, selection: Selection, motion: Motion) -> S
             place::snap(layout, to)
         }
         (Granularity::LineBoundary, Some(right)) => {
-            place::snap(layout, visual::line_end(layout, focus, right))
+            let rule = motion.line_end_motion;
+            place::snap(layout, visual::line_end(layout, focus, right, rule))
         }
-        (Granularity::LineBoundary, None) => {
-            place::snap(layout, line_boundary(layout, focus, forward))
-        }
+        (Granularity::LineBoundary, None) => place::snap(
+            layout,
+            line_boundary(layout, focus, forward, motion.line_end_motion),
+        ),
         (Granularity::ParagraphBoundary, _) => {
             place::snap(layout, paragraph_boundary(layout, focus, forward))
         }
@@ -381,13 +386,79 @@ fn by_line(
     }
 }
 
-/// Returns the logical start of `focus`'s line, or its end where `forward`:
-/// Home and End.
-fn line_boundary(layout: &Layout, focus: ClusteredPosition, forward: bool) -> ClusteredPosition {
+/// Returns the logical start of `focus`'s line, or its end under `rule`
+/// where `forward`: Home and End.
+fn line_boundary(
+    layout: &Layout,
+    focus: ClusteredPosition,
+    forward: bool,
+    rule: LineEndMotion,
+) -> ClusteredPosition {
     match place::caret_line(layout, focus, None) {
-        Some(line) => line_edge(layout, &line, forward),
+        Some(line) if forward => line_end_stop(layout, &line, focus, rule),
+        Some(line) => line_edge(layout, &line, false),
         None => focus,
     }
+}
+
+/// Returns the stop End reaches from `focus` on `line` under `rule`.
+///
+/// Under [`LineEndMotion::BeforeTrailingSpace`], this is the position before
+/// the line's trailing preserved white space while `focus` is before it, and
+/// the line's end ([`line_edge`]) elsewhere.
+pub(super) fn line_end_stop(
+    layout: &Layout,
+    line: &Line<'_>,
+    focus: ClusteredPosition,
+    rule: LineEndMotion,
+) -> ClusteredPosition {
+    let end = line_edge(layout, line, true);
+    if rule == LineEndMotion::LineEnd {
+        return end;
+    }
+    match before_trailing_space(layout, line, end) {
+        Some(first) if focus.offset() < first.offset() => first,
+        _ => end,
+    }
+}
+
+/// Returns the position before the preserved white space that ends `line`
+/// at `end`, upstream, so it is drawn after the text before it.
+///
+/// Preserved white space is the breaking spaces the line's leaves place,
+/// hanging or not; builder break opportunities among them are passed over.
+/// Returns `None` where no such space precedes `end`, or only white space
+/// does.
+#[cold]
+fn before_trailing_space(
+    layout: &Layout,
+    line: &Line<'_>,
+    end: ClusteredPosition,
+) -> Option<ClusteredPosition> {
+    // The end of what the leaves place; removed white space lies past it.
+    let placed = place::leaves(*line)
+        .map(|leaf| leaf.end)
+        .max()
+        .unwrap_or_default();
+    let clusters = &layout.analysis().clusters;
+    let start = line.record().clusters().start;
+    let mut at = end.cluster;
+    let mut spaces = false;
+    while at > start {
+        work::step();
+        let before = ClusterId::new(at.get() - 1);
+        let Some(class) = clusters.class(before) else {
+            break;
+        };
+        let space = class.is_breaking_space() && clusters.start(before).get() < placed;
+        if !space && class != ClusterClass::BreakOpportunity {
+            return spaces
+                .then(|| ClusteredPosition::from_cluster(clusters, at, Affinity::Upstream));
+        }
+        spaces |= space;
+        at = before;
+    }
+    None
 }
 
 /// Returns the logical start of `line`, or its end where `forward`.

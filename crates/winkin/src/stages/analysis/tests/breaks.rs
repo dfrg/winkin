@@ -879,23 +879,68 @@ fn latin_1_fast_path_characters_analyse_as_the_general_walk_does() {
     assert_eq!(fast, printable.collect::<Vec<u32>>());
 }
 
-/// Japanese and Chinese tailor `normal`: a break before U+301C `〜`,
+/// Returns a style in `language` under `line-break: line_break`.
+fn language_line_break(language: &str, line_break: LineBreak) -> ComputedStyle<'static> {
+    styled(|s| {
+        s.text.language = Language::parse(language).ok();
+        s.text.line_break = line_break;
+    })
+}
+
+/// Japanese, Korean and Chinese tailor `normal`: a break before U+301C `〜`,
 /// which the stream resumes for at a seam into Japanese.
 #[test]
-fn japanese_and_chinese_tailor_normal() {
+fn japanese_korean_and_chinese_tailor_normal() {
     let text = "あ\u{301C}";
-    assert_eq!(breaks(&root_text(&language("ja"), text)), [3]);
-    assert_eq!(breaks(&root_text(&language("zh-Hant"), text)), [3]);
-    assert_eq!(breaks(&root_text(&language("en"), text)), [] as [usize; 0]);
-    let strict_ja = styled(|s| {
-        s.text.language = Language::parse("ja").ok();
-        s.text.line_break = LineBreak::Strict;
-    });
+    for language in ["ja", "ko", "zh-Hant"] {
+        let normal = language_line_break(language, LineBreak::Normal);
+        assert_eq!(breaks(&root_text(&normal, text)), [3], "{language}");
+    }
+    let en = language_line_break("en", LineBreak::Normal);
+    assert_eq!(breaks(&root_text(&en, text)), [] as [usize; 0]);
+    let strict_ja = language_line_break("ja", LineBreak::Strict);
     assert_eq!(breaks(&root_text(&strict_ja, text)), [] as [usize; 0]);
-    let en = language("en");
-    let ja = language("ja");
+    let ja = language_line_break("ja", LineBreak::Normal);
     assert_eq!(breaks_cut(text, &[(3, &en), (6, &ja)]), [3]);
     assert_eq!(breaks_cut(text, &[(3, &ja), (6, &en)]), [] as [usize; 0]);
+}
+
+/// `line-break: auto` tailors Chinese only. Chrome 155, in a 4em column,
+/// breaks `国国国国〜` before the `〜` and `国国国国“` before the `“` in
+/// Chinese under `auto`, and in Japanese and Korean only under `normal` and
+/// `loose`. Under `auto` a small kana and U+30FC `ー` may start a line in
+/// every language, as under `normal`.
+#[test]
+fn auto_tailors_chinese_only() {
+    for (language, tailored) in [("zh", true), ("ja", false), ("ko", false), ("en", false)] {
+        let auto = language_line_break(language, LineBreak::Auto);
+        let tailoring = if tailored {
+            &[3, 6, 9, 12][..]
+        } else {
+            &[3, 6, 9]
+        };
+        assert_eq!(
+            breaks(&root_text(&auto, "国国国国\u{301C}")),
+            tailoring,
+            "{language}"
+        );
+        assert_eq!(
+            breaks(&root_text(&auto, "国国国国“")),
+            tailoring,
+            "{language}"
+        );
+        assert_eq!(
+            breaks(&root_text(&auto, "国国国国ゃ")),
+            [3, 6, 9, 12],
+            "{language}"
+        );
+        assert_eq!(
+            breaks(&root_text(&auto, "国国国国ー")),
+            [3, 6, 9, 12],
+            "{language}"
+        );
+    }
+    assert_eq!(ComputedStyle::initial().text.line_break, LineBreak::Auto);
 }
 
 /// Chinese reads `“` as an opening bracket and `”` as a closing one, as ICU's

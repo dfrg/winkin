@@ -254,8 +254,8 @@ define_flags! {
         /// `overflow-wrap: anywhere`, which lowers min-content to the widest
         /// cluster; `break-word` does not.
         pub(crate) const ANYWHERE = 1 << 5;
-        /// The content language is Japanese or Chinese, which the line
-        /// segmenter tailors for under `line-break: normal` and `loose`.
+        /// The line segmenter tailors its rules for Chinese and Japanese
+        /// ([`breaks_cj`]).
         pub(crate) const CJK_LINE_BREAKS = 1 << 6;
         /// Upright in a vertical typographic line, or combined whole: bidi
         /// resolves each cluster as one left-to-right unit.
@@ -340,8 +340,8 @@ style_struct! {
 impl TextFacts {
     /// Lowers the text facts of `style` in a block of `writing_mode`.
     ///
-    /// `shaping` names its shaping facts; `cjk` is set where its language
-    /// is Japanese or Chinese.
+    /// `shaping` names its shaping facts; `cjk` is set where the line
+    /// segmenter tailors for Chinese and Japanese ([`breaks_cj`]).
     fn new(
         style: &StyleKey,
         shaping: ShapingFactsId,
@@ -1117,6 +1117,21 @@ impl TextFitFacts {
     }
 }
 
+/// Returns whether the line segmenter tailors its rules for Chinese and
+/// Japanese under `line_break` in text of `language`.
+///
+/// Chrome 155 tailors Chinese under `auto`, `normal` and `loose`, and
+/// Japanese and Korean under `normal` and `loose` only: ICU4C's `ja` locale
+/// reads its root `line_normal` rules where the locale names no `lb`
+/// keyword, and Blink names none under `auto`.
+pub(super) fn breaks_cj(line_break: LineBreak, language: &str) -> bool {
+    match line_break {
+        LineBreak::Auto => language == "zh",
+        LineBreak::Normal | LineBreak::Loose => matches!(language, "ja" | "ko" | "zh"),
+        LineBreak::Strict | LineBreak::Anywhere => false,
+    }
+}
+
 /// Whether `language` is in the Chinese macrolanguage, as listed by Blink's
 /// `LayoutLocale::IsMacrolanguageChinese` from the IANA registry.
 pub(super) fn is_chinese(language: &str) -> bool {
@@ -1152,7 +1167,7 @@ static INITIAL_TEXT: TextFacts = TextFacts {
         .union(TextFlags::WHITE_SPACE_HANGS)
         .union(TextFlags::SKIPS_START_SPACES)
         .union(TextFlags::SKIPS_END_SPACES),
-    line_break: LineBreak::Normal,
+    line_break: LineBreak::Auto,
     word_break: WordBreak::Normal,
     collapse: WhiteSpaceCollapse::Collapse,
     setting: TextSetting::Horizontal,
@@ -1293,7 +1308,10 @@ impl Facts {
         writing_mode: WritingMode,
     ) -> Lowered<TextFactsId> {
         let mut flags = ContentFlags::NONE;
-        let cjk = matches!(languages.get(style.text.language).language(), "ja" | "zh");
+        let cjk = breaks_cj(
+            style.text.line_break,
+            languages.get(style.text.language).language(),
+        );
         let size = style.font.computed_size();
         let letter = TextUnit::from_px(style.text.letter_spacing.resolve(size));
         let request = FontRequest::new(style, writing_mode, letter);

@@ -1514,7 +1514,7 @@ fn there_is_one_initial_style() {
     let initial = ComputedStyle::initial();
     assert_eq!(initial, ComputedStyle::default());
     assert_eq!(initial.font.size, 16.0);
-    assert_eq!(initial.text.line_break, LineBreak::Normal);
+    assert_eq!(initial.text.line_break, LineBreak::Auto);
     assert!(initial.font.families.is_empty(), "the Standard font alone");
 }
 

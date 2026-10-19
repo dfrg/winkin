@@ -6,7 +6,8 @@
 //! [`Selection`] retains an anchor, focus and target column for line motion.
 //!
 //! Physical left/right motion follows visual order. Forward/backward motion
-//! follows logical order. Choose [`WordMotion`] to match platform word stops.
+//! follows logical order. Choose [`WordMotion`] to match platform word stops,
+//! and [`LineEndMotion`] for an End that stops after the text first.
 //! Caret and selection geometry is relative to each line box.
 //!
 //! A position keeps the side it was reached from in its [`Affinity`]. Motion
@@ -293,12 +294,15 @@ impl MotionDirection {
     ///
     /// Collapses the selection at the destination. Word motion defaults to
     /// [`WordMotion::PLATFORM`]; override with [`Motion::with_word_motion`].
+    /// Line-end motion defaults to [`LineEndMotion::LineEnd`]; override with
+    /// [`Motion::with_line_end_motion`].
     pub const fn moving(self, granularity: Granularity) -> Motion {
         Motion {
             direction: self,
             granularity,
             extend: false,
             word_motion: WordMotion::PLATFORM,
+            line_end_motion: LineEndMotion::LineEnd,
         }
     }
 
@@ -335,6 +339,7 @@ pub enum Granularity {
     /// start, downstream. [`Left`](MotionDirection::Left) and
     /// [`Right`](MotionDirection::Right) go to its edge on that side of the
     /// screen. At a wrap after white space, the line's end is past that space.
+    /// [`LineEndMotion`] can add a stop before trailing preserved white space.
     LineBoundary,
     /// The paragraph's start or end.
     ParagraphBoundary,
@@ -346,7 +351,8 @@ pub enum Granularity {
 ///
 /// Construct with [`MotionDirection::moving`] or
 /// [`MotionDirection::extending`]. Override platform word-stop behavior
-/// with [`with_word_motion`](Self::with_word_motion).
+/// with [`with_word_motion`](Self::with_word_motion), and the line-end stops
+/// with [`with_line_end_motion`](Self::with_line_end_motion).
 ///
 /// ```
 /// use winkin::selection::{Granularity, MotionDirection, WordMotion};
@@ -363,6 +369,7 @@ pub struct Motion {
     granularity: Granularity,
     extend: bool,
     word_motion: WordMotion,
+    line_end_motion: LineEndMotion,
 }
 
 impl Motion {
@@ -372,6 +379,20 @@ impl Motion {
     pub const fn with_word_motion(self, word_motion: WordMotion) -> Self {
         Self {
             word_motion,
+            ..self
+        }
+    }
+
+    /// Returns this motion with the specified line-end stops.
+    ///
+    /// Applies to [`Forward`](MotionDirection::Forward) motion by
+    /// [`LineBoundary`](Granularity::LineBoundary), and to
+    /// [`Left`](MotionDirection::Left) or [`Right`](MotionDirection::Right)
+    /// motion by it toward the end of a line in its paragraph direction.
+    /// Other motion ignores it.
+    pub const fn with_line_end_motion(self, line_end_motion: LineEndMotion) -> Self {
+        Self {
+            line_end_motion,
             ..self
         }
     }
@@ -408,6 +429,37 @@ impl Default for WordMotion {
     fn default() -> Self {
         Self::PLATFORM
     }
+}
+
+/// The stopping rule for line-end motion: End.
+///
+/// A line can end in a run of preserved white space, such as spaces hanging
+/// at a soft wrap under `white-space: pre-wrap`, or spaces before a forced
+/// break. White space that the line end removes has no such run. Where a
+/// line has no such run, or holds nothing but white space, both rules stop
+/// at the line's end.
+///
+/// The default is [`LineEnd`](Self::LineEnd) on every platform.
+///
+/// ```
+/// use winkin::selection::{Granularity, LineEndMotion, MotionDirection};
+///
+/// // End stops after the text first, and at the line's end on a second press.
+/// let end = MotionDirection::Forward
+///     .moving(Granularity::LineBoundary)
+///     .with_line_end_motion(LineEndMotion::BeforeTrailingSpace);
+/// ```
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
+pub enum LineEndMotion {
+    /// At the line's end, past any trailing white space.
+    #[default]
+    LineEnd,
+    /// Before the line's trailing preserved white space, upstream, where the
+    /// caret is drawn after the text before it.
+    ///
+    /// Where the focus is already at or past that place on the line, at the
+    /// line's end, as [`LineEnd`](Self::LineEnd) stops.
+    BeforeTrailingSpace,
 }
 
 /// Caret geometry relative to a line box.

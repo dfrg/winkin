@@ -601,7 +601,7 @@ pub(super) struct ClusterWriter<'a> {
     /// opportunity rule.
     any_atomics: bool,
     /// Whether a small kana is held to what precedes it under
-    /// `line-break: normal`, as CSS Text says, instead of starting a line as
+    /// `line-break: normal` and `auto`, as CSS Text says, instead of starting a line as
     /// in Chrome (`Config::small_kana`).
     hold_small_kana: bool,
     ruby: RubyState,
@@ -1593,7 +1593,7 @@ impl ClusterWriter<'_> {
         mut breaks: bool,
     ) -> bool {
         // If configured, a small kana or the prolonged sound mark is held to
-        // what precedes it under `line-break: normal`, as CSS Text 3 says
+        // what precedes it under `line-break: normal` and `auto`, as CSS Text 3 says
         // (csswg-drafts#10363). Line_Break CJ is read as NS, as under
         // `strict`, so it starts a line only after a space or a zero width
         // space (LB18, LB8); a tab and an ideographic space are BA. ICU, and

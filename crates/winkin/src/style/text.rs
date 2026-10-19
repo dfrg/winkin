@@ -170,14 +170,20 @@ impl TextSecurity {
 }
 
 /// `line-break`: how strictly CJK line-breaking rules apply.
-///
-/// Resolve `auto` to `normal` before building, as browsers do.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub enum LineBreak {
+    /// The rules chosen by the content language. The initial value.
+    ///
+    /// Breaks as `normal`, but tailors the rules for Chinese text only, not
+    /// for Japanese or Korean: those may then break before neither U+301C
+    /// `〜` nor a curly quotation mark beside an ideograph.
+    #[default]
+    Auto,
     /// The least restrictive rules.
     Loose,
-    /// The common rules. The initial value, as `auto` resolves.
-    #[default]
+    /// The common rules.
+    ///
+    /// Tailored for Chinese, Japanese and Korean text.
     Normal,
     /// The most restrictive rules.
     Strict,

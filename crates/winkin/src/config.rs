@@ -59,7 +59,8 @@ pub struct Config {
     /// Applies every CSS variation, or only the matching axes as Chrome on
     /// Windows and Linux does. Changes take effect on rebuild.
     pub platform_font_variations: PlatformFontVariations,
-    /// Whether small kana may start a line under `line-break: normal`.
+    /// Whether small kana may start a line under `line-break: normal` and
+    /// `auto`.
     ///
     /// Changes take effect on rebuild.
     pub small_kana: SmallKana,
@@ -162,7 +163,8 @@ impl Config {
     ///   CSS Inline 3, which takes the `super` and `sub` offsets from the
     ///   parent font.
     /// - `small_kana`: [`Held`](SmallKana::Held), per CSS Text 4, which
-    ///   forbids a break before a small kana under `line-break: normal`.
+    ///   forbids a break before a small kana under `line-break: normal`
+    ///   and `auto`.
     /// - `punctuation_trim`: [`Always`](PunctuationTrim::Always), per CSS
     ///   Text 4, which trims whether or not the font has `halt`.
     /// - `tab_justification`: [`KeepStops`](TabJustification::KeepStops), per
@@ -331,7 +333,8 @@ pub enum PlatformFontVariations {
     All,
 }
 
-/// Whether a small kana may start a line under `line-break: normal`.
+/// Whether a small kana may start a line under `line-break: normal` and
+/// `auto`.
 ///
 /// A small kana has Line_Break class CJ. Under `loose` it always may, and
 /// under `strict` only after a space or U+200B.

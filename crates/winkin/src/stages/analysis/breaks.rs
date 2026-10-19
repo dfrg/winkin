@@ -43,8 +43,8 @@ use icu_segmenter::scaffold::Utf8;
 use crate::style::{LineBreak, WordBreak};
 use crate::{unicode, work};
 
-/// The language passed for Japanese or Chinese text. The segmenter tailors
-/// only for those two, alike.
+/// The language passed where the segmenter tailors for Japanese and Chinese.
+/// It tailors only for those two, alike.
 static JAPANESE: LanguageIdentifier = langid!("ja");
 
 /// The options a line segmenter is made with, resolved from a style: one of
@@ -60,7 +60,7 @@ static JAPANESE: LanguageIdentifier = langid!("ja");
 pub(super) struct LineKey {
     strictness: LineBreak,
     word: WordBreak,
-    /// Whether the content language is Japanese or Chinese.
+    /// Whether the segmenter tailors for Japanese and Chinese.
     ja_zh: bool,
 }
 
@@ -70,8 +70,9 @@ impl LineKey {
 
     /// Returns the key for `line-break: strictness` and `word-break: word`.
     ///
-    /// `cjk` says the language is Japanese or Chinese
-    /// (`TextFlags::CJK_LINE_BREAKS`). `auto-phrase` segments as `normal`,
+    /// `cjk` says the segmenter tailors for Japanese and Chinese
+    /// (`TextFlags::CJK_LINE_BREAKS`). `auto` breaks as `normal`, its
+    /// tailoring already resolved into `cjk`. `auto-phrase` segments as `normal`,
     /// as Blink's `kPhrase` does; the writer then keeps only the phrase
     /// boundaries between ideographs and kana.
     pub(super) fn new(strictness: LineBreak, word: WordBreak, cjk: bool) -> Self {
@@ -80,6 +81,7 @@ impl LineKey {
             word => word,
         };
         match strictness {
+            LineBreak::Auto => Self::new(LineBreak::Normal, word, cjk),
             LineBreak::Anywhere => Self {
                 strictness,
                 word: WordBreak::Normal,
@@ -158,8 +160,8 @@ impl LineKey {
         self.ja_zh
     }
 
-    /// Returns whether the key is `line-break: normal`, under which a small
-    /// kana may start a line unless the config holds it.
+    /// Returns whether the key is `line-break: normal` or `auto`, under which
+    /// a small kana may start a line unless the config holds it.
     pub(super) fn is_normal(self) -> bool {
         self.strictness == LineBreak::Normal
     }
@@ -173,7 +175,7 @@ impl LineKey {
         };
         match self.strictness {
             LineBreak::Loose => word * 2 + usize::from(self.ja_zh),
-            LineBreak::Normal => 6 + word * 2 + usize::from(self.ja_zh),
+            LineBreak::Auto | LineBreak::Normal => 6 + word * 2 + usize::from(self.ja_zh),
             LineBreak::Strict => 12 + word,
             LineBreak::Anywhere => 15,
         }
@@ -207,12 +209,12 @@ impl LineKey {
 }
 
 impl From<LineBreak> for LineBreakStrictness {
-    /// Returns ICU's strictness for `line-break: value`; the four values
-    /// match one to one.
+    /// Returns ICU's strictness for `line-break: value`; four values match
+    /// one to one, and `auto` breaks as `normal`.
     fn from(value: LineBreak) -> Self {
         match value {
             LineBreak::Loose => Self::Loose,
-            LineBreak::Normal => Self::Normal,
+            LineBreak::Auto | LineBreak::Normal => Self::Normal,
             LineBreak::Strict => Self::Strict,
             LineBreak::Anywhere => Self::Anywhere,
         }
