@@ -280,7 +280,9 @@ pub enum DominantBaselines {
     ///
     /// Shifts by the difference between their primary fonts' baseline
     /// offsets, so the same baseline and font give no shift. The block's
-    /// baseline is the line's.
+    /// baseline is the line's. Under a parent's `text-top`, `text-bottom` or
+    /// `middle`, a box or atomic inline on the baseline aligns as
+    /// `vertical-align` of that name does.
     Applied,
 }
 

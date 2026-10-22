@@ -88,14 +88,22 @@ pub enum DominantBaseline {
     /// Alphabetic, in horizontal text. The initial value.
     #[default]
     Auto,
+    /// The bottom of the primary font's ascent and descent: `text-bottom`.
+    TextBottom,
     /// The alphabetic baseline.
     Alphabetic,
     /// The bottom of the ideographic em box.
     Ideographic,
+    /// Halfway between the alphabetic baseline and the x-height: `middle`.
+    Middle,
     /// The middle of the em box.
     Central,
     /// The mathematical baseline.
     Mathematical,
+    /// The hanging baseline.
+    Hanging,
+    /// The top of the primary font's ascent and descent: `text-top`.
+    TextTop,
 }
 
 /// `initial-letter-align`.

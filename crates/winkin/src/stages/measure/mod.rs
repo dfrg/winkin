@@ -45,7 +45,7 @@ use crate::stages::analysis::{Analysis, ClusterId, ParagraphId};
 use crate::stages::content::{AtomicId, Content, NodeId, TextFactsId};
 use crate::stages::fonts::{FontLineMetrics, Fonts, LineBaseline};
 use crate::stages::shape::{ShapeSession, Shaped};
-use crate::style::{FirstLine, FirstLineState, FirstLineVariant};
+use crate::style::{FirstLine, FirstLineState, FirstLineVariant, VerticalAlign};
 use crate::unit::{InlineLayoutUnit, LayoutUnit};
 use scan::{Scan, ScanPrefix};
 
@@ -369,6 +369,10 @@ struct RareMeasures {
     /// The breaker works out `middle`, `text-top`, `text-bottom`, `top` and
     /// `bottom` per line.
     shifts: SortedTable<(NodeId, LayoutUnit)>,
+    /// The alignment each box on its parent's baseline takes from the
+    /// parent's `dominant-baseline`, where line layout places it, sorted by
+    /// node.
+    dominant_aligns: SortedTable<(NodeId, VerticalAlign)>,
     em_boxes: ItemEmBoxes,
     rubies: RubyColumns,
     /// The boxes that keep a fragment, with their fragments' extents.
@@ -385,6 +389,7 @@ impl RareMeasures {
         Self {
             edge_costs: LineEdgeCosts::new(),
             shifts: SortedTable::new(),
+            dominant_aligns: SortedTable::new(),
             em_boxes: ItemEmBoxes::new(),
             rubies: RubyColumns::new(),
             kept_boxes: KeptBoxes::new(),
@@ -403,6 +408,7 @@ impl RareMeasures {
     fn clear(&mut self) {
         self.edge_costs.clear();
         self.shifts.clear();
+        self.dominant_aligns.clear();
         self.em_boxes.clear();
         self.rubies.clear();
         self.kept_boxes.clear();
@@ -471,6 +477,23 @@ impl MeasuredText {
     #[inline]
     pub(super) fn shifts(&self) -> &SortedTable<(NodeId, LayoutUnit)> {
         &self.rare().shifts
+    }
+
+    /// Returns the alignment box `node` takes from its parent's
+    /// `dominant-baseline`, or `None` where it keeps its own.
+    #[inline]
+    pub(super) fn dominant_align(&self, node: NodeId) -> Option<VerticalAlign> {
+        self.rare()
+            .dominant_aligns
+            .get(node)
+            .map(|&(_, align)| align)
+    }
+
+    /// Returns whether some box takes its alignment from its parent's
+    /// `dominant-baseline`.
+    #[inline]
+    pub(super) fn has_dominant_aligns(&self) -> bool {
+        !self.rare().dominant_aligns.is_empty()
     }
 
     /// Returns the line-edge costs: none where no line's edge costs anything.
@@ -688,7 +711,7 @@ heap_bytes! {
 }
 
 heap_bytes! {
-    RareMeasures { edge_costs, shifts, em_boxes, rubies, kept_boxes; initial_letter }
+    RareMeasures { edge_costs, shifts, dominant_aligns, em_boxes, rubies, kept_boxes; initial_letter }
 }
 
 heap_bytes! {

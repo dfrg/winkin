@@ -8,7 +8,7 @@ use crate::stages::content::{
     BoxFlags, ContentFlags, ItemFlags, ItemId, ItemKind, NodeId, NodeKind, TextFactsId,
 };
 use crate::stages::fonts::FontLineMetrics;
-use crate::style::{FirstLineVariant, VerticalAlign};
+use crate::style::{DominantBaseline, FirstLineVariant, VerticalAlign};
 use crate::unit::LayoutUnit;
 use crate::work;
 
@@ -62,15 +62,24 @@ pub(super) fn prepare_boxes(
         let boxes = facts.box_facts(nodes.box_facts(node, variant));
         let own = input.primary(text);
         let parent_metrics = input.primary(parent);
+        let from_dominant = if shifts && dominant {
+            dominant_align(boxes.align, facts.text(parent).dominant)
+        } else {
+            None
+        };
+        if let Some(align) = from_dominant {
+            out.rare_mut().dominant_aligns.push((node, align));
+        }
+        let align = from_dominant.unwrap_or(boxes.align);
         let shift = if shifts {
             baseline_shift(
                 input,
                 metrics,
                 text,
                 parent,
-                boxes.align,
+                align,
                 atomic,
-                dominant,
+                dominant && from_dominant.is_none(),
                 own,
                 parent_metrics,
             )
@@ -103,7 +112,7 @@ pub(super) fn prepare_boxes(
             || boxes.has(BoxFlags::PAINTS)
             || boxes.has(BoxFlags::OUTLINES)
             || boxes.has(BoxFlags::HAS_EDGES)
-            || !matches!(boxes.align, VerticalAlign::Baseline)
+            || !matches!(align, VerticalAlign::Baseline)
             || shift != LayoutUnit::ZERO
             || boxes.has(BoxFlags::TRIMS_OVER)
             || boxes.has(BoxFlags::TRIMS_UNDER)
@@ -133,6 +142,25 @@ pub(super) fn prepare_boxes(
                 "no more kept boxes than nodes, which a NodeId names",
             );
         }
+    }
+}
+
+/// Returns the alignment a box with `align` takes from its parent's
+/// `dominant-baseline`, `parent`, or `None` where it keeps its own.
+///
+/// Only a box on its parent's baseline takes one. Under `text-top`,
+/// `text-bottom` and `middle` it aligns as `vertical-align` does, which is
+/// where `alignment-baseline`, the shorthand's longhand, sets it. Under any
+/// other baseline a box moves by its fonts' baselines ([`baseline_shift`]).
+fn dominant_align(align: VerticalAlign, parent: DominantBaseline) -> Option<VerticalAlign> {
+    if !matches!(align, VerticalAlign::Baseline) {
+        return None;
+    }
+    match parent {
+        DominantBaseline::TextTop => Some(VerticalAlign::TextTop),
+        DominantBaseline::TextBottom => Some(VerticalAlign::TextBottom),
+        DominantBaseline::Middle => Some(VerticalAlign::Middle),
+        _ => None,
     }
 }
 

@@ -1215,3 +1215,64 @@ fn text_box_trim_on_an_inline_box_trims_its_box() {
         assert_eq!(height, Some(100.0), "{trim:?}");
     }
 }
+
+/// Under `DominantBaselines::Applied`, a parent's `dominant-baseline` of
+/// `text-top`, `text-bottom` or `middle` lays out its children, text boxes
+/// and atomic inlines alike, as their `vertical-align` of the same name
+/// does. Chrome's presets ignore it.
+#[test]
+fn a_dominant_edge_baseline_aligns_children_as_vertical_align_does() {
+    use crate::config::{Config, DominantBaselines};
+    use crate::style::DominantBaseline;
+    let cases = [
+        (DominantBaseline::TextTop, VerticalAlign::TextTop),
+        (DominantBaseline::TextBottom, VerticalAlign::TextBottom),
+        (DominantBaseline::Middle, VerticalAlign::Middle),
+    ];
+    let lay_out = |cx: &mut Context, dominant: DominantBaseline, align: VerticalAlign| {
+        let set = |style: &ComputedStyle<'static>| ComputedStyle {
+            line: LineGroup {
+                dominant_baseline: dominant,
+                vertical_align: align,
+                ..style.line
+            },
+            ..*style
+        };
+        let root = sized(&AHEM_FAMILY, 10.0);
+        let root = ComputedStyle {
+            line: LineGroup {
+                dominant_baseline: dominant,
+                ..root.line
+            },
+            ..root
+        };
+        let large = set(&sized(&AHEM_FAMILY, 24.0));
+        let atomic = set(&root);
+        let mut layout = Layout::new();
+        build(cx, &mut layout, &ComputedBlockStyle::new(&root), |b| {
+            b.text(NodeKey(1), "X ");
+            b.open_box(NodeKey(2), &large, None);
+            b.text(NodeKey(3), "X");
+            b.close_box();
+            b.atomic(NodeKey(4), &atomic, None, set_size(1));
+        });
+        layout.break_lines(cx, Area::new(200.0), &mut NoExclusions);
+        laid_out(&layout)
+    };
+    let mut cx = context();
+    for (dominant, align) in cases {
+        let aligned = lay_out(&mut cx, DominantBaseline::Auto, align);
+        assert_ne!(lay_out(&mut cx, dominant, VerticalAlign::Baseline), aligned);
+    }
+    let mut config = Config::chrome_windows();
+    config.dominant_baseline = DominantBaselines::Applied;
+    cx.set_config(config);
+    for (dominant, align) in cases {
+        let aligned = lay_out(&mut cx, DominantBaseline::Auto, align);
+        assert_eq!(
+            lay_out(&mut cx, dominant, VerticalAlign::Baseline),
+            aligned,
+            "{dominant:?}"
+        );
+    }
+}

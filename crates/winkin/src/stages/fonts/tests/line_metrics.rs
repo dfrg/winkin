@@ -1,7 +1,8 @@
 //! Line metrics tests:
 //! - the table each metrics source reads;
 //! - a zeroed win pair;
-//! - the em box and the ideographic advance.
+//! - the em box and the ideographic advance;
+//! - the edge and middle baselines `dominant-baseline` names.
 
 use super::*;
 
@@ -165,4 +166,25 @@ fn the_em_box_is_the_typographic_pair_on_the_sixty_fourth() {
     assert_eq!(metrics.em_over.to_px(), 13.0);
     assert_eq!(metrics.em_under.to_px(), 4.0);
     assert_eq!(metrics.ideographic_advance.to_px(), 17.0);
+}
+
+/// `text-top` and `text-bottom` are the ascent's and descent's edges, and
+/// `middle` is half the x-height over the alphabetic baseline, each against
+/// the dominant baseline, positive down.
+#[test]
+fn edge_and_middle_baselines_sit_on_the_line_metrics() {
+    use crate::style::DominantBaseline;
+    let font = metrics_font(false);
+    let family = font.family.clone();
+    let mut fixture = fixture_with(&[font]);
+    let mut layout = Layout::new();
+    let listed = [FontFamilyName::named(&family)];
+    fixture.span(&mut layout, &sized(&listed, 10.0), "x");
+    let metrics = used_font(&layout, fixture.primary(&layout)).metrics;
+    let at = |baseline| metrics.baseline(baseline).to_px();
+    assert_eq!(at(DominantBaseline::TextTop), -8.0);
+    assert_eq!(at(DominantBaseline::TextBottom), 2.0);
+    let half_x = metrics.x_height.to_px() / 2.0;
+    assert!(half_x > 0.0);
+    assert_eq!(at(DominantBaseline::Middle), -half_x);
 }

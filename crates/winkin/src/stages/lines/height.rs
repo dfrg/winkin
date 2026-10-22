@@ -242,7 +242,7 @@ impl LineStages<'_> {
         let flags = self.content.flags;
         flags.contains(ContentFlags::VERTICAL_ALIGN)
             || (flags.contains(ContentFlags::DOMINANT_BASELINE)
-                && !self.measured.shifts().is_empty())
+                && (!self.measured.shifts().is_empty() || self.measured.has_dominant_aligns()))
     }
 
     /// Returns whether `node` is an inline box.
@@ -301,8 +301,12 @@ impl LineStages<'_> {
         Some((id, self.content.items.get(id)?))
     }
 
-    /// Returns the `vertical-align` of box or atomic inline `node`.
+    /// Returns the `vertical-align` of box or atomic inline `node`, or the
+    /// alignment it takes from its parent's `dominant-baseline`.
     fn align(&self, node: NodeId) -> VerticalAlign {
+        if let Some(align) = self.measured.dominant_align(node) {
+            return align;
+        }
         let content = self.content;
         let facts = content.nodes.box_facts(node, self.variant);
         content.facts.box_facts(facts).align
@@ -752,9 +756,8 @@ impl BoxStack {
             }
             VerticalAlign::Middle => {
                 // Half the x-height rounds as Chrome's `FromFloatRound` does.
-                let half_x = primary_metrics(stages, parent).map_or(LayoutUnit::ZERO, |m| {
-                    LayoutUnit::from_px(m.x_height.to_px() / 2.0)
-                });
+                let half_x = primary_metrics(stages, parent)
+                    .map_or(LayoutUnit::ZERO, FontLineMetrics::half_x_height);
                 let metrics = open.metrics.zero_if_none();
                 let up = half_x - (metrics.ascent() - metrics.descent()).half();
                 record(shifts, open.node, up);

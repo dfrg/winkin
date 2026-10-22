@@ -740,14 +740,27 @@ impl FontLineMetrics {
     /// It is zero for `auto`, which is the dominant one outside SVG. It is
     /// zero for the alphabetic one except in a centred vertical line.
     /// Raising a box by it sets that baseline where the dominant one was.
+    /// `text-top` and `text-bottom` are the ascent's and descent's edges;
+    /// `middle` takes half the x-height, rounded as for `vertical-align:
+    /// middle`.
     pub(crate) fn baseline(&self, dominant: DominantBaseline) -> LayoutUnit {
         match dominant {
             DominantBaseline::Auto => LayoutUnit::ZERO,
+            DominantBaseline::TextBottom => self.descent,
             DominantBaseline::Alphabetic => self.alphabetic,
             DominantBaseline::Ideographic => self.ideographic,
+            DominantBaseline::Middle => self.alphabetic - self.half_x_height(),
             DominantBaseline::Central => self.central,
             DominantBaseline::Mathematical => self.mathematical,
+            DominantBaseline::Hanging => self.hanging,
+            DominantBaseline::TextTop => -self.ascent,
         }
+    }
+
+    /// Returns half the x-height, rounded as Chrome's `FromFloatRound` rounds
+    /// it for `vertical-align: middle`.
+    pub(crate) fn half_x_height(&self) -> LayoutUnit {
+        LayoutUnit::from_px(self.x_height.to_px() / 2.0)
     }
 }
 
