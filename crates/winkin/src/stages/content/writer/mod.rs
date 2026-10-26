@@ -34,8 +34,6 @@ mod lower;
 mod nodes;
 mod text;
 
-use alloc::string::String;
-
 use super::Lists;
 use super::collapse::Collapser;
 use super::map::MapUnitId;
@@ -99,8 +97,6 @@ impl ContentLimits {
 pub(crate) struct ContentScratch {
     /// The open containers, innermost last; the block is not on it.
     open: Table<OpenId, Open>,
-    /// Segmenter scratch for capitalize (see `transform`).
-    words: String,
     /// Lowered styles (see `memo`).
     memo: StyleMemo,
     /// Atomic inlines by the hash of their keys, to detect a shared key.
@@ -115,7 +111,6 @@ impl ContentScratch {
     pub(crate) const fn new() -> Self {
         Self {
             open: Table::new(),
-            words: String::new(),
             memo: StyleMemo::new(),
             atomic_keys: HashIndex::new(),
             lists: Lists::new(),
@@ -131,7 +126,6 @@ impl ContentScratch {
     /// Empties everything but the staging tables, keeping the capacity.
     fn clear(&mut self) {
         self.open.clear();
-        self.words.clear();
         self.memo.clear();
         self.atomic_keys.clear();
         self.lists.clear();
@@ -145,7 +139,7 @@ impl Default for ContentScratch {
 }
 
 heap_bytes! {
-    ContentScratch { open, words, memo, atomic_keys, lists, staging }
+    ContentScratch { open, memo, atomic_keys, lists, staging }
 }
 
 define_id! {
@@ -405,9 +399,9 @@ struct TextNode {
     math: MathText,
     /// The last character written, or U+0020 if something else came after.
     ///
-    /// Capitalize reads it, as Chrome reads `PreviousCharacter`. A `<br>`
+    /// Capitalize reads it, as Blink reads `PreviousCharacter`. A `<br>`
     /// leaves `\n`, a `<wbr>` U+200B, and an atomic inline or float a
-    /// space, as in Chrome.
+    /// space.
     last_char: char,
 }
 

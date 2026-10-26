@@ -1,14 +1,14 @@
-//! Caret and selection motion in text order, as Chrome's `SelectionModifier`
-//! moves, measured in Chrome 153.
+//! Caret and selection motion in text order, after Blink's
+//! `SelectionModifier`.
 //!
 //! Left and right by character, word and line end move on the screen, in
 //! `visual`. Line, paragraph and document motion have no screen side: left
-//! and right follow the focus paragraph's direction, as Chrome's
+//! and right follow the focus paragraph's direction, as Blink's
 //! `ModifyMovingRight` is `ModifyMovingForward` in a left-to-right paragraph.
 //!
 //! - Character: a stop at each grapheme boundary. A grapheme split by a style
 //!   boundary is one stop unless a box edge parts it. A builder break
-//!   opportunity's two sides are one stop, as Chrome skips a `<wbr>`.
+//!   opportunity's two sides are one stop, so a `<wbr>` adds none.
 //! - An offset drawn at two places is a stop at each; Chrome stops once. At a
 //!   wrap the places are the line's end, upstream, and the next line's start,
 //!   downstream. Where the text changes direction they are the edges of the
@@ -30,13 +30,13 @@
 //!   the selection keeps across short lines, as Blink's
 //!   `x_pos_for_vertical_arrow_navigation`. Past the last line it goes to the
 //!   text's end; before the first, to its start.
-//! - Line boundary, logical, as Chrome's Home and End: Home goes to the
+//! - Line boundary, logical, for Home and End: Home goes to the
 //!   line's first offset. At a wrap after white space, removed or hanging,
 //!   End goes past all of it, upstream, so typed text follows the space.
 //!   Chrome's End stops before removed white space and after the first
 //!   hanging preserved space (Blink's `AdjustForSoftLineWrap`). Elsewhere End
 //!   goes to the end of the line's content, after the first hanging preserved
-//!   space, as Chrome's does, and reaches into text an ellipsis hides.
+//!   space, and reaches into text an ellipsis hides.
 //! - Under `LineEndMotion::BeforeTrailingSpace`, End first stops before the
 //!   preserved white space ending the line, upstream, and from there or past
 //!   it goes on to the line's end. Removed white space has no such stop.
@@ -74,7 +74,7 @@ pub(super) fn modify(layout: &Layout, selection: Selection, motion: Motion) -> S
         MotionDirection::Forward | MotionDirection::Backward => None,
     };
     // Right is forward in a left-to-right paragraph, and left in a
-    // right-to-left one, as Chrome maps them.
+    // right-to-left one.
     let rtl = screen.is_some() && paragraph_level(layout, focus).is_rtl();
     let forward = match motion.direction {
         MotionDirection::Forward => true,

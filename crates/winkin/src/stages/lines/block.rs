@@ -47,7 +47,7 @@ impl BlockResult {
     /// `end` is where the next line box would start, in the records'
     /// positions. `trim_start` is the trim the lines were stacked and fitted
     /// with. `cleared` is where a clearing break after the last line moved
-    /// the block's end, in the host's positions. Chrome adds that clearance
+    /// the block's end, in the host's positions. That clearance applies
     /// after the trim, so the trim never pulls the end above it.
     pub(super) fn new(
         lines: &Lines,

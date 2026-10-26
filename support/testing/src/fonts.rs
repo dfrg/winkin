@@ -13,7 +13,10 @@
 //! `fvar` and `HVAR` where the font varies,
 //! its axes moving every advance; `trak`, with the `STAT` HarfBuzz asks
 //! for beside it, where the font tracks by the point size it is set at; and
-//! `vhea`, `vmtx` and `VORG` where it has vertical metrics.
+//! `vhea`, `vmtx` and `VORG` where it has vertical metrics. A font of more
+//! than 65,535 glyphs has `MAXP`, `HHEA` and `HMTX` beside `maxp`, `hhea`
+//! and `hmtx`, and its alternates past glyph 65,535 are a 24-bit single
+//! substitution over a 24-bit coverage.
 //! Deterministic, and in every build: no file, no licence.
 //!
 //! Shared by the crate's unit tests and its integration tests, so it names
@@ -521,30 +524,45 @@ impl TestFont {
 
     /// The font's bytes.
     pub fn build(&self) -> Vec<u8> {
-        let glyphs = u16::try_from(self.glyph_count()).expect("a test font under 65,536 glyphs");
+        let count = self.glyph_count();
+        let advances = self.glyph_advances();
+        // Past 65,535 glyphs the 16-bit tables hold the first 65,535, and
+        // `MAXP`, `HHEA` and `HMTX` the whole font.
+        let glyphs = u16::try_from(count).unwrap_or(u16::MAX);
         let mut tables: Vec<([u8; 4], Vec<u8>)> = vec![
             (*b"cmap", self.cmap()),
             (*b"head", self.head()),
             (*b"hhea", self.hhea(glyphs)),
-            (*b"hmtx", hmtx(&self.glyph_advances())),
+            (*b"hmtx", hmtx(&advances[..usize::from(glyphs)])),
             (*b"maxp", maxp(glyphs)),
             (*b"name", name(&self.family)),
             (*b"OS/2", self.os2()),
             (*b"post", post(-100, 50)),
         ];
+        if count > u32::from(u16::MAX) {
+            let mut hhea = self.hhea(0);
+            hhea.truncate(34);
+            push32(&mut hhea, count);
+            let mut maxp = Vec::new();
+            push32(&mut maxp, 0x0000_5000);
+            maxp.extend_from_slice(&count.to_be_bytes()[1..]);
+            tables.push((*b"HHEA", hhea));
+            tables.push((*b"HMTX", hmtx(&advances)));
+            tables.push((*b"MAXP", maxp));
+        }
         if self.color {
             tables.push((*b"COLR", colr()));
         }
         if !self.axes.is_empty() {
             tables.push((*b"fvar", fvar(&self.axes)));
-            tables.push((*b"HVAR", hvar(&self.axes, glyphs)));
+            tables.push((*b"HVAR", hvar(&self.axes, short(count))));
         }
         if !self.tracking.is_empty() {
             tables.push((*b"trak", trak(&self.tracking)));
             tables.push((*b"STAT", stat()));
         }
         if let Some(vertical) = &self.vertical {
-            tables.push((*b"vhea", vhea(glyphs)));
+            tables.push((*b"vhea", vhea(short(count))));
             tables.push((*b"vmtx", self.vmtx(vertical)));
             if let Some((default, origins)) = &vertical.origins {
                 let mut listed: Vec<(u16, i16)> =
@@ -657,7 +675,7 @@ impl TestFont {
 
     /// The glyph `ch` maps to, as a layout table holds it.
     fn g(&self, ch: char) -> u16 {
-        self.glyph(ch) as u16
+        short(self.glyph(ch))
     }
 
     /// `GSUB`, or `None` where nothing is substituted.
@@ -675,7 +693,7 @@ impl TestFont {
             let mut pairs: Vec<(u16, Vec<u16>)> = self
                 .splits
                 .iter()
-                .map(|&ch| (self.g(ch), vec![self.g(ch), self.split_glyph(ch) as u16]))
+                .map(|&ch| (self.g(ch), vec![self.g(ch), short(self.split_glyph(ch))]))
                 .collect();
             pairs.sort();
             feature(*b"ccmp", lookup(2, multiple_subst(&pairs)));
@@ -689,7 +707,7 @@ impl TestFont {
                 let mut pairs: Vec<(u16, u16)> = self
                     .joining
                     .iter()
-                    .map(|&ch| (self.g(ch), self.form_glyph(ch, form) as u16))
+                    .map(|&ch| (self.g(ch), short(self.form_glyph(ch, form))))
                     .collect();
                 pairs.sort();
                 feature(tag, lookup(1, single_subst(&pairs)));
@@ -702,29 +720,38 @@ impl TestFont {
                 .enumerate()
                 .map(|(at, chars)| {
                     let glyphs = chars.iter().map(|&ch| self.g(ch)).collect();
-                    (glyphs, self.ligature_glyph(at) as u16)
+                    (glyphs, short(self.ligature_glyph(at)))
                 })
                 .collect();
             feature(*b"liga", lookup(4, ligature_subst(&ligatures)));
         }
         let localized = self.localized.map(|(system, ch)| {
-            let pair = (self.g(ch), self.localized_glyph() as u16);
+            let pair = (self.g(ch), short(self.localized_glyph()));
             (system, feature(*b"locl", lookup(1, single_subst(&[pair]))))
         });
         for (tag, chars) in &self.alternates {
-            let mut pairs: Vec<(u16, u16)> = chars
+            let mut pairs: Vec<(u32, u32)> = chars
                 .iter()
-                .map(|&(ch, _)| (self.g(ch), self.alternate_glyph(*tag, ch) as u16))
+                .map(|&(ch, _)| (self.glyph(ch), self.alternate_glyph(*tag, ch)))
                 .collect();
             pairs.sort();
-            feature(*tag, lookup(1, single_subst(&pairs)));
+            let subtable = if pairs.iter().all(|&(_, to)| to <= u32::from(u16::MAX)) {
+                let pairs: Vec<(u16, u16)> = pairs
+                    .iter()
+                    .map(|&(from, to)| (short(from), short(to)))
+                    .collect();
+                single_subst(&pairs)
+            } else {
+                wide_single_subst(&pairs)
+            };
+            feature(*tag, lookup(1, subtable));
         }
         // The substitution is a lookup of its own, which only the contextual
         // lookup the feature names reaches.
         for (tag, chars) in &self.contextual {
             let mut pairs: Vec<(u16, u16)> = chars
                 .iter()
-                .map(|&(ch, _)| (self.g(ch), self.contextual_glyph(*tag, ch) as u16))
+                .map(|&(ch, _)| (self.g(ch), short(self.contextual_glyph(*tag, ch))))
                 .collect();
             pairs.sort();
             let single = lookups.len() as u16;
@@ -804,6 +831,17 @@ fn push16(out: &mut Vec<u8>, value: u16) {
 
 fn push32(out: &mut Vec<u8>, value: u32) {
     out.extend_from_slice(&value.to_be_bytes());
+}
+
+fn push24(out: &mut Vec<u8>, value: u32) {
+    out.extend_from_slice(&value.to_be_bytes()[1..]);
+}
+
+/// Returns `glyph` as a 16-bit table names it.
+///
+/// Panics where it is past 65,535: only alternates are written in 24 bits.
+fn short(glyph: u32) -> u16 {
+    u16::try_from(glyph).expect("a glyph a 16-bit table can name")
 }
 
 /// Every glyph's advance as a long metric, with no side bearing.
@@ -996,6 +1034,24 @@ fn lookup(kind: u16, subtable: Vec<u8>) -> Vec<u8> {
     push16(&mut head, 1);
     push16(&mut head, 0);
     parent(head, &[6], vec![subtable])
+}
+
+/// A single substitution, format 4, of `pairs` sorted by their first glyph:
+/// 24-bit substitutes, over a 24-bit coverage, format 3.
+fn wide_single_subst(pairs: &[(u32, u32)]) -> Vec<u8> {
+    let mut table = Vec::new();
+    push16(&mut table, 4);
+    push32(&mut table, (9 + 3 * pairs.len()) as u32); // coverage
+    push24(&mut table, pairs.len() as u32);
+    for &(_, to) in pairs {
+        push24(&mut table, to);
+    }
+    push16(&mut table, 3);
+    push24(&mut table, pairs.len() as u32);
+    for &(from, _) in pairs {
+        push24(&mut table, from);
+    }
+    table
 }
 
 /// A single substitution, format 2, of `pairs` sorted by their first glyph.

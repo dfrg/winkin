@@ -4,22 +4,21 @@
 //! [`WordSpacingRule`], so the prefix includes it. The breaker spaces a
 //! reshaped line edge with the same [`LetterWordSpacing::after`].
 //!
-//! The rules follow Chrome's `ShapeResultSpacing::ComputeSpacing`:
+//! The rules follow Blink's `ShapeResultSpacing::ComputeSpacing`:
 //! - `letter-spacing` goes after every cluster that draws, once per ligature.
 //!   Zero-width characters, U+FFFC and tabs take none.
 //! - A cluster of a cursive script takes no letter-spacing, as CSS Text 3,
-//!   section 7.2.1 allows and Chrome 153 does.
+//!   section 7.2.1 allows.
 //! - `word-spacing` goes after U+0020 and U+00A0, but not after a U+0020
 //!   that starts the text unless the block keeps its spaces.
 //!   [`WordSeparators`](crate::config::WordSpacing::WordSeparators) uses CSS
 //!   Text 3's separator list instead.
 //! - A space's room goes after the marks set on it, which are a cluster of
-//!   their own, as Chrome's HarfBuzz cluster holds both. Where a line starts
+//!   their own, as one shaped cluster holds both. Where a line starts
 //!   at the marks, they take their own room.
-//! - A percentage resolves against the computed font size (CSS Text 4,
-//!   Chrome 153).
+//! - A percentage resolves against the computed font size (CSS Text 4).
 //!
-//! Both are 16.16 `TextUnit`s, as Chrome's `TextRunLayoutUnit` is, and sums
+//! Both are 16.16 `TextUnit`s, as Blink's `TextRunLayoutUnit` is, and sums
 //! saturate.
 
 use crate::config::WordSpacing;
@@ -44,15 +43,16 @@ const CURSIVE: [[u8; 4]; 7] = [
 /// rule even after the config changes.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
 pub(crate) struct WordSpacingRule {
-    /// Whether CSS Text's list of separators applies, rather than Chrome's
-    /// U+0020 and U+00A0.
+    /// Whether CSS Text's list of separators applies, rather than U+0020 and
+    /// U+00A0 alone.
     css_separators: bool,
     /// Whether a U+0020 that starts the text takes word-spacing.
     first_space: bool,
 }
 
 impl WordSpacingRule {
-    /// Chrome's rule in a block that collapses spaces; the empty default.
+    /// The U+0020 and U+00A0 rule in a block that collapses spaces; the empty
+    /// default.
     pub(super) const CHROME: Self = Self {
         css_separators: false,
         first_space: false,
@@ -61,9 +61,9 @@ impl WordSpacingRule {
     /// Returns the rule `choice` makes for `content`.
     ///
     /// Under `SpaceAndNoBreakSpace`, a U+0020 that starts the text takes
-    /// spacing only where the block keeps its spaces, as Chrome's
+    /// spacing only where the block keeps its spaces, as Blink's
     /// `allow_word_spacing_anywhere_` follows `ShouldPreserveWhiteSpaces`.
-    /// `preserve-spaces`, which Chrome doesn't parse, keeps spaces.
+    /// `preserve-spaces` keeps spaces.
     pub(super) fn new(choice: WordSpacing, content: &Content) -> Self {
         match choice {
             WordSpacing::WordSeparators => Self {
@@ -181,8 +181,8 @@ impl LetterWordSpacing {
     /// Returns the room after `cluster` where it starts a line.
     ///
     /// As [`after_cluster`](Self::after_cluster), but the marks after a space
-    /// take their own room and not the space's: Chrome reshapes them alone
-    /// there, and spaces them as the marks they are.
+    /// take their own room and not the space's: they reshape alone there,
+    /// and are spaced as the marks they are.
     pub(crate) fn after_line_start(
         self,
         analysis: &Analysis,
@@ -204,8 +204,8 @@ impl LetterWordSpacing {
     ///
     /// As [`after`](Self::after), but a space's room goes after the marks
     /// set on it, which start a cluster of their own
-    /// ([`Clusters::is_space_marks`]). Chrome's HarfBuzz cluster holds the
-    /// space and its marks, and `ShapeResultSpacing` spaces the whole once,
+    /// ([`Clusters::is_space_marks`]). One shaped cluster holds the space and
+    /// its marks, and `ShapeResultSpacing` spaces the whole once,
     /// after the marks, as the space would be spaced.
     #[inline]
     pub(super) fn after_text(
@@ -314,7 +314,7 @@ fn is_cursive(text: &str) -> bool {
     }
     for ch in text.chars() {
         let props = unicode::core_props(ch);
-        let script = unicode::script(props);
+        let script = props.script();
         if CURSIVE.contains(&script.tag()) || unicode::rare_props(ch).is_join_causing() {
             return true;
         }

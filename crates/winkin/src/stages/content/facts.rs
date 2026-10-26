@@ -12,8 +12,7 @@
 //! **Four kinds, each interned by value and named by id:**
 //! - A [`FontRequest`] is what font selection selects fonts for.
 //! - A [`ShapingFacts`] names a request and adds the other shaping
-//!   properties. Equal [`ShapingFactsId`]s shape alike, as an equal `Font`
-//!   does in Blink.
+//!   properties. Equal [`ShapingFactsId`]s shape alike.
 //! - A [`TextFacts`] names a shaping row and adds every other inherited
 //!   fact.
 //! - A [`BoxFacts`] holds a box's non-inherited facts, following CSS's split
@@ -202,7 +201,7 @@ impl TextLineHeight {
         }
     }
 
-    /// Returns the line height in pixels, as Chrome's `ComputedLineHeight`
+    /// Returns the line height in pixels, as Blink's `ComputedLineHeight`
     /// gives it, using `normal` for `line-height: normal`.
     ///
     /// An initial letter is sized to span lines of this height.
@@ -267,7 +266,7 @@ define_flags! {
         pub(crate) const EMPHASIS = 1 << 9;
         /// `text-autospace` adds space between ideographs and letters
         /// (`ideograph-alpha`). Never set for text upright in a vertical
-        /// line, which Chrome classes as `kVerticalUpright`.
+        /// line, which Blink classes as `kVerticalUpright`.
         pub(crate) const AUTOSPACE_ALPHA = 1 << 10;
         /// `text-autospace` adds space between ideographs and digits
         /// (`ideograph-numeric`). Never set for text upright in a vertical
@@ -320,7 +319,7 @@ style_struct! {
         /// Measuring charges it to a line at an end where this text holds
         /// the line's outermost content, and line layout places it inside
         /// the box there. It is zero unless the length is finite and
-        /// positive. Chrome does not parse `line-padding`.
+        /// positive.
         pub(crate) padding: LayoutUnit,
         pub(crate) hanging: HangingPunctuation,
         /// The side of the line its emphasis marks go on in the block's
@@ -388,7 +387,7 @@ impl TextFacts {
         );
         // `text-orientation` has no effect in the sideways modes, so upright
         // text ends an autospace boundary only in a vertical typographic
-        // mode. Chrome's `TextAutoSpace` reads the font's orientation, which
+        // mode. Blink's `TextAutoSpace` reads the font's orientation, which
         // is horizontal there.
         let upright_in_vertical =
             vertical && orientation.text_orientation == TextOrientation::Upright;
@@ -479,7 +478,7 @@ impl HoldsFlags for TextFacts {
 
 define_flags! {
     /// Which spacings of a [`ShapingFacts`] row are fixed: a nonzero length
-    /// with no percentage, as in Chrome's `HasFixedSpacing`.
+    /// with no percentage, as Blink's `HasFixedSpacing` tests it.
     pub(crate) struct FixedSpacing(u8) {
         /// `letter-spacing`.
         pub(crate) const LETTER = 1 << 0;
@@ -503,7 +502,7 @@ style_struct! {
     pub(crate) struct ShapingFacts {
         pub(crate) font: FontRequestId,
         /// `letter-spacing` in `TextUnit`, rounded to the nearest 1/65536 px
-        /// as Chrome's `TextRunLayoutUnit::FromFloatRound` rounds it.
+        /// as Blink's `TextRunLayoutUnit::FromFloatRound` rounds it.
         ///
         /// Measuring adds it after each cluster. Through the request's
         /// `spaced`, it also turns optional ligatures off, so both use the
@@ -810,8 +809,8 @@ impl BoxFacts {
             style.line.text_box_edge,
         ));
         flags.set(BoxFlags::INITIAL_LETTER, style.line.initial_letter.is_set());
-        // An edge stops shaping as in Blink's `ShouldBreakShapingBeforeBox`
-        // and `AfterBox`: margin, border or padding on that inline side, or
+        // An edge stops shaping as Blink's `ShouldBreakShapingBeforeBox` and
+        // `AfterBox` decide: margin, border or padding on that inline side, or
         // `vertical-align` other than `baseline`. Any `unicode-bidi` stops
         // it too, as Blink ends a run at every bidi control. A box that only
         // paints is shaped across. The test reads the unrounded lengths, as
@@ -1129,8 +1128,8 @@ impl TextFitFacts {
 /// Returns whether the line segmenter tailors its rules for Chinese and
 /// Japanese under `line_break` in text of `language`.
 ///
-/// Chrome 155 tailors Chinese under `auto`, `normal` and `loose`, and
-/// Japanese and Korean under `normal` and `loose` only: ICU4C's `ja` locale
+/// Chinese is tailored under `auto`, `normal` and `loose`, and Japanese
+/// and Korean under `normal` and `loose` only: ICU4C's `ja` locale
 /// reads its root `line_normal` rules where the locale names no `lb`
 /// keyword, and Blink names none under `auto`.
 pub(super) fn breaks_cj(line_break: LineBreak, language: &str) -> bool {

@@ -225,8 +225,8 @@ impl TextKey {
     /// They hang where white space collapses, and where it is kept and wraps
     /// (`pre-wrap`). Under `break-spaces` they wrap as content. Where white
     /// space is kept and doesn't wrap (`pre`) they overflow as content, as
-    /// in Blink's `ComputeTrailingSpaceWidth`. Chrome doesn't parse
-    /// `preserve-spaces`, so it counts as `preserve`.
+    /// Blink's `ComputeTrailingSpaceWidth` counts them. `preserve-spaces`
+    /// counts as `preserve`.
     pub(super) fn white_space_hangs(&self) -> bool {
         match self.white_space_collapse {
             WhiteSpaceCollapse::BreakSpaces => false,

@@ -1,9 +1,8 @@
 //! `hanging-punctuation`: which marks hang past a line's edges.
 //!
-//! Chrome parses neither `hanging-punctuation` nor `line-padding`, so their
-//! initial values give Chrome's lines. A hanging mark draws, but its width
-//! doesn't count against the line (CSS Text 4, "hanging glyphs"). The scan
-//! writes each hang into the line-edge costs:
+//! A hanging mark draws, but its width doesn't count against the line (CSS
+//! Text 4, "hanging glyphs"). The scan writes each hang into the line-edge
+//! costs:
 //! - `first`: a negative start cost only the block's first line pays.
 //! - `force-end`, and `last` at the text's end: a flex the breaker always
 //!   takes (`HANG_FORCED`).

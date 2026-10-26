@@ -1,10 +1,9 @@
-//! Full case mapping, with the language tailorings Chrome applies.
+//! Full case mapping, with ICU4C's language tailorings.
 //!
 //! The mappings are Unicode's full ones (SpecialCasing.txt's unconditional
 //! entries included), read from runs of characters that map alike, and the
 //! conditional ones are written out here, as ICU4C's `ucase.cpp` writes them.
-//! Chrome maps case with ICU4C in the text's language (`CaseMap`), which
-//! tailors four: Turkish and Azerbaijani, Lithuanian, Greek and Dutch. Any
+//! ICU4C's `CaseMap` maps case in the text's language and tailors four: Turkish and Azerbaijani, Lithuanian, Greek and Dutch. Any
 //! other language maps as the root does, Armenian included.
 //!
 //! - Every language lowercases a capital sigma that ends a word to `ς`.
@@ -13,25 +12,32 @@
 //! - Greek drops accents from capitals, by ICU4C's `GreekUpper`.
 //! - Dutch titlecases `ij` whole.
 //!
-//! Uppercase leaves Georgian Mkhedruli as it is, and lowercases Mtavruli, as
-//! Chrome's `DisableNewGeorgianCapitalLetters` does.
+//! Uppercase leaves Georgian Mkhedruli as it is, and lowercases Mtavruli,
+//! following Blink's `DisableNewGeorgianCapitalLetters`.
 //!
 //! A mapping reads only the text it is given: a sigma at its end ends a
 //! word.
 
-use super::normalize::combining_class;
-use super::tables::{
-    CASE_DELTAS, CASE_EXCEPTIONS, CASE_RUN_DATA, CASE_RUNS, CASE_STRINGS, GREEK_ACCENT,
+mod tables;
+
+#[cfg(test)]
+mod tests;
+
+use crate::{core_props, rare_props};
+use tables::{
+    ACCENTS, CASE_DELTAS, CASE_EXCEPTIONS, CASE_RUN_DATA, CASE_RUNS, CASE_STRINGS, GREEK_ACCENT,
     GREEK_DIALYTIKA, GREEK_LETTERS, GREEK_UPPER_MASK, GREEK_VOWEL, GREEK_YPOGEGRAMMENI,
     RUN_EXCEPTIONS, RUN_KIND_MASK, RUN_LENGTH_MASK, RUN_LENGTH_SHIFT, RUN_LOWER, RUN_PAIRS,
     RUN_START_SHIFT, RUN_UPPER, SOFT_DOTTED,
 };
-use super::{is_mark, rare_props};
 
-/// The rules a language maps case by, as Blink's `CaseMap::Locale` picks
-/// them.
+/// The rules a language maps case by.
+///
+/// Four languages tailor Unicode's mappings: Turkish and Azerbaijani,
+/// Lithuanian, Greek and Dutch. Every other language maps as the root does.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub(crate) enum CaseLanguage {
+pub enum CaseLanguage {
+    // The languages Blink's `CaseMap::Locale` picks.
     /// Unicode's mappings, untailored.
     Root,
     /// Turkish and Azerbaijani: `i` uppercases to `İ`, and `I` lowercases to
@@ -46,8 +52,9 @@ pub(crate) enum CaseLanguage {
 }
 
 impl CaseLanguage {
-    /// Returns the rules of the language whose primary subtag is `language`.
-    pub(crate) fn from_language(language: &str) -> Self {
+    /// Returns the rules of the language whose primary subtag is `language`,
+    /// such as `"tr"`.
+    pub fn from_language(language: &str) -> Self {
         match language {
             "tr" | "az" => Self::Turkic,
             "lt" => Self::Lithuanian,
@@ -71,7 +78,7 @@ const DOT_ABOVE: char = '\u{307}';
 const ACUTE: char = '\u{301}';
 
 /// Calls `push` with each character of the full uppercase of `text`.
-pub(crate) fn uppercase(text: &str, language: CaseLanguage, push: &mut dyn FnMut(char)) {
+pub fn uppercase(text: &str, language: CaseLanguage, push: &mut dyn FnMut(char)) {
     if language == CaseLanguage::Greek {
         greek_uppercase(text, push);
         return;
@@ -89,7 +96,7 @@ pub(crate) fn uppercase(text: &str, language: CaseLanguage, push: &mut dyn FnMut
 }
 
 /// Calls `push` with each character of the full lowercase of `text`.
-pub(crate) fn lowercase(text: &str, language: CaseLanguage, push: &mut dyn FnMut(char)) {
+pub fn lowercase(text: &str, language: CaseLanguage, push: &mut dyn FnMut(char)) {
     let lithuanian = language == CaseLanguage::Lithuanian;
     let turkic = language == CaseLanguage::Turkic;
     for (at, ch) in text.char_indices() {
@@ -127,8 +134,8 @@ pub(crate) fn lowercase(text: &str, language: CaseLanguage, push: &mut dyn FnMut
 /// titlecased and the rest as they are.
 ///
 /// Dutch titlecases a `j` after an `i` as well, with an acute on both or on
-/// neither, as ICU4C's `maybeTitleDutchIJ` does.
-pub(crate) fn titlecase(segment: &str, language: CaseLanguage, push: &mut dyn FnMut(char)) {
+/// neither.
+pub fn titlecase(segment: &str, language: CaseLanguage, push: &mut dyn FnMut(char)) {
     let mut chars = segment.chars();
     let Some(first) = chars.next() else {
         return;
@@ -161,7 +168,8 @@ pub(crate) fn titlecase(segment: &str, language: CaseLanguage, push: &mut dyn Fn
 /// after the `I` (`acute` false) or `Í` (`acute` true) it follows.
 ///
 /// A plain `I` takes a plain `j` or `J`, and one with an acute, precomposed or
-/// not, takes a `j` or `J` with an acute. No other mark may follow.
+/// not, takes a `j` or `J` with an acute. No other mark may follow, as in
+/// ICU4C's `maybeTitleDutchIJ`.
 fn dutch_j(rest: &str, mut acute: bool) -> Option<usize> {
     let mut chars = rest.char_indices();
     let (mut at, mut ch) = chars.next()?;
@@ -175,7 +183,10 @@ fn dutch_j(rest: &str, mut acute: bool) -> Option<usize> {
     if acute && chars.next()?.1 != ACUTE {
         return None;
     }
-    if chars.next().is_some_and(|(_, next)| is_mark(next)) {
+    if chars
+        .next()
+        .is_some_and(|(_, next)| core_props(next).is_mark())
+    {
         return None;
     }
     (ch == 'j').then_some(at)
@@ -266,10 +277,16 @@ fn dot(ch: char) -> Dot {
     if soft_dotted {
         return Dot::SoftDotted;
     }
-    match combining_class(ch) {
-        0 => Dot::None,
-        230 => Dot::Above,
-        _ => Dot::OtherAccent,
+    let at = ACCENTS.partition_point(|&range| range >> 8 <= cp);
+    match at.checked_sub(1).and_then(|at| ACCENTS.get(at)) {
+        Some(&range) if cp - (range >> 8) <= (range >> 1) & 0x7F => {
+            if range & 1 != 0 {
+                Dot::Above
+            } else {
+                Dot::OtherAccent
+            }
+        }
+        _ => Dot::None,
     }
 }
 

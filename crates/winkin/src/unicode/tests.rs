@@ -2,7 +2,7 @@
 //! - the pairwise steps, built into NFD and NFC as UAX #15 defines them,
 //!   normalize as ICU does: every character, every composing pair, a random
 //!   corpus, and `NormalizationTest.txt` where the cargo registry has it;
-//! - HarfBuzz's own properties match harfrust 0.14.0's.
+//! - HarfBuzz's own properties match harfrust 0.15.0's.
 
 use alloc::vec::Vec;
 use core::array;

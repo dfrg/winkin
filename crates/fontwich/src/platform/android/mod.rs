@@ -104,7 +104,6 @@ impl FamilyNames for BTreeMap<(String, u32), String> {
 
 /// An error encountered while reading `fonts.xml`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum ConfigError {
     /// Malformed XML, with the parser's error message.
     Malformed(String),

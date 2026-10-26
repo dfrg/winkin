@@ -23,8 +23,9 @@
 //! [`CalcHandle`] that the [`CalcResolver`] set on the
 //! [`Context`](crate::Context) resolves as layout learns the basis.
 //!
-//! Initial values are those CSS specifies, except for `text-autospace` and
-//! `ruby-position`, whose initial values are those Chrome computes.
+//! Initial values are those CSS specifies, except that `text-autospace` is
+//! `no-autospace` rather than `normal` and `ruby-position` is `over` rather
+//! than `alternate`.
 
 // - `font`, `text`, `emphasis` (part of the text group), `line`, `bidi`,
 //   `orientation`, `edges` and `ruby`: one style group's values each, with
@@ -138,11 +139,11 @@ impl FontGroup<'_> {
     };
 }
 
-/// The largest font size used, in pixels: Chrome's `kMaximumAllowedFontSize`.
+/// The largest font size used, in pixels: Blink's `kMaximumAllowedFontSize`.
 /// A larger size is used at this one.
 const MAX_FONT_SIZE: f32 = 10_000.0;
 
-/// Returns `px` as a usable font size, clamped as Chrome clamps a computed size.
+/// Returns `px` as a usable font size, clamped as Blink clamps a computed size.
 ///
 /// A size that is negative or not finite becomes zero, and one above
 /// [`MAX_FONT_SIZE`] becomes that. Every size a font is used at, computed or
@@ -260,7 +261,7 @@ style_struct! {
         pub dominant_baseline: DominantBaseline,
         /// `initial-letter` and `initial-letter-align`.
         pub initial_letter: InitialLetter,
-        /// `line-padding`, in CSS pixels. Chrome does not support it.
+        /// `line-padding`, in CSS pixels.
         pub padding: f32,
         /// `text-box-trim` on an inline box.
         ///
@@ -329,8 +330,8 @@ style_struct! {
     /// Percentages in margins and padding are of the containing block's
     /// inline size, set by [`BuildOptions::percentage_basis`] and
     /// [`Layout::measure`]. Layout maps the sides to the writing mode and
-    /// truncates each length toward zero onto a 1/64 px grid, as Chrome
-    /// does: 10.012 px becomes 10 px and 10.99 px becomes 10.984375 px.
+    /// truncates each length toward zero onto a 1/64 px grid: 10.012 px
+    /// becomes 10 px and 10.99 px becomes 10.984375 px.
     ///
     /// [`BuildOptions::percentage_basis`]: crate::BuildOptions::percentage_basis
     /// [`Layout::measure`]: crate::Layout::measure
@@ -339,9 +340,8 @@ style_struct! {
         pub margin: Sides<LengthPercentageOrCalc>,
         /// The used `border-width` in CSS pixels, or zero for `border-style: none`.
         ///
-        /// Snap widths before building, as Chrome does: a positive width
-        /// below 1 px becomes 1 px, and a larger one rounds down to whole
-        /// pixels. So 0.5 px becomes 1 px and 2.5 px becomes 2 px.
+        /// Snap widths before building: a positive width below 1 px becomes
+        /// 1 px, and a larger one rounds down to whole pixels. So 0.5 px becomes 1 px and 2.5 px becomes 2 px.
         pub border: Sides<f32>,
         /// `padding`, in CSS pixels plus a fraction of the basis, or a `calc()`.
         ///
@@ -409,7 +409,7 @@ impl UsedEdges {
     ///
     /// Each end sums the margin, border and padding on the physical side
     /// `writing_mode` puts there, each truncated onto the layout grid as
-    /// Chrome makes a `LayoutUnit` from a float.
+    /// Blink's `LayoutUnit(float)` does.
     ///
     /// Measurement, the breaker and line layout all read this, so fitting
     /// and placing agree. The caller picks an edge's end by its bidi level.
@@ -541,8 +541,9 @@ pub struct ComputedStyle<'a> {
 impl ComputedStyle<'static> {
     /// Returns the initial style.
     ///
-    /// Uses the CSS initial values, except for `text-autospace` and
-    /// `ruby-position`, which take the values Chrome computes.
+    /// Uses the CSS initial values, except `text-autospace: no-autospace`
+    /// (CSS gives `normal`) and `ruby-position: over` (CSS gives
+    /// `alternate`).
     pub const fn initial() -> Self {
         Self {
             font: FontGroup::INITIAL,

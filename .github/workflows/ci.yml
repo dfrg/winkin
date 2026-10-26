@@ -102,7 +102,24 @@ jobs:
       - name: Clippy fontwich with std and without system
         run: cargo clippy -p fontwich --all-targets --no-default-features --features std -- -D warnings
 
-  # Both crates claim to be no_std without their default features. Every host
+      # The workspace builds cleft with the `css` and `case` features winkin
+      # turns on. On its own it has none, and each feature changes the
+      # tables it compiles.
+      - name: Test cleft without features
+        if: runner.os == 'Linux'
+        run: cargo test -p cleft --no-default-features
+
+      - name: Test cleft with every feature
+        if: runner.os == 'Linux'
+        run: cargo test -p cleft --all-features
+
+      - name: Clippy cleft without features
+        run: cargo clippy -p cleft --all-targets --no-default-features -- -D warnings
+
+      - name: Clippy cleft with every feature
+        run: cargo clippy -p cleft --all-targets --all-features -- -D warnings
+
+  # The three crates claim to be no_std without their default features. Every host
   # above has std, so a stray `use std::` compiles there and fails only for
   # the consumers it matters to. These targets have no std to fall back on.
   no-std:
@@ -122,6 +139,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Build cleft
+        run: cargo build -p cleft --target ${{ matrix.target }} --no-default-features
+
+      - name: Build cleft with every feature
+        run: cargo build -p cleft --target ${{ matrix.target }} --all-features
+
       - name: Build fontwich
         run: cargo build -p fontwich --target ${{ matrix.target }} --no-default-features
 
@@ -138,7 +161,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.88
       - run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check -p winkin -p fontwich
+      - run: cargo check -p winkin -p fontwich -p cleft --lib --all-features
+      - run: cargo check -p winkin -p fontwich -p cleft --lib --no-default-features
 
   doc:
     if: github.repository == 'dfrg/winkin' || github.event_name == 'workflow_dispatch'
@@ -150,5 +174,20 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev
       - uses: Swatinem/rust-cache@v2
-      - run: cargo doc -p winkin -p fontwich --all-features --no-deps
-      - run: cargo doc -p winkin -p fontwich --all-features --no-deps --document-private-items
+      - run: cargo doc -p winkin -p fontwich -p cleft --all-features --no-deps
+      - run: cargo doc -p winkin -p fontwich -p cleft --all-features --no-deps --document-private-items
+      - run: cargo doc -p winkin -p fontwich -p cleft --no-default-features --no-deps
+      - run: cargo test -p winkin -p fontwich -p cleft --all-features --doc
+
+  # Each crate as crates.io receives it: packaged together, so that winkin
+  # resolves fontwich and cleft from the packages beside it, and built from
+  # the packages.
+  package:
+    if: github.repository == 'dfrg/winkin' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo package -p cleft -p fontwich -p winkin

@@ -23,17 +23,16 @@
 //! that normalize alike cost an extra cache entry, never a wrong answer. No
 //! layout holds an [`InstanceId`].
 //!
-//! **Variations** merge by tag, the later winning, in Chrome's order (Blink's
-//! `FontCustomPlatformData`, measured against Chrome 153):
+//! **Variations** merge by tag, the later winning, in this order (Blink's
+//! `FontCustomPlatformData`):
 //! 1. the axes font matching sets for weight, width and style ([`Synthesis`]);
 //! 2. the `@font-face` descriptor's `font-variation-settings`;
 //! 3. the element's `font-variation-settings`;
 //! 4. `opsz` at the used size under `font-optical-sizing: auto`, where
 //!    neither setting names `opsz`.
 //!
-//! A platform font may take the matching axes alone, as Chrome on Windows
-//! and Linux leaves its variations to the platform
-//! ([`PlatformFontVariations`]).
+//! A platform font may take the matching axes alone, leaving its
+//! variations to the platform ([`PlatformFontVariations`]).
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -98,9 +97,9 @@ style_struct! {
     ///
     /// They are `size-adjust` and the ascent, descent and line gap
     /// overrides. fontwich carries them without applying them; a used font
-    /// applies them, as Chrome does. `size-adjust` multiplies the size a
-    /// font is used at, unless `font-size-adjust` sets the size. Each
-    /// override replaces its metric at the used size.
+    /// applies them. `size-adjust` multiplies the size a font is used at,
+    /// unless `font-size-adjust` sets the size. Each override replaces its
+    /// metric at the used size.
     pub(super) struct FaceOverrides {
         /// `size-adjust`: the used size is multiplied by it.
         size_adjust: Option<f32>,
@@ -415,10 +414,9 @@ impl Instances {
     /// `font`.
     ///
     /// `synthesis` is the font's synthesis for the style. The settings merge
-    /// in Chrome's order (see the module documentation); under
-    /// `matching_only`, only the synthesis's settings apply. Each tag appears
-    /// once, at the value set last, in tag order. A value that is not a
-    /// finite number sets nothing.
+    /// in the module documentation's order; under `matching_only`, only the
+    /// synthesis's settings apply. Each tag appears once, at the value set
+    /// last, in tag order. A value that is not a finite number sets nothing.
     fn merge_variations(
         &mut self,
         font: &fontwich::Font,
@@ -638,8 +636,7 @@ impl HeapBytes for Instances {
 
 /// Returns whether `family`'s variations are left to font matching.
 ///
-/// They are for a platform font when `platform` is `MatchingOnly`, which
-/// follows Chrome.
+/// They are for a platform font when `platform` is `MatchingOnly`.
 pub(super) fn variations_left_to_matching(
     family: &Family,
     platform: PlatformFontVariations,

@@ -15,3 +15,6 @@
 *.woff binary
 *.woff2 binary
 *.png binary
+
+# The dictionaries the generator writes.
+*.dafsa binary

@@ -1,69 +1,11 @@
 //! The Unicode bidirectional algorithm's classes, and its reordering of a
 //! line (UAX #9, rule L2).
 //!
-//! [`BidiClass`] is each character's class from the tables. Analysis
-//! resolves a paragraph's levels from these classes, and line layout puts a
-//! line's pieces in visual order with [`reorder_bidi`].
+//! Each character's [`BidiClass`] comes from `cleft`'s tables.
+//! Analysis resolves a paragraph's levels from these classes, and line
+//! layout puts a line's pieces in visual order with [`reorder_bidi`].
 
-// --------------------------------------------------------------------------
-// Classes
-// --------------------------------------------------------------------------
-
-/// A Bidi_Class in ICU4C's `UCharDirection` numbering.
-///
-/// The core word stores the same numbers, so a lookup needs no conversion.
-#[derive(Copy, Clone, Default, Eq, PartialEq, Debug)]
-#[repr(transparent)]
-pub(crate) struct BidiClass(pub(crate) u8);
-
-impl BidiClass {
-    /// Left-to-right letter (L).
-    pub(crate) const LEFT_TO_RIGHT: Self = Self(0);
-    /// Right-to-left letter (R).
-    pub(crate) const RIGHT_TO_LEFT: Self = Self(1);
-    /// European number (EN).
-    pub(crate) const EUROPEAN_NUMBER: Self = Self(2);
-    /// European separator (ES).
-    pub(crate) const EUROPEAN_SEPARATOR: Self = Self(3);
-    /// European terminator (ET).
-    pub(crate) const EUROPEAN_TERMINATOR: Self = Self(4);
-    /// Arabic number (AN).
-    pub(crate) const ARABIC_NUMBER: Self = Self(5);
-    /// Common separator (CS).
-    pub(crate) const COMMON_SEPARATOR: Self = Self(6);
-    /// Paragraph separator (B).
-    pub(crate) const PARAGRAPH_SEPARATOR: Self = Self(7);
-    /// Segment separator (S).
-    pub(crate) const SEGMENT_SEPARATOR: Self = Self(8);
-    /// Whitespace (WS).
-    pub(crate) const WHITE_SPACE: Self = Self(9);
-    /// Other neutral (ON).
-    pub(crate) const OTHER_NEUTRAL: Self = Self(10);
-    /// Left-to-right embedding (LRE).
-    pub(crate) const LEFT_TO_RIGHT_EMBEDDING: Self = Self(11);
-    /// Left-to-right override (LRO).
-    pub(crate) const LEFT_TO_RIGHT_OVERRIDE: Self = Self(12);
-    /// Arabic letter (AL).
-    pub(crate) const ARABIC_LETTER: Self = Self(13);
-    /// Right-to-left embedding (RLE).
-    pub(crate) const RIGHT_TO_LEFT_EMBEDDING: Self = Self(14);
-    /// Right-to-left override (RLO).
-    pub(crate) const RIGHT_TO_LEFT_OVERRIDE: Self = Self(15);
-    /// Pop directional format (PDF).
-    pub(crate) const POP_DIRECTIONAL_FORMAT: Self = Self(16);
-    /// Nonspacing mark (NSM).
-    pub(crate) const NONSPACING_MARK: Self = Self(17);
-    /// Boundary neutral (BN).
-    pub(crate) const BOUNDARY_NEUTRAL: Self = Self(18);
-    /// First strong isolate (FSI).
-    pub(crate) const FIRST_STRONG_ISOLATE: Self = Self(19);
-    /// Left-to-right isolate (LRI).
-    pub(crate) const LEFT_TO_RIGHT_ISOLATE: Self = Self(20);
-    /// Right-to-left isolate (RLI).
-    pub(crate) const RIGHT_TO_LEFT_ISOLATE: Self = Self(21);
-    /// Pop directional isolate (PDI).
-    pub(crate) const POP_DIRECTIONAL_ISOLATE: Self = Self(22);
-}
+use super::BidiClass;
 
 /// Returns the class a cluster resolves as, from its first character's
 /// class `first` and the other characters' classes `rest`.
@@ -92,23 +34,6 @@ pub(crate) fn cluster_bidi_class(
         BidiClass::OTHER_NEUTRAL
     } else {
         first
-    }
-}
-
-impl BidiClass {
-    /// Returns true if this class is removed by rule X9.
-    pub(crate) const fn is_removed_by_x9(self) -> bool {
-        self.mask() & REMOVED_BY_X9_MASK != 0
-    }
-
-    /// Returns the class as a single bit, for testing membership of a set of
-    /// classes.
-    ///
-    /// Every defined class is under 31, so the shift saturates: any value
-    /// from 31 up maps to the top bit, which no class has. A wrapping shift
-    /// would alias 200 onto class 8.
-    pub(crate) const fn mask(self) -> u32 {
-        1u32 << if self.0 < 31 { self.0 as u32 } else { 31 }
     }
 }
 

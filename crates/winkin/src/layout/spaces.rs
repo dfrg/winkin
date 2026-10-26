@@ -1,7 +1,7 @@
 //! The spaces decoration bars leave out, as `text-decoration-skip-spaces`
 //! sets them.
 //!
-//! The values match Chrome 155:
+//! The values:
 //! - `start` and `end` leave out the spaces at the line's logical ends,
 //!   across runs and boxes, up to the first and from the last character
 //!   that is neither a space nor invisible. An atomic inline counts as such
@@ -148,8 +148,8 @@ impl LineSpaces {
         if lead == clusters.start && trail == clusters.end && !interior {
             return None;
         }
-        // The letter-spacing after the line's last letter on the right, as
-        // Chrome leaves it off under `all`; a negative one stays.
+        // The letter-spacing after the line's last letter on the right, left
+        // off under `all`; a negative one stays.
         let mut trim = InlineLayoutUnit::ZERO;
         if interior && self.right == Some(id) {
             let shaping = facts.shaping(text.shaping);

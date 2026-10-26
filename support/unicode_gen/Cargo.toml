@@ -4,16 +4,11 @@ version = "0.0.0"
 edition.workspace = true
 license.workspace = true
 publish = false
-description = "Generates winkin's packed Unicode property tables."
+description = "Generates cleft's packed Unicode property and case tables, and its word dictionaries."
 
-# The generator's alone: winkin reads the file this writes, and its runtime
-# reads none of these but icu_locale_core. icu_properties, icu_casemap and
-# icu_normalizer are also winkin's dev-dependencies, for the sweep tests that
-# check the file against them. icu_casemap gives the case mappings, and
-# icu_normalizer the decompositions the Greek uppercasing table is read from.
+# The generator reads the pinned UCD files and ICU word lists in `data/`,
+# which `cargo run -p unicode_gen -- fetch` downloads (see README.md), and
+# nothing else: packtab finds the three-level layout of each word. cleft's sweep
+# tests check what it writes against icu_properties and icu_casemap.
 [dependencies]
-icu_casemap = { version = "2.3.0", default-features = false, features = ["compiled_data"] }
-icu_locale_core = { version = "2.3.0", default-features = false }
-icu_normalizer = { version = "2.3.0", default-features = false, features = ["compiled_data"] }
-icu_properties = { version = "2.3.0", default-features = false, features = ["compiled_data"] }
 packtab = "1.9.0"

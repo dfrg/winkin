@@ -324,7 +324,7 @@ impl CandidateList {
     fn new(collection: &Collection, names: &[StoredName], key: ListKey) -> Self {
         let language = (key.language != Language::UND).then_some(key.language);
         // The first generic the list names is the class fallback reads (serif
-        // fallbacks, Windows' monospace Arabic), as Chrome's
+        // fallbacks, Windows' monospace Arabic), as Blink's
         // `GenericFamily()` is the first generic keyword. With none, the
         // class is `Plain`, the Standard font's.
         let class = names
@@ -351,7 +351,7 @@ impl CandidateList {
             add_each(&mut families, family.iter());
         }
         // The Standard font comes after the list and before fallback's, as
-        // Chrome tries it (`FontFallbackList::GetFontData`). A list naming
+        // Blink's `FontFallbackList::GetFontData` tries it. A list naming
         // its own generic still reaches that generic first.
         let standard = collection.fallback(&collection.key(&FallbackRequest::Standard(language)));
         add_each(&mut families, standard.first());
@@ -499,8 +499,8 @@ impl CandidateList {
     ///
     /// It is the first font of the listed families, the Standard font
     /// included, that matches the list's request, has its data, and whose
-    /// `unicode-range` holds U+0020. A face still pending is passed over, as
-    /// Chrome passes over a face while it downloads.
+    /// `unicode-range` holds U+0020. A face still pending, such as one
+    /// downloading, is passed over.
     fn first_available(&self) -> Option<(Family, usize)> {
         let request = self.key.request;
         let listed = self.families.get(..self.listed).unwrap_or_default();

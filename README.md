@@ -1,6 +1,6 @@
 # winkin
 
-CSS inline layout in Rust, and the font crate it uses.
+CSS inline layout in Rust, and the font and Unicode crates it uses.
 
 See [the CSS winkin supports](crates/winkin/docs/css-support.md) and
 [the showcase](crates/winkin/docs/showcase.md) of its output.
@@ -11,13 +11,14 @@ See [the CSS winkin supports](crates/winkin/docs/css-support.md) and
 |---|---|
 | [`winkin`](crates/winkin) | The layout engine. Takes styled text, inline boxes, atomic inlines, floats, absolutely positioned boxes and ruby; produces lines of positioned glyphs and boxes, paint order, carets, hit testing and selection. |
 | [`fontwich`](crates/fontwich) | Font enumeration, CSS font matching, `@font-face` and platform font fallback on Windows, macOS, Linux and Android. Usable on its own. |
+| [`cleft`](crates/cleft) | Unicode character properties, and grapheme, word and line segmentation with dictionaries, case mapping and CSS classes. `no_std`, with no dependencies. Usable on its own. |
 
 The workspace also contains unpublished crates:
 
 | Path | Description |
 |---|---|
 | [`support/testing`](support/testing) | Test fonts, in-memory fonts, an allocation counter and Unicode's conformance files for winkin's tests. |
-| [`support/unicode_gen`](support/unicode_gen) | The generator for winkin's Unicode property tables. |
+| [`support/unicode_gen`](support/unicode_gen) | The generator for cleft's Unicode property tables and word dictionaries. |
 | [`examples/editor`](examples/editor) | A plain-text editor rendered with Vello CPU, with selection, clipboard, undo and IME input. |
 
 ## Using winkin
@@ -60,14 +61,12 @@ lists every CSS property winkin reads and how far each goes.
 
 ## Status
 
-Both crates are at 0.0.1 and not yet published to crates.io. The APIs may
-change.
+The three crates are at 0.1.0. The APIs may change between minor versions.
 
 On the web platform tests' inline-text suites (css-text, css-writing-modes,
 css-fonts, css-text-decor, css-inline, css-ruby, and CSS 2's text and line
-box tests), run through Blitz's WPT runner, winkin passes 3,548 of 5,078
-tests; Chrome 153 passes 4,396. Most of the difference is block layout in
-vertical writing modes, which belongs to the host.
+box tests), run through Blitz's WPT runner, winkin passes 4,182 of 5,356
+tests.
 
 ## Build and test
 
@@ -111,6 +110,14 @@ Licensed under either of
 - MIT license ([LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
 
 at your option.
+
+cleft's tables are generated from the Unicode Character Database, under the
+Unicode License v3, and its dictionaries from ICU's word lists, under ICU's
+license and the notices of the lists' sources: see
+[`crates/cleft/LICENSE-UNICODE`](crates/cleft/LICENSE-UNICODE) and
+[`crates/cleft/THIRD-PARTY`](crates/cleft/THIRD-PARTY). fontwich's notices
+for the data its tables record are in
+[`crates/fontwich/THIRD-PARTY`](crates/fontwich/THIRD-PARTY).
 
 ## Contribution
 

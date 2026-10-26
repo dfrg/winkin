@@ -1,5 +1,5 @@
-//! The position a point hits, as Chrome's `PositionForPoint` finds it in an
-//! inline formatting context.
+//! The position a point hits in an inline formatting context, after Blink's
+//! `PositionForPoint`.
 //!
 //! - The line is the one whose line box holds the point; glyph extents play
 //!   no part. A box's bottom edge belongs to the next line, as in

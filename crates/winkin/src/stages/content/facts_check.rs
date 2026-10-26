@@ -355,7 +355,7 @@ fn same_tab_size(text: &TextFacts, style: &StyleKey) -> bool {
 ///
 /// It compares two readings. Measuring rounds a length onto the grid
 /// (`line_height` in `stages/measure/metrics.rs`). The initial letter reads
-/// the height through `TextLineHeight::px`, as Chrome's
+/// the height through `TextLineHeight::px`, as Blink's
 /// `ComputedLineHeight` gives it: a length as is, and `normal` as the
 /// primary font's line spacing.
 fn line_height_is(height: TextLineHeight, style: &StyleKey, at: NodeKind) {

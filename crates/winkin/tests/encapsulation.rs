@@ -1,6 +1,7 @@
 //! The encapsulation, naming and comment guard.
 //!
-//! Reads the crate's sources as text and fails on:
+//! Reads the sources of winkin and of `cleft`, its Unicode data,
+//! as text and fails on:
 //! - a `pub` field on a crate-private struct, a function whose name has a
 //!   blocked word ([`BLOCKED_WORDS`]), a `usize` range into a table, or a
 //!   constructor not named `new`, `from_*` or `with_*`;
@@ -43,6 +44,13 @@
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+/// `cleft`'s crate, from winkin's; its files are named by this
+/// path in reports and allowlists.
+const UNICODE_ROOT: &str = "../cleft";
+
+/// `cleft`'s sources, from winkin's crate.
+const UNICODE_SRC: &str = "../cleft/src";
 
 /// An allowlist entry: the file, the item it excuses, and the reason.
 type Entry = (&'static str, &'static str, &'static str);
@@ -154,7 +162,7 @@ const ALLOWED_DOORS: &[Entry] = &[
     ("src/stages/fragments/boxes.rs", "partition_point(", "line layout's box parts, by their left: geometry"),
     ("src/stages/measure/items.rs", "partition_point(", "body: `KeptBoxes::first_from`, a walk's one seek among the kept boxes by node, not a table of runs"),
     ("src/path/curves.rs", "partition_point(", "text on a path: a segment of the path by arc length"),
-    ("src/unicode/case.rs", "partition_point(", "the case runs and Soft_Dotted ranges by code point: Unicode data"),
+    ("../cleft/src/case/mod.rs", "partition_point(", "the case runs, Soft_Dotted ranges and accent ranges by code point: Unicode data"),
     ("src/stages/measure/scan/em_boxes.rs", "cursor_containing(", "entry: the unshaped first-line tail of an item, sought once then walked in font order"),
     // Entries: a random-access read starts here, seeks once, and walks.
     ("src/selection/motion.rs", ".containing(", "entry: `paragraph_level` and `paragraph_boundary` seek the focus's paragraph from its cluster, once a motion"),
@@ -208,6 +216,7 @@ fn fields_names_and_indexes_keep_the_rules() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
     collect(&root.join("src"), &mut files);
+    collect(&root.join(UNICODE_SRC), &mut files);
     files.sort();
 
     let mut guard = Guard::default();
@@ -390,6 +399,7 @@ fn comments_tell_no_history_and_cite_no_docs() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
     collect_every(&root.join("src"), &mut files);
+    collect_every(&root.join(UNICODE_SRC), &mut files);
     collect_every(&root.join("tests"), &mut files);
     files.sort();
 
@@ -423,6 +433,7 @@ fn no_module_is_found_by_a_path_attribute() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
     collect_every(root, &mut files);
+    collect_every(&root.join(UNICODE_ROOT), &mut files);
     files.sort();
 
     let mut report = String::new();
@@ -459,6 +470,7 @@ fn no_item_is_visible_by_path() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
     collect_every(&root.join("src"), &mut files);
+    collect_every(&root.join(UNICODE_SRC), &mut files);
     files.sort();
 
     let mut report = String::new();
@@ -498,6 +510,7 @@ fn child_modules_are_private() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
     collect_every(&root.join("src"), &mut files);
+    collect_every(&root.join(UNICODE_SRC), &mut files);
     files.sort();
 
     let mut report = String::new();

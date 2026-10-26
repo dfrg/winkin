@@ -104,7 +104,7 @@ impl<'a> TextRun<'a> {
     /// Returns text extents across the line, relative to the line-over edge.
     ///
     /// Uses font ascent and descent around the baseline. These extents also
-    /// contribute to rectangles of culled boxes, matching Chrome.
+    /// contribute to rectangles of culled boxes.
     pub fn block(&self) -> CrossExtents {
         let (over, under) = self.block_extent();
         CrossExtents {
@@ -184,7 +184,7 @@ impl<'a> TextRun<'a> {
     ///
     /// Narrows combined text to one em where narrower font forms are not
     /// enough. Scale each glyph about its supplied position; positions are
-    /// already scaled, matching Chrome.
+    /// already scaled.
     pub fn combine_scale(&self) -> f32 {
         if self.orientation() != RunOrientation::Combined {
             return 1.0;
@@ -388,9 +388,9 @@ impl<'a> TextRun<'a> {
     /// combined.
     ///
     /// A combined unit's text is horizontal text set across its em, from the
-    /// line's under side toward its over side as it reads. Chrome 153 places a
-    /// caret in it as in the horizontal text its `LayoutTextCombine` holds, at
-    /// the pen between two clusters. Such a caret runs along the line over the
+    /// line's under side toward its over side as it reads. A caret in it goes
+    /// as in the horizontal text of Blink's `LayoutTextCombine`, at the pen
+    /// between two clusters. Such a caret runs along the line over the
     /// em, while the rest of a line's carets run across it.
     ///
     /// - A cluster starts where its first glyph is drawn; a base glyph stands
@@ -468,7 +468,6 @@ impl fmt::Debug for TextRun<'_> {
 /// A strike cache must include the key, `coords`, `size`, `embolden`, `skew`,
 /// device scale and hinting settings. The face key alone is insufficient.
 #[derive(Copy, Clone)]
-#[non_exhaustive]
 pub struct FontInstance<'a> {
     /// Shared font bytes and their identifier.
     ///

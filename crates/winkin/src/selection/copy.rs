@@ -1,4 +1,4 @@
-//! The text a selection copies, as Chrome serializes it.
+//! The text a selection copies.
 //!
 //! - The layout's text is what is laid out: white space collapsed, each
 //!   element's transform applied, small capitals in the author's case, and
@@ -9,9 +9,9 @@
 //!   for an image or a `<wbr>` either.
 //! - A U+200B or soft hyphen in the content stays, as does text an ellipsis
 //!   or clamp hides, and ruby annotation text, in source order.
-//! - The first line's transform is not in the layout's text; Chrome's
-//!   `toString` leaves it out too.
-//! - For the clipboard, a no-break space becomes a space, as Chrome's plain
+//! - The first line's transform is not in the layout's text, so a copy
+//!   leaves it out.
+//! - For the clipboard, a no-break space becomes a space, as Blink's plain
 //!   text flavour does (`ReplaceNBSPWithSpace`).
 //!
 //! Chrome's clipboard also copies a node's text before `text-transform`
@@ -39,7 +39,7 @@ pub enum CopyKind {
     Text,
     /// Text for the clipboard.
     ///
-    /// Converts no-break spaces to spaces, as Chrome does on the clipboard.
+    /// Converts no-break spaces to spaces.
     Clipboard,
 }
 

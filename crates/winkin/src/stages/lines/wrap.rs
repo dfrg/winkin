@@ -4,23 +4,22 @@
 //! Each paragraph is laid out greedily first, with floats, the initial
 //! letter, the first-line variant and a clamp. Those lines stay unless a
 //! better choice is found; otherwise they and the host's floats are taken
-//! back and laid out again. Every paragraph is balanced, as CSS Text 4 says;
-//! Chrome balances only a block's first.
+//! back and laid out again. Every paragraph is balanced, as CSS Text 4 says.
 //!
-//! `balance`, as Chrome does it:
+//! `balance`:
 //! - Up to six greedy lines whose rooms don't depend on where they break
 //!   are scored over the same count. That needs no float anchored in them,
 //!   no first-line variant, and a searched prefix.
 //! - Otherwise the room is halved to the narrowest that keeps the line
-//!   count, from four fifths of the lines' average to a pixel, as Chrome's
+//!   count, from four fifths of the lines' average to a pixel, as Blink's
 //!   `ParagraphLineBreaker` does: at most 25 trials, each a whole greedy
 //!   layout.
-//! - Beyond Chrome, halving has no line limit and works beside floats,
-//!   narrowing every band alike as CSS Text 4's "remaining space" says.
-//!   Lines beside an initial letter are balanced in the rooms it leaves.
+//! - Halving has no line limit and works beside floats, narrowing every band
+//!   alike as CSS Text 4's "remaining space" says. Lines beside an initial
+//!   letter are balanced in the rooms it leaves.
 //!
 //! `pretty` scores a paragraph's last lines where the last one ends short,
-//! keeping the greedy line count. Chrome's rule scores four lines and calls
+//! keeping the greedy line count. The rule scores four lines and calls
 //! a line short when it is one word under a third of its room, or the two
 //! lines before it are hyphenated. `Pretty::Even` scores six and also counts
 //! any last line under a fifth.
@@ -76,7 +75,7 @@ impl LayoutMark {
         }
     }
 
-    /// Takes back every line laid out since, as Chrome's `RewindFloats`
+    /// Takes back every line laid out since, as Blink's `RewindFloats`
     /// does for floats.
     fn rewind(&self, cursor: &mut Cursor, out: &mut Lines, exclusions: &mut dyn Exclusions) {
         exclusions.rewind(self.placing);
@@ -222,8 +221,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         let (Some(first), Some(last)) = (greedy_lines.first(), greedy_lines.last()) else {
             return WrapDecision::Keep;
         };
-        // One line has nothing to even. Chrome also declines an overflowing
-        // line, or one ending at an emergency break.
+        // One line has nothing to even. An overflowing line, or one ending at
+        // an emergency break, is declined too.
         if greedy_lines.len() <= 1
             || greedy_lines.iter().any(|line| line.flags.overflowed())
             || lines.area.width() <= LayoutUnit::ZERO
@@ -235,7 +234,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             && !first.flags.contains(LineFlags::FIRST_LINE)
             && !self.holds_floats(out, greedy.clone(), lines.para.start);
         let rule = scorable.then(|| self.score_rule(LineChoice::Balance, last));
-        // Chrome's bisection starts from four fifths of the lines' average,
+        // The bisection starts from four fifths of the lines' average,
         // indents included (`LineWidthSum`).
         let sum = greedy_lines
             .iter()
@@ -303,8 +302,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             })
     }
 
-    /// Returns whether the last of `scored` ends short by `rule`, as in
-    /// Chrome's `ShouldOptimize`: one word under a third of its room, or
+    /// Returns whether the last of `scored` ends short by `rule`, as Blink's
+    /// `ShouldOptimize` decides: one word under a third of its room, or
     /// after two hyphenated lines. `Pretty::Even` adds any under a fifth.
     fn ends_short(&self, scored: &[LineRecord], content_end: ClusterId, rule: Pretty) -> bool {
         let Some(last) = scored.last() else {
@@ -328,7 +327,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         rule == Pretty::Even && width < room.divided(5)
     }
 
-    /// Returns whether `line` may break inside its content, as Chrome's
+    /// Returns whether `line` may break inside its content, as Blink's
     /// `CanBreakInside`.
     fn breaks_inside(&self, line: &LineRecord, content_end: ClusterId) -> bool {
         let start = line.clusters().start;
@@ -354,7 +353,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
 
     /// Returns the scorer's weights under `choice`.
     ///
-    /// The room is the last greedy line's band, as Chrome's
+    /// The room is the last greedy line's band, as Blink's
     /// `LineWidths::Default`, at the block's font size.
     fn score_rule(&self, choice: LineChoice, last: &LineRecord) -> ScoreRule {
         let justified = self.text_align == TextAlign::Justify;
@@ -402,7 +401,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         while let Some(opportunity) = self.opportunity(next..before_end, false, false) {
             work::step();
             // White space hanging after an opportunity belongs to the line
-            // before, as in Blink's `AppendTrailingSpaces`; measured from the
+            // before, as Blink's `AppendTrailingSpaces` puts it; measured from the
             // space, the next line would score fuller than it is.
             let mut at = opportunity;
             while at < end && self.clusters.hangs(at) {
@@ -473,8 +472,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// Balances a paragraph by halving its room to the narrowest that meets
     /// `halving`, to a pixel.
     ///
-    /// Each trial rewinds to `mark`, as in Chrome's
-    /// `ParagraphLineBreaker::BisectAvailableWidth`.
+    /// Each trial rewinds to `mark`, as Blink's
+    /// `ParagraphLineBreaker::BisectAvailableWidth` does.
     fn halve<const FLOATS: bool>(
         &mut self,
         out: &mut Lines,

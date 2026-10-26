@@ -1,4 +1,4 @@
-//! Choosing a font from a family: CSS Fonts 4 font matching (§5.2), and
+//! Choosing a font from a family: CSS Fonts 4 font matching (section 5.2), and
 //! what to synthesize for what the chosen font lacks.
 //!
 //! The steps are the spec's: width first, then style, then weight, each
@@ -9,17 +9,15 @@
 //!   upright font is italic 0 and oblique 0deg; an italic font is italic 1;
 //!   an oblique font is its angle. An italic request tries italic values, then
 //!   oblique angles, and upright fonts last; fontique ranks them on one scale.
-//! - **The oblique threshold is 14deg**, Chrome's `kItalicThreshold`, where
+//! - **The oblique threshold is 14deg**, Blink's `kItalicThreshold`, where
 //!   the spec now says 11deg. An italic request with no italic to offer
-//!   aims at 14deg among obliques, as Chrome's `kItalicSlopeValue` does, so
+//!   aims at 14deg among obliques, Blink's `kItalicSlopeValue`, so
 //!   a face whose range holds 14deg ties with any other that does, and
 //!   weight decides.
 //! - **Shallow oblique requests look shallower first**, then steeper, then at
 //!   italics in the same order; and with `font-synthesis-style: auto`, an
 //!   upright font to shear comes before them, but only in a family with no
 //!   italic or oblique font at all, as the spec's note on synthesis says.
-//!   Chrome agrees, checked against `@font-face` families in headless
-//!   Chrome.
 //! - **The `ital` axis never satisfies an oblique request.**
 //! - **Negative angles mirror positive ones**, as the spec says, rather than
 //!   being written out case by case.
@@ -45,7 +43,7 @@ use super::{Attributes, Axis, FaceStyle, Font};
 const DEFAULT_OBLIQUE: f32 = 14.0;
 
 /// The threshold between shallow and steep oblique requests, and the oblique
-/// angle an italic value of 1 corresponds to: Chrome's `kItalicThreshold` and
+/// angle an italic value of 1 corresponds to: Blink's `kItalicThreshold` and
 /// `kItalicSlopeValue`.
 const THRESHOLD: f32 = 14.0;
 
@@ -482,7 +480,7 @@ fn style_rank(offered: Styles, style: FontStyle, synthesize_style: bool) -> Rank
 ///
 /// Weights of 600 or above request synthetic bold if the font cannot
 /// reach them. Fonts with a `wght` axis extending above 400 are not
-/// emboldened unless face descriptors declare their weights, matching Chrome.
+/// emboldened unless face descriptors declare their weights.
 ///
 /// Italic requests use `ital`, then `slnt` if it supports italic, then
 /// synthetic skew. The italic target is 14°, regardless of face descriptors.
@@ -593,8 +591,8 @@ pub(super) fn synthesis(font: &Font, request: Attributes) -> Synthesis {
     }
     // Bold asked for, and the font cannot get there. A face declared bold is
     // bold, whatever its file says. A `wght` axis reaching past 400 is never
-    // emboldened unless a face declares its weight, as Chrome's
-    // `FontCustomPlatformData` has it.
+    // emboldened unless a face declares its weight, as in Blink's
+    // `FontCustomPlatformData`.
     let varies_to_bold = font
         .axis(b"wght")
         .is_some_and(|wght| wght.max * super::attributes::css_scale(wght) > 400.0);
@@ -620,14 +618,14 @@ pub(super) fn synthesis(font: &Font, request: Attributes) -> Synthesis {
             }
             // `slnt` goes to the nearest the font reaches to upright: its
             // default where that leans, or a declared range's nearest end,
-            // as Chrome clamps the request into a face's slope range.
+            // clamping the request into a face's slope range.
             if let Some(slnt) = font.axis(b"slnt") {
                 synthesis.set(slnt, -within(0.0, obliques.unwrap_or((0.0, 0.0))));
             }
         }
         // An axis that reaches italic is driven whatever the font declares,
         // so a face declared `oblique 0deg 15deg` with only a `slnt` axis
-        // leans to 14deg, as Chrome's `FontCustomPlatformData` sets it. Only
+        // leans to 14deg, as Blink's `FontCustomPlatformData` sets it. Only
         // a font that cannot lean otherwise is sheared.
         FontStyle::Italic => match (font.axis(b"ital"), font.axis(b"slnt"), obliques) {
             (Some(ital), _, _) if italics.is_some() => {
@@ -826,7 +824,7 @@ mod tests {
 
     #[test]
     fn italic_looks_at_obliques_from_14_degrees() {
-        // At or past the threshold, ascending: 20 before 12, as in Chrome.
+        // At or past the threshold, ascending: 20 before 12, as in Blink's `FontSelectionAlgorithm`.
         assert_eq!(
             chosen_style(&[oblique(12.0), oblique(20.0), NORMAL], ITALIC, true),
             oblique(20.0)
@@ -970,7 +968,7 @@ mod tests {
     #[test]
     fn italic_sets_slnt_in_a_face_declared_oblique() {
         // `slnt-variable`: a face declared `oblique 0deg 15deg` with only a
-        // `slnt` axis leans to 14deg for italic, as Chrome sets it, and
+        // `slnt` axis leans to 14deg for italic, as Blink sets it, and
         // stays upright for normal.
         let face = |lo: f32, hi: f32, axis: ([u8; 4], f32, f32, f32)| {
             let descriptors = super::super::FaceDescriptors {
@@ -1002,7 +1000,7 @@ mod tests {
     #[test]
     fn normal_sets_slnt_to_the_nearest_end_of_a_declared_oblique_range() {
         // `stretch-distance-over-weight-distance`: a face declared `oblique
-        // 45deg 67.5deg` asked for normal leans 45deg, as Chrome clamps the
+        // 45deg 67.5deg` asked for normal leans 45deg, as Blink clamps the
         // request's slope into the face's range; one declared `oblique
         // -20deg` leans back 20deg.
         let face = |lo: f32, hi: f32| {

@@ -94,8 +94,8 @@ impl LineEndState {
         if can_end {
             across.end += room.overhang.end;
         }
-        // A line ending at a hyphenated break pays for the hyphen, as
-        // Chrome's breaker adds it to its last item. Never at the text's end.
+        // A line ending at a hyphenated break pays for the hyphen, added to
+        // its last item. Never at the text's end.
         let hyphen = self.hyphen_owed.take().filter(|_| breaks && at < end);
         if let Some(width) = hyphen {
             across.end += InlineLayoutUnit::from_layout(width);

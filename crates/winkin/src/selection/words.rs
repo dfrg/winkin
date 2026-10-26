@@ -1,82 +1,67 @@
 //! Word starts and ends for word motion, found in place at each caret stop.
 //!
 //! - Words are UAX #29's over each whole paragraph, so a wrap does not split
-//!   them, as Chrome's `TextOffsetMapping` reads the block whole. Chrome's
+//!   them, as Blink's `TextOffsetMapping` reads the block whole. Blink's
 //!   one tailoring holds: ICU's `en_US_POSIX` rules join a full stop only
 //!   between digits, so `x.y` is three words and `3.14` one.
 //! - An atomic inline's U+FFFC is a word of its own, as Blink reads a
 //!   replaced element as a comma.
-//! - With the `dictionaries` feature, ICU's dictionaries segment Thai, Lao,
-//!   Khmer, Myanmar, Chinese and Japanese, as ICU4C does for Chrome. Without
-//!   it, the LSTM segments the first four, and each ideograph or hiragana is
-//!   a word, a katakana run one word.
+//! - The layout's dictionaries segment Thai, Lao, Khmer, Myanmar, Chinese
+//!   and Japanese, as ICU4C's do. Without them, a run of the first four is
+//!   one word, and each ideograph or hiragana is a word, a katakana run one
+//!   word.
 //! - To motion, a word is any segment but white space. Punctuation stops a
 //!   word motion, and a forced break is a stop of its own. A run of
-//!   punctuation and symbols is one word, as Chrome takes it.
+//!   punctuation and symbols is one word.
 //!
 //! A motion asks at each stop whether a word starts or ends there
 //! ([`Words::starts_word`], [`Words::ends_word`]). Only the clusters around
-//! the stop are segmented. UAX #29 reads at most two characters either side
-//! (WB6, WB7, WB11, WB12), past attached marks and format characters (WB4),
-//! so [`CONTEXT`] clusters either side decide as the whole paragraph would.
-//! Regional indicators pair from a cluster start (WB15, WB16), as clusters
-//! pair them (GB12, GB13). A motion therefore costs the distance it moves
-//! and keeps nothing between calls. Between ASCII letters, digits and
-//! spaces, no segmenter runs.
+//! the stop are segmented, [`CONTEXT`] either side: UAX #29 reads at most
+//! two characters either side (WB6, WB7, WB11, WB12), past attached marks
+//! and format characters (WB4). Regional indicators pair from a cluster
+//! start (WB15, WB16),
+//! as clusters pair them (GB12, GB13). A motion therefore costs the
+//! distance it moves and keeps nothing between calls. Between ASCII
+//! letters, digits and spaces, no segmenter runs.
 //!
-//! Runs ICU hands whole to its dictionaries or LSTM (`unicode::is_complex`)
-//! are segmented whole, since a word end inside one depends on all of it.
-//! [`Words`] keeps the words either side of the last such stop, so a motion
-//! segments each run it enters once. These runs are where word motion
-//! allocates, inside ICU.
+//! A run a dictionary segments ([`Dictionaries::segments`]) is scanned from
+//! its start, since a word end inside one depends on all of the run before
+//! it. [`Words`] keeps the words either side of the last such stop, which
+//! answer later stops between them.
 //!
-//! Chrome's iterator ignores a builder break opportunity (a `<wbr>`'s
-//! U+200B), so `super<wbr>califragilistic` is one word. Where one is near a
-//! stop, the clusters are copied without it into a stack buffer and
-//! segmented there. A cluster longer than [`CLUSTER_BYTES`] is copied as its
-//! first and last characters, which is all the rules read. Regional
-//! indicators either side of one stay apart. A whole run longer than [`RUN`]
-//! bytes is segmented in the pieces its break opportunities part.
-//!
-//! Without dictionaries, an ideograph or hiragana is copied as a stand-in
-//! with its Word_Break (`unicode::segmenter_char`), so it never reaches ICU's
-//! dictionary, which the build does not carry.
+//! Blink's word iterator ignores a builder break opportunity (a `<wbr>`'s
+//! U+200B), so `super<wbr>califragilistic` is one word. The scans read the
+//! clusters without them, except between regional indicators, which they
+//! keep apart. Nothing is copied and nothing allocates.
 
 use core::ops::Range;
-use core::str;
+use core::str::CharIndices;
 
-use icu_segmenter::WordSegmenterBorrowed;
+use cleft::{Dictionaries, WordBreaks, WordOptions};
 
 use crate::data::{Id, IdRange, TextOffset};
 use crate::layout::Layout;
 use crate::stages::analysis::{ClusterClass, ClusterId, Clusters};
-use crate::unicode::{has_stand_ins, is_complex, segmenter_char, word_boundaries, word_segmenter};
 use crate::{unicode, work};
 
-/// The clusters either side of a stop that decide a word boundary.
+/// The clusters either side of a stop that a scan reads.
 ///
 /// Format characters standing alone do not count. One more than the two
 /// characters UAX #29 reads, to cover a cluster of marks alone.
 const CONTEXT: usize = 3;
 
-/// The size of the stack buffer for the clusters around a stop.
-///
-/// It holds [`CONTEXT`] clusters either side, each at most
-/// [`CLUSTER_BYTES`], and a few format characters.
-const WINDOW: usize = 128;
+/// The most clusters a scan reaches over either side, counted or not, so
+/// that a long run of format characters costs no more.
+const REACH: usize = 64;
 
-/// The most bytes of a cluster copied whole into the buffer.
-///
-/// A longer one is copied as its first and last characters. UAX #29 reads a
-/// cluster's edges by those: marks and joiners attach to the first (WB4),
-/// and a joiner before a pictograph is read as the last (WB3c).
-const CLUSTER_BYTES: usize = 16;
+/// The options words are found with: ICU's `en_US_POSIX` full stop, as
+/// Blink's word iterator has it.
+const OPTIONS: WordOptions = WordOptions {
+    posix_full_stop: true,
+};
 
-/// The size of the stack buffer for a run segmented whole.
-///
-/// Holds over three hundred Thai characters or ideographs. A Thai paragraph
-/// measured in Chrome runs at most 52 between spaces.
-const RUN: usize = 1024;
+/// The dictionaries of a layout built before any had been set.
+static NO_DICTIONARIES: Dictionaries = Dictionaries::new();
 
 /// A side of a boundary.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -89,28 +74,28 @@ enum Side {
 
 /// Word boundaries in a layout, asked stop by stop by one motion.
 ///
-/// Keeps the words either side of the last stop inside a run segmented
-/// whole, which answer later stops between them.
+/// Keeps the words either side of the last stop inside a run a dictionary
+/// segments, which answer later stops between them.
 pub(super) struct Words<'l> {
     layout: &'l Layout,
-    segmenter: WordSegmenterBorrowed<'static>,
-    /// The words around the last stop asked about inside a run segmented
-    /// whole.
+    /// The dictionaries the layout was built with.
+    dictionaries: &'l Dictionaries,
+    /// The words around the last stop asked about inside a run a
+    /// dictionary segments.
     known: Option<Known>,
     /// The clusters of the paragraph last asked about, reused until a motion
     /// leaves it.
     paragraph: Option<Range<ClusterId>>,
 }
 
-/// The words of a run segmented whole either side of a stop inside it.
+/// The words of a run a dictionary segments either side of a stop inside
+/// it.
 #[derive(Clone, Debug)]
 struct Known {
-    /// The run's text.
-    run: Range<TextOffset>,
-    /// Its word boundaries either side of the stop, with none between them.
-    ///
-    /// Each is after the text before it, before any builder break
-    /// opportunity there.
+    /// The cluster the run starts in.
+    run: ClusterId,
+    /// Its word boundaries either side of the stop, with none between them,
+    /// each at the start of the text after it.
     around: Range<TextOffset>,
 }
 
@@ -119,7 +104,9 @@ impl<'l> Words<'l> {
     pub(super) fn new(layout: &'l Layout) -> Self {
         Self {
             layout,
-            segmenter: word_segmenter(),
+            dictionaries: layout
+                .dictionaries()
+                .map_or(&NO_DICTIONARIES, |dictionaries| &**dictionaries),
             known: None,
             paragraph: None,
         }
@@ -161,16 +148,14 @@ impl<'l> Words<'l> {
 
     /// Returns whether the caret stop at `stop`'s start is a word boundary.
     ///
-    /// A paragraph's ends are boundaries. Elsewhere, UAX #29 with Chrome's
-    /// full stops decides over the clusters around the stop, ignoring builder
-    /// break opportunities. Inside a run segmented whole, the run's words
-    /// decide.
+    /// A paragraph's ends are boundaries. Elsewhere, UAX #29 with the
+    /// `en_US_POSIX` full stop decides over the clusters around the stop,
+    /// ignoring builder break opportunities. Inside a run a dictionary
+    /// segments, the run's words decide.
     fn is_boundary(&mut self, stop: ClusterId) -> bool {
         let layout = self.layout;
-        let analysis = layout.analysis();
-        let clusters = &analysis.clusters;
+        let clusters = &layout.analysis().clusters;
         let text = layout.text();
-        let at = clusters.start(stop).get();
         // Each paragraph is segmented on its own, so its ends are boundaries.
         let Some(paragraph) = stop
             .get()
@@ -203,7 +188,7 @@ impl<'l> Words<'l> {
                 _ => {}
             }
         }
-        // Chrome takes a run of punctuation and symbols as one word: `a,,,,b`
+        // A run of punctuation and symbols is one word: `a,,,,b`
         // is three words and a masked password one. No stop parts two of
         // them.
         let punctuation = |cluster| {
@@ -214,138 +199,109 @@ impl<'l> Words<'l> {
         if punctuation(before) && punctuation(after) {
             return false;
         }
-        // Inside a run ICU segments whole, the run's own words decide.
-        if clusters
-            .last_char(text.into(), before)
-            .is_some_and(is_complex)
-            && clusters
-                .first_char(text.into(), after)
-                .is_some_and(is_complex)
-        {
-            return self.inside_run(&paragraph, before, after);
-        }
         // Regional indicators either side of a builder break opportunity
         // stay apart, as they are drawn.
         if !adjacent && indicator(clusters, text, before) && indicator(clusters, text, after) {
             return true;
         }
-        let (first, before_generated) = reach(clusters, text, &paragraph, before, Side::Before);
-        let (last, after_generated) = reach(clusters, text, &paragraph, after, Side::After);
-        let from = clusters.start(first).get();
-        let to = clusters.start(last).get();
-        if adjacent
-            && !before_generated
-            && !after_generated
-            && let Some(window) = text.get(from..to)
-            && !has_stand_ins(window)
+        let at = clusters.start(after);
+        // Inside a run a dictionary segments, the run's own words decide.
+        let segments = |ch: char| self.dictionaries.segments(ch);
+        if clusters
+            .last_char(text.into(), before)
+            .is_some_and(segments)
+            && clusters
+                .first_char(text.into(), after)
+                .is_some_and(segments)
         {
-            // With no builder break opportunity nearby and no stand-ins,
-            // the text is segmented in place.
-            return is_word_boundary(self.segmenter, window, at.saturating_sub(from));
+            return self.inside_run(&paragraph, before, at);
         }
-        // Otherwise the clusters are copied onto the stack, without builder
-        // break opportunities and with stand-ins for ideographs and hiragana.
-        let mut buffer = [0u8; WINDOW];
-        let mut len = 0;
-        let mut stop_at = 0;
-        for cluster in (first..last).ids() {
-            work::step();
-            if clusters.class(cluster) == Some(ClusterClass::BreakOpportunity)
-                && !between_indicators(clusters, text, cluster)
-            {
-                continue;
-            }
-            let range = clusters.range(cluster);
-            let Some(piece) = text.get(range.start.get()..range.end.get()) else {
-                continue;
-            };
-            let Some(copied) = copy_short(piece, buffer.get_mut(len..).unwrap_or_default()) else {
-                break;
-            };
-            len += copied;
-            if cluster == before {
-                stop_at = len;
-            }
-        }
-        buffer
-            .get(..len)
-            .and_then(|bytes| str::from_utf8(bytes).ok())
-            .is_none_or(|window| is_word_boundary(self.segmenter, window, stop_at))
+        let first = reach(clusters, text, &paragraph, before, Side::Before);
+        let last = reach(clusters, text, &paragraph, after, Side::After);
+        self.scan(first..last)
+            .find(|&boundary| {
+                work::step();
+                boundary >= at.get()
+            })
+            .is_some_and(|boundary| boundary == at.get())
     }
 
-    /// Returns whether the stop between `before` and `after`, inside a run
-    /// ICU segments whole, is a word boundary.
+    /// Returns the word boundaries of the text of `range`, a paragraph's
+    /// clusters, without builder break opportunities.
+    fn scan(&self, range: Range<ClusterId>) -> WordBreaks<'l, ParagraphChars<'l>> {
+        let layout = self.layout;
+        let chars = ParagraphChars {
+            clusters: &layout.analysis().clusters,
+            text: layout.text(),
+            next: range.start,
+            end: range.end,
+            chars: "".char_indices(),
+            base: 0,
+        };
+        WordBreaks::new(chars, OPTIONS).with_dictionaries(self.dictionaries)
+    }
+
+    /// Returns whether the stop between `before` and the text at `at`,
+    /// inside a run a dictionary segments, is a word boundary.
     ///
-    /// The kept words answer where they surround the stop. Otherwise segments
-    /// the run whole and keeps the words either side of the stop.
+    /// The kept words answer where they surround the stop. Otherwise scans
+    /// the run from its start and keeps the words either side of the stop.
     fn inside_run(
         &mut self,
         paragraph: &Range<ClusterId>,
         before: ClusterId,
-        after: ClusterId,
+        at: TextOffset,
     ) -> bool {
-        let layout = self.layout;
-        let clusters = &layout.analysis().clusters;
-        let text = layout.text();
-        // The stop as the run has it: after the text before it, on either
-        // side of a builder break opportunity.
-        let at = clusters.range(before).end;
+        let clusters = &self.layout.analysis().clusters;
+        let run = self.run_start(paragraph, before);
         if let Some(known) = &self.known
-            && known.run.start < at
-            && at < known.run.end
+            && known.run == run
             && known.around.start <= at
             && at <= known.around.end
         {
             return at == known.around.start || at == known.around.end;
         }
-        let mut found = complex_run(clusters, text, paragraph, before, after, true);
-        if found.2.is_some_and(|copied| copied > RUN) {
-            // Too long to copy, so it is segmented in the pieces its builder
-            // break opportunities part, which meet at a boundary.
-            if after.get() != before.get() + 1 {
-                return true;
+        let mut start = clusters.start(run);
+        let mut end = clusters.start(paragraph.end);
+        for boundary in self.scan(run..paragraph.end) {
+            work::step();
+            let boundary = TextOffset::new(boundary);
+            if boundary >= at {
+                end = boundary;
+                break;
             }
-            found = complex_run(clusters, text, paragraph, before, after, false);
+            start = boundary;
         }
-        let (run, run_clusters, copied) = found;
-        let around = if copied.is_some() {
-            // Copy it onto the stack without builder break opportunities,
-            // then map the words found back into the text.
-            let mut buffer = [0u8; RUN];
-            let mut len = 0;
-            let mut stop_at = None;
-            each_piece(clusters, text, &run, &run_clusters, |start, piece| {
-                if stop_at.is_none() && start <= at && at.get() <= start.get() + piece.len() {
-                    stop_at = Some(len + (at.get() - start.get()));
+        self.known = Some(Known {
+            run,
+            around: start..end,
+        });
+        at == start || at == end
+    }
+
+    /// Returns the cluster that the run a dictionary segments, ending with
+    /// `before`, starts in, across builder break opportunities.
+    fn run_start(&self, paragraph: &Range<ClusterId>, before: ClusterId) -> ClusterId {
+        let clusters = &self.layout.analysis().clusters;
+        let text = self.layout.text();
+        let segments = |ch: char| self.dictionaries.segments(ch);
+        let mut cluster = before;
+        loop {
+            work::step();
+            if !cluster_text(clusters, text, cluster).chars().all(segments) {
+                return cluster;
+            }
+            match text_beside(clusters, paragraph, cluster, Side::Before) {
+                Some(previous)
+                    if clusters
+                        .last_char(text.into(), previous)
+                        .is_some_and(segments) =>
+                {
+                    cluster = previous;
                 }
-                if let Some(into) = buffer.get_mut(len..len + piece.len()) {
-                    into.copy_from_slice(piece.as_bytes());
-                    len += piece.len();
-                }
-            });
-            let copy = buffer
-                .get(..len)
-                .and_then(|bytes| str::from_utf8(bytes).ok());
-            let (Some(copy), Some(stop_at)) = (copy, stop_at) else {
-                return true;
-            };
-            let (from, to) = words_around(self.segmenter, copy, stop_at);
-            let put = |at: usize| put_back(clusters, text, &run, &run_clusters, at);
-            put(from)..put(to)
-        } else {
-            let Some(copy) = text.get(run.start.get()..run.end.get()) else {
-                return true;
-            };
-            let (from, to) = words_around(
-                self.segmenter,
-                copy,
-                at.get().saturating_sub(run.start.get()),
-            );
-            TextOffset::new(run.start.get() + from)..TextOffset::new(run.start.get() + to)
-        };
-        let boundary = at == around.start || at == around.end;
-        self.known = Some(Known { run, around });
-        boundary
+                _ => return cluster,
+            }
+        }
     }
 
     /// Returns whether the segment on `side` of the word boundary at
@@ -369,11 +325,7 @@ impl<'l> Words<'l> {
         };
         loop {
             work::step();
-            let range = clusters.range(cluster);
-            let piece = text
-                .get(range.start.get()..range.end.get())
-                .unwrap_or_default();
-            if !is_white_space(piece) {
+            if !is_white_space(cluster_text(clusters, text, cluster)) {
                 return true;
             }
             // On to the next cluster of text that way, unless a boundary
@@ -393,172 +345,53 @@ impl<'l> Words<'l> {
     }
 }
 
-/// Returns whether UAX #29, with Chrome's full stops, breaks `window` at
-/// byte `at`.
-///
-/// Uses [`word_boundaries`], which adds the breaks `en_US_POSIX` makes around
-/// a full stop.
-fn is_word_boundary(segmenter: WordSegmenterBorrowed<'static>, window: &str, at: usize) -> bool {
-    for boundary in word_boundaries(segmenter, window, 0) {
-        work::step();
-        if boundary >= at {
-            return boundary == at;
-        }
-    }
-    true
+/// The characters of a paragraph's clusters from one on, with their offsets
+/// in the layout's text, without builder break opportunities but those
+/// between regional indicators.
+#[derive(Clone)]
+struct ParagraphChars<'l> {
+    clusters: &'l Clusters,
+    text: &'l str,
+    /// The next cluster to read.
+    next: ClusterId,
+    /// The paragraph's end.
+    end: ClusterId,
+    /// The characters left of the cluster being read.
+    chars: CharIndices<'l>,
+    /// The offset of `chars` in the text.
+    base: usize,
 }
 
-/// Returns the word boundaries of `run` around byte `at`: the last at or
-/// before, the first at or after.
-///
-/// `run` holds characters ICU segments whole. No full stop joins such
-/// characters, so Chrome's full-stop tailoring does not apply.
-fn words_around(segmenter: WordSegmenterBorrowed<'static>, run: &str, at: usize) -> (usize, usize) {
-    let mut before = 0;
-    for end in segmenter.segment_str(run) {
-        work::step();
-        if end >= at {
-            return (if end == at { at } else { before }, end);
-        }
-        before = end;
-    }
-    (before, run.len())
-}
+impl Iterator for ParagraphChars<'_> {
+    type Item = (usize, char);
 
-/// Returns the run of characters ICU segments whole around the stop between
-/// `before` and `after`.
-///
-/// The run stays within `paragraph`. Where `through`, it crosses builder
-/// break opportunities, which words ignore. Also returns the clusters
-/// holding the run, from its start's to its end's, and its byte length
-/// without break opportunities. Returns `None` where there is no such run.
-fn complex_run(
-    clusters: &Clusters,
-    text: &str,
-    paragraph: &Range<ClusterId>,
-    before: ClusterId,
-    after: ClusterId,
-    through: bool,
-) -> (Range<TextOffset>, Range<ClusterId>, Option<usize>) {
-    let mut generated = after.get() != before.get() + 1;
-    // Back from the stop, a cluster of text at a time, while the run goes on.
-    let mut cluster = before;
-    let start = loop {
-        work::step();
-        let range = clusters.range(cluster);
-        let piece = text
-            .get(range.start.get()..range.end.get())
-            .unwrap_or_default();
-        if let Some((at, ch)) = piece.char_indices().rev().find(|&(_, ch)| !is_complex(ch)) {
-            let start = range.start.get() + at + ch.len_utf8();
-            // Past the cluster's last character, the run starts with the next.
-            let holding = if start == range.end.get() {
-                ClusterId::new(cluster.get() + 1)
-            } else {
-                cluster
-            };
-            break (TextOffset::new(start), holding);
-        }
-        match text_beside(clusters, paragraph, cluster, Side::Before) {
-            Some(previous)
-                if clusters
-                    .last_char(text.into(), previous)
-                    .is_some_and(is_complex)
-                    && (through || previous.get() + 1 == cluster.get()) =>
-            {
-                generated |= previous.get() + 1 != cluster.get();
-                cluster = previous;
+    fn next(&mut self) -> Option<(usize, char)> {
+        loop {
+            if let Some((at, ch)) = self.chars.next() {
+                return Some((self.base + at, ch));
             }
-            _ => break (range.start, cluster),
-        }
-    };
-    // Forward from the stop the same way.
-    let mut cluster = after;
-    let end = loop {
-        work::step();
-        let range = clusters.range(cluster);
-        let piece = text
-            .get(range.start.get()..range.end.get())
-            .unwrap_or_default();
-        if let Some((at, _)) = piece.char_indices().find(|&(_, ch)| !is_complex(ch)) {
-            break (TextOffset::new(range.start.get() + at), cluster);
-        }
-        let next = ClusterId::new(cluster.get() + 1);
-        match text_beside(clusters, paragraph, next, Side::After) {
-            Some(following)
-                if clusters
-                    .first_char(text.into(), following)
-                    .is_some_and(is_complex)
-                    && (through || following == next) =>
-            {
-                generated |= following != next;
-                cluster = following;
+            if self.next >= self.end {
+                return None;
             }
-            _ => break (range.end, ClusterId::new(cluster.get() + 1)),
+            work::step();
+            let cluster = self.next;
+            self.next = ClusterId::new(cluster.get() + 1);
+            if self.clusters.class(cluster) == Some(ClusterClass::BreakOpportunity)
+                && !between_indicators(self.clusters, self.text, cluster)
+            {
+                continue;
+            }
+            self.base = self.clusters.start(cluster).get();
+            self.chars = cluster_text(self.clusters, self.text, cluster).char_indices();
         }
-    };
-    let (run, holding) = (start.0..end.0, start.1..end.1);
-    let copied = generated.then(|| {
-        let mut len = 0;
-        each_piece(clusters, text, &run, &holding, |_, piece| {
-            len += piece.len()
-        });
-        len
-    });
-    (run, holding, copied)
-}
-
-/// Calls `each` with each part of `run`'s text between its builder break
-/// opportunities, and the part's start.
-///
-/// `holding` is from the cluster holding the run's start to the one holding
-/// its end.
-fn each_piece(
-    clusters: &Clusters,
-    text: &str,
-    run: &Range<TextOffset>,
-    holding: &Range<ClusterId>,
-    mut each: impl FnMut(TextOffset, &str),
-) {
-    let mut from = run.start;
-    for cluster in holding.clone().ids() {
-        work::step();
-        if clusters.class(cluster) != Some(ClusterClass::BreakOpportunity) {
-            continue;
-        }
-        let range = clusters.range(cluster);
-        if let Some(piece) = text.get(from.get()..range.start.get()) {
-            each(from, piece);
-        }
-        from = range.end;
-    }
-    if let Some(piece) = text.get(from.get()..run.end.get()) {
-        each(from, piece);
     }
 }
 
-/// Maps byte `at` of `run`'s copy without builder break opportunities back
-/// to the text.
-///
-/// The result is after the text before it, before any break opportunity
-/// there.
-/// `holding` is the clusters holding the run, as [`each_piece`] takes them.
-fn put_back(
-    clusters: &Clusters,
-    text: &str,
-    run: &Range<TextOffset>,
-    holding: &Range<ClusterId>,
-    at: usize,
-) -> TextOffset {
-    let mut found = None;
-    let mut len = 0;
-    each_piece(clusters, text, run, holding, |start, piece| {
-        if found.is_none() && at <= len + piece.len() {
-            found = Some(TextOffset::new(start.get() + at.saturating_sub(len)));
-        }
-        len += piece.len();
-    });
-    found.unwrap_or(run.end)
+/// Returns the text of `cluster`.
+fn cluster_text<'t>(clusters: &Clusters, text: &'t str, cluster: ClusterId) -> &'t str {
+    let range = clusters.range(cluster);
+    text.get(range.start.get()..range.end.get())
+        .unwrap_or_default()
 }
 
 /// Returns the cluster of text on `side` of the boundary before `at`,
@@ -588,37 +421,32 @@ fn text_beside(
 /// Returns how far the clusters around a stop reach on `side`, from `from`.
 ///
 /// The reach covers [`CONTEXT`] counted clusters, to a grapheme boundary,
-/// within `paragraph` and half the buffer. Before the stop it is the first
-/// cluster; after, the cluster past the last. Also returns whether a
-/// builder break opportunity is among them.
+/// within `paragraph` and at most [`REACH`] clusters. Before the stop it is
+/// the first cluster; after, the cluster past the last.
 fn reach(
     clusters: &Clusters,
     text: &str,
     paragraph: &Range<ClusterId>,
     from: ClusterId,
     side: Side,
-) -> (ClusterId, bool) {
-    // Each side fits half the buffer, less the most one cluster takes.
-    const BUDGET: usize = WINDOW / 2 - CLUSTER_BYTES;
+) -> ClusterId {
     let mut counted = 0;
-    let mut bytes = 0;
-    let mut generated = false;
     let mut at = from;
-    loop {
+    for _ in 0..REACH {
         work::step();
-        let generates = clusters.class(at) == Some(ClusterClass::BreakOpportunity);
-        generated |= generates;
-        if !generates && !clusters.continues_grapheme(text, at) && counts(clusters, text, at) {
+        if clusters.class(at) != Some(ClusterClass::BreakOpportunity)
+            && !clusters.continues_grapheme(text, at)
+            && counts(clusters, text, at)
+        {
             counted += 1;
         }
-        bytes += short_len(clusters, text, at);
-        let done = counted >= CONTEXT || bytes >= BUDGET;
+        let done = counted >= CONTEXT;
         match side {
             // Back to a grapheme's start, which a split grapheme's later
             // part is not.
             Side::Before => {
                 if (done && !clusters.continues_grapheme(text, at)) || at <= paragraph.start {
-                    return (at, generated);
+                    return at;
                 }
                 at = ClusterId::new(at.get() - 1);
             }
@@ -627,11 +455,15 @@ fn reach(
             Side::After => {
                 let next = ClusterId::new(at.get() + 1);
                 if (done && !clusters.continues_grapheme(text, next)) || next >= paragraph.end {
-                    return (next, generated);
+                    return next;
                 }
                 at = next;
             }
         }
+    }
+    match side {
+        Side::Before => at,
+        Side::After => ClusterId::new(at.get() + 1).min(paragraph.end),
     }
 }
 
@@ -663,48 +495,10 @@ fn between_indicators(clusters: &Clusters, text: &str, cluster: ClusterId) -> bo
 
 /// Returns `cluster`'s byte where it is one ASCII character.
 fn ascii(clusters: &Clusters, text: &str, cluster: ClusterId) -> Option<u8> {
-    let range = clusters.range(cluster);
-    match text.as_bytes().get(range.start.get()..range.end.get())? {
+    match cluster_text(clusters, text, cluster).as_bytes() {
         &[byte] if byte.is_ascii() => Some(byte),
         _ => None,
     }
-}
-
-/// Returns how many bytes of `cluster` [`copy_short`] copies into the buffer.
-fn short_len(clusters: &Clusters, text: &str, cluster: ClusterId) -> usize {
-    let range = clusters.range(cluster);
-    let piece = text
-        .get(range.start.get()..range.end.get())
-        .unwrap_or_default();
-    shortened(piece).map_or(0, |(first, last)| first.len() + last.len())
-}
-
-/// Returns `piece` as it is copied: whole, or its first and last characters
-/// where longer than [`CLUSTER_BYTES`].
-fn shortened(piece: &str) -> Option<(&str, &str)> {
-    if piece.len() <= CLUSTER_BYTES {
-        return Some((piece, ""));
-    }
-    let first = piece.chars().next()?.len_utf8();
-    let last = piece.chars().next_back()?.len_utf8();
-    Some((piece.get(..first)?, piece.get(piece.len() - last..)?))
-}
-
-/// Copies `piece`, shortened, into `into`, and returns the bytes it took.
-///
-/// Each character is copied as ICU's word segmenter is given it
-/// (`unicode::segmenter_char`), at the same length. Returns `None` where it
-/// does not fit.
-fn copy_short(piece: &str, into: &mut [u8]) -> Option<usize> {
-    let (first, last) = shortened(piece)?;
-    let mut len = 0;
-    for ch in first.chars().chain(last.chars()) {
-        let ch = segmenter_char(ch).unwrap_or(ch);
-        let to = into.get_mut(len..len + ch.len_utf8())?;
-        ch.encode_utf8(to);
-        len += ch.len_utf8();
-    }
-    Some(len)
 }
 
 /// Returns whether `ch` is punctuation, a symbol or an emoji, which runs

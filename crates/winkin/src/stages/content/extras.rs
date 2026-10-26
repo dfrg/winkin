@@ -25,8 +25,7 @@ pub(crate) struct Atomic {
     /// resolve against the content's percentage basis.
     margin: Sides<LengthPercentageOrCalc>,
     /// Its margin box along the line: the border box truncated onto the
-    /// grid, as Chrome holds a box's lengths, plus the line-direction
-    /// margins on the grid.
+    /// grid, plus the line-direction margins on the grid.
     pub(crate) margin_inline: LayoutUnit,
     /// Its margins across the line, `(over, under)`, on the grid. Its
     /// extent reaches this far past its border box.
@@ -72,10 +71,9 @@ impl Atomic {
 /// Returns a box's margin box along the line and its margins across the
 /// line, `(over, under)`, all on the grid.
 ///
-/// The margin box is the border box `size`, truncated onto the grid as
-/// Chrome holds a box's lengths, plus `margin` on either side. Percentages
-/// resolve against `basis` pixels and each `calc()` by `calc`, in a block of
-/// `writing_mode`.
+/// The margin box is the border box `size`, truncated onto the grid, plus
+/// `margin` on either side. Percentages resolve against `basis` pixels and
+/// each `calc()` by `calc`, in a block of `writing_mode`.
 fn margin_box(
     size: BoxSize,
     margin: &Sides<LengthPercentageOrCalc>,
@@ -183,10 +181,10 @@ pub(crate) struct Float {
     /// Its margin box, `(along the line, across it)`, never negative.
     ///
     /// It is the border box plus the margins on either side, each truncated
-    /// onto the grid as Chrome holds a box's lengths. It is the only size a
-    /// float has: the breaker asks the host to place it, and intrinsic
-    /// sizes count it. Negative margins clamp the result at zero, as
-    /// Chrome's `ClampNegativeToZero` does for a float's contribution.
+    /// onto the grid. It is the only size a float has: the breaker asks the
+    /// host to place it, and intrinsic sizes count it. Negative margins clamp
+    /// the result at zero, as Blink's `ClampNegativeToZero` does for a float's
+    /// contribution.
     pub(crate) margin_box: (LayoutUnit, LayoutUnit),
 }
 

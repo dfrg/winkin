@@ -35,8 +35,8 @@ impl WritingMode {
     /// Returns whether its lines flip, which only `vertical-lr` does.
     ///
     /// Its lines stack from the left with their over side on the right, so
-    /// a line box's block-start side is its under side, as in Chrome's
-    /// `IsFlippedLinesWritingMode`. `sideways-lr` lines also stack from the
+    /// a line box's block-start side is its under side, as Blink's
+    /// `IsFlippedLinesWritingMode` has it. `sideways-lr` lines also stack from the
     /// left, but run upward with their over side on the left (Blink's
     /// `LineOver`), so they do not flip.
     pub(crate) fn flips_lines(self) -> bool {
@@ -66,13 +66,13 @@ impl TextAlign {
     /// Returns whether every line in a block aligned `self`, with `last` on
     /// its last line, needs its exact end.
     ///
-    /// This is the alignment half of Chrome's `NeedsAccurateEndPosition`,
+    /// This is the alignment half of Blink's `NeedsAccurateEndPosition`,
     /// which decides whether a line's end is reshaped at a space.
     ///
-    /// Chrome reads both values on every line, and reads them before it
-    /// knows the line's direction. So `left` never needs it, and `right`
-    /// always does. Chrome 155, `XRAY bravo` in Times New Roman at 20px, 90px
-    /// wide: the `Y` is reshaped under `right`, `end`, `center` and
+    /// It reads both values on every line, and reads them before it knows
+    /// the line's direction. So `left` never needs it, and `right` always
+    /// does. With `XRAY bravo` in Times New Roman at 20px, 90px wide, the
+    /// `Y` is reshaped under `right`, `end`, `center` and
     /// `justify`, in either direction, and under `start` with
     /// `text-align-last: center`, but not under `left` in a right-to-left
     /// block.
@@ -115,7 +115,7 @@ impl TextAlignLast {
     /// Returns the alignment of a paragraph's last line in a block aligned `align`.
     ///
     /// `auto` gives `align`, or `start` where `align` is `justify`, as
-    /// Chrome's `GetTextAlign(is_last_line)` resolves it.
+    /// Blink's `GetTextAlign(is_last_line)` resolves it.
     #[inline]
     pub(crate) fn resolve(self, align: TextAlign) -> TextAlign {
         match self {
@@ -147,9 +147,9 @@ impl TextIndent {
     /// Returns how far it indents a line in an area `width` wide, a
     /// `calc()` resolved by `calc`.
     ///
-    /// The result is truncated onto the grid, as Chrome's
+    /// The result is truncated onto the grid, as Blink's
     /// `MinimumValueForLength` does. The intrinsic sizes take a `width` of
-    /// zero, as Chrome's breaker does in its min- and max-content modes.
+    /// zero, as Blink's breaker does in its min- and max-content modes.
     pub(crate) fn length(self, width: LayoutUnit, calc: Option<&dyn CalcResolver>) -> LayoutUnit {
         LayoutUnit::from_px_truncated(self.amount.resolve(width.to_px(), calc))
     }
@@ -199,7 +199,7 @@ pub enum LineClamp {
     /// Keeps the lines that end within
     /// [`Area::block_end`](crate::Area::block_end), which the host sets from
     /// the block's `height` or `max-height`. Clamps nothing where
-    /// `block_end` is `None`. Chrome 153 supports it only behind a flag.
+    /// `block_end` is `None`.
     Auto,
 }
 
@@ -216,8 +216,6 @@ impl LineClamp {
 }
 
 /// `text-group-align`.
-///
-/// Chrome does not support it.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub enum TextGroupAlign {
     /// No group alignment. The initial value.

@@ -19,10 +19,10 @@
 /// script or block rule places.
 pub(crate) static LAST_RESORT: &str = "Lucida Sans Unicode";
 
-/// `kCommonFonts`, in Chrome's order.
+/// Blink's `kCommonFonts`, in its order.
 ///
-/// `dejavu sasns` is Chrome's misspelling, so it names no family; it is kept
-/// so the order is Chrome's, and finds nothing as Chrome's does.
+/// `dejavu sasns` is a misspelling in that list, so it names no family; it is
+/// kept so the order stays the list's, and finds nothing.
 pub(super) static COMMON_FONTS: [&str; 16] = [
     "Tahoma",
     "Arial Unicode MS",

@@ -17,11 +17,11 @@ pub(crate) struct FontResolution {
     /// `size-adjust`: the computed size, or that size as `font-size-adjust`
     /// or an initial letter's lines adjust it against the primary font.
     pub(super) base: f32,
-    /// Whether `base` was adjusted, so no face's `size-adjust` applies, as
-    /// in Chrome (`FontDescription::SizeAdjustedFontDescription`).
+    /// Whether `base` was adjusted, so no face's `size-adjust` applies
+    /// (Blink's `FontDescription::SizeAdjustedFontDescription`).
     adjusted: bool,
     /// The computed size in pixels, before any adjustment. Synthesized
-    /// small capitals are drawn at 0.7 of it, as in Chrome.
+    /// small capitals are drawn at 0.7 of it.
     pub(crate) computed: f32,
     /// Whether its text is set upright or mixed in a vertical line. It then
     /// shapes with the vertical forms of its spacing features.

@@ -1,9 +1,9 @@
-//! Paint operations and geometry in Chrome paint order.
+//! Paint operations and geometry, in painting order.
 //!
 //! [`Line::paints`] yields [`Paint`] values. The host draws them using colors,
 //! backgrounds, borders and decoration styles retrieved by [`NodeKey`].
-//! A line paints its inline content item by item, as CSS 2.1 Appendix E
-//! orders it and Chrome paints it:
+//! A line paints its inline content item by item, in the painting order of
+//! CSS 2.1, Appendix E:
 //!
 //! 1. The block background behind the line content.
 //! 2. The line's items in visual order, left to right, each box before the
@@ -30,8 +30,8 @@
 //! boxes inside it only.
 //!
 //! Each bar provides its reference baseline and font metrics, underline
-//! helpers that match Chrome, and font underline and strikeout metrics for
-//! `from-font`.
+//! thickness and offset helpers, and font underline and strikeout metrics
+//! for `from-font`.
 //! A box's bars use the baseline of its own fragment, where it keeps one, or
 //! else of the innermost retained box around it; block decorations use the
 //! line baseline.
@@ -90,7 +90,6 @@ impl Decorates {
 
 /// A paint operation in drawing order.
 #[derive(Copy, Clone, Debug)]
-#[non_exhaustive]
 pub enum Paint<'a> {
     /// The block's background behind the line's content.
     Background(Background<'a>),
@@ -152,7 +151,7 @@ impl Background<'_> {
     /// Returns the cross-line extents, relative to the line-over edge.
     pub fn block(&self) -> CrossExtents {
         // The block's content area, in its first-line font on the first
-        // line, as Chrome paints the line's root inline box.
+        // line: the line's root inline box.
         let line = &self.line;
         let layout = line.layout();
         let content = layout.content();
@@ -277,7 +276,7 @@ impl Decoration {
         self.descent
     }
 
-    /// Returns the underline thickness, as Chrome computes it.
+    /// Returns the underline thickness.
     ///
     /// One tenth of the font size, rounded down, with a minimum of one pixel.
     pub fn underline_thickness(&self) -> f32 {
@@ -301,8 +300,9 @@ impl Decoration {
 
     /// Returns strikeout metrics from `OS/2`, if available.
     ///
-    /// Chrome instead centers line-through one third of the ascent above
-    /// the baseline and uses underline thickness.
+    /// Without them, a line through can be centered one third of the ascent
+    /// above the baseline, with the
+    /// [`underline_thickness`](Self::underline_thickness).
     pub fn font_line_through(&self) -> Option<FontDecorationLine> {
         self.line_through
     }
@@ -310,7 +310,7 @@ impl Decoration {
     /// Returns thickness for `text-decoration-thickness: from-font`.
     ///
     /// Uses the font underline thickness, falling back to
-    /// [`underline_thickness`](Self::underline_thickness), matching Chrome.
+    /// [`underline_thickness`](Self::underline_thickness).
     pub fn underline_thickness_from_font(&self) -> f32 {
         self.underline
             .map_or_else(|| self.underline_thickness(), |line| line.thickness)
@@ -319,8 +319,9 @@ impl Decoration {
     /// Returns the underline offset for `text-underline-position: from-font`.
     ///
     /// Uses the font underline offset, falling back to
-    /// [`underline_gap`](Self::underline_gap). Chrome applies this only to
-    /// text on the alphabetic baseline.
+    /// [`underline_gap`](Self::underline_gap). It applies only to text on the
+    /// alphabetic baseline; other text uses
+    /// [`underline_gap`](Self::underline_gap).
     pub fn underline_gap_from_font(&self) -> f32 {
         self.underline
             .map_or_else(|| self.underline_gap(), |line| line.offset)
@@ -388,7 +389,7 @@ enum Phase {
     Done,
 }
 
-/// A line's paint, in Chrome's order: what [`Line::paints`] walks.
+/// A line's paint, in painting order: what [`Line::paints`] walks.
 ///
 /// It walks the line's items once, left to right, each box part before the
 /// items inside it, as Chrome's `BoxFragmentPainter` walks a line's
@@ -582,7 +583,7 @@ impl<'a> PaintedLine<'a> {
         held: &mut [Option<(NodeId, Decoration)>; 2],
     ) -> Option<Decoration> {
         let item = self.line_item(run)?;
-        // Chrome draws no decoration over a tab, under any
+        // A tab takes no decoration, under any
         // `text-decoration-skip-spaces`.
         if item.flags.contains(FragmentItemFlags::HANGS)
             || item.flags.contains(FragmentItemFlags::TAB)
@@ -719,7 +720,7 @@ impl<'a> PaintedLine<'a> {
         let request = content.facts.text_request(text);
         let used = layout.fonts().primary_font(request);
         // On a line `text-fit` scales, the font's metrics scale with the
-        // text, as Chrome decorates through the scaled font.
+        // text: decorations go through the scaled font.
         let scale = self.line.scale();
         let scaled = |px: f32| if scale == 1.0 { px } else { px * scale };
         // Thickness is of the computed size, before `font-size-adjust` and

@@ -1,7 +1,7 @@
 //! What `text-box-trim` takes off a block's first and last lines.
 //!
 //! Breaking stacks the lines by these amounts, and the block result reports
-//! them. The rules follow Chrome's `InlineLayoutAlgorithm::ApplyTextBoxTrim`
+//! them. The rules follow Blink's `InlineLayoutAlgorithm::ApplyTextBoxTrim`
 //! and `InlineBoxState::AdjustEdges`:
 //! - The first line is trimmed by its ascent less the block's over edge.
 //! - The last line is trimmed by its descent less the under edge.
@@ -9,8 +9,8 @@
 //! - An amount may be negative. A line box shorter than its text, under a
 //!   small `line-height`, moves the first line down and the block's end out.
 //! - In `vertical-lr`, where lines flip, the start is a line's under side,
-//!   as Chrome's `is_flipped_line` swaps them. `sideways-lr` trims as a
-//!   horizontal block does, as Chrome 153 does.
+//!   as Blink's `is_flipped_line` swaps them. `sideways-lr` trims as a
+//!   horizontal block does.
 
 use crate::stages::content::{Content, NodeId};
 use crate::stages::fonts::Fonts;
@@ -36,7 +36,7 @@ impl TextBoxTrims {
     /// Returns the trims of `content`'s block in `fonts`.
     ///
     /// The edges are measured in the block's font, and on the first line in
-    /// its `::first-line` font, as Chrome's `ApplyTextBoxTrim` reads the
+    /// its `::first-line` font, as Blink's `ApplyTextBoxTrim` reads the
     /// line's style. Returns `None` where the block trims nothing or has no
     /// font, as in content never built.
     pub(super) fn new(content: &Content, fonts: &Fonts) -> Option<Self> {
@@ -69,8 +69,7 @@ impl TextBoxTrims {
     /// `text-fit` scale and variant.
     ///
     /// It is what the line box reaches past the start edge, or zero where
-    /// the block does not trim its start. The edges scale with the text, as
-    /// Chrome scales the line's edge metrics.
+    /// the block does not trim its start. The edges scale with the text.
     pub(super) fn start(self, first: Extent, scale: f32, variant: FirstLineVariant) -> LayoutUnit {
         let (over, under) = self.edges(variant);
         match (self.starts, self.flipped) {

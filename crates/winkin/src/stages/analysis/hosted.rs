@@ -11,7 +11,7 @@
 use alloc::vec::Vec;
 use core::ops::Range;
 
-use icu_segmenter::LineSegmenterBorrowed;
+use cleft::Dictionaries;
 
 use super::breaks::{LineKey, LineStream};
 use crate::data::{TextOffset, heap_bytes};
@@ -32,15 +32,14 @@ pub(super) enum Hosted {
     /// Japanese `auto-phrase` text: between ideographs and kana it breaks
     /// only at the phrase boundaries the segmenter finds. The other
     /// opportunities there, and its soft hyphens, are taken only where
-    /// nothing else fits, as Chrome retries a line that overflows without
-    /// phrases.
+    /// nothing else fits: a line that overflows is retried without phrases.
     Phrases,
     /// `auto-phrase` text in another language: only its soft hyphens wait
-    /// for a line that overflows, as Chrome disables them under phrases.
+    /// for a line that overflows.
     Unsegmented,
 }
 
-/// The fewest characters a word has before it is hyphenated, as Chrome's
+/// The fewest characters a word has before it is hyphenated, as Blink's
 /// `Hyphenation` sets by default (CSS Text 4's `hyphenate-limit-chars`).
 const MIN_WORD: usize = 5;
 
@@ -57,7 +56,7 @@ const MIN_SUFFIX: usize = 2;
 pub(super) struct HostedPoints {
     /// Each point's byte offset in the whole text, shifted left one. Bit 0
     /// is set for a hyphenation opportunity in the text's last word, which
-    /// Chrome takes only where nothing else fits.
+    /// is taken only where nothing else fits.
     points: Vec<u32>,
     /// The index of the next point a boundary may take.
     next: usize,
@@ -130,25 +129,23 @@ heap_bytes! {
 pub(super) struct ItemWords<'t> {
     /// The whole text.
     pub(super) text: &'t str,
-    /// The whole text as the line segmenter reads it under the Japanese and
-    /// Chinese options (`breaks::fill_cj_text`), or `text`.
-    pub(super) cj_text: &'t str,
     /// The item's bytes in `text`.
     pub(super) range: Range<TextOffset>,
     pub(super) key: LineKey,
-    pub(super) segmenter: LineSegmenterBorrowed<'static>,
+    /// The dictionaries that break SA runs.
+    pub(super) dictionaries: &'t Dictionaries,
     pub(super) language: Language,
 }
 
 /// Records in `points` the hyphenation opportunities `hyphenator` finds in
 /// the words of `item`.
 ///
-/// A word runs from one line-break opportunity to the next, as Chrome's
+/// A word runs from one line-break opportunity to the next, as Blink's
 /// line breaker hands words to its `Hyphenation`, and is cut at the item's
-/// ends. Each is trimmed as Chrome's `HyphenationMinikin` trims it, and is
+/// ends. Each is trimmed as Blink's `HyphenationMinikin` trims it, and is
 /// asked about only if long enough and, in English, not capitalized. An
 /// opportunity in the text's last word is marked, unless that word is all
-/// the text, as Chrome's `ShouldHyphenate` keeps that word whole where an
+/// the text, as Blink's `ShouldHyphenate` keeps that word whole where an
 /// earlier break fits.
 pub(super) fn hyphenate(
     points: &mut HostedPoints,
@@ -157,10 +154,9 @@ pub(super) fn hyphenate(
 ) {
     let ItemWords {
         text,
-        cj_text,
         ref range,
         key,
-        segmenter,
+        dictionaries,
         language,
     } = *item;
     let (start, end) = (range.start.get(), range.end.get());
@@ -168,20 +164,28 @@ pub(super) fn hyphenate(
         return;
     };
     let host = (hyphenator, language.language().eq_ignore_ascii_case("en"));
-    let mut stream = LineStream::new(text, cj_text, start, segmenter, key);
+    let mut stream = LineStream::new(text, start, dictionaries, key);
     let mut word_start = start;
-    let (mut before, mut before_before) = (None, None);
+    let mut before = None;
     for (offset, ch) in item_text.char_indices() {
         work::step();
         let at = start + offset;
+        let earlier = || {
+            item_text
+                .get(..offset)
+                .unwrap_or_default()
+                .chars()
+                .rev()
+                .skip(1)
+        };
         if let Some(last) = before
-            && key.ascii_or(|| before_before, last, ch, || stream.at(at))
+            && key.blink_or(earlier, last, ch, || stream.at(at))
         {
             let word = text.get(word_start..at).unwrap_or_default();
             hyphenate_word(points, word, word_start, false, language, host);
             word_start = at;
         }
-        (before_before, before) = (before, Some(ch));
+        before = Some(ch);
     }
     if word_start < end {
         let last = text.get(end..).is_some_and(all_breakable_spaces)
@@ -195,7 +199,7 @@ pub(super) fn hyphenate(
 /// next, starting at byte `raw_start` of the text.
 ///
 /// `last` marks them as the text's last word's. `english` keeps a
-/// capitalized word whole, as Chrome's `ShouldHyphenateWord` does for
+/// capitalized word whole, as Blink's `ShouldHyphenateWord` does for
 /// locales starting with `en`.
 fn hyphenate_word(
     points: &mut HostedPoints,
@@ -208,7 +212,7 @@ fn hyphenate_word(
     let trimmed = raw.trim_start_matches(skips_before_word);
     let start = raw_start + (raw.len() - trimmed.len());
     let trimmed = trimmed.trim_end_matches(skips_after_word);
-    // Chrome counts UTF-16 units; this counts characters, which agree
+    // Blink counts UTF-16 units; this counts characters, which agree
     // outside the supplementary planes.
     let length = trimmed.chars().count();
     if length < MIN_WORD || english && trimmed.chars().next().is_some_and(char::is_uppercase) {
@@ -263,7 +267,7 @@ pub(super) fn segment_phrases(
 /// Returns whether `ch` is one that ICU's phrase segmentation of Japanese
 /// covers: an ideograph, a kana, or a prolonged sound or voicing mark.
 pub(super) fn is_phrase_letter(ch: char) -> bool {
-    let script = unicode::script(unicode::core_props(ch));
+    let script = unicode::core_props(ch).script();
     matches!(
         script,
         ScriptId::HAN | ScriptId::HIRAGANA | ScriptId::KATAKANA
@@ -271,7 +275,7 @@ pub(super) fn is_phrase_letter(ch: char) -> bool {
 }
 
 /// Returns whether every character of `text` is a breakable space, as
-/// Chrome's `ShapingLineBreaker` counts them: a space, tab, line feed or
+/// Blink's `ShapingLineBreaker` counts them: a space, tab, line feed or
 /// other space separator.
 fn all_breakable_spaces(text: &str) -> bool {
     text.chars().all(|ch| {
@@ -284,7 +288,7 @@ fn all_breakable_spaces(text: &str) -> bool {
 /// Returns whether `ch` is trimmed from a word's start before it is
 /// hyphenated: a space, or opening punctuation or a quote.
 ///
-/// Chrome trims Line_Break OP and QU. This reads opening punctuation (Ps)
+/// Blink trims Line_Break OP and QU. This reads opening punctuation (Ps)
 /// and the quotation marks among the other punctuation.
 fn skips_before_word(ch: char) -> bool {
     matches!(
@@ -303,7 +307,7 @@ fn skips_before_word(ch: char) -> bool {
 }
 
 /// Returns whether `ch` is trimmed from a word's end before it is
-/// hyphenated: a space separator, punctuation or a control, as in Chrome.
+/// hyphenated: a space separator, punctuation or a control.
 fn skips_after_word(ch: char) -> bool {
     ch.is_control()
         || ch == '\u{3000}'

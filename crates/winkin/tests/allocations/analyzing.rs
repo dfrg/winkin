@@ -1,7 +1,6 @@
 //! Analysis:
 //! - analyzing Latin, CJK or Arabic again allocates nothing;
-//! - Thai and the other scripts ICU breaks with its dictionaries or its LSTM
-//!   allocate inside ICU and only there.
+//! - analyzing Thai again allocates nothing, with or without dictionaries.
 
 use super::{count_allocations, text};
 use winkin::style::{ComputedStyle, Language, TextGroup, WordBreak};
@@ -76,15 +75,14 @@ fn analyzing_latin_cjk_or_arabic_allocates_nothing_warm() {
     }
 }
 
-/// Thai allocates inside ICU and nowhere else.
+/// Thai rebuilds without allocating, and so does Latin built after it in the
+/// same layout.
 ///
-/// ICU breaks Thai, Lao, Khmer and Myanmar lines with its dictionaries, or
-/// its LSTM without the `dictionaries` feature. Either allocates on every
-/// run of such text, and ICU's API takes no buffer. winkin itself allocates
-/// nothing, as Latin built after it in the same layout shows. If ICU stops
-/// allocating, this test fails.
+/// Thai, Lao, Khmer and Myanmar lines break at the words of a dictionary the
+/// scan reads in place; without the `dictionaries` feature a run breaks
+/// only around it.
 #[test]
-fn thai_allocates_inside_icu_and_only_there() {
+fn thai_allocates_nothing_warm() {
     let thai = text(
         "\u{E20}\u{E32}\u{E29}\u{E32}\u{E44}\u{E17}\u{E22}\u{E40}\u{E1B}\u{E47}\u{E19}\u{E20}\u{E32}\u{E29}\u{E32}\u{E17}\u{E35}\u{E48}\u{E2A}\u{E27}\u{E22}\u{E07}\u{E32}\u{E21}",
         8,
@@ -95,7 +93,7 @@ fn thai_allocates_inside_icu_and_only_there() {
     prose(&mut layout, &mut cx, "th", &thai);
     prose(&mut layout, &mut cx, "en", &latin);
     let warm = count_allocations(|| prose(&mut layout, &mut cx, "th", &thai));
-    assert!(warm > 0, "ICU's LSTM no longer allocates: update this test");
+    assert_eq!(warm, 0, "rebuilding Thai allocated");
     let warm = count_allocations(|| prose(&mut layout, &mut cx, "en", &latin));
     assert_eq!(warm, 0, "after Thai, Latin allocated");
 }

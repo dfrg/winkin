@@ -15,14 +15,13 @@
 //!   symbol the symbol key.
 //!
 //! Anything else asks nothing of its own and goes to the Common key, which on
-//! Windows ends with Chrome's catch-all lists (`platform::windows::tail`).
+//! Windows ends with Blink's catch-all lists (`platform::windows::tail`).
 //!
-//! This follows Chrome where that is cheap and differs where Chrome needs a
-//! table per block: Windows' block rule sends arrows and math operators to
-//! Cambria Math and `①` reaches MS PGothic through `kCommonFonts`, where
-//! here both ask the symbol key; and Linux walks the page language's whole
-//! list for shared punctuation, which this answers from the character's
-//! scripts' lists instead.
+//! No rule here needs a table per Unicode block. Blink's Windows block rule
+//! sends arrows and math operators to Cambria Math, and `①` reaches
+//! MS PGothic through `kCommonFonts`; here both ask the symbol key. Blink's
+//! Linux fallback walks the page language's whole list for shared
+//! punctuation; this answers it from the character's scripts' lists.
 
 use parlance::{Language, Script};
 

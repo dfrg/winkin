@@ -16,7 +16,7 @@
 //! against ICU's except for those 34.
 //!
 //! The rest are HarfBuzz's own rules: the modified combining classes, its
-//! default-ignorables and its variation selectors. harfrust 0.14.0 keeps
+//! default-ignorables and its variation selectors. harfrust 0.15.0 keeps
 //! these private, so this module copies them; coverage has to agree with
 //! the shaper. Whether a character is a mark comes from this crate's table
 //! ([`CoreProps::is_mark`](super::CoreProps::is_mark)).
@@ -53,7 +53,7 @@ pub(crate) fn decompose(ch: char) -> Option<(char, Option<char>)> {
 /// excluding composition exclusions as NFC does.
 ///
 /// As `hb_unicode_compose`: the primary composites, and Hangul's LV from L
-/// and V and LVT from LV and T. harfrust 0.14.0 also composes an LV and
+/// and V and LVT from LV and T. harfrust 0.15.0 also composes an LV and
 /// U+11A7, which is not a trailing consonant, to the LV itself, where
 /// HarfBuzz and ICU compose nothing (its bound is `T_BASE <= b`, HarfBuzz's
 /// `b > TBASE`). No replay hits this: only marks compose onto a starter, and
@@ -145,7 +145,7 @@ pub(crate) fn modified_combining_class(ch: char) -> u8 {
 /// as spacing glyphs as Uniscribe does, and the shorthand format controls
 /// U+1BCA0 to U+1BCA3 (HarfBuzz issue 503). The tests check that these are
 /// the whole difference. U+180F, the fourth Mongolian free variation
-/// selector, is hidden, as harfrust 0.14.0 hides it.
+/// selector, is hidden, as harfrust 0.15.0 hides it.
 pub(crate) fn is_default_ignorable(ch: char) -> bool {
     rare_props(ch).is_default_ignorable()
         && !matches!(

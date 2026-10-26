@@ -178,8 +178,10 @@ impl Editor {
         bold.font.weight = FontWeight::BOLD;
         style.bidi.unicode_bidi = UnicodeBidi::Plaintext;
         let block = ComputedBlockStyle::new(&style);
-        let mut options = BuildOptions::default();
-        options.map_source = true;
+        let options = BuildOptions {
+            map_source: true,
+            ..BuildOptions::default()
+        };
         let mut builder = self
             .layout
             .builder(&mut self.cx, NodeKey(0), &block, options);

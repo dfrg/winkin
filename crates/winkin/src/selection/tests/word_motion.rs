@@ -149,23 +149,27 @@ fn from_utf16(text: &str, units: &[usize]) -> Vec<usize> {
 /// Word motion over a Thai and a Japanese sentence stops where Chrome 153's
 /// does on Windows.
 ///
-/// With the `dictionaries` feature, ICU4X finds the words ICU4C finds for
-/// Chrome: `ฉัน|ชอบ|กิน|ข้าว|…` and
+/// With the `dictionaries` feature, the dictionaries' longest words are the
+/// words ICU4C finds for Chrome: `ฉัน|ชอบ|กิน|ข้าว|…` and
 /// `私|は|コンピューター|で|日本語|の|テキスト|を|書き|ます|。`.
-/// Without it, the LSTM finds the same Thai words. UAX #29 then makes each
-/// ideograph and hiragana a word, and a katakana run one word.
+/// Without it, a Thai run is one word, as ICU makes it with no dictionary,
+/// and UAX #29 makes each ideograph and hiragana a word, and a katakana run
+/// one word.
 #[test]
 fn word_motion_finds_thai_and_japanese_words() {
     let forward = MotionDirection::Forward
         .moving(Granularity::Word)
         .with_word_motion(WordMotion::SkipSpaces);
     let backward = MotionDirection::Backward.moving(Granularity::Word);
-    let chrome_thai = [0, 3, 6, 9, 13, 16, 19, 22, 26, 29, 32, 35, 39];
+    #[cfg(feature = "dictionaries")]
+    let thai = [0, 3, 6, 9, 13, 16, 19, 22, 26, 29, 32, 35, 39];
+    #[cfg(not(feature = "dictionaries"))]
+    let thai = [0, 26, 39];
     #[cfg(feature = "dictionaries")]
     let japanese = [0, 1, 2, 9, 10, 13, 14, 18, 19, 21, 23, 24];
     #[cfg(not(feature = "dictionaries"))]
     let japanese = [0, 1, 2, 9, 10, 11, 12, 13, 14, 18, 19, 20, 21, 22, 23, 24];
-    for (text, stops) in [(THAI, &chrome_thai[..]), (JAPANESE, &japanese[..])] {
+    for (text, stops) in [(THAI, &thai[..]), (JAPANESE, &japanese[..])] {
         let layout = laid(text, 400.0);
         let stops = from_utf16(text, stops);
         assert_eq!(walk(&layout, 0, forward), stops, "{text}");
@@ -174,15 +178,15 @@ fn word_motion_finds_thai_and_japanese_words() {
     }
 }
 
-/// Where a Thai run meets Latin letters or digits, ICU4X breaks, so
-/// `ภาษา|abc|ไทย 123|ไทย` is five words.
+/// Where a Thai run meets Latin letters or digits, a word ends, so
+/// `ภาษา|abc|ไทย 123|ไทย` is five words: Thai letters are Word_Break Other,
+/// which UAX #29 joins to nothing (WB999), as ICU4X has them.
 ///
-/// ICU4X always breaks before a dictionary run and after one of two or more
-/// characters. ICU4C counts Thai as a letter that joins its neighbours, so
-/// Chrome 153 stops only at `ภาษาabcไทย` and `123ไทย`. The difference is
-/// ICU4X's segmenting and is recorded, not worked around.
+/// ICU4C counts Thai as a letter that joins its neighbours, so Chrome 153
+/// stops only at `ภาษาabcไทย` and `123ไทย`. The difference is recorded, not
+/// worked around.
 #[test]
-fn thai_beside_latin_is_parted_where_icu4x_parts_it() {
+fn thai_beside_latin_is_parted_where_uax_29_parts_it() {
     let text = "\u{E20}\u{E32}\u{E29}\u{E32}abc\u{E44}\u{E17}\u{E22} 123\u{E44}\u{E17}\u{E22}";
     let layout = laid(text, 400.0);
     let forward = MotionDirection::Forward
@@ -263,14 +267,11 @@ fn a_break_opportunity_leaves_a_word_whole() {
     assert_eq!(walk(&joined("abc", " def"), 0, end), [0, 3, 10]);
 }
 
-/// A run too long for the stack copy is segmented in the pieces its `<wbr>`s
-/// part.
-///
-/// In long Thai with a `<wbr>`, a word starts at each stop near it where each
-/// side segmented alone has one, and at the `<wbr>`.
+/// A long run with a `<wbr>` finds the words of its text without it: the
+/// break opportunity leaves the words across it whole.
 #[test]
-fn a_long_run_finds_words_on_each_side_of_its_wbr() {
-    use crate::unicode::word_segmenter;
+fn a_long_run_finds_its_words_across_its_wbr() {
+    use cleft::{Utf8Scalars, WordBreaks, WordOptions};
     use words::Words;
     // "Thai" 60 times on each side: 540 bytes a side, 1,080 the run.
     let piece = "\u{E44}\u{E17}\u{E22}".repeat(60);
@@ -279,11 +280,15 @@ fn a_long_run_finds_words_on_each_side_of_its_wbr() {
         b.break_opportunity();
         b.text(NodeKey(2), &piece);
     });
-    let words: Vec<usize> = word_segmenter().segment_str(&piece).collect();
+    let dictionaries = layout.dictionaries().expect("a built layout");
+    let run = piece.repeat(2);
+    let words: Vec<usize> = WordBreaks::new(Utf8Scalars::new(&run), WordOptions::new())
+        .with_dictionaries(dictionaries)
+        .collect();
     // The far side, after the U+200B.
     let far = piece.len() + '\u{200B}'.len_utf8();
-    let near = (piece.len() - 18..=piece.len()).map(|at| (at, words.contains(&at)));
-    let beyond = (far..=far + 18).map(|at| (at, words.contains(&(at - far))));
+    let near = (piece.len() - 18..piece.len()).map(|at| (at, words.contains(&at)));
+    let beyond = (far..=far + 18).map(|at| (at, words.contains(&(at - far + piece.len()))));
     let text = layout.text();
     for (at, starts) in near
         .chain(beyond)
@@ -297,7 +302,6 @@ fn a_long_run_finds_words_on_each_side_of_its_wbr() {
             );
         }
     }
-    assert!(Words::new(&layout).starts_word(cluster(&layout, piece.len())));
 }
 
 /// Word boundaries found around each stop equal those of the whole
@@ -313,8 +317,9 @@ fn a_long_run_finds_words_on_each_side_of_its_wbr() {
 fn words_around_a_stop_are_the_whole_paragraphs() {
     use crate::data::{Id, IdRange};
     use crate::stages::analysis::{ClusterClass, ClusterId};
-    use crate::unicode::{self, segmenter_char, word_boundaries, word_segmenter};
+    use crate::unicode;
     use alloc::collections::BTreeMap;
+    use cleft::{Utf8Scalars, WordBreaks, WordOptions};
     use words::Words;
 
     // Letters, digits and the punctuation the rules join across; spaces; a
@@ -336,13 +341,13 @@ fn words_around_a_stop_are_the_whole_paragraphs() {
         "\u{306F}", "\u{3005}",
     ];
     // Whether a word starts and ends at each caret stop, from each whole
-    // paragraph without builder break opportunities, each character as the
-    // segmenter is given it.
+    // paragraph without builder break opportunities, under the en_US_POSIX
+    // full stop.
     let whole = |layout: &Layout| {
         let analysis = layout.analysis();
         let clusters = &analysis.clusters;
         let text = layout.text();
-        let segmenter = word_segmenter();
+        let dictionaries = layout.dictionaries().expect("a built layout");
         let mut found: BTreeMap<usize, (bool, bool)> = BTreeMap::new();
         for (id, _) in analysis.paragraphs.iter() {
             let range = analysis.paragraphs.clusters(id);
@@ -373,9 +378,7 @@ fn words_around_a_stop_are_the_whole_paragraphs() {
                     firsts.push((words.len(), first));
                 }
                 if !generated || apart {
-                    for ch in text[at.start.get()..at.end.get()].chars() {
-                        words.push(segmenter_char(ch).unwrap_or(ch));
-                    }
+                    words.push_str(&text[at.start.get()..at.end.get()]);
                 }
             }
             places.push((clusters.start(range.end).get(), words.len()));
@@ -395,7 +398,13 @@ fn words_around_a_stop_are_the_whole_paragraphs() {
                 let before = firsts.iter().rev().find(|&&(at, _)| at < to);
                 matches!((before, after), (Some(&(_, b)), Some(&(_, a))) if punctuation(b) && punctuation(a))
             };
-            for to in word_boundaries(segmenter, &words, 0) {
+            let options = WordOptions {
+                posix_full_stop: true,
+            };
+            let boundaries = WordBreaks::new(Utf8Scalars::new(&words), options)
+                .with_dictionaries(dictionaries)
+                .chain([words.len()]);
+            for to in boundaries {
                 if to <= from || (to < words.len() && joined(to)) {
                     continue;
                 }

@@ -1,7 +1,7 @@
 //! Used fonts: the size a request's fonts are used at, and the interner of
 //! the layout's table of them.
 //!
-//! - `used_size` keys a size as Chrome does.
+//! - `used_size` keys a size.
 //! - `adjusted_size` applies `font-size-adjust`.
 //! - `InitialLetterGrid` sizes an initial letter to the lines it spans.
 //! - `UsedFontInterner` finds or adds a used font.
@@ -20,9 +20,9 @@ use crate::work;
 
 /// Returns the size a used font is set at for `px` pixels.
 ///
-/// The size is floored to a hundredth of a pixel, as Chrome's
+/// The size is floored to a hundredth of a pixel, as Blink's
 /// `FontDescription::EffectiveFontSize` keys its fonts, then truncated to
-/// 16.16 `TextUnit`, as Chrome turns a size into its HarfBuzz scale.
+/// 16.16 `TextUnit`, the shaper's scale.
 pub(super) fn used_size(px: f32) -> TextUnit {
     TextUnit::from_px_truncated(unit::floor_to_hundredth(sanitized_font_size(px)))
 }
@@ -33,7 +33,7 @@ pub(super) fn used_size(px: f32) -> TextUnit {
 /// metrics and size, which give the letter's alignment points.
 #[derive(Copy, Clone, Debug)]
 pub(super) struct InitialLetterGrid {
-    /// The block's first-line line height in pixels, as Chrome's
+    /// The block's first-line line height in pixels, as Blink's
     /// `ComputedLineHeight` gives it.
     pub(super) line_height: f32,
     /// The block's primary font's metrics, unscaled.
@@ -52,7 +52,7 @@ impl InitialLetterGrid {
     const MAX_STEPS: usize = 64;
 
     /// Returns the size in pixels an initial letter of `request` is used at,
-    /// as Chrome's `ComputeInitialLetterFont` computes it.
+    /// as Blink's `ComputeInitialLetterFont` computes it.
     ///
     /// `computed` is the request's computed size and `unscaled` its primary
     /// font's metrics; `source` says how lines are measured. The letter's

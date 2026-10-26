@@ -74,7 +74,7 @@ impl Family {
     ///
     /// Matches width, style, then weight according to CSS Fonts. Variable
     /// fonts match within their axis ranges. Italic requests target 14°
-    /// when only oblique fonts are available, matching Chrome. Ranges
+    /// when only oblique fonts are available. Ranges
     /// containing 14° tie, leaving weight to decide.
     ///
     /// `synthesize_style` permits an upright font for an oblique request

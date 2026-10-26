@@ -61,10 +61,10 @@ impl PrefixAdvances {
     /// starts at `origin`.
     ///
     /// The distance from the paragraph's start rounds up to the 26.6 grid, as
-    /// Chrome's cached character positions do (`ToCeil<LayoutUnit>`), but
-    /// stays 48.16 so a long paragraph fits exactly. Chrome's positions
+    /// Blink's cached character positions do (`ToCeil<LayoutUnit>`), but
+    /// stays 48.16 so a long paragraph fits exactly. Blink's positions
     /// restart at each item; restarting at each paragraph makes a
-    /// paragraph's first item round as Chrome's does.
+    /// paragraph's first item round as there.
     #[inline]
     pub(crate) fn fit_position(&self, origin: ClusterId, at: ClusterId) -> InlineLayoutUnit {
         (self.get(at) - self.get(origin)).ceil_to_grid()

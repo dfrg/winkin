@@ -300,28 +300,15 @@ fn selecting_allocates_nothing() {
     }
 }
 
-/// Word motion allocates only inside ICU.
-///
-/// ICU's word segmenter copies each run it hands its dictionaries or LSTM
-/// into a string (icu_segmenter 2.3, `handle_complex_utf8`). Motion through
-/// Thai, Lao, Khmer or Myanmar meets such runs, and so, with the
-/// `dictionaries` feature, does motion through ideographs and hiragana.
-/// Without that feature, UAX #29's rules segment ideographs and hiragana
-/// with no allocation. Every other query over the same text allocates
-/// nothing. If ICU stops allocating, this test fails.
+/// Word motion allocates nothing, through Thai and through ideographs and
+/// hiragana, which the dictionaries segment, and neither does any other
+/// motion over the same text.
 #[test]
-fn word_motion_allocates_inside_icu_and_only_there() {
+fn word_motion_allocates_nothing_warm() {
     use winkin::selection::{Granularity, MotionDirection, Position, Selection};
-    // Each text, and whether ICU's dictionaries or its LSTM segment it.
     let documents = [
-        (
-            "\u{E20}\u{E32}\u{E29}\u{E32}\u{E44}\u{E17}\u{E22} \u{E40}\u{E1B}\u{E47}\u{E19}",
-            true,
-        ),
-        (
-            "\u{6F22}\u{5B57}\u{3068}\u{304B}\u{306A} \u{6587}\u{5B57}",
-            cfg!(feature = "dictionaries"),
-        ),
+        "\u{E20}\u{E32}\u{E29}\u{E32}\u{E44}\u{E17}\u{E22} \u{E40}\u{E1B}\u{E47}\u{E19}",
+        "\u{6F22}\u{5B57}\u{3068}\u{304B}\u{306A} \u{6587}\u{5B57}",
     ];
     let how = (
         "Test Latin",
@@ -335,7 +322,7 @@ fn word_motion_allocates_inside_icu_and_only_there() {
         MotionDirection::Left,
         MotionDirection::Right,
     ];
-    for (line, icus) in documents {
+    for line in documents {
         let mut cx = Context::new(collection());
         let mut layout = Layout::new();
         prose(&mut layout, &mut cx, how, &text(line, 2));
@@ -358,14 +345,7 @@ fn word_motion_allocates_inside_icu_and_only_there() {
         let mut sum = 0;
         let words = count_allocations(|| sum = moving(&[Granularity::Word]));
         assert!(sum > 0, "{line}: something was read");
-        if icus {
-            assert!(
-                words > 0,
-                "{line}: ICU's word iterator no longer allocates: update this test"
-            );
-        } else {
-            assert_eq!(words, 0, "{line}: words by UAX #29's rules allocated");
-        }
+        assert_eq!(words, 0, "{line}: word motion allocated");
         let rest = count_allocations(|| {
             moving(&[
                 Granularity::Character,

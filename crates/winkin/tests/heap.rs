@@ -168,8 +168,10 @@ fn build(layout: &mut Layout, cx: &mut Context, document: Document, paragraphs: 
         },
         ..ComputedBlockStyle::new(&root)
     };
-    let mut options = BuildOptions::default();
-    options.map_source = matches!(document, Document::Mapped);
+    let options = BuildOptions {
+        map_source: matches!(document, Document::Mapped),
+        ..BuildOptions::default()
+    };
     let mut b = layout.builder(cx, NodeKey(0), &block, options);
     let mut key = 0;
     let mut next = || {
@@ -220,7 +222,7 @@ const DOCUMENTS: [Document; 4] = [
 ];
 const WIDTHS: [f32; 3] = [240.0, 97.5, 600.0];
 
-/// A layout's record, its size apart from its heap, is at most 968 bytes on
+/// A layout's record, its size apart from its heap, is at most 976 bytes on
 /// a 64-bit target.
 ///
 /// - The stages' first-line variants are boxed, made only where a layout
@@ -251,13 +253,15 @@ const WIDTHS: [f32; 3] = [240.0, 97.5, 600.0];
 ///   where a layout has one.
 /// - The block's `text-indent` holds its length inline, 12 bytes, as a
 ///   length and a percentage or a `calc()` handle.
+/// - The word dictionaries the lines broke with take 8 bytes, a pointer
+///   shared with the context.
 ///
 /// A layout's whole size is this record plus its heap.
 #[test]
 #[cfg(target_pointer_width = "64")]
-fn a_layout_record_is_968_bytes_at_most() {
+fn a_layout_record_is_976_bytes_at_most() {
     let record = size_of::<Layout>();
-    assert!(record <= 968, "a layout's record is {record} bytes");
+    assert!(record <= 976, "a layout's record is {record} bytes");
 }
 
 /// A layout never built keeps nothing.

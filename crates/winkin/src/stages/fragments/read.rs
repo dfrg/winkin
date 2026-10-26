@@ -15,14 +15,14 @@
 //!
 //! A glyph's advance is the shaper's, except a cluster's last glyph,
 //! which takes the rest of the cluster's advance. So the glyphs add up to
-//! the cluster, spacing and justification included, as Chrome adds letter
-//! spacing and justification room to a cluster's last glyph.
+//! the cluster, spacing and justification included: letter spacing and
+//! justification room go to a cluster's last glyph.
 //!
 //! On a justified line a cluster's advance adds `per` for each of its
 //! opportunities, counted by the same rule line layout uses. The last
 //! opportunity also takes the leftover. A cluster with an opportunity before
-//! it moves its glyphs by that room, as Chrome offsets an ideograph after a
-//! letter. The line's item names its record; nothing is stored per cluster.
+//! it moves its glyphs by that room, as an ideograph after a letter is
+//! offset. The line's item names its record; nothing is stored per cluster.
 //!
 //! No item searches for its run or items: the item names its shaping run
 //! and its content item, and its line names its paragraph.

@@ -21,7 +21,7 @@ pub(super) fn text_metrics(
 ) {
     let facts = &input.content.facts;
     out.reserve(facts.text_ids().len());
-    // Tabs count the block's space, as Chrome's `InlineNode::FontForTab`.
+    // Tabs count the block's space, as Blink's `InlineNode::FontForTab`.
     let block = input
         .content
         .nodes
@@ -63,7 +63,7 @@ pub(super) fn text_metrics(
     }
 }
 
-/// Returns the used line height, as Chrome's `ComputedLineHeightAsFixed`
+/// Returns the used line height, as Blink's `ComputedLineHeightAsFixed`
 /// makes it.
 ///
 /// `normal` takes the font's line spacing. A factor arrives resolved and
@@ -79,8 +79,8 @@ fn line_height(height: TextLineHeight, metrics: &FontLineMetrics) -> LayoutUnit 
 /// Returns a font's ascent and descent with the leading that `height` adds.
 ///
 /// Half the leading, floored to a whole pixel, goes over the baseline and
-/// the rest under (Blink's `CalculateLeadingSpace`): Chrome puts a baseline
-/// at 87 where an even split gives 87.6.
+/// the rest under (Blink's `CalculateLeadingSpace`): a baseline lands at 87
+/// where an even split gives 87.6.
 pub(super) fn leaded(metrics: &FontLineMetrics, height: LayoutUnit) -> Extent {
     let (ascent, descent) = (metrics.ascent, metrics.descent);
     let leading = height - (ascent + descent);
@@ -97,7 +97,7 @@ pub(crate) fn normal_extent(metrics: &FontLineMetrics) -> Extent {
 /// Returns the em box an emphasis mark is drawn in.
 ///
 /// It is the primary font's em box at half of `size`, rounded to a whole
-/// pixel as Blink does (`lroundf`); the ascent rounds to 1/64. Without font
+/// pixel (`lroundf`); the ascent rounds to 1/64. Without font
 /// metrics, four fifths go over the baseline.
 fn mark(primary: Option<&FontLineMetrics>, size: f32) -> Extent {
     let size = unit::round_to_whole(size * 0.5).max(0.0);

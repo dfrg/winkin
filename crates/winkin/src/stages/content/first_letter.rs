@@ -1,7 +1,7 @@
 //! Finds the extent of `::first-letter` text.
 //!
-//! The rules are CSS Pseudo-Elements 4, section 2.2.1, as in Blink's
-//! `FirstLetterPseudoElement::FirstLetterLength`:
+//! The rules are CSS Pseudo-Elements 4, section 2.2.1, as Blink's
+//! `FirstLetterPseudoElement::FirstLetterLength` reads them:
 //!
 //! - **Leading white space** is skipped where it collapses and included
 //!   where it is kept, tabs and no-break spaces too (Blink's
@@ -14,28 +14,24 @@
 //!   them is included only when punctuation follows it, and never U+0020,
 //!   U+00A0 or U+3000.
 //!
-//! Each grapheme is classed by its first character, as in Blink. The text
-//! is read as collapsing leaves it:
+//! Each grapheme is classed by its first character. The text is read as
+//! collapsing leaves it:
 //! - a collapsible space, tab or segment break is a word space;
 //! - a kept segment break or a character that always forces a break ends
 //!   the first line and the search;
 //! - white space `discard` removes is skipped.
 //!
-//! Chrome instead reads the source text and simulates collapsing, so a
-//! segment break after an opening quote ends its search where a space
-//! would not. CSS reads the text as drawn, as this does.
+//! CSS reads the text as drawn, so a segment break after an opening quote
+//! ends the search only where a space would.
 //!
 //! **Across texts.** Punctuation ending a text leaves the letter to the
 //! next text, as Blink's `LeadingPunctuationState` does. The box then holds
-//! only the first text's part, as in Chrome; CSS allows this when the text
-//! spans elements. A text of only white space leaves the search unchanged.
+//! only the first text's part; CSS allows this when the text spans elements. A
+//! text of only white space leaves the search unchanged.
 //!
-//! **Chrome 153** follows CSS 2.1 instead: Ps, Pe, Pi, Pf and Po on both
-//! sides and no space after leading punctuation, so `“ Once` has no first
-//! letter and a leading dash counts as the letter. Blink's source follows
-//! CSS Pseudo-Elements 4, as this does.
-
-use icu_segmenter::GraphemeClusterSegmenter;
+//! These are the CSS Pseudo-Elements 4 rules, not those of CSS 2.1 (Ps, Pe,
+//! Pi, Pf and Po on both sides and no space after leading punctuation, so
+//! `“ Once` has no first letter and a leading dash counts as the letter).
 
 use crate::style::WhiteSpaceCollapse;
 use crate::unicode::{self, FirstLetterClass};
@@ -148,13 +144,10 @@ impl FirstLetterScan {
             Phase::Leading
         };
         let mut start = 0;
-        let mut boundaries = GraphemeClusterSegmenter::new().segment_str(text);
-        // The segmenter yields 0 first.
-        let mut at = boundaries.next().unwrap_or(0);
-        for next in boundaries {
+        for (at, grapheme) in unicode::graphemes(text) {
             work::step();
-            let seen = Seen::new(text.get(at..next).unwrap_or_default(), mode);
-            at = next;
+            let next = at + grapheme.len();
+            let seen = Seen::new(grapheme, mode);
             phase = match (phase, seen) {
                 (_, Seen::Nothing) => phase,
                 (Phase::Leading | Phase::Punctuation, Seen::Break) => {

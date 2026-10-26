@@ -1,4 +1,4 @@
-//! The Windows backend: Chrome's Windows fallback tables, with corrections.
+//! The Windows backend: Blink's Windows fallback tables, with corrections.
 //!
 //! Children:
 //! - `scripts`: the fonts for each script, from Chrome's `GetFallbackFamily`;
@@ -36,7 +36,6 @@ use crate::script as sc;
 ///
 /// Created by [`Backend::platform`](crate::backend::Backend::platform).
 #[derive(Debug)]
-#[non_exhaustive]
 pub struct Windows {}
 
 impl Windows {

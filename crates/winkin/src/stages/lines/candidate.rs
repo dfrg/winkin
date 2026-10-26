@@ -2,7 +2,7 @@
 //!
 //! - **Width.** A line to `e` reaches its prefix sum there, plus its reshaped
 //!   pieces' deltas, its tabs and a continued ruby column's shift, rounded up
-//!   to Chrome's grid. What hangs at its end comes off it.
+//!   to the 1/64 grid. What hangs at its end comes off it.
 //! - **Tabs.** A tab takes nothing in the prefix. Its width depends on where
 //!   it lands; line layout sizes it with the same function.
 //! - **Costs.** A line pays the line-edge cost at each end, and takes
@@ -398,7 +398,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// - The first line takes it, and under `each-line` every line after a
     ///   forced break. `hanging` inverts which lines do.
     /// - A percentage is of the area's width, not the band's, truncated as
-    ///   Chrome's `MinimumValueForLength` does. Nothing clamps it.
+    ///   Blink's `MinimumValueForLength` does. Nothing clamps it.
     /// - A first line that opens an initial letter takes it twice, once
     ///   before the letter's box and once inside it
     ///   (`CalculateInitialLetterBoxInlineSize`).

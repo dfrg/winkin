@@ -11,6 +11,7 @@
 //! far bigger than the last calls needed.
 
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 #[cfg(test)]
 use alloc::vec::Vec;
 use core::mem;
@@ -19,7 +20,7 @@ use fontwich::Collection;
 
 use crate::config::Config;
 use crate::data::HeapBytes;
-use crate::segment::{Hyphenator, PhraseSegmenter};
+use crate::segment::{Dictionaries, Hyphenator, PhraseSegmenter};
 use crate::stages::analysis::{AnalysisContext, AnalysisScratch, ClusterId};
 use crate::stages::content::{ContentScratch, Lists, NodeId};
 #[cfg(test)]
@@ -53,7 +54,9 @@ use crate::unit::InlineLayoutUnit;
 /// };
 /// # use fontwich::{Collection, LayerBuilder, Role};
 /// # let mut fonts = LayerBuilder::new(Role::Application);
-/// # fonts.add_data(include_bytes!("../../../support/testing/fonts/Ahem.ttf").as_slice()).unwrap();
+/// # // Ahem, from the repository: a packaged crate does not ship it.
+/// # let Ok(ahem) = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../support/testing/fonts/Ahem.ttf")) else { return };
+/// # fonts.add_data(ahem).unwrap();
 /// # let fonts = Collection::new().with_layer(fonts.snapshot());
 ///
 /// let mut cx = Context::new(fonts);
@@ -85,7 +88,7 @@ pub struct Context {
     content_scratch: ContentScratch,
     /// Font selection's working memory.
     font_scratch: FontScratch,
-    /// The segmenters analysis runs, and the host's hyphenator and phrase
+    /// The word dictionaries, and the host's hyphenator and phrase
     /// segmenter.
     analysis: AnalysisContext,
     /// Analysis's working memory.
@@ -191,6 +194,25 @@ impl Context {
     /// they were built until rebuilt.
     pub fn set_hyphenator(&mut self, hyphenator: Option<Box<dyn Hyphenator>>) {
         self.analysis.hyphenator = hyphenator;
+    }
+
+    /// Sets the word dictionaries that break Thai, Lao, Khmer and Myanmar
+    /// lines, and find the words of those scripts and of Chinese and
+    /// Japanese for `text-transform: capitalize` and word motion.
+    ///
+    /// A run of a Southeast Asian script with no dictionary in the set breaks
+    /// only around it and is one word; without a Chinese and Japanese
+    /// dictionary, each ideograph and hiragana is a word. The default is the
+    /// set the `dictionaries` feature compiles in, or
+    /// an empty one without it. Existing layouts keep the dictionaries they
+    /// were built with until rebuilt.
+    pub fn set_dictionaries(&mut self, dictionaries: Arc<Dictionaries>) {
+        self.analysis.dictionaries = dictionaries;
+    }
+
+    /// Returns the word dictionaries that break lines and find words.
+    pub fn dictionaries(&self) -> &Arc<Dictionaries> {
+        &self.analysis.dictionaries
     }
 
     /// Sets what finds the phrases of `word-break: auto-phrase` text, or
@@ -504,7 +526,6 @@ impl ScratchSizes {
 /// assert_eq!(cx.cache_limits().font_instances, 16);
 /// ```
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
-#[non_exhaustive]
 pub struct CacheLimits {
     /// Distinct `font-family` lists. Default 64.
     ///
@@ -550,7 +571,6 @@ impl Default for CacheLimits {
 /// read-fonts, harfrust and fontwich. Font bytes shared with the collection
 /// are reported in [`font_data`](Self::font_data), outside the total.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
-#[non_exhaustive]
 pub struct ContextHeap {
     /// The font selection caches.
     ///

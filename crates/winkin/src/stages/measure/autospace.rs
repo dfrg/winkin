@@ -1,13 +1,13 @@
 //! `text-autospace`: the room added where an ideograph meets a narrow letter
-//! or digit, as Chrome's `TextAutoSpace::Apply` adds it.
+//! or digit, as Blink's `TextAutoSpace::Apply` adds it.
 //!
 //! The room is an eighth of the ideographic advance, in 16.16 `TextUnit`,
 //! after the cluster before the seam. A seam reaches across items and box
 //! edges. An atomic inline, a float, an absolutely positioned box's anchor,
-//! a forced break or a `unicode-bidi` box ends it, as Chrome writes each as
-//! a character. A line ending at a seam gives the room back
-//! (`UnapplyAutoSpacing`), even where Chrome keeps it after right-to-left
-//! text. A seam inside one cluster is not looked for.
+//! a forced break or a `unicode-bidi` box ends it, each being written as a
+//! character. A line ending at a seam gives the room back
+//! (`UnapplyAutoSpacing`), after right-to-left text too. A seam inside one
+//! cluster is not looked for.
 //!
 //! The scan finds seams with [`Seams`]; the breaker and line layout ask
 //! [`AutospaceRules`].
@@ -277,8 +277,8 @@ impl AutospaceRules {
     /// Returns the room of the seam at boundary `at` where the side before
     /// reads right to left and the side after left to right.
     ///
-    /// Chrome's `TextAutoSpace` writes that room before the later item's
-    /// first glyph, so line layout draws it with the later text. The prefix
+    /// That room goes before the later item's first glyph, as Blink's
+    /// `TextAutoSpace` writes it, so line layout draws it with the later text. The prefix
     /// still holds it before `at`. Zero unless `paragraph` mixes levels.
     #[inline]
     pub(crate) fn room_before(
@@ -462,8 +462,8 @@ fn last_kind(text: &str, chinese: bool) -> Option<Kind> {
 
 /// Returns whether text with the facts `text` takes a seam whose narrow side
 /// is `narrow`: a letter under `ideograph-alpha`, a digit under
-/// `ideograph-numeric`. The builder clears both for upright text, as Chrome
-/// ends a seam at a `kVerticalUpright` item.
+/// `ideograph-numeric`. The builder clears both for upright text, so a seam
+/// ends at upright text.
 fn takes(facts: &Facts, text: TextFactsId, narrow: Kind) -> bool {
     let text = facts.text(text);
     match narrow {
@@ -476,8 +476,8 @@ fn takes(facts: &Facts, text: TextFactsId, narrow: Kind) -> bool {
 /// Returns whether `item`, at a boundary with no text of its own, ends any
 /// seam across it.
 ///
-/// A float or an absolutely positioned box's anchor ends one, as Chrome's
-/// U+FFFC does. So does a box whose `unicode-bidi` writes bidi controls.
+/// A float or an absolutely positioned box's anchor ends one, as a U+FFFC
+/// does. So does a box whose `unicode-bidi` writes bidi controls.
 pub(super) fn ends_seams(content: &Content, item: &Item) -> bool {
     match item.kind {
         ItemKind::Float | ItemKind::Absolute => true,

@@ -81,7 +81,6 @@ fn read<P: TextPath>(layout: &Layout, paths: &[P], ends: PastEnds) -> f32 {
                 PathPaint::Emphasis { place, .. } | PathPaint::Atomic { place, .. } => {
                     sum += place.sin;
                 }
-                _ => {}
             }
         }
     }

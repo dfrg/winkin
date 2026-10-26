@@ -5,12 +5,11 @@
 //!
 //! - `walk` walks the items and the text once and writes every table.
 //! - `classify` classifies characters for the walk.
-//! - `breaks` holds the line segmenters' keys and the line stream.
-//! - `graphemes` finds the grapheme boundaries clusters start at.
-//! - `ascii` and `pairs` answer most Latin-1 breaks without ICU.
+//! - `breaks` holds the line engine's options and the line stream.
+//! - `ascii` and `pairs` answer most Latin-1 breaks without the engine.
 //! - `scripts` resolves each cluster's script and splits the runs.
 //! - `bidi` builds each paragraph's bidi input and resolves its levels.
-//! - `context` caches the segmenters in the [`Context`](crate::Context).
+//! - `context` holds what analysis reads from the [`Context`](crate::Context).
 //! - `clusters`, `items`, `paragraphs` and `runs` own the stored tables.
 //!
 //! Every per-character table is indexed by [`ClusterId`]. An analyzed
@@ -22,7 +21,6 @@ mod breaks;
 mod classify;
 mod clusters;
 mod context;
-mod graphemes;
 mod hosted;
 mod items;
 mod pairs;
@@ -36,10 +34,9 @@ mod walk;
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::mem;
 use core::ops::Range;
 
-use crate::config::SmallKana;
+use crate::config::{LooseHyphens, SmallKana};
 use crate::data::{define_id, heap_bytes};
 use crate::stages::content::{Content, ContentFlags, ItemId, NodeId};
 
@@ -53,12 +50,15 @@ pub use runs::{BidiLevel, RunOrientation};
 pub(crate) use runs::{ScriptRun, ScriptRuns};
 use walk::ClusterWriter;
 
-/// The input to analysis: the content and one config choice.
+/// The input to analysis: the content and two config choices.
 pub(crate) struct AnalysisInput<'a> {
     pub(crate) content: &'a Content,
     /// Whether a small kana may start a line under `line-break: normal`
     /// and `auto` (`Config::small_kana`).
     pub(crate) small_kana: SmallKana,
+    /// The languages in which `line-break: loose` breaks before a hyphen
+    /// after an ideograph (`Config::loose_hyphens`).
+    pub(crate) loose_hyphens: LooseHyphens,
 }
 
 /// The working memory of analysis, kept on the context for its capacity.
@@ -75,10 +75,6 @@ pub(crate) struct AnalysisScratch {
     /// A ruby column's base and the text after the column, which decide a
     /// break after the column.
     column_text: String,
-    /// The text with its curly double quotes swapped, which the line
-    /// segmenter reads under the Japanese and Chinese options
-    /// (`breaks::fill_cj_text`). Empty outside a call.
-    cj_text: String,
     /// See [`AnalysisScratch::hyphen_nodes`].
     hyphen_nodes: Vec<(NodeId, ClusterId)>,
     /// The break opportunities the host found in the text item being walked.
@@ -92,7 +88,6 @@ impl AnalysisScratch {
             pending_runs: Vec::new(),
             bidi: bidi::BidiInput::new(),
             column_text: String::new(),
-            cj_text: String::new(),
             hyphen_nodes: Vec::new(),
             hosted: hosted::HostedPoints::new(),
         }
@@ -119,7 +114,7 @@ impl AnalysisScratch {
 }
 
 heap_bytes! {
-    AnalysisScratch { pending_runs, bidi, column_text, cj_text, hyphen_nodes, hosted }
+    AnalysisScratch { pending_runs, bidi, column_text, hyphen_nodes, hosted }
 }
 
 impl Default for AnalysisScratch {
@@ -174,17 +169,11 @@ pub(crate) fn analyze(
     // has exactly one.
     out.clusters.reserve(content.text.as_str().chars().count());
     out.item_clusters.reserve(content.items.len());
-    // Taken out of scratch for the walk, which borrows the rest of it.
-    let mut cj_text = mem::take(&mut scratch.cj_text);
-    let swapped = breaks::fill_cj_text(content.text.as_str(), &mut cj_text);
-    let mut writer =
-        ClusterWriter::new(input, cx, scratch, out, swapped.then_some(cj_text.as_str()));
+    let mut writer = ClusterWriter::new(input, cx, scratch, out);
     for (id, item) in content.items.iter() {
         writer.visit_item(id, item);
     }
     writer.finish();
-    cj_text.clear();
-    scratch.cj_text = cj_text;
 }
 
 define_id! {

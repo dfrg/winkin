@@ -8,10 +8,9 @@
 //! this follows Firefox, which builds the set of glyphs the feature's
 //! lookups take (`gfxFontEntry::InputsForOpenTypeFeature`) once per font,
 //! script and feature. Firefox then tests each run's nominal glyphs against
-//! that set (`gfxFont::SupportsSubSuperscript`). Chrome applies the feature
-//! alone and synthesizes nothing (crbug.com/352218916), as `FeaturesOnly`
-//! does. The run loop asks for a coverage the first time a run needs it, and
-//! [`FeatureCoverages`] keeps it.
+//! that set (`gfxFont::SupportsSubSuperscript`). `FeaturesOnly` applies the
+//! feature alone and synthesizes nothing. The run loop asks for a coverage the
+//! first time a run needs it, and [`FeatureCoverages`] keeps it.
 //!
 //! **A feature's coverage** is the characters whose nominal glyph the
 //! feature substitutes. For a character harfrust fakes where the font does
@@ -42,7 +41,9 @@ use core::hash::{Hash, Hasher};
 use fontwich::{Charset, Family, Font, FontKey};
 use read_fonts::TableProvider;
 use read_fonts::model::Font as HeldFont;
-use read_fonts::tables::gsub::{SingleSubst, SubstitutionLookupList, SubstitutionSubtables};
+use read_fonts::tables::gsub::{
+    AlternateSubst, SingleSubst, SubstitutionLookupList, SubstitutionSubtables,
+};
 use read_fonts::tables::layout::CoverageTable;
 
 use super::coverage::{FAKED, faked_from};
@@ -62,8 +63,13 @@ define_id! {
 /// coverage range. A real font's `sups` takes a few hundred.
 const MAX_WORK: u32 = 1 << 20;
 
-/// How many glyph ids, and lookup indices, there can be: sixteen bits each.
+/// How many lookup indices there can be, and the fewest glyph ids a feature
+/// is read for: sixteen bits each.
 const IDS: usize = 1 << 16;
+
+/// The most glyph ids a feature is read for: twenty-four bits, the most a
+/// font can have.
+const MAX_GLYPHS: u32 = 1 << 24;
 
 /// What `feature` of `font` covers under the OpenType script `script`.
 #[derive(Clone, Debug)]
@@ -200,8 +206,9 @@ impl FeatureCoverages {
     ///
     /// It reads at most [`MAX_WORK`] steps.
     fn collect_glyphs(&mut self, font: &HeldFont, script: [u8; 4], feature: [u8; 4]) {
-        self.glyphs.reset();
-        self.lookups.reset();
+        let glyphs = font.num_glyphs().clamp(IDS as u32, MAX_GLYPHS);
+        self.glyphs.reset(usize::try_from(glyphs).unwrap_or(IDS));
+        self.lookups.reset(IDS);
         let Ok(gsub) = font.tables().gsub() else {
             return;
         };
@@ -293,7 +300,7 @@ impl Reader<'_, '_> {
         if self.lookups.contains(u32::from(index)) || !self.spend(1) {
             return;
         }
-        self.lookups.insert(index, index);
+        self.lookups.insert(u32::from(index), u32::from(index));
         let Ok(lookup) = self.list.lookups().get(usize::from(index)) else {
             return;
         };
@@ -307,6 +314,8 @@ impl Reader<'_, '_> {
                     let coverage = subtable.and_then(|subtable| match subtable {
                         SingleSubst::Format1(table) => table.coverage(),
                         SingleSubst::Format2(table) => table.coverage(),
+                        SingleSubst::Format3(table) => table.coverage(),
+                        SingleSubst::Format4(table) => table.coverage(),
                     });
                     self.coverage(coverage.ok());
                 }
@@ -324,7 +333,11 @@ impl Reader<'_, '_> {
                     if !self.spend(1) {
                         return;
                     }
-                    self.coverage(subtable.and_then(|table| table.coverage()).ok());
+                    let coverage = subtable.and_then(|subtable| match subtable {
+                        AlternateSubst::Format1(table) => table.coverage(),
+                        AlternateSubst::Format2(table) => table.coverage(),
+                    });
+                    self.coverage(coverage.ok());
                 }
             }
             // A ligature substitutes a sequence, and a contextual lookup
@@ -334,41 +347,65 @@ impl Reader<'_, '_> {
     }
 
     /// Sets the glyphs `coverage` holds, as far as the work allows.
+    ///
+    /// Formats 3 and 4 name glyphs in 24 bits, the others in 16.
     fn coverage(&mut self, coverage: Option<CoverageTable<'_>>) {
         match coverage {
             Some(CoverageTable::Format1(table)) => {
-                for glyph in table.glyph_array() {
-                    if !self.spend(1) {
-                        return;
-                    }
-                    let glyph = glyph.get().to_u16();
-                    self.glyphs.insert(glyph, glyph);
-                }
+                self.listed(table.glyph_array().iter().map(|glyph| glyph.get().to_u32()));
             }
             Some(CoverageTable::Format2(table)) => {
-                for range in table.range_records() {
-                    let (start, end) = (
-                        range.start_glyph_id().to_u16(),
-                        range.end_glyph_id().to_u16(),
-                    );
-                    if start > end {
-                        continue;
-                    }
-                    let words = u32::from(end - start) / 64;
-                    if !self.spend(1 + words) {
-                        return;
-                    }
-                    self.glyphs.insert(start, end);
-                }
+                self.ranges(table.range_records().iter().map(|range| {
+                    (
+                        range.start_glyph_id().to_u32(),
+                        range.end_glyph_id().to_u32(),
+                    )
+                }));
+            }
+            Some(CoverageTable::Format3(table)) => {
+                self.listed(table.glyph_array().iter().map(|glyph| glyph.get().to_u32()));
+            }
+            Some(CoverageTable::Format4(table)) => {
+                self.ranges(table.range_records().iter().map(|range| {
+                    (
+                        range.start_glyph_id().to_u32(),
+                        range.end_glyph_id().to_u32(),
+                    )
+                }));
             }
             None => {}
         }
     }
+
+    /// Sets each of `glyphs`, a step each.
+    fn listed(&mut self, glyphs: impl Iterator<Item = u32>) {
+        for glyph in glyphs {
+            if !self.spend(1) {
+                return;
+            }
+            self.glyphs.insert(glyph, glyph);
+        }
+    }
+
+    /// Sets each range of `ranges`, first to last glyph, a step and one
+    /// more for every 64 glyphs. A range that runs backwards is passed over.
+    fn ranges(&mut self, ranges: impl Iterator<Item = (u32, u32)>) {
+        for (start, end) in ranges {
+            if start > end {
+                continue;
+            }
+            if !self.spend(1 + (end - start) / 64) {
+                return;
+            }
+            self.glyphs.insert(start, end);
+        }
+    }
 }
 
-/// A set of sixteen-bit ids, a bit each.
+/// A set of ids, a bit each, from zero to the count it was last reset to.
 ///
-/// Its 8 KiB are allocated the first time a coverage is made, and kept.
+/// Its 8 KiB, more for a font of more than 65,536 glyphs, are allocated the
+/// first time a coverage is made, and kept.
 struct Bits {
     words: Vec<u64>,
     /// Whether any bit is set.
@@ -383,16 +420,24 @@ impl Bits {
         }
     }
 
-    /// Empties the set, allocating its words the first time.
-    fn reset(&mut self) {
+    /// Empties the set and sizes it for `ids` ids, allocating its words
+    /// where it has too few.
+    fn reset(&mut self, ids: usize) {
         self.words.clear();
-        self.words.resize(IDS / 64, 0);
+        self.words.resize(ids.div_ceil(64), 0);
         self.any = false;
     }
 
-    /// Sets `start..=end`, a word at a time.
-    fn insert(&mut self, start: u16, end: u16) {
-        let (start, end) = (usize::from(start), usize::from(end));
+    /// Sets `start..=end`, a word at a time. An id past the set's size is
+    /// passed over.
+    fn insert(&mut self, start: u32, end: u32) {
+        let (Ok(start), Ok(end)) = (usize::try_from(start), usize::try_from(end)) else {
+            return;
+        };
+        let end = end.min((self.words.len() * 64).saturating_sub(1));
+        if self.words.is_empty() || start > end {
+            return;
+        }
         let (first, last) = (start / 64, end / 64);
         for (at, word) in self.words.iter_mut().enumerate().take(last + 1).skip(first) {
             let low = if at == first { start % 64 } else { 0 };
@@ -402,7 +447,7 @@ impl Bits {
         }
     }
 
-    /// Returns whether `id` is set. An id past sixteen bits never is.
+    /// Returns whether `id` is set. An id past the set's size never is.
     fn contains(&self, id: u32) -> bool {
         let Ok(id) = usize::try_from(id) else {
             return false;
@@ -467,6 +512,40 @@ mod tests {
         pack(&head, &[], &[])
     }
 
+    /// Returns `value`'s low three bytes, big-endian.
+    fn u24(value: u32) -> [u8; 3] {
+        let [_, high, middle, low] = value.to_be_bytes();
+        [high, middle, low]
+    }
+
+    /// A coverage table of `glyphs`, format 3, whose ids are 24-bit.
+    fn wide_glyphs(glyphs: &[u32]) -> Vec<u8> {
+        let mut out = vec![0, 3];
+        out.extend(u24(glyphs.len() as u32));
+        out.extend(glyphs.iter().flat_map(|&glyph| u24(glyph)));
+        out
+    }
+
+    /// A coverage table of `ranges`, format 4, whose ids are 24-bit.
+    fn wide_ranges(ranges: &[(u32, u32)]) -> Vec<u8> {
+        let mut out = vec![0, 4];
+        out.extend(u24(ranges.len() as u32));
+        for &(start, end) in ranges {
+            out.extend(u24(start).into_iter().chain(u24(end)).chain(u24(0)));
+        }
+        out
+    }
+
+    /// A single substitution subtable, format 3 (a 24-bit delta), over
+    /// `coverage`.
+    fn wide_single(coverage: Vec<u8>) -> Vec<u8> {
+        let mut out = vec![0, 3];
+        out.extend(9u32.to_be_bytes());
+        out.extend(u24(1));
+        out.extend(coverage);
+        out
+    }
+
     /// A substitution subtable of GSUB type `kind` over `coverage`, whose
     /// contextual kinds apply lookup 0 to their one glyph.
     fn subtable(kind: u16, coverage: Vec<u8>) -> Vec<u8> {
@@ -507,6 +586,22 @@ mod tests {
     /// of `lookups` it points at. An entry naming none points past the
     /// table.
     fn font(indices: &[u16], entries: &[usize], lookups: &[Vec<u8>]) -> Vec<u8> {
+        sfnt(&[(*b"GSUB", gsub(indices, entries, lookups))])
+    }
+
+    /// Builds the same font with a `MAXP` of `glyphs` glyphs, a count past
+    /// sixteen bits.
+    fn wide_font(glyphs: u32, indices: &[u16], entries: &[usize], lookups: &[Vec<u8>]) -> Vec<u8> {
+        let mut maxp = 0x0000_5000u32.to_be_bytes().to_vec();
+        maxp.extend(u24(glyphs));
+        sfnt(&[
+            (*b"GSUB", gsub(indices, entries, lookups)),
+            (*b"MAXP", maxp),
+        ])
+    }
+
+    /// Builds a version 1.0 `GSUB`, as [`font`] describes it.
+    fn gsub(indices: &[u16], entries: &[usize], lookups: &[Vec<u8>]) -> Vec<u8> {
         let scripts = pack(&[1, 0x4446, 0x4C54, 8, 4, 0, 0, 0xFFFF, 1, 0], &[], &[]);
         let mut feature = vec![0, indices.len() as u16];
         feature.extend_from_slice(indices);
@@ -524,21 +619,30 @@ mod tests {
             .map(|(at, &child)| (1 + at, child))
             .collect();
         let list = pack(&head, &slots, lookups);
-        let gsub = pack(
+        pack(
             &[1, 0, 0, 0, 0],
             &[(2, 0), (3, 1), (4, 2)],
             &[scripts, features, list],
-        );
-        // One table, `GSUB`, after the directory.
+        )
+    }
+
+    /// Builds a font of `tables`, in tag order, after the directory.
+    fn sfnt(tables: &[([u8; 4], Vec<u8>)]) -> Vec<u8> {
         let mut sfnt = Vec::new();
-        for word in [1u16, 0, 1, 0, 0, 0] {
+        for word in [1u16, 0, tables.len() as u16, 0, 0, 0] {
             sfnt.extend_from_slice(&word.to_be_bytes());
         }
-        sfnt.extend_from_slice(b"GSUB");
-        for word in [0u32, 28, gsub.len() as u32] {
-            sfnt.extend_from_slice(&word.to_be_bytes());
+        let mut offset = 12 + 16 * tables.len();
+        for (tag, table) in tables {
+            sfnt.extend_from_slice(tag);
+            for word in [0, offset as u32, table.len() as u32] {
+                sfnt.extend_from_slice(&word.to_be_bytes());
+            }
+            offset += table.len();
         }
-        sfnt.extend_from_slice(&gsub);
+        for (_, table) in tables {
+            sfnt.extend_from_slice(table);
+        }
         sfnt
     }
 
@@ -550,7 +654,8 @@ mod tests {
         if let Some(font) = HeldFont::new(Blob::from(data.to_vec()), 0) {
             coverages.collect_glyphs(&font, *b"DFLT", *b"sups");
         }
-        (0..IDS as u32)
+        let ids = coverages.glyphs.words.len() as u32 * 64;
+        (0..ids)
             .filter(|&glyph| coverages.glyphs.contains(glyph))
             .collect()
     }
@@ -610,27 +715,53 @@ mod tests {
         assert_eq!(substituted(&data).len(), IDS);
     }
 
+    /// A font of more than 65,536 glyphs is read past sixteen bits: the
+    /// 24-bit coverages, format 3 and 4, in a 24-bit single substitution,
+    /// up to its glyph count and no further.
+    #[test]
+    fn coverages_past_sixteen_bits_are_read_up_to_the_glyph_count() {
+        let lookups = [
+            lookup(1, &[0], &[wide_single(wide_glyphs(&[3, 70_000, 90_000]))]),
+            lookup(1, &[0], &[wide_single(wide_ranges(&[(65_530, 65_540)]))]),
+            lookup(1, &[0], &[subtable(1, glyphs(&[9]))]),
+        ];
+        let data = wide_font(70_002, &[0, 1, 2], &[0, 1, 2], &lookups);
+        let expected: Vec<u32> = [3, 9]
+            .into_iter()
+            .chain(65_530..=65_540)
+            .chain([70_000])
+            .collect();
+        assert_eq!(substituted(&data), expected);
+        // Without a count past sixteen bits, only those ids are read.
+        let data = font(&[0, 1, 2], &[0, 1, 2], &lookups);
+        assert_eq!(
+            substituted(&data),
+            [3, 9, 65_530, 65_531, 65_532, 65_533, 65_534, 65_535]
+        );
+    }
+
     #[test]
     fn bits_set_ranges_across_words_and_nothing_else() {
         let mut bits = Bits::new();
         assert!(!bits.contains(0), "empty before its first reset");
-        bits.reset();
+        bits.insert(0, 5);
+        assert!(!bits.contains(0), "nothing set before its first reset");
+        bits.reset(IDS);
         assert!(bits.is_empty());
         bits.insert(60, 130);
         bits.insert(7, 7);
-        bits.insert(u16::MAX, u16::MAX);
+        bits.insert(65_535, 70_000);
+        bits.insert(80_000, 80_000);
         let set: Vec<u32> = (0..IDS as u32 + 2)
             .filter(|&id| bits.contains(id))
             .collect();
-        let expected: Vec<u32> = [7]
-            .into_iter()
-            .chain(60..=130)
-            .chain([u32::from(u16::MAX)])
-            .collect();
+        let expected: Vec<u32> = [7].into_iter().chain(60..=130).chain([65_535]).collect();
         assert_eq!(set, expected);
         assert!(!bits.is_empty());
-        bits.reset();
+        bits.reset(IDS + 1);
         assert!(bits.is_empty() && !bits.contains(7));
+        bits.insert(65_536, 70_000);
+        assert!(bits.contains(65_536) && !bits.contains(65_600));
     }
 
     /// `FAKED` lists every character harfrust fakes, and nothing else.

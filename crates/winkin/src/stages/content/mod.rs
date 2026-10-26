@@ -250,8 +250,8 @@ define_flags! {
         /// an annotation of the same container follows before the container
         /// closes.
         ///
-        /// Base text with no annotation after it is no ruby column: Chrome
-        /// lays it out as line text (`LineBreaker::HandleRuby`: "No
+        /// Base text with no annotation after it is no ruby column: it lays
+        /// out as line text (`LineBreaker::HandleRuby`: "No
         /// ruby-text"). Annotations of nested containers don't count, but
         /// those of a container written as a box do. The writer sets the
         /// flag as each annotation opens.

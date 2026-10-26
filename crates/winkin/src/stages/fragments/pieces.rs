@@ -23,8 +23,8 @@
 //! for carets and copying.
 //!
 //! Pieces follow nodes. A grapheme split by a style boundary is a piece in
-//! each part's item, even when both parts share a shaping run, as Chrome
-//! gives a span's text its own item.
+//! each part's item, even when both parts share a shaping run, since a
+//! span's text is its own item.
 //!
 //! Advances are exact. A text piece is as wide as the prefix sums say,
 //! from its first cluster's pen to its last's end (`MeasuredText::pen`,
@@ -34,12 +34,11 @@
 //! pieces add up to the line's exact reach, and only the line's origin
 //! rounds.
 //!
-//! A box covers what hangs inside it, as in Chrome, where
-//! `ComputeInlinePositions` places hanging results inside their box. A box
-//! closing after the last word, before a space outside it, still ends at
-//! the word. Width and alignment leave hanging content out, so a box edge
-//! after it stands past it. A collapsible space is removed, and no box
-//! covers it.
+//! A box covers what hangs inside it, as Blink's `ComputeInlinePositions`
+//! places hanging results inside their box. A box closing after the last word,
+//! before a space outside it, still ends at the word. Width and alignment
+//! leave hanging content out, so a box edge after it stands past it. A
+//! collapsible space is removed, and no box covers it.
 //!
 //! Each tab is a piece of its own, an item flagged `TAB` whose
 //! size is its width to its stop. The width uses the same tab function the
@@ -332,7 +331,7 @@ impl<'a> Placer<'a> {
     /// Adds the piece of the anchor `item` at boundary `at`, at its own
     /// level.
     ///
-    /// An anchor at a soft break ends its line only where Chrome's breaker
+    /// An anchor at a soft break ends its line only where Blink's breaker
     /// breaks after it, which it does only where the line's white space
     /// before it fits (`HandleOverflow`) and no scorer chose the break
     /// (`break_at_`). Elsewhere it goes to the next line's start, where
@@ -433,9 +432,9 @@ impl<'a> Placer<'a> {
     /// paragraph's level, or `end` where it keeps its own.
     ///
     /// The caller has text of the same item before `trailing` on the line,
-    /// and the item going on past `end`. Chrome splits trailing white space
-    /// off only where it ends an item or is all its item holds on the line.
-    /// Chrome's items also end at a level change and around each tab, so the
+    /// and the item going on past `end`. Trailing white space splits off
+    /// only where it ends an item or is all its item holds on the line.
+    /// Items also end at a level change and around each tab, so the
     /// white space keeps its level only where `trailing - 1` to `end`, both
     /// included, hold no tab and are at one level.
     ///
@@ -478,7 +477,7 @@ impl<'a> Placer<'a> {
     /// Only the spaces after the last hanging character that is not a space
     /// go, as CSS Text 3, section 4.1.3, removes "a sequence of collapsible
     /// spaces at the end of a line". A space before an ideographic space
-    /// hangs with it, as in Chrome.
+    /// hangs with it.
     fn removable_spaces(&self, line: &LineView<'_>) -> ClusterId {
         let start = line.content_end;
         let mut at = line.clusters().end;
@@ -571,8 +570,8 @@ impl<'a> Placer<'a> {
     /// none.
     ///
     /// The side before reads right to left and the side after left to
-    /// right, so Chrome's `TextAutoSpace` writes the room into the later
-    /// item. It is looked for only where some style sets `text-autospace`
+    /// right, so the room goes into the later item, as Blink's
+    /// `TextAutoSpace` writes it. It is looked for only where some style sets `text-autospace`
     /// and some paragraph has mixed levels and reads right to left. `at` is
     /// inside the line, so the seam is in the line's paragraph.
     #[inline]
@@ -797,8 +796,8 @@ impl<'a> Placer<'a> {
         };
         // The content: text by used font, and each tab on its own, in this
         // item's own pieces. A grapheme split by a style boundary still gets
-        // a piece per part, though both parts share a shaping run, as Chrome
-        // gives a span's text its own item.
+        // a piece per part, though both parts share a shaping run, since a
+        // span's text is its own item.
         while u < content {
             let run = self.advance_run(u);
             let run_id = run.map(|_| self.run.id());
@@ -872,8 +871,7 @@ impl<'a> Placer<'a> {
         }
         // What hangs:
         // - preserved white space becomes a piece past the content, at the
-        //   paragraph's level (L1), in its box so the box covers it, as in
-        //   Chrome;
+        //   paragraph's level (L1), in its box so the box covers it;
         // - a collapsible space at the line's very end is removed, as
         //   Blink's breaker removes it; one before a hanging ideographic
         //   space hangs with it;

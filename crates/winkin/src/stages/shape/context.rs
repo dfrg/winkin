@@ -34,8 +34,9 @@
 //! - **advance rooms** ([`AdvanceRooms`]): the shaped advances of a layout
 //!   that keeps none of its own.
 //!
-//! Fonts prepared for harfrust ([`ShaperFont`]) are not kept here. Each
-//! pass prepares its own few ([`ShapeSession`]).
+//! Fonts prepared for harfrust ([`ShaperFont`]) are not kept here. A call
+//! prepares its own, which reads nothing: harfrust keeps a font's parsed
+//! layout tables with the font.
 //!
 //! Warm, a call finds each entry by hash and allocates nothing. A plan's
 //! hash names its language by the language table's id, and its match
@@ -224,14 +225,13 @@ pub(crate) struct ShapeContext {
     advance_rooms: AdvanceRooms,
 }
 
-/// One pass over the shaping context, with the host's metric provider and
-/// the fonts the pass has prepared for harfrust.
+/// One pass over the shaping context, with the host's metric provider.
 ///
 /// A build's shaping, a measurement and a line break each make one. The
-/// context keeps neither the provider nor the prepared fonts.
+/// context does not keep the provider.
 pub(crate) struct ShapeSession<'c, 'p> {
     context: &'c mut ShapeContext,
-    pass: PassFonts<'p>,
+    provider: Option<&'p dyn FontMetricsProvider>,
 }
 
 impl<'c, 'p> ShapeSession<'c, 'p> {
@@ -241,31 +241,25 @@ impl<'c, 'p> ShapeSession<'c, 'p> {
         context: &'c mut ShapeContext,
         provider: Option<&'p dyn FontMetricsProvider>,
     ) -> Self {
-        let pass = PassFonts {
-            provider,
-            held: Default::default(),
-            next: 0,
-        };
-        Self { context, pass }
+        Self { context, provider }
     }
 
-    /// Shapes as [`ShapeContext::shape_call`] does, with the pass's provider
-    /// and prepared fonts.
+    /// Shapes as [`ShapeContext::shape_call`] does, with the pass's provider.
     pub(super) fn shape_call<R>(
         &mut self,
-        font: &'p UsedInstance,
+        font: &UsedInstance,
         text: &CallText<'_>,
         settings: &CallSettings,
         wanted: Features<'_>,
         read: impl FnOnce(&Buffer) -> R,
     ) -> Option<R> {
         self.context
-            .shape_call(font, text, settings, wanted, Some(&mut self.pass), read)
+            .shape_call(font, text, settings, wanted, self.provider, read)
     }
 
     /// Returns the host's metric provider, if any.
     pub(crate) fn provider(&self) -> Option<&'p dyn FontMetricsProvider> {
-        self.pass.provider
+        self.provider
     }
 }
 
@@ -280,51 +274,6 @@ impl Deref for ShapeSession<'_, '_> {
 impl DerefMut for ShapeSession<'_, '_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.context
-    }
-}
-
-/// How many prepared fonts a pass keeps.
-const SHAPERS: usize = 4;
-
-/// A pass's metric provider, and the fonts it last shaped in, prepared for
-/// harfrust.
-///
-/// Preparing a font sets up its layout tables, feature variations and
-/// character map; its glyph metrics load on first use. A pass shapes run
-/// after run in the same few fonts, so a few prepared fonts spare nearly
-/// every preparation.
-struct PassFonts<'f> {
-    provider: Option<&'f dyn FontMetricsProvider>,
-    /// The prepared fonts, each with its key and the scale it was last set
-    /// to. A miss replaces the one prepared longest ago, at `next`.
-    held: [Option<(FontKey, i32, ShaperFont<'f, 'static>)>; SHAPERS],
-    next: usize,
-}
-
-impl<'f> PassFonts<'f> {
-    /// Returns `font` prepared for harfrust at `scale`, preparing it where
-    /// no entry holds it.
-    fn shaper(&mut self, font: &'f UsedInstance, scale: i32) -> &ShaperFont<'f, 'static> {
-        let found = self.held.iter().position(|held| {
-            held.as_ref()
-                .is_some_and(|(key, _, shaper)| is_instance(*key, shaper, font))
-        });
-        let at = found.unwrap_or_else(|| {
-            let at = self.next % SHAPERS;
-            self.next = at + 1;
-            self.held[at] = None;
-            at
-        });
-        let (_, held, shaper) = self.held[at].get_or_insert_with(|| {
-            let mut shaper = ShaperFont::new(&font.font);
-            shaper.set_scale(scale);
-            (font.key(), scale, shaper)
-        });
-        if *held != scale {
-            *held = scale;
-            shaper.set_scale(scale);
-        }
-        shaper
     }
 }
 
@@ -450,8 +399,8 @@ pub(super) struct CallSettings {
     /// harfrust's scale: the glyph size in 1/65536 px, or the font's em for
     /// trim probes.
     pub(super) scale: i32,
-    /// The point size in CSS pixels, for `trak` tables, as Chrome hands
-    /// HarfBuzz the specified size.
+    /// The point size in CSS pixels, for `trak` tables: the specified size,
+    /// as Blink hands it to HarfBuzz.
     ///
     /// It differs from `scale`'s size where `font-size-adjust`, a face's
     /// `size-adjust` or synthesis sets the glyphs at another size.
@@ -630,21 +579,20 @@ impl ShapeContext {
     /// Shapes `text` in `font` as `call` and `wanted` say, and returns what
     /// `read` makes of the shaped buffer.
     ///
-    /// Glyph metrics come from `pass`'s provider where there is one and
-    /// `wanted` is the font's features; trim probes never read it. Down the
-    /// line, the font's vertical metrics answer what the provider leaves
-    /// (see `vertical`). Across the line with no provider, the call uses the
-    /// font as `pass` holds it prepared, or prepares it without `pass`.
+    /// Glyph metrics come from `provider` where there is one and `wanted`
+    /// is the font's features; trim probes never read it. Down the line,
+    /// the font's vertical metrics answer what the provider leaves (see
+    /// `vertical`).
     ///
     /// Returns `None` where harfrust refuses the call, which never happens
     /// for a buffer filled this way.
-    fn shape_call<'f, R>(
+    fn shape_call<R>(
         &mut self,
-        font: &'f UsedInstance,
+        font: &UsedInstance,
         text: &CallText<'_>,
         call: &CallSettings,
         wanted: Features<'_>,
-        pass: Option<&mut PassFonts<'f>>,
+        provider: Option<&dyn FontMetricsProvider>,
         read: impl FnOnce(&Buffer) -> R,
     ) -> Option<R> {
         // Down the line, use the font's vertical metrics at the call's size,
@@ -681,8 +629,7 @@ impl ShapeContext {
         fill(buffer, text, call);
         // Only a run's call reads the host's metrics. Trim probes shape at
         // the font's em and classify punctuation by the font's own ink.
-        let provided = (pass.as_ref())
-            .and_then(|pass| pass.provider)
+        let provided = provider
             .filter(|_| matches!(wanted, Features::Font { .. }))
             .map(|provider| (provider, provider_instance(font, call.scale)));
         let options = ShapeOptions::new()
@@ -699,19 +646,14 @@ impl ShapeContext {
                 buffer,
                 options,
             ),
-            None => match (provided, pass) {
-                (None, Some(pass)) => {
-                    harfrust::shape(pass.shaper(font, call.scale), buffer, options).is_ok()
-                }
-                (provided, _) => {
-                    let funcs = provided
-                        .map(|(provider, request)| ProvidedFuncs::new(provider, request, None));
-                    let mut shaper = ShaperFont::new(&font.font);
-                    shaper.set_scale(call.scale);
-                    shaper.set_font_funcs(funcs.as_ref().map(|funcs| funcs as &dyn FontFuncs));
-                    harfrust::shape(&shaper, buffer, options).is_ok()
-                }
-            },
+            None => {
+                let funcs =
+                    provided.map(|(provider, request)| ProvidedFuncs::new(provider, request, None));
+                let mut shaper = ShaperFont::new(&font.font);
+                shaper.set_scale(call.scale);
+                shaper.set_font_funcs(funcs.as_ref().map(|funcs| funcs as &dyn FontFuncs));
+                harfrust::shape(&shaper, buffer, options).is_ok()
+            }
         };
         let answer = shaped.then(|| read(buffer));
         buffer.clear();
@@ -807,8 +749,8 @@ impl ShapeContext {
     /// reads bounds `!is_horizontal`.
     ///
     /// It reads in font units, with harfrust's own vertical metrics. These
-    /// match Blink's except that Blink rounds the top of the bounds out to a
-    /// whole pixel at a size (see `vertical`). The answer serves every size,
+    /// differ from Blink's only in that Blink rounds the top of the bounds
+    /// out to a whole pixel at a size (see `vertical`). The answer serves every size,
     /// so it leaves that rounding out.
     fn read_trim_font(
         &mut self,
@@ -1131,9 +1073,9 @@ impl PlanRequest<'_> {
 /// The key is the font, the instance's feature variations, the script, the
 /// direction, the language and the features in order, each by content.
 /// harfrust's own [`ShapePlanKey`] compares all but the font, including the
-/// feature variations, which only it can read. A plan depends on an
-/// instance's coordinates only through those variations, so instances of
-/// one font that select the same variations share a plan.
+/// feature variations, which only it can read, and the coordinates where
+/// the font varies its lookups. So instances of one font that select the
+/// same variations share a plan, unless the font varies its lookups.
 ///
 /// The hash covers everything but the variations. A table whose ids are all
 /// taken starts again.
@@ -1186,9 +1128,8 @@ fn fill(buffer: &mut Buffer, text: &CallText<'_>, call: &CallSettings) {
     // unsafe instead.
     buffer.set_cluster_level(ClusterLevel::MonotoneCharacters);
     // Nothing asks for harfrust's unsafe-to-concatenate flags. A reshape
-    // window starts and ends where breaking is safe, as Chrome's do.
-    // Producing the flags makes the shaper track glyphs for lookups it then
-    // rejects.
+    // window starts and ends where breaking is safe. Producing the flags makes
+    // the shaper track glyphs for lookups it then rejects.
     let mut flags = BufferFlags::empty();
     if text.starts_paragraph {
         flags |= BufferFlags::BEGINNING_OF_TEXT;

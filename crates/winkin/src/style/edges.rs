@@ -122,7 +122,7 @@ impl<T: Copy> Sides<T> {
 
 impl Sides<f32> {
     /// Returns [`along_line`](Self::along_line)'s lengths truncated onto the
-    /// layout grid, as Chrome holds a box's margin, border and padding.
+    /// layout grid, as Blink holds a box's margin, border and padding.
     pub(crate) fn along_line_on_grid(self, writing_mode: WritingMode) -> (LayoutUnit, LayoutUnit) {
         let (start, end) = self.along_line(writing_mode);
         (
@@ -132,7 +132,7 @@ impl Sides<f32> {
     }
 
     /// Returns [`across_line`](Self::across_line)'s lengths truncated onto the
-    /// layout grid, as Chrome holds a box's margin, border and padding.
+    /// layout grid, as Blink holds a box's margin, border and padding.
     pub(crate) fn across_line_on_grid(self, writing_mode: WritingMode) -> (LayoutUnit, LayoutUnit) {
         let (over, under) = self.across_line(writing_mode);
         (

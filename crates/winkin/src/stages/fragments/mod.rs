@@ -238,7 +238,7 @@ impl FragmentItemFlags {
 ///   left. Its `block` is its baseline from the line box's top, with its
 ///   box's shift and its own.
 /// - `size` is the item's reach along the line on layout's grid, rounded up
-///   as Chrome snaps a text item's width. For a box it is the border box,
+///   as a text item's width snaps. For a box it is the border box,
 ///   for an atomic the margin box, for an annotation line its width.
 ///
 /// **A leaf's advance** (text, generated text or an atomic) is stored
@@ -451,7 +451,7 @@ impl FragmentItem {
     }
 
     /// Returns its exact reach along the line; `size` is this rounded up, as
-    /// Chrome snaps a text item's width.
+    /// a text item's width snaps.
     ///
     /// - Text: its clusters' advances, with reshaped line edges and any
     ///   justification room.
@@ -615,7 +615,7 @@ define_id! {
 /// An absolutely positioned box's static position, where line layout put
 /// its anchor: 32 bytes.
 ///
-/// It follows Chrome's `PlaceOutOfFlowObjects`. An inline-level box stands
+/// It follows Blink's `PlaceOutOfFlowObjects`. An inline-level box stands
 /// where its anchor is on its line, at the line box's top. A block-level box
 /// stands at the block's start edge, below the line where in-flow content
 /// comes before it there. An anchor on no line box stands where an empty
@@ -1264,8 +1264,7 @@ struct Gates {
     has_ruby: bool,
     /// The block has ruby and some right-to-left text.
     ///
-    /// Then no ruby column sits flush with a line's edge, as in Chrome when
-    /// bidi is on.
+    /// Then no ruby column sits flush with a line's edge.
     ruby_in_bidi: bool,
     /// Some box decorates its text (`ContentFlags::DECORATED_BOXES`). Then
     /// each line says whether an inline box holds some of it.
@@ -1344,7 +1343,7 @@ struct LineRuby<'a> {
     /// The room a spread ruby base shares among its justification
     /// opportunities, given out as its pieces are made.
     ///
-    /// This is what Chrome's `JustifyResults` spreads over a ruby line.
+    /// This is what Blink's `JustifyResults` spreads over a ruby line.
     spread: Option<Justified<'a>>,
     /// The innermost ruby column open where the walk is, as an index into
     /// the line's columns.

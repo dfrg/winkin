@@ -132,7 +132,7 @@ impl<'a> Line<'a> {
         LineItems::new(self, false)
     }
 
-    /// Returns paint operations in Chrome paint order.
+    /// Returns paint operations in painting order (CSS 2.1, Appendix E).
     ///
     /// Starts with the background, then yields the items in visual order,
     /// each box before what it holds. Each text run comes with its underlines
@@ -306,7 +306,6 @@ impl fmt::Debug for Line<'_> {
 /// `left` and `top` use the coordinates of the [`Area`](crate::Area)
 /// passed to line breaking. Item positions are relative to this origin.
 #[derive(Copy, Clone, PartialEq, Debug, Default)]
-#[non_exhaustive]
 pub struct LineMetrics {
     /// The aligned line-box left position along the line.
     ///

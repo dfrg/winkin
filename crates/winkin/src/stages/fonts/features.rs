@@ -3,8 +3,8 @@
 //! [`ScriptOffers`] is the context's cache of which synthesized features a
 //! font offers under a script.
 //!
-//! **The order is Chrome's**, read from Blink's source, since the
-//! specification's list differs at the edges:
+//! **The order is read from Blink's source**; the specification's list
+//! differs at the edges:
 //! 1. `font-variant-alternates` and the `@font-face` descriptor's features
 //!    (`FontDescription::ResolveFontFeatures`);
 //! 2. the capitals `font-variant-caps` asks for, which the shaper prepends
@@ -210,8 +210,8 @@ heap_bytes! {
 /// descriptor's features the alternates do not set, the capitals, the
 /// request's own ([`push_request_features`]), then the position's. Blink
 /// appends the position's feature after every other, `font-feature-settings`
-/// included, so it wins over a setting of its tag: Chrome 153 draws
-/// superscripts under `'sups' 0`. The list is part of the instance's key, so
+/// included, so it wins over a setting of its tag: superscripts are drawn
+/// under `'sups' 0`. The list is part of the instance's key, so
 /// equal lists share one instance.
 pub(super) fn merge_features(
     font: &Font,
@@ -486,8 +486,8 @@ impl CapsPlan {
             (Support::Fallback, C::Unicase) if same_case => C::SmallCaps,
             _ => C::Normal,
         };
-        // Without synthesis nothing is divided. All of it shapes as Blink
-        // shapes an undivided run: as text of the same case.
+        // Without synthesis nothing is divided. All of it shapes as an
+        // undivided run: as text of the same case.
         if !synthesize || caps == C::TitlingCaps {
             return Self::from_feature(to_use(true));
         }
@@ -551,8 +551,7 @@ fn caps_features(caps: FontVariantCaps) -> &'static [FontFeature] {
 ///
 /// Under a nonzero `letter-spacing`, the common ligatures and the contextual
 /// alternates are off, and the discretionary and historical ligatures stay
-/// off, as in Blink. A ligature would otherwise take one gap for all the
-/// letters it joins.
+/// off. A ligature would otherwise take one gap for all the letters it joins.
 ///
 /// Under any `text-spacing-trim` but `space-all`, `chws` is on, or `vchw`
 /// where the text is `upright`. It stays off where `font-feature-settings`

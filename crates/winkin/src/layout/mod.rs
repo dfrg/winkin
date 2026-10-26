@@ -20,7 +20,7 @@
 //! - `ruby`: the ruby annotations;
 //! - `floats`: the floats;
 //! - `positioned`: the absolutely positioned boxes' static positions;
-//! - `paint`: what a line paints, in Chrome's order.
+//! - `paint`: what a line paints, in painting order.
 //!
 //! Invariants:
 //! - Readers borrow the frozen stages, write nothing and allocate nothing.
@@ -34,7 +34,7 @@
 //! - A culled box keeps no fragment. [`Layout::box_fragments`] finds its
 //!   pieces from its descendants' items, as Blink answers a culled inline,
 //!   so `getClientRects` and hover work for any box without a relayout.
-//! - [`Line::paints`] yields a line's paint item by item in Chrome's order:
+//! - [`Line::paints`] yields a line's paint item by item in painting order:
 //!   the block background, then each item with its box background,
 //!   decorations, text and marks, then the ruby annotations. Only the block
 //!   and boxes whose style sets `decorates` are asked for decorations. It
@@ -57,6 +57,7 @@ mod tests;
 #[cfg(test)]
 pub(crate) use tests::{primary, primary_id};
 
+use alloc::sync::Arc;
 use core::fmt;
 use core::ops::Range;
 
@@ -67,6 +68,7 @@ use crate::config::PastLines;
 use crate::context::Context;
 use crate::data::{HeapBytes, Id};
 use crate::font::FontMetricsProvider;
+use crate::segment::Dictionaries;
 use crate::selection::{
     self, Affinity, Caret, Carets, CopyKind, NodePosition, Position, SelectedText, SelectionRect,
     SelectionRects,
@@ -130,6 +132,10 @@ pub(crate) struct PreparedStages {
     /// shaping fills them, and measuring turns them into prefix sums in
     /// place.
     measured: Measured,
+    /// The word dictionaries analysis broke lines with and word motion reads,
+    /// the context's at the last build, shared with it; `None` before the
+    /// first build.
+    dictionaries: Option<Arc<Dictionaries>>,
 }
 
 impl PreparedStages {
@@ -140,6 +146,7 @@ impl PreparedStages {
             fonts: Fonts::new(),
             shaped: Shaped::new(),
             measured: Measured::new(),
+            dictionaries: None,
         }
     }
 
@@ -175,9 +182,11 @@ impl PreparedStages {
         let input = AnalysisInput {
             content,
             small_kana: config.small_kana,
+            loose_hyphens: config.loose_hyphens,
         };
-        let (segmenters, scratch) = cx.analyzing();
-        analysis::analyze(&input, segmenters, scratch, &mut self.analysis);
+        let (analysis_cx, scratch) = cx.analyzing();
+        analysis::analyze(&input, analysis_cx, scratch, &mut self.analysis);
+        self.dictionaries = Some(Arc::clone(&analysis_cx.dictionaries));
         let (caches, scratch, lists, hyphen_nodes) = cx.selecting_fonts();
         let input = FontInput {
             content,
@@ -527,6 +536,16 @@ impl Layout {
         self.stages.fonts.wanted()
     }
 
+    /// Returns the word dictionaries the layout's lines break with and its
+    /// word motion finds words with: the context's at its last build, or
+    /// `None` before its first.
+    ///
+    /// A layout keeps them after the context's are replaced, until it is
+    /// built again.
+    pub fn dictionaries(&self) -> Option<&Arc<Dictionaries>> {
+        self.stages.dictionaries.as_ref()
+    }
+
     /// Returns lines from the last [`break_lines`](Self::break_lines) call.
     ///
     /// Lines are in block order. The iterator is empty before line breaking
@@ -555,8 +574,8 @@ impl Layout {
     ///
     /// Keys need not be unique; results include all boxes with the key.
     /// Retained boxes use their stored fragments. Culled boxes derive a
-    /// fragment from each group of descendant items on a line, matching
-    /// Chrome. This supports client rectangles and hover without relayout.
+    /// fragment from each group of descendant items on a line. This supports
+    /// client rectangles and hover without relayout.
     /// Only relevant lines are inspected. Does not allocate.
     #[inline]
     pub fn box_fragments(&self, key: NodeKey) -> impl Iterator<Item = BoxFragment<'_>> + Clone {
@@ -640,14 +659,14 @@ impl Layout {
     /// below the line box. A final clearing break moves the block end below
     /// floats; only content extending beyond that end affects this value.
     /// [`LayoutMetrics::block_end`] already includes the extension and clearance.
-    /// The host may allow annotations into end padding, matching Chrome.
+    /// The host may let annotations extend into end padding.
     ///
     /// Returns zero when `text-box-trim` trims the end or there are no lines.
     /// For content without annotations or emphasis marks, computes the value
     /// on demand from the last line rather than during relayout.
     pub fn room_below(&self) -> f32 {
-        // Chrome trims what the annotations push down with the last line, and
-        // lends nothing past a trimmed end (`trim_block_end_by`).
+        // A trimmed end trims what the annotations push down with the last
+        // line, and lends nothing past it, as Blink's `trim_block_end_by`.
         if self.lines.block.trims_end {
             return 0.0;
         }
@@ -670,8 +689,7 @@ impl Layout {
     /// point in a box's margin, border or padding maps to the nearer adjacent
     /// text, on that side of the box edge. Atomic inlines use the nearer
     /// side. Ruby annotations are hit-tested in their own positions. At bidi
-    /// boundaries, the hit uses the position with a caret at that edge,
-    /// matching Chrome.
+    /// boundaries, the hit uses the position with a caret at that edge.
     #[inline]
     pub fn hit_test(&self, inline: f32, block: f32, past_lines: PastLines) -> Option<Position> {
         selection::hit_test(self, inline, block, past_lines)
@@ -684,8 +702,7 @@ impl Layout {
     /// border or padding, it selects the side of the edge, and at a bidi
     /// boundary the side of the text it is drawn by (see [`Affinity`]);
     /// [`carets`](Self::carets) also returns the other side. Text hidden by
-    /// an ellipsis retains its caret position beyond the ellipsis, matching
-    /// Chrome.
+    /// an ellipsis retains its caret position beyond the ellipsis.
     #[inline]
     pub fn caret(&self, position: Position) -> Option<Caret> {
         self.carets(position).map(|carets| carets.strong)
@@ -695,7 +712,8 @@ impl Layout {
     /// weak one.
     ///
     /// The weak caret supports split carets; the affinity selects the strong
-    /// side. Chrome draws one caret, on the side of the paragraph direction.
+    /// side. A display with one caret draws it on the side of the paragraph
+    /// direction.
     /// Returns `None` if there are no lines.
     #[inline]
     pub fn carets(&self, position: Position) -> Option<Carets> {
@@ -707,7 +725,7 @@ impl Layout {
     /// Uses the block direction, or the first strong character under
     /// `unicode-bidi: plaintext`. After a forced break, uses the new paragraph.
     ///
-    /// To match Chrome arrow-key motion, map arrows to
+    /// For arrow keys that follow the paragraph direction, map arrows to
     /// [`Forward`](crate::selection::MotionDirection::Forward) and
     /// [`Backward`](crate::selection::MotionDirection::Backward) using this
     /// direction rather than using physical left and right motion.
@@ -719,8 +737,7 @@ impl Layout {
     ///
     /// `range` contains byte offsets into [`Layout::text`]. Rectangles cover
     /// the selected text in each item and span at least the line-box height.
-    /// A selection continuing past a line end adds a space-wide mark there,
-    /// matching Chrome.
+    /// A selection continuing past a line end adds a space-wide mark there.
     pub fn selection_rects(&self, range: Range<usize>) -> impl Iterator<Item = SelectionRect> {
         SelectionRects::new(self, range.start, range.end)
     }
@@ -731,7 +748,7 @@ impl Layout {
     /// inline placeholders and U+200B break opportunities. Forced breaks
     /// copy as newlines. `kind` controls whether no-break spaces are preserved
     /// (as in `Selection.toString()`) or converted to spaces (as on the
-    /// Chrome clipboard).
+    /// clipboard).
     pub fn selected_text(
         &self,
         range: Range<usize>,
@@ -781,11 +798,14 @@ impl Layout {
             lines,
             fragments,
         } = self;
+        // The dictionaries are shared with the context, which counts nothing
+        // of them either.
         let PreparedStages {
             analysis,
             fonts,
             shaped,
             measured,
+            dictionaries: _,
         } = stages;
         // The first line's variant, which the fonts, the shaping and the
         // measurements each count among their own tables.
@@ -948,7 +968,6 @@ impl Default for Layout {
 /// Returned by [`Layout::metrics`] after line layout. Individual line
 /// geometry is available through [`LineMetrics`].
 #[derive(Copy, Clone, PartialEq, Debug, Default)]
-#[non_exhaustive]
 pub struct LayoutMetrics {
     /// The block-end content position after `text-box-trim`.
     ///
@@ -979,7 +998,6 @@ pub struct LayoutMetrics {
 /// across builds and line breaking. Excludes shared font bytes. Block
 /// metrics require no heap allocation.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
-#[non_exhaustive]
 pub struct LayoutHeap {
     /// The content tables.
     ///

@@ -99,7 +99,7 @@ impl RubyColumns {
 
     /// Returns the em box of `column`'s base on a line whose in-flow content
     /// ends at `end`: without its trailing collapsible spaces where the
-    /// column ends the line, as Chrome's `RemoveTrailingCollapsibleSpace`.
+    /// column ends the line, as Blink's `RemoveTrailingCollapsibleSpace`.
     pub(crate) fn line_base_em(
         &self,
         id: RubyColumnId,
@@ -529,7 +529,7 @@ impl RubyColumns {
 }
 
 /// The most glyphs a ruby base, or the rest of one, holds and still stays
-/// whole, as Chrome keeps a column with a short base from breaking.
+/// whole, so a column with a short base does not break.
 const BASE_WHOLE_GLYPHS: usize = 4;
 
 /// The most glyphs an annotation level, or the rest of one, holds and still
@@ -778,8 +778,7 @@ pub(crate) enum RubySide {
 
 impl RubySide {
     /// Returns the side of annotation `level`, from zero, under its
-    /// container's `ruby-position`. `alternate`, which Chrome doesn't parse,
-    /// alternates as CSS Ruby says.
+    /// container's `ruby-position`. `alternate` alternates as CSS Ruby says.
     pub(super) fn from_position(position: RubyPosition, level: usize) -> Self {
         let even = level.is_multiple_of(2);
         match position {
@@ -815,7 +814,7 @@ pub(crate) struct RubyLevel {
     pub(crate) side: RubySide,
     /// Its max-content line width, box edges included, on the grid.
     pub(crate) width: LayoutUnit,
-    /// Its em box, as Chrome's `ComputeEmHeight`, with its emphasis marks
+    /// Its em box, as Blink's `ComputeEmHeight`, with its emphasis marks
     /// and its box's margin, border and padding added: what the levels stack
     /// by. [`Extent::NONE`] where it has no text.
     pub(crate) extent: Extent,
@@ -853,7 +852,7 @@ pub(crate) struct RubyColumn {
     pub(crate) width: LayoutUnit,
     /// Its base's width, on the grid.
     pub(crate) base_width: LayoutUnit,
-    /// The room `ruby-align` puts before the base (Chrome's `ApplyRubyAlign`)
+    /// The room `ruby-align` puts before the base (Blink's `ApplyRubyAlign`)
     /// and inside it. The rest of `width` less `base_width` goes after it.
     pub(crate) room_before: LayoutUnit,
     pub(crate) room_inside: LayoutUnit,

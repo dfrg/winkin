@@ -195,7 +195,7 @@ impl<'a, I: Id, S: AdvanceStore> GlyphSink<'a, I, S> {
     /// 1/65536 px.
     ///
     /// This serves a line's last cluster that gives a seam's room back,
-    /// copied rather than shaped again, as Chrome's `UnapplyAutoSpacing`
+    /// copied rather than shaped again, as Blink's `UnapplyAutoSpacing`
     /// copies its line's last glyph. Its glyphs go into this sink's sidecar,
     /// and its word keeps its flags.
     pub(crate) fn copy(&mut self, glyphs: &GlyphStore, cluster: ClusterId, advance: i64) {

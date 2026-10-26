@@ -195,8 +195,7 @@ impl<'a> AcrossPlaces<'a> {
     /// Returns where `at`'s first glyph is drawn across the line, or `None`
     /// where `at` is past the unit or has no glyphs of its own.
     ///
-    /// Rounds to the 1/64 layout grid, as Chrome's caret rectangles are
-    /// `LayoutUnit`s.
+    /// Rounds to the 1/64 layout grid, on which caret rectangles lie.
     fn drawn(&self, at: ClusterId) -> Option<f32> {
         if at >= self.unit_end {
             return None;

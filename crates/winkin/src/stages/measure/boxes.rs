@@ -48,8 +48,8 @@ pub(super) fn prepare_boxes(
                 kind,
                 Some(NodeKind::Box | NodeKind::FirstLetter | NodeKind::Atomic)
             );
-        // A ruby container keeps its box, as Chrome does when annotations
-        // set their own fonts; an anonymous one has no element to keep.
+        // A ruby container keeps its box, for annotations that set their own
+        // fonts; an anonymous one has no element to keep.
         let ruby = item.kind == ItemKind::RubyOpen && !nodes.is_anonymous_ruby(node);
         // An annotation keeps its box: its line, as wide as its column.
         let annotation = item.kind == ItemKind::AnnotationOpen;
@@ -120,7 +120,7 @@ pub(super) fn prepare_boxes(
             || !same_metrics;
         if kept {
             // `text-box-trim` brings its trimmed edges to `text-box-edge`'s,
-            // as Chrome's `InlineBoxState::AdjustEdges` does.
+            // as Blink's `InlineBoxState::AdjustEdges` does.
             let (trims_over, trims_under, edge) = boxes.text_box();
             let (ascent, descent) = own.map_or((LayoutUnit::ZERO, LayoutUnit::ZERO), |metrics| {
                 (

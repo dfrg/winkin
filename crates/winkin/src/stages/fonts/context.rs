@@ -45,12 +45,12 @@ use crate::stages::content::FontRequest;
 
 /// The script a style's primary font is asked for where no language says.
 ///
-/// Chrome chooses the primary font by the element's locale, or its default
+/// The primary font is chosen by the element's locale, or the default
 /// locale, not by the text. fontwich resolves a generic by the language's
 /// script wherever there is a language. So this counts only where the style
-/// names no language and the config's default is `und`. It is Latin, as
-/// Chrome's default locale gives on an English system. The primary's small
-/// capitals are also read under it.
+/// names no language and the config's default is `und`. It is Latin, the
+/// script of an English default locale. The primary's small capitals are
+/// also read under it.
 pub(super) const PRIMARY_SCRIPT: Script = Script::from_bytes(*b"Latn");
 
 /// A change to the context's caches that the run loop's walk stops for.

@@ -17,7 +17,7 @@ use read_fonts::model::{Blob, Font};
 use read_fonts::types::{F2Dot14, GlyphId};
 use winkin::FontInstance;
 use winkin::font::{FontMetricsProvider, GlyphAdvanceBatch};
-use winkin::style::{ComputedStyle, FontFamilyName, FontGroup};
+use winkin::style::{ComputedStyle, FontFamilyName};
 use winkin::{Area, BuildOptions, ComputedBlockStyle, Context, Layout, NoExclusions, NodeKey};
 
 /// One font instance at one size, and the advances measured in it.
@@ -140,14 +140,9 @@ fn main() {
         .expect("Ahem is a font");
     let mut context = Context::new(Collection::new().with_layer(layer.snapshot()));
     let families = [FontFamilyName::Named(Cow::Borrowed("Ahem"))];
-    let style = ComputedStyle {
-        font: FontGroup {
-            families: &families,
-            size: 16.0,
-            ..FontGroup::INITIAL
-        },
-        ..ComputedStyle::initial()
-    };
+    let mut style = ComputedStyle::initial();
+    style.font.families = &families;
+    style.font.size = 16.0;
     let mut layout = Layout::new();
     let mut builder = layout.builder(
         &mut context,

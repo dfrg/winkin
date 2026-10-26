@@ -1,9 +1,8 @@
 //! `text-spacing-trim` at shaping: which full-width punctuation gives back
 //! its blank half, and how.
 //!
-//! The rule is Chrome's `HanKerning` (Blink's `han_kerning.cc`). The tests
-//! pin it against Chrome with Yu Gothic, which has `halt`, and MS Gothic,
-//! which does not.
+//! The rule follows Blink's `HanKerning` (`han_kerning.cc`). The tests pin
+//! it with Yu Gothic, which has `halt`, and MS Gothic, which does not.
 //! - Under any value but `space-all`, font selection turns on `chws`. A font
 //!   with contextual half-width spacing collapses adjacent punctuation
 //!   itself.
@@ -23,9 +22,9 @@
 //!   and takes nothing from before it.
 //! - Where the font has no `halt`, nothing is trimmed.
 //!   [`Config::punctuation_trim`] set to [`PunctuationTrim::Always`] trims
-//!   there too, which Chrome does not, by halving the mark's own advance as
-//!   Chrome's unshipped fallback (`ApplyKerning`) does. An opening mark's
-//!   glyph moves back into the half it keeps.
+//!   there too, by halving the mark's own advance as Blink's unshipped
+//!   fallback (`ApplyKerning`) does. An opening mark's glyph moves back into
+//!   the half it keeps.
 //! - Five classes depend on the font: its dots, colon, semicolon and curly
 //!   quotes. [`TrimFont`] reads them once from its glyphs, shaped in the
 //!   text's language, by which half of the advance each glyph's ink is in.
@@ -107,7 +106,7 @@ impl TrimFont {
     /// Where `probes` is `None`, because the font does not draw them one
     /// glyph each, its `halt` goes unused and its classes are `Other`, as
     /// Blink's `FontData` gives up. The classes are read even without
-    /// `halt`, for the halving trim, which Chrome's rule never asks for.
+    /// `halt`, for the halving trim.
     pub(super) fn from_probes(halt: bool, chws: bool, probes: Option<&[TrimProbe; 10]>) -> Self {
         let Some(probes) = probes else {
             return Self {
@@ -229,7 +228,7 @@ fn should_kern_last(class: TrimClass, last: TrimClass) -> bool {
 /// range in the font `own`.
 ///
 /// For the five classes that depend on the font, `theirs`, the font `ch` is
-/// shaped in, decides where it has `halt`, as Chrome's `HanKerning` caches
+/// shaped in, decides where it has `halt`, as Blink's `HanKerning` caches
 /// each character's class in its own font, fallback fonts included.
 /// Otherwise `own` decides.
 pub(super) fn class_beside(

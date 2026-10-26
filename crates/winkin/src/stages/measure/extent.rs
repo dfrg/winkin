@@ -20,7 +20,7 @@ impl Extent {
     /// The extent of what takes no room across the line: a closing edge, a
     /// float's anchor, an item out of the line's flow.
     ///
-    /// Both sides are `LayoutUnit::MIN`, as in Chrome's `FontHeight::Empty()`,
+    /// Both sides are `LayoutUnit::MIN`, after Blink's `FontHeight::Empty()`,
     /// so it is the identity of [`unite`](Self::unite).
     pub(crate) const NONE: Self = Self {
         ascent: LayoutUnit::MIN,
@@ -45,13 +45,13 @@ impl Extent {
     /// An atomic's baseline is measured down from its block-start edge. In
     /// `vertical-lr`, where lines flip, that edge is the under side, so the
     /// baseline is measured up from it (Blink's `IsFlippedLines`). In
-    /// `sideways-lr` it is the over side (Chrome 153).
+    /// `sideways-lr` it is the over side.
     pub(crate) fn from_atomic(
         atomic: &Atomic,
         writing_mode: WritingMode,
         baseline: LineBaseline,
     ) -> Self {
-        // Chrome truncates the margins (already so in the row) and the size.
+        // The margins (already so in the row) and the size truncate.
         // The baseline is a position in the host's layout, so it rounds.
         let (over, under) = atomic.margins_across;
         let size = atomic.size;
@@ -125,8 +125,8 @@ impl Extent {
     /// Returns the extent, or zero on both sides where it is
     /// [`NONE`](Self::NONE).
     ///
-    /// Blink zeroes an empty `FontHeight` before aligning it, and Chrome
-    /// does the same for an empty annotation line.
+    /// Blink zeroes an empty `FontHeight` before aligning it, and an empty
+    /// annotation line the same way.
     #[inline]
     pub(crate) fn zero_if_none(self) -> Self {
         if self.is_none() {

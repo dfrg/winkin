@@ -97,7 +97,7 @@ pub(crate) enum ClusterClass {
     /// U+00AD SOFT HYPHEN.
     SoftHyphen = 9,
     /// A U+200B in the input text. It is shaped with the text around it,
-    /// which hides it, as Chrome keeps it in its text item.
+    /// which hides it.
     ZeroWidthSpace = 10,
     /// Another default-ignorable character standing alone: a bidi control,
     /// a word joiner, a lone joiner or variation selector. It is shaped with
@@ -142,9 +142,9 @@ impl ClusterClass {
     /// A default-ignorable in the input text (a soft hyphen, U+200B, a word
     /// joiner, a bidi control) is shaped with the text around it, which hides
     /// it, as Blink keeps it in its text item. A ligature or kern across one
-    /// survives on an unbroken line (Chrome 153: `AV` in Arial kerns across
-    /// each). A line that breaks there reshapes its end, and draws a soft
-    /// hyphen's hyphen from generated text.
+    /// survives on an unbroken line (`AV` in Arial kerns across each). A line
+    /// that breaks there reshapes its end, and draws a soft hyphen's hyphen
+    /// from generated text.
     pub(crate) fn is_shaped(self) -> bool {
         !matches!(
             self,
@@ -545,8 +545,8 @@ impl Clusters {
     /// Returns whether the cluster before boundary `end` is a space or a
     /// tab; false at the text's start.
     ///
-    /// Chrome reshapes a line's end at a break after one only in a few
-    /// cases, which line layout tests apart.
+    /// A line's end reshapes at a break after one only in a few cases,
+    /// which line layout tests apart.
     #[inline]
     pub(crate) fn space_or_tab_before(&self, end: ClusterId) -> bool {
         end.get()

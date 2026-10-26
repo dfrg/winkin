@@ -13,7 +13,7 @@ use crate::style::{InitialLetterAlign, WritingMode};
 use crate::unit::{InlineLayoutUnit, LayoutUnit, TextUnit};
 use crate::{unit, work};
 
-/// Measures the block's initial letter in `scan`'s variant, as Chrome's
+/// Measures the block's initial letter in `scan`'s variant, as Blink's
 /// `LayoutInitialLetterBox` and `initial_letter_utils` lay it out.
 ///
 /// `advances` are the shaped advances, `strut` the line's strut. Returns
@@ -68,8 +68,8 @@ pub(super) fn initial_letter(
             .clusters
             .attrs(at)
             .map_or(ClusterClass::Text, ClusterAttrs::class);
-        // A tab takes its advance whole, as Chrome counts a control item into the
-        // box's size (`CalculateInitialLetterBoxInlineSize`). The prefix holds
+        // A tab takes its advance whole, a control item counting into the box's
+        // size (Blink's `CalculateInitialLetterBoxInlineSize`). The prefix holds
         // none of it: line layout sizes it.
         if class == ClusterClass::Tab
             && let Some(stops) = scan.tab_stops(look.text)

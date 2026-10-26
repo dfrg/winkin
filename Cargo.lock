@@ -213,6 +213,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
+name = "cleft"
+version = "0.1.0"
+dependencies = [
+ "icu_casemap",
+ "icu_collections",
+ "icu_locale_core",
+ "icu_properties",
+ "icu_provider",
+ "icu_segmenter",
+ "testing",
+]
+
+[[package]]
 name = "clipboard-win"
 version = "5.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -499,16 +512,16 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "font-types"
-version = "0.12.6"
+version = "0.12.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c92d9081c7ab3bd83ef1eecdfad090f3d966e3ce74106779664114cfe1a6274"
+checksum = "835ae9d781464a79026cde387f9cbc650c9a4909d7cf7e658b127e3c35d2f35d"
 dependencies = [
  "bytemuck",
 ]
 
 [[package]]
 name = "fontwich"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "hashbrown",
  "icu_properties",
@@ -516,7 +529,7 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-core-text",
  "parlance",
- "read-fonts 0.45.0",
+ "read-fonts 0.46.0",
  "roxmltree",
  "spin",
  "windows",
@@ -636,16 +649,17 @@ dependencies = [
 
 [[package]]
 name = "harfrust"
-version = "0.14.0"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86aa776d6d32b072119e1f1650f4db843ff4382a4aaa6a2c9c4e35703cd377cb"
+checksum = "865dcc4105d51c323d8fedbb2d75b5e9c8ecddf5613f74c82f851d0afbc97114"
 dependencies = [
  "bitflags 2.13.1",
  "bytemuck",
  "core_maths",
- "read-fonts 0.45.0",
+ "read-fonts 0.46.0",
  "smallvec",
  "spin",
+ "yoke",
 ]
 
 [[package]]
@@ -798,7 +812,6 @@ version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "82d07aafccd67af15d02512a6adf5896fbc5ed00f2e99b471d2efa14016db3db"
 dependencies = [
- "core_maths",
  "icu_collections",
  "icu_locale_fallback",
  "icu_provider",
@@ -1440,9 +1453,9 @@ dependencies = [
 
 [[package]]
 name = "parlance"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b6937eda350acc1a5d05872c3cbf99fe78619c269096e2be3d4a350058639d5"
+checksum = "73072a9470554c8e794778acece2312661218aaabb635600957d952cf01c716e"
 
 [[package]]
 name = "peniko"
@@ -1615,14 +1628,16 @@ dependencies = [
 
 [[package]]
 name = "read-fonts"
-version = "0.45.0"
+version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a5b7bed3d16ab428d8fa533640ab805ff50e7ad8a4d00649de1259e70023282"
+checksum = "bdaa4fffe9ff3ca2c353fa9729792805b9b3e324695ff5a081f860612e81b330"
 dependencies = [
  "bytemuck",
  "core_maths",
+ "foldhash",
  "font-types",
  "once_cell",
+ "smallvec",
  "yoke",
 ]
 
@@ -2113,10 +2128,6 @@ checksum = "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8"
 name = "unicode_gen"
 version = "0.0.0"
 dependencies = [
- "icu_casemap",
- "icu_locale_core",
- "icu_normalizer",
- "icu_properties",
  "packtab",
 ]
 
@@ -2703,18 +2714,16 @@ dependencies = [
 
 [[package]]
 name = "winkin"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
+ "cleft",
  "fontwich",
  "harfrust",
  "hashbrown",
- "icu_casemap",
- "icu_locale_core",
  "icu_normalizer",
  "icu_properties",
- "icu_segmenter",
  "parlance",
- "read-fonts 0.45.0",
+ "read-fonts 0.46.0",
  "spin",
  "testing",
 ]

@@ -593,7 +593,7 @@ impl<'w, 'a> Walking<'w, 'a> {
             self.flags.insert(MeasureFlags::HAS_BREAKABLE_RUBY);
         }
         // The floats anchored here sit beside the paragraph the boundary starts.
-        // A float after a forced break is the next line's, as in Chrome's breaker.
+        // A float after a forced break is the next line's.
         self.widths.floats(room.floats);
         self.writer.write(self.sums);
         // The rest start the line after.
@@ -678,8 +678,7 @@ impl<'w, 'a> Walking<'w, 'a> {
     }
 
     /// Measures again the min-content lines of the current paragraph, whose
-    /// prefix goes back, as Chrome's breaker sets them in no room. It ends at
-    /// sum `end`.
+    /// prefix goes back, set in no room. It ends at sum `end`.
     ///
     /// A line overflows at its first opportunity unless its content ends no
     /// further on than it started. Where nothing fits there, later
@@ -751,7 +750,7 @@ impl<'w, 'a> Walking<'w, 'a> {
             boundary_room(content, analysis, None, at, item).1
         };
         // Where a line ending at `at` ends its content, and where the next starts.
-        // Opening boxes with negative room end the line, as Chrome's breaker takes
+        // Opening boxes with negative room end the line, as the breaker takes
         // each item that fits.
         let ends = |at: ClusterId| {
             let rest = opening(at).min(InlineLayoutUnit::ZERO);
@@ -801,7 +800,7 @@ impl<'w, 'a> Walking<'w, 'a> {
     ///
     /// - `gap`, the seam's room after the cluster, which the line gives back.
     /// - After a breakable soft hyphen or a hyphenation opportunity, the
-    ///   hyphen, snapped to the grid as Chrome's `HyphenResult::InlineSize`
+    ///   hyphen, snapped to the grid as Blink's `HyphenResult::InlineSize`
     ///   is.
     /// - Where the cluster doesn't hang, its padding and the mark that may
     ///   hang. `step` is its advance with `gap`.

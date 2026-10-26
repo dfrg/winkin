@@ -1,7 +1,7 @@
 //! Writes a line's ruby annotation lines.
 //!
 //! Once the line is placed, each annotation is set as a line of its own
-//! over the column's box. `ruby-align` spreads it, as Chrome's
+//! over the column's box. `ruby-align` spreads it, as Blink's
 //! `PlaceRubyAnnotation` does. Its baseline comes from `LevelBands::stack`,
 //! the function the breaker sized the line with. The annotation lines'
 //! items follow the line's own.
@@ -269,8 +269,8 @@ impl<'a> Placer<'a> {
             // The column's box spans from its start gap to its end gap,
             // with the overhangs. Its start is on the left for a
             // left-to-right base. It is at least the column's width, wider
-            // where justification spread the base, as Chrome widens it
-            // (`JustifyResults`).
+            // where justification spread the base (as Blink's
+            // `JustifyResults` widens it).
             let (left, right) = if lead.inline <= trail.inline {
                 (
                     lead.inline - open.overhang.0 + open.parent_room.0,
@@ -332,7 +332,7 @@ impl<'a> Placer<'a> {
 
     /// Writes one annotation line, `level` of a column, at `place`.
     ///
-    /// Its text is spread by `ruby-align`, as Chrome's `ApplyRubyAlign` does,
+    /// Its text is spread by `ruby-align`, as Blink's `ApplyRubyAlign` does,
     /// reordered as a line of its own, and set from the column box's left.
     /// Then its items are written.
     // Out of line, so that a line with no ruby pays nothing for it.
@@ -426,7 +426,7 @@ impl<'a> Placer<'a> {
             start
         };
         // The text takes in the room spread at its opportunities, and the
-        // room on its left and right, as Chrome's expansion is part of its
+        // room on its left and right, as justification room is part of its
         // glyphs.
         pieces.absorb_spread();
         let all = PieceId::new(0)..pieces.logical.next_id();
@@ -473,8 +473,8 @@ impl<'a> Placer<'a> {
     /// - Text: a piece per cluster, in its shaping run's font and level,
     ///   stepping as the text does in the line's variant, with gaps where
     ///   `spreading` gives room.
-    /// - Box edges: gaps taking the room the level's width counted, as in
-    ///   Chrome, at the level of the text beside them.
+    /// - Box edges: gaps taking the room the level's width counted, at the
+    ///   level of the text beside them.
     ///
     /// The walk runs from `first`, the annotation's opening item or the
     /// first item of a continued part, to its closing, going past its last
@@ -720,7 +720,7 @@ impl<'a> Placer<'a> {
     ) {
         // Kept boxes go after the head and before the text, outermost first,
         // in paint order. Each spans its border box over all its pieces, as
-        // Chrome gives a box in an annotation its own fragment. Where
+        // a box in an annotation has its own fragment. Where
         // reordering splits a box's pieces, one item covers them all.
         let kept_count = boxes
             .boxes

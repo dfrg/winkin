@@ -5,8 +5,8 @@
 //!   `InlineCursor::CurrentLocalSelectionRectForText` does.
 //! - An atomic inline is selected whole or not at all. A line's hyphen is
 //!   selected with the soft hyphen before it.
-//! - An ellipsis and the text it hides paint nothing, as in Chrome, nor does
-//!   a box's padding. Text in each direction is its own run, so its own
+//! - An ellipsis and the text it hides paint nothing, nor does a box's
+//!   padding. Text in each direction is its own run, so its own
 //!   rectangle.
 //! - A rectangle spans the line box, or the text's own box where that is
 //!   taller, as `ExpandSelectionRectToLineHeight` unites them.
@@ -17,8 +17,7 @@
 //!   the last run reads against the paragraph.
 //!
 //! The rectangles are line-relative. A host unites or paints them as it
-//! likes, typically tinting an atomic inline's, as Chrome tints a replaced
-//! element.
+//! likes, typically tinting an atomic inline's.
 
 use core::iter::once;
 use core::ops::Range;
@@ -37,7 +36,6 @@ use crate::unit::InlineLayoutUnit;
 
 /// A selection rectangle relative to a line box.
 #[derive(Copy, Clone, PartialEq, Debug)]
-#[non_exhaustive]
 pub struct SelectionRect {
     /// The zero-based line index.
     pub line: usize,
@@ -60,8 +58,8 @@ pub enum SelectionRectKind {
     LineEnd,
     /// An atomic inline, selected whole.
     ///
-    /// Chrome tints a replaced element's box but not an inline-block, whose
-    /// text is selected instead.
+    /// A host typically tints a replaced element's box but not an
+    /// inline-block, whose text is selected instead.
     Atomic,
 }
 
@@ -195,7 +193,7 @@ impl<'a> SelectionRects<'a> {
                     from <= range.start.get() && range.end.get() <= to
                 };
                 // Combined text spans the unit's em along the line and the
-                // selected characters across it, as Chrome paints it.
+                // selected characters across it.
                 if let Some(places) = run.across_places() {
                     let (over, under) = union(
                         places

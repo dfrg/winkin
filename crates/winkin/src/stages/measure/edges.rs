@@ -13,7 +13,7 @@ use crate::unit::{InlineLayoutUnit, LayoutUnit};
 use crate::work;
 
 /// The position of a break among the items at one boundary, fed one item at
-/// a time, as Chrome's `RewindOverflow` places it.
+/// a time, as Blink's `RewindOverflow` places it.
 ///
 /// - Closes of earlier boxes, and boxes that open and close at the boundary,
 ///   end the line before.

@@ -286,3 +286,23 @@ fn a_font_with_only_a_newer_indic_script_tag_has_its_features() {
         }
     }
 }
+
+/// A font of more than 65,536 glyphs whose `sups` names glyphs past 65,535,
+/// in a 24-bit single substitution over a 24-bit coverage, covers the
+/// characters of those glyphs. A character it does not substitute still
+/// has the run synthesized.
+#[test]
+fn a_feature_past_glyph_65535_covers_its_characters() {
+    let mut font = TestFont::new("Test Wide", &[(0x20, 0x7E), (0x20000, 0x20000 + 65_600)]);
+    let wide = ['\u{2FFDC}', '\u{2FFDD}'];
+    font.alternates = vec![(*b"sups", wide.iter().map(|&ch| (ch, 300)).collect())];
+    assert!(font.glyph(wide[0]) > 65_535);
+    let mut fixture = fixture_with(&[font]);
+    let mut layout = Layout::new();
+    let family = [FontFamilyName::named("Test Wide")];
+    let style = style_super(&family);
+    fixture.span(&mut layout, &style, "\u{2FFDC}\u{2FFDD}");
+    assert!(all_set(&layout, UsedSynthesis::None, &[("sups", 1)]));
+    fixture.span(&mut layout, &style, "\u{2FFDC}\u{2FFDE}");
+    assert!(all_set(&layout, super_30px(), &[]));
+}

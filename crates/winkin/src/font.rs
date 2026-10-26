@@ -4,8 +4,10 @@
 //! rasterizer. Each query can fall back to font-table metrics. Horizontal
 //! advances can be written in batches directly into the shaping buffer.
 //!
-//! Fallback metrics use harfrust scaling and Blink-compatible vertical
-//! metrics, the same as when no provider is supplied.
+//! Fallback metrics are the same as when no provider is supplied. Horizontal
+//! metrics use harfrust scaling. Vertical metrics come from `vmtx`, `VORG`
+//! and glyph ink bounds, read without `HVAR` or `VVAR`; a font without `vhea`
+//! and `vmtx` advances by its line height.
 
 use harfrust::Advances;
 
@@ -133,9 +135,9 @@ pub trait FontMetricsProvider {
     ///
     /// Uses signed 16.16 CSS pixels, with x rightward and y upward.
     /// Returning `None` uses `VORG` or derives the origin from `vmtx`
-    /// and font-table ink bounds, matching Blink. Fallback does not use
-    /// [`glyph_extents`](Self::glyph_extents). Rasterizers that shift ink
-    /// should also override this method.
+    /// and font-table ink bounds rounded out to whole pixels. Fallback does
+    /// not use [`glyph_extents`](Self::glyph_extents). Rasterizers that shift
+    /// ink should also override this method.
     fn v_origin(&self, _font: FontInstance<'_>, _glyph: u32) -> Option<(i32, i32)> {
         None
     }

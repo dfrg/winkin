@@ -166,7 +166,7 @@ impl Tally {
 
     /// Returns whether the paragraph fits as balancing asks: in at most
     /// `lines` lines, reaching `end`, none overflowing or ending at an
-    /// emergency break, as Chrome's bisection asks.
+    /// emergency break.
     pub(super) fn holds(&self, lines: usize, end: ClusterId) -> bool {
         !self.overflowed && self.lines <= lines && self.end >= end
     }
@@ -402,7 +402,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         let mut cursor = Cursor::new(LayoutUnit::from_px(area.block_start));
         for (id, paragraph) in self.stages.analysis.paragraphs.iter() {
             // A text ending in a separator ends in an empty paragraph, which
-            // makes no line, as in Chrome, unless a box there has an inline
+            // makes no line, unless a box there has an inline
             // margin, border or padding.
             let paragraphs = &self.stages.analysis.paragraphs;
             let empty = paragraphs.clusters(id).is_empty();
@@ -505,8 +505,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
                 }
             }
             tally.take(&line);
-            // A narrowing trial stops at an overflowing line, as Chrome's
-            // bisection does.
+            // A narrowing trial stops at an overflowing line.
             let too_narrow = plan.is_narrowing_trial() && tally.overflowed;
             debug_assert!(line.end > start || line.end == lines.para.end);
             start = line.end;
@@ -584,8 +583,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         };
         let first_item = cursor.items;
         cursor.items = trial.height.next_item;
-        // Floats not placed beside the line go below it, as in Blink's
-        // `PlaceFloatingObjects`.
+        // Floats not placed beside the line go below it, as Blink's
+        // `PlaceFloatingObjects` places them.
         if FLOATS {
             let bottom = top + trial.height.extent.box_height();
             self.place_after(out, para, start, &trial.fitted, bottom, &mut cursor.floats);
@@ -666,8 +665,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     ) -> bool {
         line.facts.block_start = line.facts.block_start + cursor.trimmed;
         // `line-clamp`: the last kept line takes an ellipsis where text
-        // follows. A clamp the text does not reach clamps nothing, as Chrome
-        // relays the block out without it (`kNeedsLineClampRelayout`).
+        // follows. A clamp the text does not reach clamps nothing: the block
+        // lays out as without it.
         if let Clamp::Lines(limit) = self.clamp
             && out.lines.len() + 1 >= usize::try_from(limit).unwrap_or(usize::MAX)
             && line.end < self.clusters.end_id()
@@ -804,7 +803,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         }
         let mut flags = fitted.flags;
         // `text-overflow: ellipsis` cuts a line that overflows its band, as
-        // Chrome's `LineInfo::HasOverflow` does.
+        // Blink's `LineInfo::HasOverflow` decides.
         if self.ellipsis && flags.contains(LineFlags::OVERFLOWS) {
             flags.insert(LineFlags::ELLIPSIS);
         }

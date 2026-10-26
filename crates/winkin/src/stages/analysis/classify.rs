@@ -43,7 +43,7 @@ impl TextSetting {
             Self::Sideways => RunOrientation::Sideways,
             Self::Mixed if upright() => RunOrientation::Upright,
             Self::Mixed => RunOrientation::Sideways,
-            Self::Upright if is_vertical_only(unicode::script(props)) => RunOrientation::Sideways,
+            Self::Upright if is_vertical_only(props.script()) => RunOrientation::Sideways,
             Self::Upright => RunOrientation::Upright,
         }
     }
@@ -78,7 +78,7 @@ impl TextSetting {
     /// side and one between Latin words stands up. Blink stands every such
     /// character up.
     pub(super) fn follows_script_run(self, props: CoreProps) -> bool {
-        self == Self::Upright && is_shared(unicode::script(props))
+        self == Self::Upright && is_shared(props.script())
     }
 }
 
@@ -183,7 +183,9 @@ pub(super) fn latin1_fast_class(ch: char) -> ClusterClass {
 /// and its bidi class keeps a cluster at its paragraph's level.
 #[cfg(test)]
 pub(super) fn latin1_fast_agrees(ch: char, content: &Content) -> bool {
-    let item = ItemInfo::from_block(content);
+    use crate::config::LooseHyphens;
+
+    let item = ItemInfo::from_block(content, LooseHyphens::JapaneseChinese);
     let props = unicode::core_props(ch);
     let rare = unicode::rare_props(ch);
     is_latin1_fast(ch)

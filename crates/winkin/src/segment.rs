@@ -1,4 +1,14 @@
-//! Hyphenation and phrase segmentation supplied by the host.
+//! Hyphenation and phrase segmentation supplied by the host, and the word
+//! dictionaries that find the words of Thai, Lao, Khmer, Myanmar, and
+//! Chinese and Japanese.
+//!
+//! The [`Context`] holds the [`Dictionaries`] its builds break lines and
+//! find words with: with the `dictionaries` feature, all five compiled in;
+//! without it, none, so a run of Thai, Lao, Khmer or Myanmar breaks only
+//! around it and is one word, and each ideograph and hiragana is a word. A
+//! host sets its own with [`Context::set_dictionaries`], such as only the
+//! scripts it ships, loaded at run time with [`Dictionary::new`]. A layout
+//! keeps the set it was built with, for word motion and selection.
 //!
 //! winkin carries no hyphenation dictionaries and no phrase models. A host
 //! that wants `hyphens: auto` or `word-break: auto-phrase` sets a
@@ -20,7 +30,9 @@
 //! };
 //! # use fontwich::{Collection, LayerBuilder, Role};
 //! # let mut fonts = LayerBuilder::new(Role::Application);
-//! # fonts.add_data(include_bytes!("../../../support/testing/fonts/Ahem.ttf").as_slice()).unwrap();
+//! # // Ahem, from the repository: a packaged crate does not ship it.
+//! # let Ok(ahem) = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../support/testing/fonts/Ahem.ttf")) else { return };
+//! # fonts.add_data(ahem).unwrap();
 //! # let fonts = Collection::new().with_layer(fonts.snapshot());
 //!
 //! /// Breaks "hyphenation" as "hy-phen-ation", in English only.
@@ -54,6 +66,8 @@
 //! assert!(layout.lines().next().is_some_and(|line| line.is_hyphenated()));
 //! ```
 
+pub use cleft::{Bytes, Dictionaries, Dictionary, DictionaryError, DictionaryScript};
+
 use crate::style::Language;
 #[cfg(doc)]
 use crate::{Context, style::Hyphens, style::WordBreak};
@@ -61,9 +75,9 @@ use crate::{Context, style::Hyphens, style::WordBreak};
 /// Finds where a word may break with a hyphen, for [`Hyphens::Auto`].
 ///
 /// winkin finds the words, asks for each one that is long enough, and
-/// applies the limits on what stays before and after a break: CSS's
-/// defaults, which Chrome applies, of five characters a word and two on each
-/// side. A capitalized English word is not hyphenated, as in Chrome.
+/// applies the limits on what stays before and after a break: the CSS
+/// defaults of five characters a word and two on each side. A capitalized
+/// English word is not hyphenated.
 ///
 /// The hyphen drawn at a break is the text's `hyphenate-character`.
 pub trait Hyphenator: Send + Sync {
@@ -82,7 +96,7 @@ pub trait Hyphenator: Send + Sync {
 /// Finds the phrases of Japanese text, for [`WordBreak::AutoPhrase`].
 ///
 /// Between two ideographs or kana, a line under `auto-phrase` breaks only
-/// at a phrase boundary, as Chrome's phrase segmentation of Japanese does.
+/// at a phrase boundary.
 /// Elsewhere the usual rules apply. A line that no phrase boundary lets
 /// fit breaks as under `normal`.
 pub trait PhraseSegmenter: Send + Sync {

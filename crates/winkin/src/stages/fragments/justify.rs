@@ -15,9 +15,9 @@ use crate::unit::{InlineLayoutUnit, LayoutUnit};
 
 /// The line's spare room per justification opportunity, in 48.16: 32 bytes.
 ///
-/// The room divides truncated, as in Chrome's `ShapeResultSpacing`
-/// (`expansion / count`). The remainder goes to the opportunity Chrome fills
-/// last, as its `NextExpansion` does, so the shares add up exactly. That is
+/// The room divides truncated, as Blink's `ShapeResultSpacing` divides it
+/// (`expansion / count`). The remainder goes to the opportunity filled
+/// last, as its `NextExpansion` gives it, so the shares add up exactly. That is
 /// the last one of the logically last item, or its first if that item is
 /// right-to-left.
 ///
@@ -92,7 +92,7 @@ impl LineJustification {
             (true, false) => self.per,
             (true, true) => self.per + self.leftover(),
         };
-        // Chrome takes a cluster's before opportunity first.
+        // A cluster's before opportunity comes first.
         (share(before, last && !after), share(after, last))
     }
 }
@@ -202,12 +202,11 @@ impl<'a> Placer<'a> {
     ///
     /// Returns the amounts and which clusters have opportunities. Returns
     /// `None` where the line has no room or no opportunity; it is then set at
-    /// its start, as in Chrome.
+    /// its start.
     ///
-    /// The shares add up to the room exactly, as in Chrome. A tab's width
-    /// with its share rounds up onto the grid, as Chrome snaps a tab, so its
-    /// size stays its advance. Tabs take no share where the config keeps them
-    /// at their stops.
+    /// The shares add up to the room exactly. A tab's width with its share
+    /// rounds up onto the grid, as a tab snaps, so its size stays its
+    /// advance. Tabs take no share where the config keeps them at their stops.
     fn justify(
         &self,
         pieces: &mut LinePieces,
@@ -264,18 +263,17 @@ impl<'a> Placer<'a> {
     }
 }
 
-/// Returns the justification opportunity Chrome fills last, which takes the
+/// Returns the justification opportunity filled last, which takes the
 /// leftover: its piece and its cluster. `None` where no piece has one.
 ///
-/// Chrome spends the room item by item in logical order (`JustifyResults`).
-/// Within an item it goes in glyph order
+/// The room is spent item by item in logical order (Blink's
+/// `JustifyResults`). Within an item it goes in glyph order
 /// (`ShapeResult::ApplySpacingOrExpansion`), which is visual.
 ///
 /// So the last is in the logically last piece with an opportunity. Left to
 /// right, it is that piece's last. Right to left, it is the first of the
-/// whole item: Chrome's shape result spans pieces of the same node and level
-/// that only a font change divides. A tab is an item of its own, as in
-/// Chrome.
+/// whole item: a shape result spans pieces of the same node and level that
+/// only a font change divides. A tab is an item of its own.
 fn last_opportunity(
     pieces: &Table<PieceId, Piece>,
     opportunities: &JustifyOpportunities<'_>,

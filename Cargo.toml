@@ -3,8 +3,8 @@ resolver = "3"
 members = ["crates/*", "examples/editor", "support/*"]
 
 # The font crates are pinned here, once, so that fontwich, winkin and
-# harfrust read fonts with the same read-fonts. harfrust is at its 0.14.0
-# release (2026-10-03), which is built on read-fonts 0.45 and its owned font,
+# harfrust read fonts with the same read-fonts. harfrust is at its 0.15.0
+# release (2026-10-22), which is built on read-fonts 0.46 and its owned font,
 # `read_fonts::model::Font`; fontwich follows rather than pulling a second
 # copy.
 [workspace.package]
@@ -14,8 +14,8 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/dfrg/winkin"
 
 [workspace.dependencies]
-read-fonts = { version = "0.45.0", default-features = false }
-harfrust = { version = "0.14.0", default-features = false }
+read-fonts = { version = "0.46.0", default-features = false }
+harfrust = { version = "0.15.0", default-features = false }
 
 # One codegen unit, so that timings compare code rather than where the
 # compiler happened to place it: with the default sixteen, an edit that adds

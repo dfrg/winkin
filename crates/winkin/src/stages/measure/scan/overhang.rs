@@ -1,5 +1,5 @@
 //! How far a ruby column overhangs the text beside it, by the config's
-//! rule: Chrome's, or the Japanese Layout Requirements'.
+//! rule: onto adjacent text, or the Japanese Layout Requirements'.
 
 use super::ruby::{Sizing, keep_tab_reach};
 use crate::config::RubyOverhangRule;
@@ -39,7 +39,7 @@ impl Sizing<'_, '_> {
         }
     }
 
-    /// Returns Chrome's overhang (Blink's `GetOverhang`,
+    /// Returns the overhang onto adjacent text (Blink's `GetOverhang`,
     /// `CanApplyStartOverhang` and `CommitPendingEndOverhang`).
     ///
     /// - `auto`: the lesser of the base's inset and half the annotation's font
@@ -72,7 +72,7 @@ impl Sizing<'_, '_> {
         }
         // Half the annotation's font size in whole pixels, as Blink's
         // `FontSize() / 2` with `FontSize()` rounded (`ComputedPixelSize`): a 17px
-        // annotation overhangs by 8, not 8.5 (measured with Chrome 153).
+        // annotation overhangs by 8, not 8.5.
         let half = LayoutUnit::from_px_whole(size).half().floor_px();
         // The base's inset each side under `space-around` (`ComputeRubyBaseInset`).
         let inset = RubySpread::from_base(RubyAlign::SpaceAround, space, opportunities).start;
@@ -118,7 +118,7 @@ impl Sizing<'_, '_> {
     }
 
     /// Returns the blank the text before a column, `beside`, offers it, as
-    /// Chrome's `spaces` reads it (`GetOverhang`).
+    /// Blink's `spaces` reads it (`GetOverhang`).
     ///
     /// Counting back from the column: spaces and tabs, then the blank half of a
     /// full-width closing mark or a quarter of a middle dot. The tab run counts
@@ -176,7 +176,7 @@ impl Sizing<'_, '_> {
     /// before it, or a quarter of a middle dot.
     ///
     /// A mark narrower than full width offers none (`IsFullWidthGlyph`). A
-    /// middle dot counts at any width, as Chrome's `MaybeHanKerningMiddle`
+    /// middle dot counts at any width, as Blink's `MaybeHanKerningMiddle`
     /// reads only the character.
     fn facing(
         &self,
@@ -204,9 +204,10 @@ impl Sizing<'_, '_> {
     /// blank after it, `beside`, up to `pending`. Keeps in `out` how far each
     /// tab there moves.
     ///
-    /// Chrome's `CommitPendingEndOverhang` takes the overhang off the items
-    /// after the column one by one ([`end_take`](Self::end_take)); the prefix
-    /// takes it off the column. Each tab is sized where Chrome sizes it.
+    /// The overhang comes off the items after the column one by one
+    /// ([`end_take`](Self::end_take)), following Blink's
+    /// `CommitPendingEndOverhang`; the prefix takes it off the column. Each
+    /// tab is sized before the overhang comes off.
     fn end_overhang(
         &self,
         column: &Overhanging,
@@ -231,7 +232,7 @@ impl Sizing<'_, '_> {
     }
 
     /// Returns how much of `pending` the blank after a column, `beside`, takes,
-    /// the column ending at `from` on its paragraph's line, as Chrome's
+    /// the column ending at `from` on its paragraph's line, as Blink's
     /// `CommitPendingEndOverhang` does.
     ///
     /// Each item takes what it can of what is left: a tab run its width, sized
@@ -248,7 +249,7 @@ impl Sizing<'_, '_> {
         let clusters = &self.scan.input.analysis.clusters;
         let mut left = InlineLayoutUnit::from_layout(pending);
         let mut taken = InlineLayoutUnit::ZERO;
-        // Where Chrome's breaker stands, and the run being added up.
+        // Where the breaker stands, and the run being added up.
         let mut pen = from;
         let (mut spaces, mut tabs) = (InlineLayoutUnit::ZERO, InlineLayoutUnit::ZERO);
         // Takes what an item `width` wide can of what is left.
@@ -309,7 +310,7 @@ impl Sizing<'_, '_> {
     }
 
     /// Returns the computed font size of the text holding `cluster`, truncated
-    /// to the grid as Chrome's `LayoutUnit(font_size)` is. Searches from `item`;
+    /// to the grid as Blink's `LayoutUnit(font_size)` is. Searches from `item`;
     /// the block's size where no item holds it.
     fn size(&self, item: ItemId, cluster: ClusterId) -> LayoutUnit {
         let text = self.text(item, cluster);

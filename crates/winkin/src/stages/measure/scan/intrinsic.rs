@@ -1,7 +1,7 @@
 //! The intrinsic sizes, added up as the scan goes.
 //!
 //! Min-content is the widest content between two break opportunities, set
-//! as a line of its own as by Chrome's breaker in min-content mode.
+//! as a line of its own, as a breaker in min-content mode sets it.
 //! Max-content is the widest paragraph.
 
 use super::LinePay;
@@ -36,8 +36,8 @@ impl Tab {
 /// `text-indent` as the intrinsic sizes read it.
 ///
 /// It is resolved in an area of zero width, so a percentage counts as zero:
-/// Chrome's breaker resolves it so in its min- and max-content modes
-/// (`ComputeTextIndent`). A first line that opens an initial letter takes it
+/// a breaker resolves it so in its min- and max-content modes (Blink's
+/// `ComputeTextIndent`). A first line that opens an initial letter takes it
 /// twice, as line layout does.
 #[derive(Copy, Clone, Debug, Default)]
 pub(super) struct Indent {
@@ -82,8 +82,7 @@ impl Indent {
 ///   own advances.
 /// - **Tabs:** a tab takes nothing in the prefix, so it is sized where it
 ///   lands: on the paragraph's line for max-content, on its own min-content
-///   line for min-content, as Chrome's breaker sets it. A hanging tab comes
-///   off like a hanging space.
+///   line for min-content. A hanging tab comes off like a hanging space.
 /// - **Hanging:** a min-content line leaves out all it ends with that hangs.
 ///   A paragraph leaves out trailing white space only where all of it
 ///   hangs: `pre-wrap` space hangs only where it overflows, so max-content
@@ -321,8 +320,8 @@ impl IntrinsicScan {
     /// Records the floats anchored at a boundary of the current paragraph.
     ///
     /// A max-content line sets them all beside it, and no line is narrower
-    /// than the widest, as in Chrome's breaker's min- and max-content modes.
-    /// `clear` is the host's concern, so every float sits beside the paragraph.
+    /// than the widest, in both min- and max-content modes. `clear` is the
+    /// host's concern, so every float sits beside the paragraph.
     pub(super) fn floats(&mut self, anchored: AnchoredFloats) {
         self.floats += anchored.sum;
         self.min.other = self.min.other.max(anchored.widest);
@@ -392,8 +391,8 @@ impl IntrinsicScan {
     /// where the first line has a variant of its own.
     ///
     /// Neither size is negative, and max-content is never under min-content.
-    /// As in Chrome's breaker, the block's first min-content line and first
-    /// paragraph are measured in the first line's styles.
+    /// The block's first min-content line and first paragraph are measured in
+    /// the first line's styles.
     pub(crate) fn finish(&self, first: Option<&IntrinsicScan>) -> IntrinsicWidths {
         let first = first.unwrap_or(self);
         let min = (first.min.first.max(self.min.other))

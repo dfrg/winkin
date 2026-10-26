@@ -21,12 +21,12 @@
 //!   container adds its `unicode-bidi` controls as a box does. An annotation
 //!   is a first-strong isolate, so it neither moves nor is moved by its
 //!   base; its own `unicode-bidi` adds controls inside it. A float or an
-//!   absolutely positioned box is a neutral, as Blink resolves its U+FFFC.
+//!   absolutely positioned box is a neutral, resolved as a U+FFFC.
 //!   The block's initial letter is an isolate, so it resolves as the neutral
 //!   U+FFFC Blink sets for it.
 //! - **A paragraph re-opens** the controls of every box open across its
-//!   start, as Blink does around a forced break (CSS Writing Modes 3,
-//!   section 2.4.3). `track` follows the open boxes during the writer's
+//!   start, so they span a forced break (CSS Writing Modes 3, section
+//!   2.4.3). `track` follows the open boxes during the writer's
 //!   walk ([`BidiInput::walk`]), so a paragraph never walks up its
 //!   ancestors.
 //! - **A bidi paragraph may end inside one** after U+001C, U+001D or
@@ -36,8 +36,8 @@
 //!
 //! **Fast paths skip the resolver.** A paragraph with no right-to-left
 //! class or control, in a block that is not right to left, is not walked:
-//! every cluster is at level 0, as Blink sets a unidirectional paragraph.
-//! A paragraph whose clusters all sit at its own level records no changes.
+//! every cluster is at level 0. A paragraph whose clusters all sit at its own
+//! level records no changes.
 //!
 //! **Nothing here panics.** The resolver takes any nesting depth, capped at
 //! UAX #9's 125 levels, and any balance of controls.
@@ -66,7 +66,7 @@ pub(super) use resolver::{BidiScratch, BidiUnit, reset_separators, resolve_bidi}
 /// order unchanged, so it is not kept. In `R LRI L PDI` at level 0, the LRI
 /// at 0 keeps the R at 1 and the L at 2 from reversing together.
 ///
-/// An absolutely positioned box's anchor resolves as a U+FFFC, as Chrome's
+/// An absolutely positioned box's anchor resolves as a U+FFFC, as Blink's
 /// `InlineNode::SegmentBidiRuns` does. Its level is always kept, since it
 /// places the anchor on its line.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]

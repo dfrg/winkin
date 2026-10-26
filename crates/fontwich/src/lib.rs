@@ -12,8 +12,8 @@
 //! exists. Document faces participate in named lookup and matching only.
 //! The application traverses CSS family lists and loads pending faces.
 //!
-//! Family lookup supports Chrome aliases such as `Times`, `Courier` and
-//! `Helvetica`. Matching follows CSS Fonts 4 with a 14° italic target.
+//! Family lookup treats `Times`, `Courier` and `Helvetica` as aliases of
+//! `Times New Roman`, `Courier New` and `Arial`. Matching follows CSS Fonts 4 with a 14° italic target.
 //! [`Font::synthesis`] supplies variation settings, synthetic bold and slant.
 //!
 //! # System fonts and fallback
@@ -166,7 +166,7 @@
 //! - `docs/architecture.md` in the crate's source: how fontwich is built.
 
 #![no_std]
-#![warn(missing_docs)]
+#![deny(missing_docs)]
 #![warn(rustdoc::broken_intra_doc_links)]
 
 extern crate alloc;
@@ -228,3 +228,8 @@ pub use font::{
 pub use layer::{AddError, Layer, LayerBuilder, LoadFamily, Role};
 #[cfg(feature = "std")]
 pub use scan::Scanned;
+
+/// The examples of the README, run as doc tests.
+#[cfg(all(doctest, feature = "system"))]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

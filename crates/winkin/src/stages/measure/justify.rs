@@ -5,8 +5,8 @@
 //! reader walks adds up to what line layout placed. Nothing is stored per
 //! cluster.
 //!
-//! Chrome's rule under `text-justify: auto`
-//! (`Character::ExpansionOpportunityCount`,
+//! The rule under `text-justify: auto` (Blink's
+//! `Character::ExpansionOpportunityCount` and
 //! `ShapeResultSpacing::ComputeSpacing`), over the line less what hangs:
 //! - a space, a tab or U+00A0 (`TreatAsSpace`) has an opportunity after it;
 //! - an ideograph or CJK symbol (`IsCJKIdeographOrSymbol`) has one after
@@ -16,10 +16,10 @@
 //!   and its neighbours don't see it.
 //!
 //! `inter-word` keeps the spaces alone. `inter-character` puts one after
-//! every cluster but the last, as Chrome's `distribute` does, and one
+//! every cluster but the last, as Blink's `distribute` does, and one
 //! before the first character after a run of atomic inlines. `none`
 //! justifies nothing. Each cluster follows its own text's `text-justify`.
-//! Hangul is no ideograph, as in Chrome.
+//! Hangul is no ideograph.
 //!
 //! Combined text (`text-combine-upright`) is one ideograph, as Blink
 //! justifies it as U+3042 (`kTextCombineItemMarker`). A ruby base at least
@@ -56,7 +56,7 @@ enum Kind {
     /// [`Other`](Self::Other), [`Object`](Self::Object) or
     /// [`Cursive`](Self::Cursive).
     Cjk,
-    /// What Chrome treats as a zero-width space: nothing, and unseen.
+    /// A zero-width space or the like: nothing, and unseen.
     Invisible,
     /// An atomic inline's U+FFFC: nothing, even between characters.
     Object,
@@ -191,7 +191,7 @@ impl fmt::Debug for JustifyOpportunities<'_> {
 
 impl<'a> JustifyOpportunities<'a> {
     /// Returns the opportunities of `clusters`, a ruby base or annotation,
-    /// as a line of their own under `justify` (Chrome's
+    /// as a line of their own under `justify` (Blink's
     /// `ApplyJustification`). `None` under `text-justify: none`.
     pub(crate) fn new(
         content: &'a Content,
@@ -611,8 +611,8 @@ impl<'a> JustifyOpportunities<'a> {
 
     /// Returns whether `cluster` is in a run of a script that
     /// `inter-character` leaves whole: Arabic, Syriac, Mongolian, N'Ko,
-    /// Mandaic, Hanifi Rohingya and Phags-pa, as in Chrome 155. Chrome
-    /// spreads Adlam, Sogdian, Manichaean and the other joining scripts.
+    /// Mandaic, Hanifi Rohingya and Phags-pa. Adlam, Sogdian, Manichaean and
+    /// the other joining scripts are spread.
     fn is_cursive(&self, cluster: ClusterId) -> bool {
         if !self.scripts {
             return false;
@@ -707,14 +707,14 @@ fn ruby_kind(
         .then_some(Kind::Invisible)
 }
 
-/// Returns whether `ch` is set on the CJK grid, as Chrome's
+/// Returns whether `ch` is set on the CJK grid, as Blink's
 /// `Character::IsCJKIdeographOrSymbol` says.
 fn is_cjk_ideograph_or_symbol(ch: char) -> bool {
     let c = u32::from(ch);
     if c < 0x2C7 {
         return false;
     }
-    // Isolated symbols, as Chrome lists them.
+    // Isolated symbols, as Blink lists them.
     if matches!(
         c,
         0x2C7
@@ -828,7 +828,7 @@ fn is_cjk_ideograph_or_symbol(ch: char) -> bool {
             | 0xFF00..=0xFF0C
             | 0xFF0E..=0xFF1A
             | 0xFF1F..=0xFFEF
-            // Enclosed and squared letters, and the emoji Chrome counts.
+            // Enclosed and squared letters, and the emoji Blink counts.
             | 0x1F110..=0x1F129
             | 0x1F130..=0x1F149
             | 0x1F150..=0x1F169

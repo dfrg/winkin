@@ -44,7 +44,7 @@ with ruby flows beside a float on the left.
 Japanese set in `vertical-rl`, with ruby to the right of the lines and
 emphasis marks beside them. `text-combine-upright: digits 2` sets runs of
 up to two digits upright in one em, as in dates and times, and leaves the
-four-digit number on its side. Chrome does not support `digits`.
+four-digit number on its side.
 
 ![Vertical Japanese columns read from right to left, with readings beside some characters, red sesame marks, and one- and two-digit numbers set upright in a single character's space.](showcase/vertical.png)
 

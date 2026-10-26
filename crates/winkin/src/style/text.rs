@@ -51,7 +51,7 @@ impl WhiteSpaceCollapse {
 
 /// `white-space-trim`: removal of white space at an element's edges.
 ///
-/// Not inherited. Chrome does not support it.
+/// Not inherited.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub struct WhiteSpaceTrim {
     /// `discard-before`: the white space just before the element's start.
@@ -77,7 +77,6 @@ impl WhiteSpaceTrim {
 
 /// The case or exclusive mathematical part of `text-transform`.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
-#[non_exhaustive]
 pub enum TextCase {
     /// As written. The initial value.
     #[default]
@@ -107,7 +106,6 @@ pub struct TextTransform {
     ///
     /// Covers printable ASCII, half-width katakana and Hangul, and some
     /// symbols. A preserved space becomes U+3000. Applied after case mapping.
-    /// Chrome supports it only behind a flag.
     pub full_width: bool,
     /// `full-size-kana`: converts small kana to full-size forms.
     ///
@@ -325,7 +323,7 @@ pub struct TextAutospace {
 impl TextAutospace {
     /// `no-autospace`: nothing added.
     ///
-    /// The initial value as Chrome computes it; CSS gives `normal`.
+    /// The initial value. CSS gives [`NORMAL`](Self::NORMAL).
     pub const NO_AUTOSPACE: Self = Self {
         ideograph_alpha: false,
         ideograph_numeric: false,
@@ -388,8 +386,6 @@ pub enum HangEnd {
 }
 
 /// `hanging-punctuation`.
-///
-/// Chrome parses it but does not apply it.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub struct HangingPunctuation {
     /// `first`: an opening bracket or quote at the first line's start.

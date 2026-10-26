@@ -3,7 +3,7 @@
 //! right-to-left order, `.notdef` and broken layout tables.
 
 use super::*;
-use crate::style::FirstLineVariant;
+use crate::style::{FirstLineVariant, FontVariantPosition};
 
 // Advances -----------------------------------------------------------------
 
@@ -107,6 +107,33 @@ fn text_with_nothing_to_substitute_or_move_is_compact() {
         assert_eq!(advances[cluster.get()], 8 * 65_536, "half an em at 16 px");
     }
     assert_eq!(shaped.runs.len(), 1, "one run");
+}
+
+/// A font of more than 65,536 glyphs is shaped and stored whole: a
+/// character mapped past glyph 65,535 is a compact cluster holding its id,
+/// and `sups` substitutes its alternate past it from a 24-bit single
+/// substitution, with the alternate's advance from `HMTX`.
+#[test]
+fn glyphs_past_65535_are_shaped_and_stored() {
+    let mut font = TestFont::new("Test Wide", &[(0x20, 0x7E), (0x20000, 0x20000 + 65_600)]);
+    let wide = '\u{2FFDC}';
+    font.alternates = vec![(*b"sups", vec![(wide, 300)])];
+    let (plain, alternate) = (font.glyph(wide), font.alternate_glyph(*b"sups", wide));
+    assert!(plain > 65_535 && alternate > plain);
+    let mut fixture = fixture_with(&[font]);
+    let mut layout = Layout::new();
+    let family = [FontFamilyName::named("Test Wide")];
+    let mut style = families_style(&family);
+    fixture.span(&mut layout, &style, "\u{2FFDC}");
+    let shaped = layout.shaped().text(FirstLineVariant::Standard);
+    assert!(shaped.glyphs.sidecar.is_empty(), "compact");
+    assert_eq!(ids(&layout), [vec![plain]]);
+    assert_eq!(fixture.advances(), [px16(8)], "half an em at 16 px");
+    style.font.variant_position = FontVariantPosition::Super;
+    fixture.span(&mut layout, &style, "\u{2FFDC}");
+    assert_eq!(ids(&layout), [vec![alternate]]);
+    let size = i64::from(px16(16));
+    assert_eq!(fixture.advances(), [scaled(300, 1000, size)]);
 }
 
 /// A character drawn as two glyphs and a glyph drawn raised are expanded.

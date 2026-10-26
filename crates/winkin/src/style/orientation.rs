@@ -23,8 +23,6 @@ pub enum TextCombineUpright {
     /// The element's text set across the line in one upright em.
     All,
     /// Each run of up to this many ASCII digits, combined.
-    ///
-    /// Chrome does not support it.
     Digits(u8),
 }
 

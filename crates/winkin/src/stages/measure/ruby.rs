@@ -2,7 +2,7 @@
 //! room.
 //!
 //! A ruby column is as wide as the widest of its base and its annotation
-//! levels, each measured at its max-content, as Chrome's `HandleRuby` sizes
+//! levels, each measured at its max-content, as Blink's `HandleRuby` sizes
 //! it. [`RubySpread`] places the room a narrower part leaves. An emphasis
 //! mark is set like an annotation of its character, at half the size (CSS
 //! Text Decoration 4, "emphasis marks"). Nothing here allocates.
@@ -19,7 +19,7 @@ use super::Extent;
 use crate::work;
 
 /// Returns the em box of `clusters`' text in font request `request`, around
-/// its baseline, as Chrome's `ComputeEmHeight` gives a text item's.
+/// its baseline, as Blink's `ComputeEmHeight` gives a text item's.
 ///
 /// The box unites the em boxes of the fonts the clusters are drawn in, each
 /// rounded up to a whole pixel, capped at the primary font's ascent and
@@ -65,8 +65,8 @@ pub(crate) fn em_box(
 }
 
 /// Returns the em box of `request`'s primary font, rounded up to whole
-/// pixels and capped at its ascent and descent, for an empty ruby base, as
-/// Chrome's empty base line takes its container's font. [`Extent::NONE`]
+/// pixels and capped at its ascent and descent, for an empty ruby base: an
+/// empty base line takes its container's font. [`Extent::NONE`]
 /// without a primary font.
 pub(super) fn strut_em(fonts: &Fonts, request: FontRequestId) -> Extent {
     let Some(metrics) = fonts.primary_font(request).map(|used| &used.metrics) else {
@@ -84,14 +84,14 @@ pub(super) fn strut_em(fonts: &Fonts, request: FontRequestId) -> Extent {
 pub(crate) struct RubySpread {
     /// The room before the first cluster, at the logical start.
     pub(crate) start: LayoutUnit,
-    /// The room the opportunities share, as Chrome's `JustifyResults`
+    /// The room the opportunities share, as Blink's `JustifyResults`
     /// spreads it. The last takes what the division leaves.
     pub(crate) inside: LayoutUnit,
 }
 
 impl RubySpread {
     /// Returns the spread of `space` beside a base with `opportunities`, as
-    /// Chrome's `ApplyRubyAlign` places it on a justified base line.
+    /// Blink's `ApplyRubyAlign` places it on a justified base line.
     ///
     /// - `space-around`: an inset each side of half what one more
     ///   opportunity would take, the rest to the opportunities.
@@ -118,7 +118,7 @@ impl RubySpread {
         }
     }
 
-    /// Returns the spread of `space` beside an annotation, as Chrome's
+    /// Returns the spread of `space` beside an annotation, as Blink's
     /// `ApplyRubyAlign` places it on an annotation line.
     ///
     /// Only `space-around` differs from [`from_base`](Self::from_base). In a

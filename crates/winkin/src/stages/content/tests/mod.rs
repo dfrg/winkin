@@ -2460,13 +2460,15 @@ fn capitalize_titlecases_the_first_letter_of_each_word() {
     assert_eq!(transformed(&style, "mIxED CASE"), "MIxED CASE");
 }
 
-/// Capitalize finds words with the build's segmenter, as word motion does.
+/// Capitalize finds words with the context's dictionaries, as word motion
+/// does.
 ///
 /// - A Latin word after ideographs, kana or Thai starts a word, however they
 ///   are segmented.
-/// - With the `dictionaries` feature, so does one after `々`. ICU hands `々`
-///   to its dictionary with the ideograph before it, and breaks after the
-///   run, as Chrome 153 does.
+/// - With the `dictionaries` feature, so does one after `々`. Where a
+///   dictionary finds Han words, no Han character is a letter to the rules,
+///   as in ICU4C's word rules, so a word ends after the run, as Chrome 153
+///   ends one.
 /// - ICU4C's word rules count Thai as a letter joining the Latin after it,
 ///   so Chrome leaves `ghi` as it is. This test pins the difference.
 /// - Without dictionaries, UAX #29's rules find Chinese and Japanese words.

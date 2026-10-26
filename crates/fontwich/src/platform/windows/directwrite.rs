@@ -113,9 +113,9 @@ fn wws_families() -> Vec<(String, Vec<String>)> {
 /// Arial Black and Arial Narrow are fonts of "Arial" there, and Segoe UI
 /// Semibold one of "Segoe UI". But a page asks for them by their legacy
 /// names, as Win32 knew them — `font-family: "Arial Black"`, `"Segoe UI
-/// Semibold"` — and Chrome finds them, drawing only those fonts. So do we:
-/// the system font set indexes every font by its Win32 family name and its
-/// typographic family name, and every one of those not already a family is a
+/// Semibold"` — and each name draws only those fonts. So the system font
+/// set indexes every font by its Win32 family name and its typographic
+/// family name, and every one of those not already a family is a
 /// family too, loaded by [`by_property`].
 ///
 /// Returns them with how many are DirectWrite's own, which come first; the
@@ -423,18 +423,15 @@ impl LoadFamily for DirectWriteFonts {
 /// A Win32 family holds four styles — regular, bold, italic, bold italic —
 /// so a font that does not fit gets a family of its own: Arial Black, Arial
 /// Narrow, Segoe UI Semibold. Those names are the font's own, declared in its
-/// `name` table, and a page asks for them. Chrome draws exactly those fonts
-/// for them, and so do we.
+/// `name` table, and a page that asks for them gets exactly those fonts.
 ///
 /// DirectWrite applies the same rule to a *variable* font's named instances,
 /// which is a different thing: "Bahnschrift SemiBold" is a point on
 /// Bahnschrift's weight axis, named nowhere in the file, and every instance
 /// belongs to one font. Those are dropped. The font set answers for them even
 /// though it does not list them, so the check is here rather than at
-/// listing. Firefox does not resolve them either, and Chrome's own support is
-/// partial — it draws Bahnschrift SemiBold and Bahnschrift Condensed but
-/// falls back for Bahnschrift SemiBold Condensed — so nothing can depend on
-/// it. A page reaches a named instance through `font-weight` and the rest,
+/// listing. Browsers resolve them inconsistently, so nothing can depend on
+/// them. A page reaches a named instance through `font-weight` and the rest,
 /// which vary the font, or through `local()` in `@font-face`, which CSS says
 /// matches a full font name.
 fn other_names(name: &str) -> Vec<Font> {
@@ -499,7 +496,7 @@ fn local(name: &str) -> Option<Font> {
 /// in text of `locale`, if it maps `c` to one that has it.
 ///
 /// `IDWriteFontFallback::MapCharacters` as Skia's `matchFamilyStyleCharacter`
-/// asks it for Chrome: from the system collection, for the default family
+/// asks it: from the system collection, for the default family
 /// (Segoe UI, the message font Skia takes), regular, upright and normal
 /// width. Holds nothing across calls; a family name longer than a stack
 /// buffer, or any failure, is no answer.

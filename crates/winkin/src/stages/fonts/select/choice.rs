@@ -127,7 +127,7 @@ pub(super) struct Choice {
 #[derive(Copy, Clone, Debug)]
 pub(super) enum PositionPlan {
     /// Nothing to decide: `same` and `upper` set the text, with the feature
-    /// the style asks for, if any, as Chrome sets it.
+    /// the style asks for, if any.
     Settled,
     /// A font that lacks the feature under the script: `same` and `upper`
     /// are synthesized, and so is every run with text in the font.

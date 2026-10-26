@@ -2,7 +2,7 @@
 //!
 //! Pieces go in the edge tables on [`Lines`]; a trial rewinds them by mark.
 //!
-//! **Unsafe edges**, as in Chrome's `ShapingLineBreaker`:
+//! **Unsafe edges**, following Blink's `ShapingLineBreaker`:
 //! - A start the font shaped across is reshaped up to the next safe break,
 //!   within its shaping run.
 //! - An unsafe end is reshaped from the last safe break before it, never
@@ -23,7 +23,7 @@
 //!
 //! **Seam room** (`text-autospace`). A line that ends at a seam gives its
 //! room back: the last cluster is copied from the paragraph's glyphs, less
-//! the room (Chrome's `UnapplyAutoSpacing`).
+//! the room (Blink's `UnapplyAutoSpacing`).
 //!
 //! **Punctuation trim** (`text-spacing-trim`). A reshaped start is shaped as
 //! a line start. Under `space-first` and `trim-start`, a wrapped line that
@@ -56,8 +56,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// next safe break within its shaping run.
     ///
     /// The piece stays first in the edge tables for the candidates to share.
-    /// As in Chrome, nothing checks that it joins the paragraph's glyphs at its
-    /// end; a check costs a reshape per window and changes no test or page.
+    /// Nothing checks that it joins the paragraph's glyphs at its end; a check
+    /// costs a reshape per window and changes no test or page.
     pub(super) fn start_window(
         &mut self,
         out: &mut Lines,
@@ -347,7 +347,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
         let seams = para.seams;
         let letter_or_word = content.flags.contains(ContentFlags::NONZERO_SPACING);
         if letter_or_word || seams {
-            // Space the piece's own advances as Chrome spaces a reshaped result, so a
+            // Space the piece's own advances as a reshaped result is spaced, so a
             // ligature the piece forms is spaced as the piece has it. Seam room follows
             // every cluster but the last of a piece that ends a line.
             let spaced = LetterWordSpacing::from_shaping(&content.facts, run.shaping, self.words);
@@ -455,7 +455,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     }
 
     /// Returns the last cluster before `end` as its own piece, copied, with
-    /// `room` taken off its advance, as Chrome's `UnapplyAutoSpacing` does.
+    /// `room` taken off its advance, as Blink's `UnapplyAutoSpacing` does.
     fn given_back(
         &mut self,
         out: &mut Lines,
@@ -490,14 +490,14 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// the paragraph's glyphs. Then its last letter stays kerned against the
     /// space.
     ///
-    /// Collapsible spaces go, and Chrome removes them before it shapes a
-    /// paragraph's end. Elsewhere, as Chrome's `TruncateLineEndResult`
-    /// decides, the line is reshaped only where it needs its exact end
-    /// ([`Breaker::ends_without_spaces`]). Spaces that hang but stay keep
-    /// the paragraph's glyphs, and the text before them is reshaped as
-    /// `ShapingLineBreaker` ends it there: only where the line needs its
-    /// exact end, and only where the text's item goes on past the break,
-    /// since Chrome breaks no item that fits whole.
+    /// Collapsible spaces go, removed before a paragraph's end is shaped.
+    /// Elsewhere, as Blink's `TruncateLineEndResult` decides, the line is
+    /// reshaped only where it needs its exact end
+    /// ([`Breaker::ends_without_spaces`]). Spaces that hang but stay keep the
+    /// paragraph's glyphs, and the text before them is reshaped as
+    /// `ShapingLineBreaker` ends it there: only where the line needs its exact
+    /// end, and only where the text's item goes on past the break, since no
+    /// item that fits whole is broken.
     pub(super) fn removed_end(&self, line: &LineStart<'_>, end: ClusterId) -> Option<ClusterId> {
         let start = line.start;
         let mut at = end;
@@ -522,7 +522,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// Returns whether a line ending at `end`, after a space the text was
     /// shaped across, is reshaped up to `end`.
     ///
-    /// Chrome's `ShapingLineBreaker` ends the text before spaces that hang,
+    /// Blink's `ShapingLineBreaker` ends the text before spaces that hang,
     /// so they keep the paragraph's glyphs. `TruncateLineEndResult` then
     /// reshapes them only from a safe break inside them, past their first
     /// space. Under `break-spaces` the spaces end the text and are reshaped
@@ -530,7 +530,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// where the line needs its exact end. A tab ends its text, and its line
     /// is not reshaped.
     ///
-    /// Chrome 155, Times New Roman at 20px, whose space is 3.91px kerned
+    /// In Times New Roman at 20px, whose space is 3.91px kerned
     /// against an `A` and 5px alone: `XX AXX` in 60px keeps its space at
     /// 3.91px under `pre-wrap` at every alignment and with a background,
     /// and reshapes it to 5px under `break-spaces` at `center` or with a
@@ -580,16 +580,16 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// reshaped without them.
     ///
     /// Collapsible spaces at a paragraph's end always are. Elsewhere the line
-    /// must need its exact end, Chrome's `NeedsAccurateEndPosition` as
+    /// must need its exact end, Blink's `NeedsAccurateEndPosition` as
     /// `TruncateLineEndResult` and `ShapingLineBreaker` ask it: the alignment
     /// says so, or the text's style paints a background, border or box
     /// shadow, or has decorations, its own or its ancestors'. And the item
     /// holding the text before `at` must go on past the first space where
-    /// the spaces collapse, since Chrome drops a space in a node of its own
-    /// without a reshape, or past `end` where they stay, since Chrome breaks
-    /// no item that fits whole.
+    /// the spaces collapse, since a space in a node of its own drops without
+    /// a reshape, or past `end` where they stay, since no item that fits
+    /// whole is broken.
     ///
-    /// Chrome 155, `XRAY bravo` in Times New Roman at 20px, 90px wide, its
+    /// For `XRAY bravo` in Times New Roman at 20px, 90px wide, its
     /// `Y` 0.75px narrower kerned against the space: the `Y` is reshaped
     /// with a background, a border or a box shadow on the block or on a span
     /// holding `XRAY `, with an underline on the block or on a span around
@@ -621,7 +621,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     }
 
     /// Returns whether the text of `node` needs its line's exact end by its
-    /// style, as Chrome's `NeedsAccurateEndPosition` reads it.
+    /// style, as Blink's `NeedsAccurateEndPosition` reads it.
     ///
     /// Its container paints a background, border or box shadow there, or
     /// decorates its text, or a box around it or the block does. An outline

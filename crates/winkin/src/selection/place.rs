@@ -148,7 +148,7 @@ impl<'a> Leaf<'a> {
     /// hits, with the cluster starting there.
     ///
     /// The boundary is the nearer edge of the cluster at `y`, a tie going to
-    /// its start, as a click in Chrome's combined text finds it. Past the text
+    /// its start, as a click in Blink's combined text finds it. Past the text
     /// on either side it is the unit's start or end. Chrome there jumps to the
     /// text's start, a bug not matched.
     pub(super) fn hit_across(&self, layout: &Layout, y: f32) -> Option<(usize, ClusterId)> {
@@ -247,9 +247,9 @@ impl<'a> Leaf<'a> {
     /// Returns the extent across the line of a caret in it, from the line
     /// box's top.
     ///
-    /// In text it spans the font's ascent and descent around the baseline, as
-    /// Chrome sizes a caret. Beside an atomic inline it spans the line box,
-    /// as Chrome's `ComputeLocalCaretRectByBoxSide` does.
+    /// In text it spans the font's ascent and descent around the baseline.
+    /// Beside an atomic inline it spans the line box, as Blink's
+    /// `ComputeLocalCaretRectByBoxSide` does.
     fn caret_block(&self) -> CrossExtents {
         match &self.item {
             LeafItem::Text(run) => run.block(),
@@ -286,8 +286,7 @@ impl<'a> Leaf<'a> {
 
 /// Returns the leaves of `line` in visual order.
 ///
-/// Includes text an ellipsis hides, which keeps its carets and hits as in
-/// Chrome.
+/// Includes text an ellipsis hides, which keeps its carets and hits.
 pub(super) fn leaves<'a>(line: Line<'a>) -> impl DoubleEndedIterator<Item = Leaf<'a>> + Clone {
     line.leaf_items()
         .filter_map(move |item| Leaf::from_item(line, item))
@@ -741,8 +740,8 @@ fn line_carets(layout: &Layout, line: &Line<'_>, snapped: ClusteredPosition) -> 
 ///
 /// At the edge of combined text, the affinity picks the side: downstream the
 /// leaf after, upstream the one before. A click in a unit draws its caret in
-/// the unit and a click beside it draws it outside, as in Chrome 153, which
-/// has two DOM positions there.
+/// the unit and a click beside it draws it outside. Blink has two DOM
+/// positions there.
 fn touching<'a>(
     layout: &Layout,
     leaves: impl Iterator<Item = Leaf<'a>>,

@@ -16,7 +16,7 @@
 //! holds all of it. The rest's width shifts prefix positions past the
 //! column's end.
 //!
-//! Chrome's rules:
+//! The rules:
 //! - The base and each level share the room in proportion to their widths.
 //! - A rest of at most four base glyphs, and at most eight in each level,
 //!   stays whole.

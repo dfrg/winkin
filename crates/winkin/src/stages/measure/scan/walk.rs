@@ -519,7 +519,7 @@ impl<'a> ScanWalk<'a> {
     /// - Text takes its strut, widened by its fonts under `line-height:
     ///   normal`, as Blink accumulates used fonts.
     /// - A `<br>` and a box's opening edge take their text's strut, as in
-    ///   Blink's standards mode.
+    ///   standards mode.
     /// - An atomic inline takes its margin box against its baseline.
     /// - Anything else takes nothing.
     fn extent(
@@ -573,8 +573,8 @@ impl<'a> Scan<'a> {
 
 /// What the scan last passed that a ruby column may overhang.
 ///
-/// Tags of boxes and ruby containers are skipped, as in Chrome's
-/// `CanApplyStartOverhang` and `CommitPendingEndOverhang`. Tracked only with
+/// Tags of boxes and ruby containers are skipped, as Blink's
+/// `CanApplyStartOverhang` and `CommitPendingEndOverhang` skip them. Tracked only with
 /// ruby.
 #[derive(Copy, Clone, Debug, Default)]
 pub(super) enum OverhangNeighbour {

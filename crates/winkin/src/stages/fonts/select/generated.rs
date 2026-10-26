@@ -2,7 +2,6 @@
 //! hyphen and a cut line's ellipsis.
 
 use fontwich::Presentation;
-use icu_segmenter::GraphemeClusterSegmenter;
 use parlance::{Language, Script};
 
 use super::choice::{ResolvedRequest, choose};
@@ -266,7 +265,7 @@ fn generated_class(grapheme: &str) -> ClusterClass {
 fn generated_script(string: &str) -> Script {
     let script = string
         .chars()
-        .map(|ch| unicode::script(unicode::core_props(ch)))
+        .map(|ch| unicode::core_props(ch).script())
         .find(|&script| {
             script != ScriptId::COMMON
                 && script != ScriptId::INHERITED
@@ -278,17 +277,7 @@ fn generated_script(string: &str) -> Script {
 
 /// Returns the graphemes of a generated text, each with its end offset.
 ///
-/// The graphemes are UAX #29 grapheme clusters, found with ICU's segmenter,
-/// whose data is compiled in and which allocates nothing.
+/// The graphemes are UAX #29 extended grapheme clusters.
 fn generated_graphemes(string: &str) -> impl Iterator<Item = (usize, &str)> {
-    let mut start = 0;
-    // The segmenter yields 0 first, which ends no grapheme.
-    GraphemeClusterSegmenter::new()
-        .segment_str(string)
-        .filter(|&end| end > 0)
-        .map(move |end| {
-            let grapheme = string.get(start..end).unwrap_or_default();
-            start = end;
-            (end, grapheme)
-        })
+    unicode::graphemes(string).map(|(start, grapheme)| (start + grapheme.len(), grapheme))
 }

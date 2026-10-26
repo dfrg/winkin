@@ -122,7 +122,7 @@ read starts, such as a hit test or a caret.
 **Fixed-point units.** Lengths use the fixed-point types in
 [`unit.rs`](../src/unit.rs): `TextUnit` (16.16) for glyph geometry,
 `LayoutUnit` (26.6) for layout geometry, and `InlineLayoutUnit` (48.16) for
-running advances. These are Chrome's types, rounded where Chrome rounds.
+running advances.
 Values enter and leave as `f32` CSS pixels, and every conversion between a
 float and an integer is in `unit.rs`.
 
@@ -154,8 +154,8 @@ between calls, and a layout stays valid, readable and breakable after
 - Block layout: the sizes of atomic inlines and floats, which the host lays
   out first, and the use of `Layout::metrics`, `intrinsic_sizes` and
   `static_positions`.
-- Painting. `Line::paints` yields operations in paint order, item by item
-  as Chrome paints a line; the host draws them.
+- Painting. `Line::paints` yields operations in paint order, item by item;
+  the host draws them.
 - Optionally, hinted glyph metrics through
   [`FontMetricsProvider`](../src/font.rs), passed to
   `LayoutBuilder::finish_with_metrics` and `Layout::break_lines_with_metrics`.
@@ -186,5 +186,5 @@ whole and counted in the `BuildReport`.
   ([`work.rs`](../src/work.rs)). Tests build the same content at two sizes
   and compare the counts, so a stage that grows faster than its input, or
   searches where it should walk, fails without depending on timing.
-- **Behavior.** Each stage's `tests/` folder holds tests with expected
-  values from Chrome or the CSS specifications.
+- **Behavior.** Each stage's `tests/` folder holds tests with pinned
+  expected values, measured or taken from the CSS specifications.

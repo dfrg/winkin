@@ -10,11 +10,11 @@
 //! - truncation, on a line cut for an ellipsis (`cut`);
 //! - the items, then the ruby annotation lines (`annotations`).
 //!
-//! Alignment is Chrome's `LineOffsetForTextAlign`. It sees the content, and
+//! Alignment follows Blink's `LineOffsetForTextAlign`. It sees the content, and
 //! only the fitting part of preserved white space before a forced break or
 //! the block's end. It moves the whole line, tabs included.
 //!
-//! Bidi follows Chrome:
+//! Bidi:
 //! - L1: the line's trailing preserved white space takes the paragraph's
 //!   level. Under `break-spaces` it splits from the text before it, as
 //!   Blink's `SplitTrailingBidiPreservedSpace` does, only where it ends
@@ -69,8 +69,8 @@ define_id! {
 /// The piece an ellipsis cut divides: the piece, the boundary, and the kept
 /// part's advance.
 ///
-/// It is written as two items, the kept part and the hidden part, as Chrome
-/// hides its item and draws a truncated one in its place. A line has one at
+/// It is written as two items, the kept part and the hidden part: the item
+/// is hidden and a truncated one drawn in its place. A line has one at
 /// most, so the pieces don't carry it.
 #[derive(Copy, Clone, Debug)]
 pub(super) struct PieceSplit {
@@ -89,11 +89,11 @@ pub(super) struct LineCut {
 
 /// Which ends of the line a ruby column standing there sits flush with.
 ///
-/// These are Chrome's `on_start_edge` and `on_end_edge`
+/// These are Blink's `on_start_edge` and `on_end_edge`
 /// (`LogicalLineBuilder::PlaceRubyColumn`). They apply on a justified line
 /// in a block with no bidi. The start also applies on a paragraph's last
-/// line when the block's `text-align` is `justify`, as in Chrome. The end
-/// applies only when the line itself is justified.
+/// line when the block's `text-align` is `justify`. The end applies only when
+/// the line itself is justified.
 #[derive(Copy, Clone, Debug, Default)]
 pub(super) struct RubyEdges {
     pub(super) start: bool,
@@ -479,9 +479,8 @@ heap_bytes! {
 /// `text-group-align`: how far each line's band narrows, and how far its
 /// left end moves in, to align the lines as one group.
 ///
-/// Chrome doesn't parse it; this follows CSS. `least` is the least room any
-/// line spares, found before any line is placed. If a line overflows, the
-/// group spares nothing.
+/// This follows CSS. `least` is the least room any line spares, found before
+/// any line is placed. If a line overflows, the group spares nothing.
 #[derive(Copy, Clone, Debug, Default)]
 pub(super) struct Group {
     least: LayoutUnit,
@@ -545,7 +544,7 @@ impl Side {
     /// Returns the side a line set in `align` goes to.
     ///
     /// A `justify` line here is one that cannot be justified, so it is set
-    /// at its start, as Chrome sets it.
+    /// at its start.
     pub(super) fn from_align(align: TextAlign, rtl: bool) -> Self {
         match align {
             TextAlign::Start | TextAlign::Justify if rtl => Self::Right,
@@ -559,7 +558,7 @@ impl Side {
     }
 
     /// Returns how far a line on this side moves in from its band's left,
-    /// given `spare` room, as Chrome's `LineOffsetForTextAlign` does.
+    /// given `spare` room, as Blink's `LineOffsetForTextAlign` does.
     ///
     /// A line that overflows spills out on its end side. A centered line
     /// moves by half the room, truncated on the grid.
@@ -934,9 +933,9 @@ impl<'a> Placer<'a> {
     /// Returns the part of line `id`'s indent inside the initial letter's
     /// box: the first line's indent, where that line opens one.
     ///
-    /// Fitting counts that line's indent twice, as Chrome lays the box out
-    /// as a block whose own first line takes the indent too
-    /// (`CalculateInitialLetterBoxInlineSize`). The box's start edge takes
+    /// Fitting counts that line's indent twice: the box lays out as a block
+    /// whose own first line takes the indent too (Blink's
+    /// `CalculateInitialLetterBoxInlineSize`). The box's start edge takes
     /// the second.
     fn letter_indent(&self, id: LineId) -> LayoutUnit {
         let indent = self.stages.content.block.text_indent;
@@ -968,8 +967,8 @@ impl<'a> Placer<'a> {
         // fits. What hangs before it, an ideographic space say, hangs only
         // where none of it fits, as nothing after it then takes room.
         // Elsewhere hanging content is left out. A justified line leaves all
-        // of it out, as Chrome hangs trailing spaces under `justify`
-        // (`ShouldHangTrailingSpaces`).
+        // of it out, since trailing spaces hang under `justify` (Blink's
+        // `ShouldHangTrailingSpaces`).
         let counted = if line.flags.contains(LineFlags::CONDITIONAL_HANG) && !justified {
             let before = line.hang.unconditional;
             let fits = (line.hang.space - before)

@@ -4,11 +4,11 @@
 //! Annotation positions belong to the line, not the column. The first level
 //! over every base on a line shares one baseline, which sets the tallest
 //! level em box on the tallest base em box. Each outer level sits on the one
-//! inside it; levels under the bases stack the same way. This is Chrome's
-//! `RubyBlockPositionCalculator::PlaceLines`. The breaker and line layout
+//! inside it; levels under the bases stack the same way, as Blink's
+//! `RubyBlockPositionCalculator::PlaceLines` stacks them. The breaker and line layout
 //! both call [`LevelBands::stack`].
 //!
-//! The room follows Chrome's `ComputeAnnotationOverflow` and
+//! The room follows Blink's `ComputeAnnotationOverflow` and
 //! `SetAnnotationOverflow`:
 //! - The line's content is each text item's em box, each atomic inline's
 //!   margin box, the emphasis marks and the annotations.
@@ -19,12 +19,12 @@
 //! - Both fold into the line's extent, so `text-box-trim` trims them with the
 //!   line. The last line's carry is `Layout::room_below`.
 //!
-//! Under `Config::emphasis_room = Uniform`, beyond Chrome, marks take no part
-//! in that. Each marked line grows instead by what its marks and their text
-//! need past its line box, split over and under in proportion to the marks,
-//! so lines stay evenly spaced.
+//! Under `Config::emphasis_room = Uniform`, marks take no part in that. Each
+//! marked line grows instead by what its marks and their text need past its
+//! line box, split over and under in proportion to the marks, so lines stay
+//! evenly spaced.
 //!
-//! Only content with ruby or emphasis makes room line by line, as Chrome
+//! Only content with ruby or emphasis makes room line by line, as Blink
 //! checks `Node().HasRuby() || has_text_emphasis`. Other blocks measure the
 //! last line's carry when `Lines::room_below` is read
 //! ([`LineStages::plain_carry`]).
@@ -93,7 +93,7 @@ impl LevelBands {
     /// `on_line`, whose bases start on the line. Empty levels of split columns
     /// are skipped. The first level sits on the bases' em box, which the line
     /// sets with in-flow content ending at `end`; where every base on a side is
-    /// empty, on `line`, the line box's extent, as in Chrome. Linear in the
+    /// empty, on `line`, the line box's extent. Linear in the
     /// levels.
     pub(crate) fn stack(
         &mut self,
@@ -148,8 +148,8 @@ impl LevelBands {
                             raise: LayoutUnit::ZERO,
                         });
                     }
-                    // No extent is a zero-height level at the baseline, as Chrome takes an
-                    // empty annotation line.
+                    // No extent is a zero-height level at the baseline, as an empty
+                    // annotation line is.
                     let extent = level.extent.zero_if_none();
                     match out.get_mut(index) {
                         Some(band) => band.extent = band.extent.unite(extent),
@@ -171,13 +171,13 @@ impl LevelBands {
             if out.len() == from {
                 continue;
             }
-            // Where every base is empty, the levels stand on the line box, as in
-            // Chrome (`node_metrics = line_box_metrics`).
+            // Where every base is empty, the levels stand on the line box
+            // (Blink's `node_metrics = line_box_metrics`).
             if base.is_none() || base.height() == LayoutUnit::ZERO {
                 base = line;
             }
             // A depth no level on the line fills, as under a split column, takes no
-            // room: Chrome stacks only the annotation lines a line has.
+            // room: only the annotation lines a line has are stacked.
             let bands = out.get_mut(from..).unwrap_or_default();
             match side {
                 RubySide::Over => {
@@ -245,7 +245,7 @@ pub(super) struct AnnotationRoom<'a> {
     rule: EmphasisRoom,
 }
 
-/// What a line leaves the next at its block-end side, as Chrome's
+/// What a line leaves the next at its block-end side, as Blink's
 /// `BlockStartAnnotationSpace`.
 ///
 /// Positive is room under the content; negative is how far the annotations
@@ -266,7 +266,7 @@ pub(super) struct AnnotationContinuation<'a> {
 impl<'a> AnnotationRoom<'a> {
     /// Returns whether the content has ruby or marks, so every line makes room.
     ///
-    /// As with Chrome's `Node().HasRuby()`, ruby anywhere counts for the whole
+    /// As with Blink's `Node().HasRuby()`, ruby anywhere counts for the whole
     /// block. The answer is the same for both variants.
     pub(super) fn wanted(content: &Content, measured: &Measured) -> bool {
         let flags = content.flags;
@@ -456,8 +456,8 @@ impl LineStages<'_> {
     /// Returns how far a line's content reaches over and under its baseline,
     /// keeping room for a letter of the block's size.
     ///
-    /// As in Chrome, a nearly empty line reaches its line box `natural` less
-    /// half the leading such a letter leaves.
+    /// A nearly empty line reaches its line box `natural` less half the
+    /// leading such a letter leaves.
     fn letter_room(
         &self,
         natural: Extent,
@@ -628,7 +628,7 @@ impl<'w, 'a> EmWalk<'w, 'a> {
     /// Adds item `id`, which contains `clusters`, some on the line.
     ///
     /// Skips annotations, which belong to their column, and items with no
-    /// cluster. Skips the initial letter too: as in Chrome's
+    /// cluster. Skips the initial letter too: as with Blink's
     /// `ComputeAnnotationOverflow`, it adds no height to the line.
     pub(super) fn visit(
         &mut self,
@@ -693,7 +693,7 @@ impl<'w, 'a> EmWalk<'w, 'a> {
 /// Returns how far the outermost annotation on `side` over `cluster`'s base
 /// reaches from the baseline.
 ///
-/// An emphasis mark in that base is set past it, as Chrome's
+/// An emphasis mark in that base is set past it, as Blink's
 /// `SetTextEmphasisAnnotationMetrics` does. The annotation's em box stands on
 /// its level's baseline (`UpdateColumnLayoutAnnotationMetrics`).
 fn annotation_past(

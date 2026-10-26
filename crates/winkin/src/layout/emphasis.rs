@@ -45,9 +45,8 @@ use crate::work;
 /// with the center of its glyph's ink bounds on `x`. Center the ink, not the
 /// advance or the font's ascent and descent, in vertical text as in
 /// horizontal text: those move the mark by the font's bearings, or by where
-/// its ink sits between its ascent and descent. This matches Chrome.
+/// its ink sits between its ascent and descent.
 #[derive(Copy, Clone, PartialEq, Debug)]
-#[non_exhaustive]
 pub struct EmphasisMark {
     /// The node key of the marked text.
     ///

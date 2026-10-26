@@ -1,5 +1,5 @@
 //! Cluster tests. They pin:
-//! - grapheme clusters, against UAX #29's own test file and ICU's segmenter;
+//! - grapheme clusters, against UAX #29's own test file and the segmenter;
 //! - Latin-1 characters and objects standing alone, and item boundaries
 //!   dividing a grapheme;
 //! - each cluster's class.
@@ -27,14 +27,22 @@ fn with_spaces_apart(text: &str, boundaries: &[usize]) -> Vec<usize> {
     out
 }
 
-/// The grapheme clusters are UAX #29 17.0's: `GraphemeBreakTest.txt`, from
-/// ICU4X's copy of the Unicode file, every line, as one text preserved, but
-/// for a space and its marks ([`with_spaces_apart`]).
+/// Returns the grapheme boundaries of `text`, both ends included.
+fn grapheme_boundaries(text: &str) -> Vec<usize> {
+    let mut boundaries: Vec<usize> = unicode::graphemes(text).map(|(start, _)| start).collect();
+    boundaries.push(text.len());
+    boundaries
+}
+
+/// The grapheme clusters are UAX #29 18.0's: `GraphemeBreakTest.txt`, the
+/// copy the Unicode tables are generated beside, every line, as one text
+/// preserved, but for a space and its marks ([`with_spaces_apart`]).
 ///
 /// The file has no U+FFFC; a boundary after one is the next test's.
 #[test]
 fn clusters_follow_the_grapheme_break_test() {
-    let Some(file) = unicode_test_data("GraphemeBreakTest.txt") else {
+    let Some(file) = unicode_test_data("../../unicode_gen/data/18.0.0/GraphemeBreakTest.txt")
+    else {
         return;
     };
     let root = white_space(WhiteSpaceCollapse::Preserve);
@@ -85,23 +93,22 @@ fn clusters_follow_the_grapheme_break_test() {
         assert_eq!(found, with_spaces_apart(&text, &expected), "{line}");
         cases += 1;
     }
-    // The file's 766, less the 75 with a CR.
-    assert_eq!(cases, 691);
+    // The file's 853, less the 79 with a CR.
+    assert_eq!(cases, 774);
 }
 
 /// Every pair of Latin-1 characters has a grapheme boundary between them, but a
 /// CRLF. This lets the writer skip the segmenter on Latin-1 text. The test checks
-/// every pair against ICU.
+/// every pair.
 #[test]
 fn latin_1_characters_are_graphemes_of_their_own_but_a_crlf() {
-    let cx = AnalysisContext::new();
     let mut text = String::new();
     for first in (0..=0xFF_u8).map(char::from) {
         for second in (0..=0xFF_u8).map(char::from) {
             text.clear();
             text.push(first);
             text.push(second);
-            let found: Vec<_> = cx.graphemes().segment_str(&text).collect();
+            let found = grapheme_boundaries(&text);
             let expected = if first == '\r' && second == '\n' {
                 vec![0, 2]
             } else {
@@ -112,57 +119,12 @@ fn latin_1_characters_are_graphemes_of_their_own_but_a_crlf() {
     }
 }
 
-/// Two characters whose Grapheme_Cluster_Break stands alone in the crate's
-/// table (Other, a control, CR or LF) have a boundary between them too. This
-/// lets the writer skip the segmenter beyond Latin-1.
-///
-/// The test takes every such code point up to plane 3 and in plane 14, and one
-/// in 64 of the planes between and of private use. Each sits beside one
-/// character of each kind the segmenter tells apart among them: a letter, a
-/// pictograph, a conjunct's consonant, a control and an ideograph. The
-/// segmenter reads the whole text at once.
+/// Clusters match the segmenter's graphemes in text that alternates between
+/// Latin-1 and what joins characters into graphemes: marks, joiners, emoji
+/// sequences, flags, Hangul syllables, conjuncts, prepended and spacing marks.
+/// The writer resumes the segmenter after each Latin-1 run it skipped.
 #[test]
-fn characters_that_stand_alone_are_graphemes_of_their_own() {
-    let cx = AnalysisContext::new();
-    let beside = ['a', '😀', 'क', '\u{1}', '日'];
-    let mut text = String::new();
-    let mut expected = vec![0];
-    let mut count = 0;
-    for cp in 0..=0x10_FFFF_u32 {
-        let sampled = (0x4_0000..0xE_0000).contains(&cp) || cp >= 0xF_0000;
-        if sampled && cp % 64 != 0 {
-            continue;
-        }
-        let Some(ch) = char::from_u32(cp) else {
-            continue;
-        };
-        if !unicode::rare_props(ch)
-            .grapheme_cluster_break()
-            .stands_alone()
-        {
-            continue;
-        }
-        for piece in [beside[count % beside.len()], ch] {
-            text.push(piece);
-            expected.push(text.len());
-        }
-        count += 1;
-    }
-    assert!(count > 300_000, "{count}");
-    let found: Vec<_> = cx.graphemes().segment_str(&text).collect();
-    if let Some(at) = found.iter().zip(&expected).position(|(a, b)| a != b) {
-        let near = text.get(expected[at.saturating_sub(2)]..expected[at + 1]);
-        panic!("no boundary as expected near {near:?}");
-    }
-    assert_eq!(found, expected);
-}
-
-/// Clusters match ICU's graphemes in text that alternates between Latin-1 and
-/// what joins characters into graphemes: marks, joiners, emoji sequences,
-/// flags, Hangul syllables, conjuncts, prepended and spacing marks. The writer
-/// restarts the segmenter wherever it skipped it.
-#[test]
-fn clusters_across_latin_1_and_the_rest_are_icus_graphemes() {
+fn clusters_across_latin_1_and_the_rest_are_graphemes() {
     let pool: Vec<char> = concat!(
         "aZé1 .\t\u{A0}\u{AD}©®",
         "\u{301}\u{308}\u{200D}\u{FE0F}👍\u{1F3FB}❤\u{1F1EB}\u{1F1F7}",
@@ -178,20 +140,31 @@ fn clusters_across_latin_1_and_the_rest_are_icus_graphemes() {
         state ^= state << 5;
         usize::try_from(state).unwrap_or(0) % below
     };
-    let cx = AnalysisContext::new();
     for _ in 0..2000 {
         let len = 1 + next(20);
         let text: String = (0..len).map(|_| pool[next(pool.len())]).collect();
         let layout = pre(&text);
         assert_eq!(layout.content().text, text, "preserved as written");
-        let graphemes: Vec<_> = cx.graphemes().segment_str(&text).collect();
-        let graphemes = with_spaces_apart(&text, &graphemes);
+        let graphemes = with_spaces_apart(&text, &grapheme_boundaries(&text));
         let expected: Vec<&str> = graphemes
             .windows(2)
             .map(|pair| &text[pair[0]..pair[1]])
             .collect();
         assert_eq!(clusters(&layout), expected, "{text:?}");
     }
+}
+
+/// A conjunct linker joins the consonant after it with no consonant before
+/// it, as Unicode 18.0's GB9c says, so U+0061 U+094D U+0915 is one cluster.
+/// Chrome 155 follows Unicode 17.0, whose GB9c needs a consonant before the
+/// linker: its `Intl.Segmenter` breaks before U+0915.
+#[test]
+fn a_linker_joins_the_next_consonant_with_none_before_it() {
+    assert_eq!(clusters(&pre("a\u{94D}\u{915}")), ["a\u{94D}\u{915}"]);
+    assert_eq!(
+        clusters(&pre("\u{915}\u{94D}\u{915}")),
+        ["\u{915}\u{94D}\u{915}"]
+    );
 }
 
 /// A cluster always ends after U+FFFC, an atomic inline's or the text's. A

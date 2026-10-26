@@ -1,6 +1,6 @@
 //! Places a line's ruby columns.
 //!
-//! A column's base sits on the line among the rest, as Chrome's
+//! A column's base sits on the line among the rest, as Blink's
 //! `PlaceRubyColumn` places it. The column's spare room goes into gaps
 //! before and after the base and at its justification opportunities, as
 //! `ruby-align` says. Gaps write no items and take the level of the text
@@ -123,15 +123,15 @@ impl ColumnSizes {
     /// share, and its width on the line, for a column at a justified line's
     /// `start` edge, `end` edge, or both.
     ///
-    /// This is where `ruby-align: space-around` puts the room, as Chrome's
+    /// This is where `ruby-align: space-around` puts the room, as Blink's
     /// `ApplyRubyAlign` does with `on_start_edge` and `on_end_edge`:
     /// - At one edge, the base sits flush with it, and all the room the
     ///   base's opportunities don't share goes on the other side.
     /// - At both edges, all the room goes inside the base, as
     ///   `space-between` puts it, or the base is centred where it has no
     ///   opportunity. A column wider than its base is then all the line
-    ///   holds, and spreads over `line`, the line's room, as Chrome spreads a
-    ///   base-shorter column alone on a line.
+    ///   holds, and spreads over `line`, the line's room, as a base-shorter
+    ///   column alone on a line spreads.
     /// - At neither, the room is `before` and `inside`.
     fn room_on_edges(
         &self,
@@ -468,7 +468,7 @@ impl<'a> Placer<'a> {
         } else {
             // Both gaps take the lowest level in the base, its boxes' bidi
             // controls included, so reordering keeps them outside every
-            // part of it, as Chrome places a column as one unit.
+            // part of it: a column is placed as one unit.
             let lowest = self.base_level(pieces, &open);
             if let Some(leading) = pieces.logical.get_mut(open.leading) {
                 leading.level = lowest;
@@ -586,7 +586,7 @@ impl<'a> Placer<'a> {
     /// Returns where the collapsible spaces ending `column`'s base start,
     /// and their advance, where the column ends `line`.
     ///
-    /// Chrome's `RemoveTrailingCollapsibleSpace` removes them from the
+    /// Blink's `RemoveTrailingCollapsibleSpace` removes them from the
     /// column's base, and the column takes the width of what is left.
     #[cold]
     #[inline(never)]
@@ -621,7 +621,7 @@ impl<'a> Placer<'a> {
     /// Returns where `line`'s in-flow content ends, leaving out a forced
     /// break but keeping trailing white space.
     ///
-    /// This is Chrome's `InflowEndOffsetWithoutForcedBreak`.
+    /// This is Blink's `InflowEndOffsetWithoutForcedBreak`.
     fn inflow_end(&self, line: &LineView<'_>) -> ClusterId {
         let end = line.clusters().end;
         match end.get().checked_sub(1).map(ClusterId::new) {
@@ -660,7 +660,7 @@ impl<'a> Placer<'a> {
     }
 
     /// Moves the room `ruby-align` spread in the line's ruby bases into
-    /// their text, as Chrome's expansion is part of the glyphs.
+    /// their text, as justification room is part of the glyphs.
     ///
     /// Each base's text takes the room at its opportunities, and its
     /// outermost text the room its column leaves before and after it, out
@@ -755,8 +755,8 @@ heap_bytes! {
 
 impl LinePieces {
     /// Moves the room each spread gap holds into the text of its node beside
-    /// it, as Chrome expands the glyph before an opportunity: into the text
-    /// before it, or the text after it where none is before.
+    /// it, as the glyph before an opportunity expands: into the text before
+    /// it, or the text after it where none is before.
     ///
     /// The gap keeps its place with no room, and the text takes the room on
     /// the gap's side. Nothing moves along the line.
@@ -820,8 +820,8 @@ impl LinePieces {
     /// none where `range` holds no text. Pieces `nested` names are passed
     /// over.
     ///
-    /// The text takes the room on that side, as Chrome expands the glyph at
-    /// the edge of a spread base or annotation.
+    /// The text takes the room on that side, expanding the glyph at the edge
+    /// of a spread base or annotation.
     pub(super) fn absorb_end(
         &mut self,
         range: Range<PieceId>,

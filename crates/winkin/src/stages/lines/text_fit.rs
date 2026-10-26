@@ -1,7 +1,7 @@
 //! `text-fit`: the scale that makes each line's text fill its line.
 //!
 //! Lines break at the text's own size; each line's scale is set after it is
-//! fitted and before its height, as Chrome's `LineFitter` does. `per-line`
+//! fitted and before its height, as Blink's `LineFitter` does. `per-line`
 //! scales each line alone. `consistent` lays the block out twice: once to
 //! find the least scale its lines ask for (`MeasurePerBlockScale`), then with
 //! that scale on every line. Kept scales go in `RareLines::scales`.
@@ -29,7 +29,7 @@ use crate::unit::{InlineLayoutUnit, LayoutUnit};
 use crate::work;
 
 /// Returns how far a line may miss its room and take no scale: 2 px,
-/// Chrome's epsilon at a device pixel ratio of 1.
+/// Blink's epsilon at a device pixel ratio of 1.
 fn epsilon() -> LayoutUnit {
     LayoutUnit::from_px(2.0)
 }
@@ -85,7 +85,7 @@ impl TextFitting {
         }
     }
 
-    /// Returns `scale` held to the limit, as Chrome's `RestrictScale` does.
+    /// Returns `scale` held to the limit, as Blink's `RestrictScale` does.
     fn restrict(&self, scale: f32) -> f32 {
         match self.kind {
             TextFitKind::Shrink => scale.max(self.bound),
@@ -175,7 +175,7 @@ impl LineStages<'_> {
     }
 }
 
-/// Height inputs of a scaled line, as Chrome's
+/// Height inputs of a scaled line, as Blink's
 /// `InlineBoxState::ComputeTextMetrics` and `ComputeAlignmentBaselineShift`
 /// scale them.
 impl LineStages<'_> {
@@ -335,7 +335,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     }
 }
 
-/// Returns the scale `consistent` sets every line of `out` in, as Chrome's
+/// Returns the scale `consistent` sets every line of `out` in, as Blink's
 /// `MeasurePerBlockScale` measures it.
 ///
 /// It is the least scale that fills a line, held to the limit. Lines within

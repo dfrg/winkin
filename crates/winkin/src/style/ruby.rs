@@ -7,8 +7,7 @@ use crate::style::same::same_by_value;
 pub enum RubyPosition {
     /// Above the base.
     ///
-    /// The initial value as Chrome computes it. CSS gives `alternate`, which
-    /// Chrome does not support.
+    /// The initial value. CSS gives [`Alternate`](Self::Alternate).
     #[default]
     Over,
     /// Below the base.

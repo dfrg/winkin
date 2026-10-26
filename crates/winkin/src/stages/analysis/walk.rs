@@ -23,14 +23,13 @@ use super::classify::is_east_asian;
 use super::classify::{
     first_class, glues, hangs, is_latin1_fast, latin1_fast_char, latin1_fast_class,
 };
-use super::graphemes::GraphemeCursor;
 use super::hosted::{self, Hosted, ItemWords};
 use super::scripts::{self, RunBuilder, Setting};
 use super::{
     Analysis, AnalysisContext, AnalysisInput, AnalysisScratch, BidiLevel, ClusterAttrs,
     ClusterClass, ClusterId, Paragraph, ParagraphFlags, ParagraphState, RunOrientation, bidi,
 };
-use crate::config::SmallKana;
+use crate::config::{LooseHyphens, SmallKana};
 use crate::data::{Id, TextOffset, define_flags};
 use crate::stages::content::{
     BoxFacts, Content, ContentFlags, Item, ItemFlags, ItemId, ItemKind, LanguageId, MAX_RUBY_DEPTH,
@@ -39,7 +38,7 @@ use crate::stages::content::{
 use crate::style::{
     Direction, FirstLineVariant, Language, TextCombineUpright, WhiteSpaceCollapse, WordBreak,
 };
-use crate::unicode::{self, CoreProps, RareProps};
+use crate::unicode::{self, CoreProps, GraphemeState, RareProps};
 use crate::unit::LayoutUnit;
 use crate::work;
 
@@ -75,27 +74,28 @@ pub(super) struct ItemInfo {
 }
 
 impl ItemInfo {
-    /// Returns the facts of `item`, a text-bearing item of `content`.
-    fn new(content: &Content, item: &Item) -> Self {
+    /// Returns the facts of `item`, a text-bearing item of `content`, under
+    /// the config's rule for hyphens under `loose`.
+    fn new(content: &Content, item: &Item, hyphens: LooseHyphens) -> Self {
         Self {
             kind: item.kind,
             annotation: item.flags.contains(ItemFlags::ANNOTATION),
             generated: item.flags.contains(ItemFlags::GENERATED),
-            ..Self::from_node(content, item.node)
+            ..Self::from_node(content, item.node, hyphens)
         }
     }
 
     /// Returns the facts of the block's own style, which stand before the
     /// first item and for a content with no items.
-    pub(super) fn from_block(content: &Content) -> Self {
+    pub(super) fn from_block(content: &Content, hyphens: LooseHyphens) -> Self {
         Self {
             emergency: false,
-            ..Self::from_node(content, NodeId::BLOCK)
+            ..Self::from_node(content, NodeId::BLOCK, hyphens)
         }
     }
 
     /// Returns the facts of a text item of `node`.
-    fn from_node(content: &Content, node: NodeId) -> Self {
+    fn from_node(content: &Content, node: NodeId, hyphens: LooseHyphens) -> Self {
         let facts = &content.facts;
         let id = content.nodes.text_facts(node, FirstLineVariant::Standard);
         let text = facts.text(id);
@@ -107,6 +107,7 @@ impl ItemInfo {
                 text.line_break,
                 text.word_break,
                 flag(TextFlags::CJK_LINE_BREAKS),
+                hyphens,
             ),
             language: facts.request(facts.text_request(id)).language,
             wraps: flag(TextFlags::WRAPS),
@@ -436,7 +437,7 @@ impl RubyState {
     /// an annotation that opened.
     ///
     /// A root column takes the next number, and no line breaks after it, as
-    /// after Chrome's empty base. A nested base starts again, empty.
+    /// after an empty base. A nested base starts again, empty.
     fn empty_base(&mut self) {
         if self.containers == 1 {
             self.serial = self.serial.saturating_add(1);
@@ -551,13 +552,11 @@ const COLUMN_LOOKAHEAD: usize = 8;
 pub(super) struct ClusterWriter<'a> {
     content: &'a Content,
     text: &'a str,
-    /// The text as the line segmenter reads it under the Japanese and Chinese
-    /// options: `text` with its curly double quotes swapped, or `text`.
-    cj_text: &'a str,
     cx: &'a AnalysisContext,
     scratch: &'a mut AnalysisScratch,
     out: &'a mut Analysis,
-    graphemes: GraphemeCursor<'a>,
+    /// The grapheme segmenter's state after the last character walked.
+    graphemes: GraphemeState,
     /// The paragraph's line stream.
     stream: Option<LineStream<'a>>,
     /// The current ruby part's line stream, over text that ends before the
@@ -601,41 +600,40 @@ pub(super) struct ClusterWriter<'a> {
     /// opportunity rule.
     any_atomics: bool,
     /// Whether a small kana is held to what precedes it under
-    /// `line-break: normal` and `auto`, as CSS Text says, instead of starting a line as
-    /// in Chrome (`Config::small_kana`).
+    /// `line-break: normal` and `auto`, as CSS Text says, instead of starting a
+    /// line (`Config::small_kana`).
     hold_small_kana: bool,
+    /// The languages in which `line-break: loose` breaks before a hyphen
+    /// after an ideograph (`Config::loose_hyphens`).
+    loose_hyphens: LooseHyphens,
     ruby: RubyState,
     combine: CombineState,
 }
 
 impl<'a> ClusterWriter<'a> {
     /// Starts the writer over the content of `input`, writing into `out`.
-    ///
-    /// `cj_text` is the content's text with its curly double quotes swapped
-    /// (`breaks::fill_cj_text`), or `None` where it has none.
     pub(super) fn new(
         input: &AnalysisInput<'a>,
         cx: &'a AnalysisContext,
         scratch: &'a mut AnalysisScratch,
         out: &'a mut Analysis,
-        cj_text: Option<&'a str>,
     ) -> Self {
         let AnalysisInput {
             content,
             small_kana,
+            loose_hyphens,
         } = *input;
         let text = content.text.as_str();
         let flags = content.flags;
         // Stands until the first text-bearing item, before any cluster.
-        let item = ItemInfo::from_block(content);
+        let item = ItemInfo::from_block(content, loose_hyphens);
         Self {
             content,
             text,
-            cj_text: cj_text.unwrap_or(text),
             cx,
             scratch,
             out,
-            graphemes: GraphemeCursor::new(text, cx.graphemes()),
+            graphemes: GraphemeState::new(),
             stream: None,
             inner_stream: None,
             inner_start: 0,
@@ -658,6 +656,7 @@ impl<'a> ClusterWriter<'a> {
             any_nowrap: flags.contains(ContentFlags::NOWRAP),
             any_atomics: flags.contains(ContentFlags::ATOMICS),
             hold_small_kana: small_kana == SmallKana::Held,
+            loose_hyphens,
             ruby: RubyState::default(),
             combine: CombineState::default(),
         }
@@ -786,7 +785,7 @@ impl ClusterWriter<'_> {
     /// Walks the characters of a text item, an atomic's U+FFFC or a `<br>`'s
     /// `\n`.
     fn text_item(&mut self, item: &Item) {
-        self.item = ItemInfo::new(self.content, item);
+        self.item = ItemInfo::new(self.content, item, self.loose_hyphens);
         if self.item.combine != TextCombineUpright::All {
             self.combine.all = 0;
         }
@@ -822,11 +821,13 @@ impl ClusterWriter<'_> {
             // grapheme step and possibly the class and orientation. Latin-1
             // needs none.
             let rare = (ch >= '\u{100}').then(|| unicode::rare_props(ch));
-            let grapheme = self.graphemes.boundary(at, ch, rare);
+            let grapheme = self.graphemes.advance(match rare {
+                Some(rare) => rare.grapheme_props(),
+                None => unicode::grapheme_props(ch),
+            });
             // Marks after a lone space start their own cluster. UAX #14 does
             // not attach marks to a space (LB9) and allows a break between
-            // them (LB10, LB18), as Chrome and Firefox do, inside the
-            // grapheme. Carets keep to the grapheme
+            // them (LB10, LB18), inside the grapheme. Carets keep to the grapheme
             // (`Clusters::continues_grapheme`).
             let after_space = !grapheme
                 && self
@@ -906,13 +907,11 @@ impl ClusterWriter<'_> {
             && let Some(hyphenator) = cx.hyphenator.as_deref()
         {
             self.hosted = Hosted::Hyphens;
-            let key = self.item.key;
             let words = ItemWords {
                 text: self.text,
-                cj_text: self.cj_text,
                 range,
-                key,
-                segmenter: cx.line(key),
+                key: self.item.key,
+                dictionaries: &cx.dictionaries,
                 language,
             };
             hosted::hyphenate(&mut self.scratch.hosted, &words, hyphenator);
@@ -969,14 +968,10 @@ impl ClusterWriter<'_> {
         loop {
             let at = start + offset;
             let props = unicode::core_props(ch);
-            // The character before `last`, which the hyphen rule reads.
-            let before_last = || {
-                whole
-                    .get(..at)
-                    .and_then(|before| before.chars().rev().nth(1))
-            };
+            // The characters before `last`, which Blink's rules read.
+            let earlier = || whole.get(..at).unwrap_or_default().chars().rev().skip(1);
             let stream = &mut self.stream;
-            let mut breaks = key.ascii_or(before_last, last, ch, || {
+            let mut breaks = key.blink_or(earlier, last, ch, || {
                 stream.as_mut().is_some_and(|stream| stream.at(at))
             });
             let space = last_class == ClusterClass::Space;
@@ -1031,7 +1026,10 @@ impl ClusterWriter<'_> {
         self.pending = Some(Pending::new(
             last_start, item, last, last_props, None, false,
         ));
-        self.graphemes.skip_to(last_start, last);
+        // The state after a Latin-1 character is the same whatever precedes
+        // it.
+        self.graphemes = GraphemeState::new();
+        self.graphemes.advance(unicode::grapheme_props(last));
         offset
     }
 
@@ -1196,13 +1194,12 @@ impl ClusterWriter<'_> {
         );
         if !self.paragraph.open {
             self.open_paragraph();
-            let key = self.item.key;
+            let cx = self.cx;
             self.stream = Some(LineStream::new(
                 self.text,
-                self.cj_text,
                 at,
-                self.cx.line(key),
-                key,
+                &cx.dictionaries,
+                self.item.key,
             ));
         }
         self.paragraph.controls |= mem::take(&mut self.controls);
@@ -1226,7 +1223,7 @@ impl ClusterWriter<'_> {
         if let Some(stream) = stream
             && stream.key() != key
         {
-            stream.resume(self.cx.line(key), key, at);
+            stream.resume(key, at);
         }
     }
 
@@ -1267,8 +1264,8 @@ impl ClusterWriter<'_> {
             && !next.class.is_forced_break()
         {
             // An emergency break between two items is allowed if either
-            // allows one, as Chrome's retry breaks before the first character
-            // of text that allows `overflow-wrap`.
+            // allows one, so a retry breaks before the first character of text
+            // that allows `overflow-wrap`.
             let either = pending.item.emergency || next.item.emergency;
             let (breaks, emergency) = match self.boundary(&pending, next) {
                 Boundary::Text if self.hosted != Hosted::None => {
@@ -1431,11 +1428,11 @@ impl ClusterWriter<'_> {
     /// Returns whether a line may break after the ruby base `base`, before
     /// `next`.
     ///
-    /// As Chrome's `CanBreakAfterRubyColumn` does, it segments the base text
+    /// Following Blink's `CanBreakAfterRubyColumn`, it segments the base text
     /// (without annotations) and the text after it, under the options of the
     /// text after. Then the filters apply, with the base's last cluster
-    /// before the boundary. No line breaks after a column with no base, as in
-    /// Chrome. Out of line ([`open_paragraph`](Self::open_paragraph)).
+    /// before the boundary. No line breaks after a column with no base. Out
+    /// of line ([`open_paragraph`](Self::open_paragraph)).
     #[inline(never)]
     fn breaks_after_base(&mut self, next: &Pending, base: RubyBase) -> bool {
         let (Some((start, first)), Some(last)) = (base.start, base.last) else {
@@ -1446,11 +1443,7 @@ impl ClusterWriter<'_> {
         }
         let start = start.get();
         let key = next.item.key;
-        let text = if key.reads_cj_quotes() {
-            self.cj_text
-        } else {
-            self.text
-        };
+        let text = self.text;
         // Gathers the base text, without any nested annotation, in scratch.
         let scratch = &mut self.scratch.column_text;
         scratch.clear();
@@ -1478,25 +1471,21 @@ impl ClusterWriter<'_> {
             }
             reach = offset + ch.len_utf8();
         }
-        // Chrome's ASCII rules go first, as Blink's `LazyLineBreakIterator`
-        // asks them before ICU.
+        // Blink's own rules go first, as its `LazyLineBreakIterator` asks
+        // them before ICU. Blink's rules read at most the character before the
+        // base's last.
         let mut base_chars = base.chars().rev();
         let (last_char, before) = (base_chars.next(), base_chars.next());
-        let segmenter = self.cx.line(key);
+        let dictionaries = &self.cx.dictionaries;
         let answer = match (last_char, following.chars().next()) {
-            (Some(last), Some(first)) => key.ascii_or(
-                || before,
+            (Some(last), Some(first)) => key.blink_or(
+                || before.into_iter(),
                 last,
                 first,
                 || {
                     let length = scratch.len();
                     scratch.push_str(following.get(..reach).unwrap_or_default());
-                    super::breaks::is_break_opportunity(segmenter, scratch, length)
-                        || super::breaks::is_quotation_break(
-                            segmenter,
-                            scratch.get(..length).unwrap_or_default(),
-                            following,
-                        )
+                    super::breaks::is_break_opportunity(scratch, length, dictionaries, key)
                 },
             ),
             // With no base text or nothing after it, there is no pair.
@@ -1508,7 +1497,7 @@ impl ClusterWriter<'_> {
     /// Returns whether a line may break between `pending`, of `class`, and
     /// `next`.
     ///
-    /// Chrome's ASCII rules answer where they decide; otherwise the
+    /// Blink's ASCII rules answer where they decide; otherwise the
     /// paragraph's line stream answers, or the ruby part's if `inner`. Then
     /// the filters apply.
     fn stream_breaks(
@@ -1527,25 +1516,15 @@ impl ClusterWriter<'_> {
         } else {
             (0, &mut self.stream)
         };
-        // The character before the cluster's last, which the hyphen rule
-        // reads; found only when asked.
+        // The characters before the cluster's last, which Blink's rules
+        // read; found only when asked.
         let before = self.text.get(from..next.start).unwrap_or_default();
-        let cx = self.cx;
-        let text = self.text;
         let key = next.item.key;
-        let breaks = key.ascii_or(
-            || before.chars().rev().nth(1),
+        let breaks = key.blink_or(
+            || before.chars().rev().skip(1),
             pending.last,
             next.first,
-            || {
-                stream.as_mut().is_some_and(|stream| stream.at(next.start))
-                    || (super::breaks::may_break_beside_quotation(pending.first, next.first)
-                        && super::breaks::is_quotation_break(
-                            cx.line(key),
-                            before,
-                            text.get(next.start..).unwrap_or_default(),
-                        ))
-            },
+            || stream.as_mut().is_some_and(|stream| stream.at(next.start)),
         );
         self.filter_break(&pending.item, pending.last, class, next, breaks)
     }
@@ -1573,11 +1552,11 @@ impl ClusterWriter<'_> {
                 )
             })
             .map_or(self.text.len(), |item| item.start.get());
+        let cx = self.cx;
         self.inner_stream = Some(LineStream::new(
             self.text.get(..end).unwrap_or(self.text),
-            self.cj_text.get(..end).unwrap_or(self.cj_text),
             at,
-            self.cx.line(self.item.key),
+            &cx.dictionaries,
             self.item.key,
         ));
     }
@@ -1596,8 +1575,8 @@ impl ClusterWriter<'_> {
         // what precedes it under `line-break: normal` and `auto`, as CSS Text 3 says
         // (csswg-drafts#10363). Line_Break CJ is read as NS, as under
         // `strict`, so it starts a line only after a space or a zero width
-        // space (LB18, LB8); a tab and an ideographic space are BA. ICU, and
-        // Chrome, read CJ as an ideograph under `normal`. This runs before
+        // space (LB18, LB8); a tab and an ideographic space are BA. ICU reads
+        // CJ as an ideograph under `normal`. This runs before
         // `break-spaces`, which breaks after every kept space regardless.
         if self.hold_small_kana
             && breaks
@@ -1611,8 +1590,8 @@ impl ClusterWriter<'_> {
             breaks = false;
         }
         // `break-spaces` breaks after every preserved space and tab, even
-        // between two, and after every other breaking space separator. Chrome
-        // breaks between two ideographic spaces there, where UAX #14 does not
+        // between two, and after every other breaking space separator, so
+        // between two ideographic spaces too, where UAX #14 does not break
         // (WPT `break-spaces-with-ideographic-space-001`).
         if item.collapse == WhiteSpaceCollapse::BreakSpaces && class.is_breaking_space() {
             breaks = true;
@@ -1623,8 +1602,7 @@ impl ClusterWriter<'_> {
         }
         // An atomic inline has an opportunity on each side, even where the
         // neighbouring character would suppress one, except beside GL other
-        // than U+00A0, WJ or ZWJ (CSS Text 3, section 5.1). Chrome's answer
-        // there is unmeasured.
+        // than U+00A0, WJ or ZWJ (CSS Text 3, section 5.1).
         if self.any_atomics {
             if next.class == ClusterClass::Object {
                 breaks = !glues(last);
@@ -1636,11 +1614,10 @@ impl ClusterWriter<'_> {
         // An opportunity after a space or tab, which disappears or hangs at
         // the break, follows whether its own box wraps. One between other
         // characters follows their nearest common ancestor (CSS Text 3,
-        // section 5.1). Chrome treats spaces and tabs so, and other space
-        // separators like any character. A generated opportunity (a `<wbr>`,
-        // or one kept where wrapping white space joins a `nowrap` run)
-        // follows its own box, as Chrome's line breaker reads its item's
-        // style.
+        // section 5.1). Only spaces and tabs are treated so; other space
+        // separators are like any character. A generated opportunity (a
+        // `<wbr>`, or one kept where wrapping white space joins a `nowrap`
+        // run) follows its own box, its item's style.
         let wraps = if class.is_space_or_tab() || class == ClusterClass::BreakOpportunity {
             item.wraps
         } else {
@@ -1748,10 +1725,9 @@ impl ClusterWriter<'_> {
 /// Returns whether the empty last paragraph opens a box with an inline
 /// margin, border or padding.
 ///
-/// Such a box makes a line where nothing else would, as Chrome's line
-/// breaker makes one for an open tag with an inline edge. A box closing
-/// there closes on the line before, after the forced break. Cold: most
-/// texts end in a cluster.
+/// Such a box makes a line where nothing else would, as an open tag with an
+/// inline edge does. A box closing there closes on the line before, after the
+/// forced break. Cold: most texts end in a cluster.
 #[cold]
 #[inline(never)]
 fn end_opens_edged_box(content: &Content, analysis: &Analysis) -> bool {

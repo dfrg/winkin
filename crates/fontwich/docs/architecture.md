@@ -73,8 +73,8 @@ matching within one family: width first, then style, then weight, each
 narrowing the candidates for the next. Each font gets a width, a style and
 a weight rank, and the match is the least of them in that order, in one
 pass over the family without allocating. Variable fonts match by axis
-range. An italic request with no italic font aims at a 14° oblique, as
-Chrome does. `Font::synthesis` reports the variation settings, synthetic
+range. An italic request with no italic font aims at a 14° oblique.
+`Font::synthesis` reports the variation settings, synthetic
 bold and slant that the matched font needs for the request.
 
 A document layer holds faces. `LayerBuilder::add_face` declares a face from
@@ -95,7 +95,7 @@ Fallback starts where the caller's `font-family` list runs out.
   the set of keys is finite.
 - **Backends.** A [`Backend`](../src/backend.rs) names a key's families, best
   first, as strings. The backends live in [`src/platform/`](../src/platform/mod.rs):
-  Windows uses Chrome's Windows tables, and DirectWrite's system fallback
+  Windows uses fontwich's tables of Windows fonts by script and language, and DirectWrite's system fallback
   for characters they miss; macOS and iOS ask Core Text; Linux and the BSDs run one fontconfig
   sort per language; Android reads `fonts.xml`. A layer can carry a
   [`FallbackOverride`](../src/fallback/mod.rs), asked before its backend.

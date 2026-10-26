@@ -11,37 +11,36 @@ use icu_properties::props::{BidiMirroringGlyph, BidiPairedBracketType, Enumerate
 
 use crate::stages::analysis::bidi::{BidiScratch, BidiUnit, reset_separators, resolve_bidi};
 use crate::tests::unicode_test_data;
-use crate::unicode::{BidiBracket, BidiClass, cluster_bidi_class, reorder_bidi};
+use crate::unicode::{self, BidiBracket, BidiClass, cluster_bidi_class, reorder_bidi};
 
-impl BidiClass {
-    // ICU4C's numbering is the point: it is the resolver's, and the tables'.
-    // icu_properties deprecates the accessor pending a use for it (icu4x#6067).
-    #[allow(deprecated)]
-    fn from_char(ch: char) -> Self {
-        BidiClass(IcuBidiClass::for_char(ch).to_icu4c_value())
-    }
+/// Returns ICU's class of `ch`.
+// ICU4C's numbering is the point: it is the resolver's, and the tables'.
+// icu_properties deprecates the accessor pending a use for it (icu4x#6067).
+#[allow(deprecated)]
+fn icu_class(ch: char) -> BidiClass {
+    BidiClass::new(IcuBidiClass::for_char(ch).to_icu4c_value())
+}
 
-    /// Whether L1 resets a character of this class at the end of a line to
-    /// the paragraph's level: white space and the isolate formatting
-    /// characters, and a segment separator, which L1 resets wherever it
-    /// falls, so that a walk back from the end passes through a tab rather
-    /// than stopping at it. Line layout resets by Chrome's rule rather than
-    /// by class, so only these tests ask.
-    fn needs_trailing_neutral_reset(self) -> bool {
-        const RESET: u32 = BidiClass::LEFT_TO_RIGHT_ISOLATE.mask()
-            | BidiClass::RIGHT_TO_LEFT_ISOLATE.mask()
-            | BidiClass::FIRST_STRONG_ISOLATE.mask()
-            | BidiClass::POP_DIRECTIONAL_ISOLATE.mask()
-            | BidiClass::WHITE_SPACE.mask()
-            | BidiClass::SEGMENT_SEPARATOR.mask();
-        self.mask() & RESET != 0
-    }
+/// Returns whether L1 resets a character of class `class` at the end of a
+/// line to the paragraph's level: white space and the isolate formatting
+/// characters, and a segment separator, which L1 resets wherever it falls,
+/// so that a walk back from the end passes through a tab rather than
+/// stopping at it. Line layout resets by Chrome's rule rather than by class,
+/// so only these tests ask.
+fn needs_trailing_neutral_reset(class: BidiClass) -> bool {
+    const RESET: u32 = BidiClass::LEFT_TO_RIGHT_ISOLATE.mask()
+        | BidiClass::RIGHT_TO_LEFT_ISOLATE.mask()
+        | BidiClass::FIRST_STRONG_ISOLATE.mask()
+        | BidiClass::POP_DIRECTIONAL_ISOLATE.mask()
+        | BidiClass::WHITE_SPACE.mask()
+        | BidiClass::SEGMENT_SEPARATOR.mask();
+    class.mask() & RESET != 0
 }
 
 /// Every class constant carries ICU4C's `UCharDirection` value, which is what
-/// the generated tables store and what `from_char` passes through unmapped.
+/// the generated tables store and what `icu_class` passes through unmapped.
 #[test]
-#[allow(deprecated)] // As in `from_char`.
+#[allow(deprecated)] // As in `icu_class`.
 fn the_classes_are_numbered_as_icu4c() {
     use icu_properties::props::BidiClass as Icu;
     let pairs = [
@@ -79,9 +78,9 @@ fn the_classes_are_numbered_as_icu4c() {
         ),
     ];
     for (i, (ours, icu)) in pairs.into_iter().enumerate() {
-        assert_eq!(ours.0, icu.to_icu4c_value(), "{icu:?}");
+        assert_eq!(ours.get(), icu.to_icu4c_value(), "{icu:?}");
         // And in order, with no gaps: L = 0 through PDI = 22.
-        assert_eq!(usize::from(ours.0), i, "{icu:?}");
+        assert_eq!(usize::from(ours.get()), i, "{icu:?}");
     }
 }
 
@@ -159,7 +158,7 @@ fn resolve_trailing_neutrals(levels: &mut [u8], classes: &[BidiClass], base_leve
         if class.is_removed_by_x9() {
             continue;
         }
-        if class.needs_trailing_neutral_reset() {
+        if needs_trailing_neutral_reset(class) {
             levels[i] = base_level;
         } else {
             break;
@@ -246,7 +245,7 @@ fn bidi_character_test() {
 /// The crate hands the resolver one unit per cluster, which is cheaper and
 /// keeps combining marks out of the algorithm, and conformance is proven per
 /// character, so this runs every string of both conformance files both
-/// ways: the clusters are ICU's graphemes, as analysis makes them, each
+/// ways: the clusters are the graphemes analysis makes, each
 /// resolved as its first character with its bracket where that is one, and
 /// each compared with the file's levels for its characters, the ones X9
 /// removes aside. Line L1 is applied to both as the files apply it, to the
@@ -311,7 +310,6 @@ fn per_cluster_resolution_matches_the_per_character_answer() {
 /// Compares the per-cluster resolution of strings with the per-character
 /// answer, and counts what it compared.
 struct ByCluster {
-    segmenter: icu_segmenter::GraphemeClusterSegmenterBorrowed<'static>,
     scratch: BidiScratch,
     levels: Vec<u8>,
     clusters: usize,
@@ -323,7 +321,6 @@ struct ByCluster {
 impl ByCluster {
     fn new() -> Self {
         Self {
-            segmenter: icu_segmenter::GraphemeClusterSegmenter::new(),
             scratch: BidiScratch::new(),
             levels: Vec::new(),
             clusters: 0,
@@ -337,9 +334,9 @@ impl ByCluster {
     /// cluster with `expected`, the per-character answer.
     fn compare(&mut self, text: &str, base: Option<u8>, expected: &[String]) {
         // Where each cluster starts, in characters, and the end.
-        let starts: Vec<usize> = self
-            .segmenter
-            .segment_str(text)
+        let starts: Vec<usize> = unicode::graphemes(text)
+            .map(|(byte, _)| byte)
+            .chain([text.len()])
             .map(|byte| text[..byte].chars().count())
             .collect();
         let chars: Vec<char> = text.chars().collect();
@@ -350,8 +347,8 @@ impl ByCluster {
             .map(|pair| {
                 let cluster = &chars[pair[0]..pair[1]];
                 cluster_bidi_class(
-                    BidiClass::from_char(cluster[0]),
-                    cluster[1..].iter().map(|&ch| BidiClass::from_char(ch)),
+                    icu_class(cluster[0]),
+                    cluster[1..].iter().map(|&ch| icu_class(ch)),
                 )
             })
             .collect();
@@ -452,7 +449,7 @@ impl TestState {
         let classes = codepoints
             .iter()
             .copied()
-            .map(BidiClass::from_char)
+            .map(icu_class)
             .collect::<Vec<_>>();
         let brackets = codepoints
             .iter()

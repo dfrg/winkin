@@ -129,7 +129,7 @@ pub(crate) struct FontScratch {
     /// The generated texts' fonts, which measurement shapes them in.
     generated: GeneratedFonts,
     /// The advance of U+0020 that a `tab-size` in spaces counts where the
-    /// block's primary font maps none, as Chrome sizes such a tab.
+    /// block's primary font maps none.
     block_space: Option<TextUnit>,
     /// The run loop's scratch.
     runs: RunScratch,
@@ -472,7 +472,7 @@ fn size_primary(
             resolution.adjust_to(size);
         }
         // An initial letter is set at the size that spans its lines,
-        // whatever its own size says (Chrome's `ComputeInitialLetterFont`).
+        // whatever its own size says (Blink's `ComputeInitialLetterFont`).
         // Only the block's initial letter's request sets one.
         if let Some(grid) = letter_grid
             && let Some(size) = grid.letter_size(request, computed, unscaled, line_metrics)
@@ -575,9 +575,8 @@ fn select_generated_texts(
 ///
 /// These are the facts a hyphen is set in. A node's first-line facts are
 /// added too where its first soft hyphen falls in the first line's reach,
-/// so the hyphen takes the first-line style, as in Chrome. The reach starts
-/// at the text's start, so a node with any soft hyphen in it has its first
-/// there.
+/// so the hyphen takes the first-line style. The reach starts at the text's
+/// start, so a node with any soft hyphen in it has its first there.
 fn hyphenated_texts(input: &FontInput<'_>, out: &mut Vec<TextFactsId>) {
     out.clear();
     let content = input.content;
@@ -643,8 +642,8 @@ pub(crate) enum CaseMap {
 /// the build that chose the fonts. Shaping and the breaker's reshaping read
 /// it here, so they use the fonts' language even after a config change.
 ///
-/// Chrome uses its default locale for every font and shaping question
-/// (`FontDescription::LocaleOrDefault`):
+/// The default locale answers every font and shaping question, as Blink's
+/// `FontDescription::LocaleOrDefault` does:
 /// - the script generic families resolve for (`GetScript`, read by
 ///   `FontSelector::FamilyNameFromSettings`);
 /// - the locale fallback and Han's variant;
@@ -676,7 +675,7 @@ impl DefaultLanguage {
 /// It covers synthesized small capitals, unicase from small capitals, and a
 /// synthesized superscript or subscript. The line metrics stay those of the
 /// used font's size, so a synthesized superscript does not make its line
-/// taller, as Chrome's smaller small-capitals font does not.
+/// taller, as a smaller small-capitals font does not.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub(crate) enum UsedSynthesis {
     /// The glyphs are the used font's, at its size, on the baseline.
@@ -915,8 +914,8 @@ pub(crate) struct FontRun {
     /// Its first cluster.
     pub(super) start: ClusterId,
     /// The font its clusters are set in. A cluster no font covers is set in
-    /// its style's primary font, which draws `.notdef` for it as Chrome
-    /// draws the missing-glyph box; where the primary has no instance,
+    /// its style's primary font, which draws `.notdef` for it, the
+    /// missing-glyph box; where the primary has no instance,
     /// nothing is drawn.
     pub(super) font: UsedFontId,
 }
@@ -1048,7 +1047,7 @@ impl GeneratedRun {
 /// - An ellipsis is made for the block's facts and its first line's, where
 ///   `text-overflow: ellipsis` or `line-clamp` may cut a line. The ellipsis
 ///   takes the block's style (CSS Overflow 4, "ellipsing details"), as
-///   Chrome's `LineTruncator::EllipsisStyle` sets it.
+///   Blink's `LineTruncator::EllipsisStyle` sets it.
 ///
 /// The string depends on what the primary font maps, which is where Blink
 /// looks for U+2010 and U+2026. Its characters take fonts as the text's do,
@@ -1237,7 +1236,7 @@ impl Fonts {
     ///
     /// The gap is an eighth of the primary font's ideographic advance (its
     /// size where it has no 水), rounded to the nearest 16.16 `TextUnit`.
-    /// Chrome's `Font::TextAutoSpaceInlineSize` divides
+    /// Blink's `Font::TextAutoSpaceInlineSize` divides
     /// `IdeographicInlineSize` the same way. The advance is a stored metric,
     /// so no font table is read. Zero where the request has no used font.
     pub(super) fn autospace_gap(&self, request: FontRequestId) -> TextUnit {

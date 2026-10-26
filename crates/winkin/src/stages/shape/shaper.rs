@@ -15,9 +15,9 @@
 //! - A cluster no glyph is labelled in lies inside something the shaper
 //!   merged, such as a ligature. After a drawn cluster it is a continuation.
 //! - Where a merge ends inside a later cluster, the clusters up to that
-//!   one's end merge whole, as HarfBuzz's grapheme cluster level, which
-//!   Chrome shapes with, merges them. Letter-spacing goes once after them,
-//!   as in Chrome's `ShapeResult::ApplySpacing`.
+//!   one's end merge whole, as HarfBuzz's grapheme cluster level merges
+//!   them. Letter-spacing goes once after them, as Blink's
+//!   `ShapeResult::ApplySpacing` adds it.
 //!
 //! **Unsafe bits.** A cluster takes harfrust's unsafe-to-break flag from the
 //! glyph labelled at its start. A cluster with no such glyph is unsafe. The
@@ -27,13 +27,13 @@
 //!
 //! **Punctuation trim** (`text-spacing-trim`). `trim` finds the marks that
 //! give their blanks back, from the characters either side. The font's
-//! `halt` applies over each mark's bytes, as in Chrome's `HanKerning`.
-//! - Breaking before a mark kerned against what precedes it is unsafe, as
-//!   Chrome marks it, so a line starting there is reshaped as a start.
+//! `halt` applies over each mark's bytes, as Blink's `HanKerning` applies it.
+//! - Breaking before a mark kerned against what precedes it is unsafe, so a
+//!   line starting there is reshaped as a start.
 //! - A run's first cluster kerned against the run before keeps that unsafe
 //!   bit too. Runs are shaped apart, so a reshape may still start there.
 //! - Where the font has no `halt` and the config asks for it, a full-width
-//!   mark's advance is halved instead, which Chrome does not do.
+//!   mark's advance is halved instead.
 
 use super::sink::{AdvanceStore, Flags, GlyphSink, Halved, along, sidecar_glyph};
 #[cfg(test)]
@@ -252,7 +252,7 @@ impl<'a> ShapingKey<'a> {
     ///   glyph size, as Blink's `HarfBuzzFace::GetScaledFont` falls back to
     ///   the platform size.
     /// - The language is `language`, or the build's default where that
-    ///   names none, as Chrome shapes in `LocaleOrDefault`.
+    ///   names none, as Blink's `LocaleOrDefault` gives it.
     /// - The language system is the font group's
     ///   `font-language-override`, if it names one.
     fn from_font(
@@ -400,7 +400,7 @@ impl<'a> NeighbourFonts<'a> {
 /// the context off.
 ///
 /// Plans and trim facts are looked up in `cx` by the key's font and built
-/// on a miss, as is the pass's prepared font. The result never depends on
+/// on a miss. The result never depends on
 /// what `cx` has kept; a warm cache only saves the building.
 ///
 /// The breaker calls this for a line edge at an unsafe break `e`:
@@ -409,8 +409,8 @@ impl<'a> NeighbourFonts<'a> {
 ///
 /// Each goes into the line's own tables. Where the returned start of a
 /// line's end is unsafe, the breaker widens it and shapes again. The context
-/// either side is the paragraph's, as Chrome gives HarfBuzz the whole text
-/// around the range, so a word broken across lines keeps its joining forms.
+/// either side is the paragraph's, the whole text around the range, so a
+/// word broken across lines keeps its joining forms.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn shape_range<'f, I: Id, S: AdvanceStore>(
     cx: &mut ShapeSession<'_, 'f>,
@@ -480,8 +480,8 @@ pub(crate) fn shape_range<'f, I: Id, S: AdvanceStore>(
             let after = beside(call.after.chars().next(), neighbours.after);
             found.find(call.chars, call.base, before, after, &trim_font, edges);
             if !trim_font.has_halt() {
-                // Chrome's fallback trims a full-width mark alone: one at
-                // least nine tenths of an em.
+                // The fallback trims a full-width mark alone: one at least
+                // nine tenths of an em.
                 let size = i64::from(key.size.raw());
                 halving = Some(i32::try_from(size * 9 / 10).unwrap_or(i32::MAX));
             }
@@ -758,8 +758,8 @@ fn sink_clusters<const MARKED: bool, I: Id, S: AdvanceStore>(
         // merged characters across the clusters between, such as a Bengali
         // ya-phala joined to the syllable before it. The clusters up to the
         // end of the one holding that label become one, as HarfBuzz's
-        // grapheme cluster level, which Chrome shapes with, makes them. The
-        // later ones are continuations.
+        // grapheme cluster level makes them. The later ones are
+        // continuations.
         while e < count {
             let at = label(e);
             cursor.locate(at);
@@ -994,8 +994,8 @@ impl<'a, const MARKED: bool> ClusterWriter<'a, MARKED> {
     /// Returns how a cluster starting at `start`, whose glyphs are `placed`,
     /// moves.
     ///
-    /// A found mark at least nine tenths of an em wide is halved, as in
-    /// Chrome's `HanKerning::ApplyKerning`: an opening mark loses its leading
+    /// A found mark at least nine tenths of an em wide is halved, as Blink's
+    /// `HanKerning::ApplyKerning` halves it: an opening mark loses its leading
     /// half, a closing mark its trailing half. Nothing moves on the plain
     /// path.
     fn halve(&mut self, start: TextOffset, placed: &[GlyphPosition]) -> Halved {
@@ -1016,7 +1016,7 @@ impl<'a, const MARKED: bool> ClusterWriter<'a, MARKED> {
         if advance < i64::from(least) {
             return Halved::default();
         }
-        // Half, toward zero, as Chrome halves a `TextRunLayoutUnit`.
+        // Half, toward zero, as a `TextRunLayoutUnit` halves.
         let half = -i32::try_from(advance / 2).unwrap_or(0);
         match mark.class() {
             TrimClass::Open => Halved {

@@ -48,7 +48,7 @@ impl ContentWriter<'_> {
     /// Opens an anonymous ruby container for annotation `key`, which has no
     /// ruby around it.
     ///
-    /// Chrome wraps such a `ruby-text` box in a ruby column with an empty
+    /// Such a `ruby-text` box is wrapped in a ruby column with an empty
     /// base. The container takes the enclosing container's text facts and
     /// direction and the annotation's `ruby` properties, and closes with the
     /// annotation.
@@ -432,9 +432,9 @@ impl ContentWriter<'_> {
     /// Writes an absolutely positioned box's anchor, in a node with its
     /// container's facts.
     ///
-    /// Like a float's, it has no text and is opaque to collapsing, as in
-    /// Chrome's `AppendOutOfFlowPositioned`. Unlike a float, capitalize
-    /// reads past it, as in Chrome.
+    /// Like a float's, it has no text and is opaque to collapsing, as Blink's
+    /// `AppendOutOfFlowPositioned` writes it. Unlike a float, capitalize
+    /// reads past it.
     pub(crate) fn absolute(&mut self, key: NodeKey, display: OriginalDisplay) {
         self.end_text();
         if !self.has_node_room() || !self.has_item_room(1) {
@@ -463,10 +463,10 @@ impl ContentWriter<'_> {
     /// line and rules out a first letter still to come. `clear` is recorded
     /// for a break that clears floats.
     ///
-    /// Inside ruby it is a space instead, as in Blink
-    /// (`kDisableForcedBreakInRubyColumn`), since no paragraph ends inside a
+    /// Inside ruby it is a space instead (Blink's
+    /// `kDisableForcedBreakInRubyColumn`), since no paragraph ends inside a
     /// column. The space ends the run before it and absorbs the white space
-    /// after it, as Blink's does.
+    /// after it.
     pub(crate) fn line_break(&mut self, key: NodeKey, clear: Option<Clear>) {
         let in_ruby = self.ruby.innermost.is_some();
         self.end_text();

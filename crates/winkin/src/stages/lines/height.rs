@@ -18,8 +18,8 @@
 //!   the parent closes.
 //! - `top` and `bottom` settle last, against the aligned subtree of the
 //!   nearest `top` or `bottom` box around them, or of the line. A taller
-//!   pinned box grows the subtree's other edge, as in Blink's
-//!   `MetricsForTopAndBottomAlign`.
+//!   pinned box grows the subtree's other edge, as Blink's
+//!   `MetricsForTopAndBottomAlign` grows it.
 //!
 //! Settled shifts go in the lines' rare `shifts` table, sorted by node within
 //! a line. Placement adds them to measurement's.
@@ -220,7 +220,7 @@ struct Ancestor {
     struts: Extent,
 }
 
-/// A closed box whose shift waits for a box around it, as in Blink's
+/// A closed box whose shift waits for a box around it, after Blink's
 /// `PendingPositions`.
 #[derive(Copy, Clone, Debug)]
 struct Waiting {
@@ -383,7 +383,7 @@ impl LineStages<'_> {
     /// next line.
     ///
     /// Text across the line's start or end is widened only by the fonts of
-    /// its clusters on the line, as Chrome's
+    /// its clusters on the line, as Blink's
     /// `InlineBoxState::AccumulateUsedFonts` does. Where given, `ems` gathers
     /// the line's em boxes in the same walk.
     #[inline]
@@ -755,7 +755,7 @@ impl BoxStack {
                 self.wait(around, open.node, open.align, open.metrics);
             }
             VerticalAlign::Middle => {
-                // Half the x-height rounds as Chrome's `FromFloatRound` does.
+                // Half the x-height rounds as Blink's `FromFloatRound` does.
                 let half_x = primary_metrics(stages, parent)
                     .map_or(LayoutUnit::ZERO, FontLineMetrics::half_x_height);
                 let metrics = open.metrics.zero_if_none();
@@ -893,7 +893,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// height is known.
     ///
     /// That is the strut's, or on an initial letter's line the letter's
-    /// margin box bottom where lower, as in Chrome's `ComputeTotalBlockSize`.
+    /// margin box bottom where lower, as Blink's `ComputeTotalBlockSize` takes it.
     pub(super) fn reserve(&self, start: ClusterId) -> LayoutUnit {
         let strut = self.stages.measured.extents.strut.box_height();
         if start == ClusterId::new(0)
@@ -920,7 +920,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     ) -> Height {
         let (extent, next_item) = self.natural_extent(out, para, from, start, end);
         // A raised initial letter moves its line down by its raise, as
-        // Chrome's `SetInitialLetterBlockStartAdjustment` does, growing the
+        // Blink's `SetInitialLetterBlockStartAdjustment` does, growing the
         // line box on its block-start side.
         let extent = match self.stages.measured.initial_letter() {
             Some(letter) if start == ClusterId::new(0) && letter.raise > LayoutUnit::ZERO => {
@@ -962,7 +962,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             },
         );
         // Annotations that move the line down past the letter's raise move
-        // the letter by the excess, as Chrome's
+        // the letter by the excess, as Blink's
         // `ComputeInitialLetterBoxBlockStartAdjustment` does.
         let letter_shift = if start == ClusterId::new(0) && !extent.is_none() {
             (annotated.ascent() - extent.ascent()).max(LayoutUnit::ZERO)

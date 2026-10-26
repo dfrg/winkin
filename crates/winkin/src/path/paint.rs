@@ -71,12 +71,10 @@ impl Placement {
 ///
 /// Text and decoration views provide [`PathTextRun::glyphs`] and
 /// [`PathDecoration::pieces`] for individual placements.
-#[non_exhaustive]
 pub enum PathPaint<'a, P: ?Sized> {
     /// An underline or overline painted before the text.
     ///
-    /// Covers one text run, split into one piece per character, matching SVG
-    /// and Chrome.
+    /// Covers one text run, split into one piece per character, as in SVG.
     DecorationBeforeText(PathDecoration<'a, P>),
     /// A run of ruby annotation text, on the annotation's baseline.
     ///
@@ -299,8 +297,7 @@ where
                     let place = self.on.place(frame, middle, at, false, 1.0);
                     PathPaint::Atomic { atomic, place }
                 }
-                // SVG paints no backgrounds behind text, nor does Chrome on a
-                // `textPath`.
+                // SVG paints no backgrounds behind text on a `textPath`.
                 Paint::Background(_) | Paint::Box(_) => continue,
             });
         }
@@ -358,7 +355,6 @@ impl<'a, P: TextPath + ?Sized> PathTextRun<'a, P> {
 /// Yielded by [`PathTextRun::glyphs`]. Draw at the local origin and apply
 /// `place`. Glyph offsets are already included in the placement.
 #[derive(Copy, Clone, PartialEq, Debug)]
-#[non_exhaustive]
 pub struct PathGlyph {
     /// The glyph, with its straight-line position.
     ///
@@ -375,7 +371,6 @@ pub struct PathGlyph {
 /// origin across the inline extent, at its straight-line baseline offset,
 /// then apply the placement transform.
 #[derive(Copy, Clone, PartialEq, Debug)]
-#[non_exhaustive]
 pub struct PathPiece {
     /// The extent along the line, from the line box's left edge.
     pub inline: InlineExtents,
@@ -471,7 +466,7 @@ impl<P: TextPath + ?Sized> Iterator for PathGlyphs<'_, P> {
 ///
 /// Yielded as [`PathPaint::DecorationBeforeText`] or
 /// [`PathPaint::DecorationAfterText`]. Each piece rotates with its character,
-/// matching SVG and Chrome. Draw it from the placement origin at the
+/// as in SVG. Draw it from the placement origin at the
 /// straight-line baseline offset, then apply the transform.
 ///
 /// Characters with midpoints outside the path are omitted under

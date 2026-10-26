@@ -295,7 +295,6 @@ pub(crate) struct IntrinsicWidths {
 
 /// Intrinsic content widths for shrink-to-fit boxes, table cells and flex items.
 #[derive(Copy, Clone, PartialEq, Debug, Default)]
-#[non_exhaustive]
 pub struct IntrinsicSizes {
     /// The min-content width in pixels: the widest unbreakable content.
     pub min_content: f32,
@@ -325,7 +324,7 @@ pub(crate) struct TextMetrics {
     /// Text, a `<br>` and a box's opening edge take this extent; the block's is
     /// every line's strut. [`Extent::NONE`] where there is no primary font.
     strut: Extent,
-    /// The used line height, as Chrome's `ComputedLineHeightAsFixed` makes it.
+    /// The used line height, as Blink's `ComputedLineHeightAsFixed` makes it.
     ///
     /// `normal` is the primary font's line spacing, a number scales the
     /// computed size, and a length rounds to the grid. A `vertical-align`
@@ -337,7 +336,7 @@ pub(crate) struct TextMetrics {
     /// computed size.
     ///
     /// The size rounds to a whole pixel (`lroundf`), the ascent to 1/64, and the
-    /// descent takes the rest, as in Blink's `SimpleFontData::EmphasisMarkFontData`.
+    /// descent takes the rest, as Blink's `SimpleFontData::EmphasisMarkFontData` sets it.
     /// [`Extent::NONE`] where the text sets no marks.
     pub(crate) mark: Extent,
 }
@@ -543,7 +542,7 @@ impl Default for MeasuredText {
 ///
 /// It is the box at the block's start that sets `initial-letter`: its
 /// `::first-letter` or first inline box. The box fits the ink of what it
-/// holds, as Chrome's `LayoutInitialLetterBox` does.
+/// holds, as Blink's `LayoutInitialLetterBox` does.
 ///
 /// - **Along the line:** its edges take their margin, border and padding,
 ///   less the letter's advance outside its ink. The prefix then holds the
@@ -560,7 +559,7 @@ pub(crate) struct InitialLetter {
     start_room: InlineLayoutUnit,
     end_room: InlineLayoutUnit,
     /// Its start and end margins. A negative side bearing kerns the start
-    /// margin of a box with no border or padding (Chrome's "inline kerning").
+    /// margin of a box with no border or padding ("inline kerning").
     pub(super) start_margin: LayoutUnit,
     pub(super) end_margin: LayoutUnit,
     /// Its border box around the letter's baseline.

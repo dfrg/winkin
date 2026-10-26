@@ -19,8 +19,10 @@ fn math_auto_allocates_nothing_warm() {
     for source in ["i", "hi", "∞"] {
         for map_source in [false, true] {
             let mut build = || {
-                let mut options = BuildOptions::default();
-                options.map_source = map_source;
+                let options = BuildOptions {
+                    map_source,
+                    ..BuildOptions::default()
+                };
                 let mut b = layout.builder(&mut cx, NodeKey(0), &block, options);
                 for key in 1..100 {
                     b.text(NodeKey(key), source);
@@ -65,8 +67,10 @@ fn masked_text_allocates_nothing_warm() {
                 while !password.is_char_boundary(typed) {
                     typed += 1;
                 }
-                let mut options = BuildOptions::default();
-                options.map_source = map_source;
+                let options = BuildOptions {
+                    map_source,
+                    ..BuildOptions::default()
+                };
                 let mut b = layout.builder(&mut cx, NodeKey(0), &block, options);
                 b.text(NodeKey(1), &password[..typed]);
                 assert!(b.finish().is_complete());

@@ -1,20 +1,215 @@
 //! The sweep: every character's two words, and every side table, checked
-//! against icu_properties 2.3.
+//! against icu_properties 2.3. The CSS classes are checked with the `css`
+//! feature.
 //!
 //! The expected values are mapped from ICU's here by name, not by the
 //! generator's code, so the two cannot share a mistake. Surrogates are not
 //! characters, so the sweep skips them.
+//!
+//! ICU's data is Unicode 17.0 and the tables' 18.0. Where the two versions'
+//! pinned UCD files differ, a property's expected value is 18.0's, read from
+//! its file, and ICU must hold 17.0's: `Map` and `Set` do this. Each test
+//! pins how many code points differ, and the list below says what changed.
 
 use icu_properties::props::{self as icu, BidiPairedBracketType};
-use icu_properties::script::{ScriptWithExtensions, ScriptWithExtensionsBorrowed};
-use icu_properties::{CodePointMapData, CodePointSetData, PropertyNamesShort};
+use icu_properties::props::{
+    EnumeratedProperty, NamedEnumeratedProperty, ParseableEnumeratedProperty,
+};
+use icu_properties::script::ScriptWithExtensions;
+#[cfg(feature = "css")]
+use icu_properties::script::ScriptWithExtensionsBorrowed;
+use icu_properties::{
+    CodePointMapData, CodePointMapDataBorrowed, CodePointSetData, CodePointSetDataBorrowed,
+    PropertyNamesShort, PropertyParser,
+};
+use std::collections::BTreeMap;
+use std::eprintln;
+use std::string::String;
+use std::vec::Vec;
 
 use super::*;
+use crate::grapheme_props;
+use crate::tests::{ICU_VERSION, TABLES_VERSION, Versions, changes};
+
+/// An enumerated property: ICU's values, and the code points whose value
+/// differs between ICU's version and the tables'.
+struct Map<T: EnumeratedProperty + 'static> {
+    icu: CodePointMapDataBorrowed<'static, T>,
+    changes: BTreeMap<u32, (String, String)>,
+    name: &'static str,
+}
+
+/// What a sweep reads of the two versions: the file, the property, its
+/// default, and the field naming it where a file holds several.
+type Source = (
+    &'static str,
+    &'static str,
+    &'static str,
+    Option<&'static str>,
+);
+
+impl<T> Map<T>
+where
+    T: EnumeratedProperty + NamedEnumeratedProperty + ParseableEnumeratedProperty + 'static,
+{
+    /// Reads `source` in both versions, and checks that `changed` code
+    /// points differ.
+    fn new(versions: &Versions, source: Source, changed: usize) -> Self {
+        let (file, property, default, named) = source;
+        let changes = versions.map_changes(file, property, default, named);
+        assert_eq!(
+            changes.len(),
+            changed,
+            "{property}: code points that differ between {ICU_VERSION} and {TABLES_VERSION}"
+        );
+        Self {
+            icu: CodePointMapData::<T>::new(),
+            changes,
+            name: property,
+        }
+    }
+
+    /// Returns the tables' version's value of `ch`: ICU's, unless the
+    /// versions differ, where ICU must hold its version's.
+    fn get(&self, ch: char) -> T {
+        let icu = self.icu.get(ch);
+        let Some((old, new)) = self.changes.get(&u32::from(ch)) else {
+            return icu;
+        };
+        assert_eq!(
+            PropertyNamesShort::<T>::new().get(icu),
+            Some(old.as_str()),
+            "{} of U+{:04X}: ICU holds {ICU_VERSION}'s value",
+            self.name,
+            u32::from(ch)
+        );
+        PropertyParser::<T>::new()
+            .get_strict(new)
+            .unwrap_or_else(|| panic!("{}: ICU has no value {new}", self.name))
+    }
+}
+
+/// A binary property: ICU's set, and the code points whose membership
+/// differs between ICU's version and the tables'.
+struct Set {
+    icu: CodePointSetDataBorrowed<'static>,
+    changes: BTreeMap<u32, (bool, bool)>,
+    name: &'static str,
+}
+
+impl Set {
+    /// Reads `name` from `file` in both versions, and checks that `changed`
+    /// code points differ.
+    fn new(
+        versions: &Versions,
+        icu: CodePointSetDataBorrowed<'static>,
+        (file, name): (&str, &'static str),
+        changed: usize,
+    ) -> Self {
+        let changes = versions.set_changes(file, name);
+        assert_eq!(
+            changes.len(),
+            changed,
+            "{name}: code points that differ between {ICU_VERSION} and {TABLES_VERSION}"
+        );
+        Self { icu, changes, name }
+    }
+
+    /// Returns whether `ch` has the property in the tables' version.
+    fn contains(&self, ch: char) -> bool {
+        let icu = self.icu.contains(ch);
+        match self.changes.get(&u32::from(ch)) {
+            Some(&(old, new)) => {
+                assert_eq!(
+                    icu, old,
+                    "{} of {ch:?}: ICU holds {ICU_VERSION}'s",
+                    self.name
+                );
+                new
+            }
+            None => icu,
+        }
+    }
+}
+
+/// Returns both versions' files, or `None`, saying so, where they are
+/// absent and a sweep cannot run.
+fn versions() -> Option<Versions> {
+    let versions = Versions::new();
+    if versions.is_none() {
+        eprintln!("the pinned UCD files are absent: the sweep is skipped");
+    }
+    versions
+}
+
+/// Returns the code points whose Script or Script_Extensions differ between
+/// the versions, with each version's Script_Extensions (the Script alone
+/// where none are listed), each sorted.
+fn script_changes(versions: &Versions) -> BTreeMap<u32, (Vec<String>, Vec<String>)> {
+    let sorted = |mut lists: Vec<Vec<String>>| {
+        for list in &mut lists {
+            list.sort();
+        }
+        lists
+    };
+    let old = versions.icu.map("Scripts.txt", "sc", "Unknown", None);
+    let new = versions.tables.map("Scripts.txt", "sc", "Unknown", None);
+    let script_changes = changes(old, new);
+    let mut both = changes(
+        sorted(versions.icu.script_extensions()),
+        sorted(versions.tables.script_extensions()),
+    );
+    for cp in script_changes.keys() {
+        let at = *cp as usize;
+        both.entry(*cp).or_insert_with(|| {
+            let mut old = versions.icu.script_extensions();
+            let mut new = versions.tables.script_extensions();
+            old[at].sort();
+            new[at].sort();
+            (old.swap_remove(at), new.swap_remove(at))
+        });
+    }
+    both
+}
+
+// The 18.0 differences the sweeps meet, counted from the pinned files:
+// - General_Category and Script: 13,007 code points newly assigned, 11,328
+//   of them the Seal script's ideographs and 164 Proto_Cuneiform's signs;
+//   and the Script_Extensions of U+0B83, U+1CF5 and U+1CF6;
+// - Bidi_Class: 112, 78 newly assigned symbols L to ON, 34 marks to or
+//   from NSM;
+// - Line_Break: 1,672, all but 19 newly assigned; 16 ID to AL, 2 ID to EB,
+//   and UAX #14's U+2012 and U+2013 HH to BA and U+00AD BA to HH;
+// - Joining_Type 53, East_Asian_Width 990 (N to W), Vertical_Orientation
+//   1,059, Grapheme_Cluster_Break 37 (to Extend), Indic_Conjunct_Break 42:
+//   newly assigned characters, and the ranges reserved for them;
+// - Extended_Pictographic 18 (reserved pictographs assigned as other
+//   symbols), Emoji and Emoji_Presentation 9, Emoji_Modifier_Base 2,
+//   Cased 165, Case_Ignorable 96: new characters;
+// - White_Space, Regional_Indicator, Emoji_Component and
+//   Default_Ignorable_Code_Point: none.
+const BIDI: Source = ("DerivedBidiClass.txt", "bc", "L", None);
+const CATEGORY: Source = ("DerivedGeneralCategory.txt", "gc", "Cn", None);
+const LINE_BREAK: Source = ("LineBreak.txt", "lb", "XX", None);
+const JOINING: Source = ("DerivedJoiningType.txt", "jt", "U", None);
+const WIDTH: Source = ("EastAsianWidth.txt", "ea", "N", None);
+const ORIENTATION: Source = ("VerticalOrientation.txt", "vo", "R", None);
+const GRAPHEME: Source = ("GraphemeBreakProperty.txt", "GCB", "XX", None);
+const CONJUNCT: Source = ("DerivedCoreProperties.txt", "InCB", "None", Some("InCB"));
 
 /// Every character.
 fn chars() -> impl Iterator<Item = char> {
     (0..=0x10FFFF_u32).filter_map(char::from_u32)
 }
+
+/// The short names of the Line_Break values, in ICU4C's `ULineBreak`
+/// numbering.
+const LINE_BREAK_NAMES: [&str; 49] = [
+    "XX", "AI", "AL", "B2", "BA", "BB", "BK", "CB", "CL", "CM", "CR", "EX", "GL", "HY", "ID", "IN",
+    "IS", "LF", "NS", "NU", "OP", "PO", "PR", "QU", "SA", "SG", "SP", "SY", "ZW", "NL", "WJ", "H2",
+    "H3", "JL", "JT", "JV", "CP", "CJ", "HL", "RI", "EB", "EM", "ZWJ", "AK", "AP", "AS", "VF",
+    "VI", "HH",
+];
 
 /// Returns ICU4C's `UCharDirection` value for `class`.
 fn bidi_class(class: icu::BidiClass) -> u8 {
@@ -97,14 +292,42 @@ fn canonical_bracket(ch: char) -> char {
 
 #[test]
 fn the_hot_word_agrees_with_icu() {
-    let bidi = CodePointMapData::<icu::BidiClass>::new();
-    let line_break = CodePointMapData::<icu::LineBreak>::new();
-    let regional = CodePointSetData::new::<icu::RegionalIndicator>();
-    let pictographic = CodePointSetData::new::<icu::ExtendedPictographic>();
-    let presentation = CodePointSetData::new::<icu::EmojiPresentation>();
-    let emoji = CodePointSetData::new::<icu::Emoji>();
-    let white_space = CodePointSetData::new::<icu::WhiteSpace>();
-    let categories = CodePointMapData::<icu::GeneralCategory>::new();
+    let Some(versions) = versions() else {
+        return;
+    };
+    let bidi = Map::<icu::BidiClass>::new(&versions, BIDI, 112);
+    let line_break = Map::<icu::LineBreak>::new(&versions, LINE_BREAK, 1672);
+    let regional = Set::new(
+        &versions,
+        CodePointSetData::new::<icu::RegionalIndicator>(),
+        ("PropList.txt", "Regional_Indicator"),
+        0,
+    );
+    let pictographic = Set::new(
+        &versions,
+        CodePointSetData::new::<icu::ExtendedPictographic>(),
+        ("emoji-data.txt", "Extended_Pictographic"),
+        18,
+    );
+    let presentation = Set::new(
+        &versions,
+        CodePointSetData::new::<icu::EmojiPresentation>(),
+        ("emoji-data.txt", "Emoji_Presentation"),
+        9,
+    );
+    let emoji = Set::new(
+        &versions,
+        CodePointSetData::new::<icu::Emoji>(),
+        ("emoji-data.txt", "Emoji"),
+        9,
+    );
+    let white_space = Set::new(
+        &versions,
+        CodePointSetData::new::<icu::WhiteSpace>(),
+        ("PropList.txt", "White_Space"),
+        0,
+    );
+    let categories = Map::<icu::GeneralCategory>::new(&versions, CATEGORY, 13007);
     for ch in chars() {
         let word = core_props(ch);
         let cp = u32::from(ch);
@@ -112,7 +335,7 @@ fn the_hot_word_agrees_with_icu() {
         assert_eq!(word.0 >> 31, 0, "U+{cp:04X}: bits past the layout");
         assert_eq!(
             word.bidi_class(),
-            BidiClass(bidi_class(bidi.get(ch))),
+            BidiClass::new(bidi_class(bidi.get(ch))),
             "U+{cp:04X}"
         );
         assert_eq!(
@@ -167,24 +390,87 @@ fn the_hot_word_agrees_with_icu() {
 
 #[test]
 fn the_cold_word_agrees_with_icu() {
-    let joining = CodePointMapData::<icu::JoiningType>::new();
-    let width = CodePointMapData::<icu::EastAsianWidth>::new();
-    let orientation = CodePointMapData::<icu::VerticalOrientation>::new();
-    let line_break = CodePointMapData::<icu::LineBreak>::new();
-    let grapheme = CodePointMapData::<icu::GraphemeClusterBreak>::new();
-    let conjunct = CodePointMapData::<icu::IndicConjunctBreak>::new();
-    let modifier_base = CodePointSetData::new::<icu::EmojiModifierBase>();
-    let component = CodePointSetData::new::<icu::EmojiComponent>();
-    let ignorable = CodePointSetData::new::<icu::DefaultIgnorableCodePoint>();
-    let white_space = CodePointSetData::new::<icu::WhiteSpace>();
-    let cased = CodePointSetData::new::<icu::Cased>();
-    let case_ignorable = CodePointSetData::new::<icu::CaseIgnorable>();
+    let Some(versions) = versions() else {
+        return;
+    };
+    let joining = Map::<icu::JoiningType>::new(&versions, JOINING, 53);
+    let width = Map::<icu::EastAsianWidth>::new(&versions, WIDTH, 990);
+    let orientation = Map::<icu::VerticalOrientation>::new(&versions, ORIENTATION, 1059);
+    let line_break = Map::<icu::LineBreak>::new(&versions, LINE_BREAK, 1672);
+    let line_break_names = PropertyNamesShort::<icu::LineBreak>::new();
+    #[cfg(feature = "css")]
+    let categories = Map::<icu::GeneralCategory>::new(&versions, CATEGORY, 13007);
+    let grapheme = Map::<icu::GraphemeClusterBreak>::new(&versions, GRAPHEME, 37);
+    let conjunct = Map::<icu::IndicConjunctBreak>::new(&versions, CONJUNCT, 42);
+    let modifier_base = Set::new(
+        &versions,
+        CodePointSetData::new::<icu::EmojiModifierBase>(),
+        ("emoji-data.txt", "Emoji_Modifier_Base"),
+        2,
+    );
+    let component = Set::new(
+        &versions,
+        CodePointSetData::new::<icu::EmojiComponent>(),
+        ("emoji-data.txt", "Emoji_Component"),
+        0,
+    );
+    let ignorable = Set::new(
+        &versions,
+        CodePointSetData::new::<icu::DefaultIgnorableCodePoint>(),
+        ("DerivedCoreProperties.txt", "Default_Ignorable_Code_Point"),
+        0,
+    );
+    let white_space = Set::new(
+        &versions,
+        CodePointSetData::new::<icu::WhiteSpace>(),
+        ("PropList.txt", "White_Space"),
+        0,
+    );
+    let cased = Set::new(
+        &versions,
+        CodePointSetData::new::<icu::Cased>(),
+        ("DerivedCoreProperties.txt", "Cased"),
+        165,
+    );
+    let case_ignorable = Set::new(
+        &versions,
+        CodePointSetData::new::<icu::CaseIgnorable>(),
+        ("DerivedCoreProperties.txt", "Case_Ignorable"),
+        96,
+    );
     for ch in chars() {
         let word = rare_props(ch);
         let cp = u32::from(ch);
         let lb = line_break.get(ch);
-        // Bits 26 and 27 hold Cased and Case_Ignorable; no higher bit is set.
-        assert_eq!(word.0 >> 28, 0, "U+{cp:04X}: bits past the layout");
+        // Bits 27 and 28 hold Cased and Case_Ignorable, and bit 29 letters
+        // and numbers; no higher bit is set.
+        assert_eq!(word.0 >> 30, 0, "U+{cp:04X}: bits past the layout");
+        #[cfg(feature = "css")]
+        assert_eq!(
+            word.is_letter_or_number(),
+            matches!(
+                categories.get(ch),
+                icu::GeneralCategory::UppercaseLetter
+                    | icu::GeneralCategory::LowercaseLetter
+                    | icu::GeneralCategory::TitlecaseLetter
+                    | icu::GeneralCategory::ModifierLetter
+                    | icu::GeneralCategory::OtherLetter
+                    | icu::GeneralCategory::DecimalNumber
+                    | icu::GeneralCategory::LetterNumber
+                    | icu::GeneralCategory::OtherNumber
+            ),
+            "U+{cp:04X}"
+        );
+        #[cfg(not(feature = "css"))]
+        assert_eq!(word.0 >> 29, 0, "U+{cp:04X}: a CSS bit without `css`");
+        // The line byte's class maps back to Line_Break.
+        assert_eq!(
+            LINE_BREAK_NAMES
+                .get(usize::from(super::line_break(ch).get()))
+                .copied(),
+            line_break_names.get(lb),
+            "U+{cp:04X}"
+        );
         assert_eq!(word.is_cased(), cased.contains(ch), "U+{cp:04X}");
         assert_eq!(
             word.is_case_ignorable(),
@@ -258,9 +544,19 @@ fn the_cold_word_agrees_with_icu() {
             indic_conjunct_break(conjunct.get(ch)),
             "U+{cp:04X}"
         );
+        // The grapheme byte is the two classes and Extended_Pictographic,
+        // which the hot word's sweep holds to ICU; the Latin-1 table agrees.
+        let expected = GraphemeProps::from_bits(
+            word.grapheme_cluster_break() as u8
+                | (word.indic_conjunct_break() as u8) << 4
+                | u8::from(core_props(ch).is_extended_pictographic()) << 6,
+        );
+        assert_eq!(word.grapheme_props(), expected, "U+{cp:04X}");
+        assert_eq!(grapheme_props(ch), expected, "U+{cp:04X}");
     }
 }
 
+#[cfg(feature = "css")]
 /// Returns UTR #59's East_Asian_Spacing for `ch`, derived from its text
 /// (section 3.1), with the crate's separate classes for marks and digits.
 ///
@@ -333,6 +629,7 @@ fn east_asian_spacing(
     }
 }
 
+#[cfg(feature = "css")]
 /// Returns CSS Text 4's text-spacing class of `ch`, in Blink's numbering.
 fn text_spacing(
     ch: char,
@@ -358,15 +655,27 @@ fn text_spacing(
     }
 }
 
+#[cfg(feature = "css")]
 /// The two fields `text-autospace` and `text-spacing-trim` read agree with
 /// their derivations from icu_properties, for every character.
 #[test]
 fn the_spacing_classes_agree_with_icu() {
-    let categories = CodePointMapData::<icu::GeneralCategory>::new();
-    let width = CodePointMapData::<icu::EastAsianWidth>::new();
+    let Some(versions) = versions() else {
+        return;
+    };
+    let categories = Map::<icu::GeneralCategory>::new(&versions, CATEGORY, 13007);
+    let width = Map::<icu::EastAsianWidth>::new(&versions, WIDTH, 990);
     let script = CodePointMapData::<icu::Script>::new();
     let scripts = ScriptWithExtensions::new();
+    // ICU knows no 18.0 script, so the code points whose Script or
+    // Script_Extensions changed are left out: the newly assigned ones, and
+    // the three whose Script_Extensions changed (`scripts_agree_with_icu`).
+    let script_changes = script_changes(&versions);
+    assert_eq!(script_changes.len(), 13010);
     for ch in chars() {
+        if script_changes.contains_key(&u32::from(ch)) {
+            continue;
+        }
         let word = rare_props(ch);
         let (gc, eaw) = (categories.get(ch), width.get(ch));
         assert_eq!(
@@ -397,6 +706,7 @@ fn the_spacing_classes_agree_with_icu() {
     assert_eq!(spacing('\u{2C7}'), EastAsianSpacing::Wide);
 }
 
+#[cfg(feature = "css")]
 /// Returns the emphasis class of `ch`, derived from icu_properties as the
 /// generator does, in Chrome's order (`Character::CanReceiveTextEmphasis`).
 fn emphasis(ch: char, gc: icu::GeneralCategory) -> EmphasisClass {
@@ -433,6 +743,7 @@ fn emphasis(ch: char, gc: icu::GeneralCategory) -> EmphasisClass {
     }
 }
 
+#[cfg(feature = "css")]
 /// Returns the first-letter class of `ch`, derived from icu_properties as
 /// the generator does (CSS Pseudo-Elements 4, section 2.2.1).
 fn first_letter(ch: char, gc: icu::GeneralCategory) -> FirstLetterClass {
@@ -449,11 +760,15 @@ fn first_letter(ch: char, gc: icu::GeneralCategory) -> FirstLetterClass {
     }
 }
 
+#[cfg(feature = "css")]
 /// The class `::first-letter` reads agrees with its derivation from
 /// icu_properties, for every character.
 #[test]
 fn the_first_letter_classes_agree_with_icu() {
-    let categories = CodePointMapData::<icu::GeneralCategory>::new();
+    let Some(versions) = versions() else {
+        return;
+    };
+    let categories = Map::<icu::GeneralCategory>::new(&versions, CATEGORY, 13007);
     for ch in chars() {
         assert_eq!(
             rare_props(ch).first_letter(),
@@ -475,11 +790,15 @@ fn the_first_letter_classes_agree_with_icu() {
     assert_eq!(class('_'), FirstLetterClass::Punctuation);
 }
 
+#[cfg(feature = "css")]
 /// The class `text-emphasis-skip` reads agrees with its derivation from
 /// icu_properties, for every character.
 #[test]
 fn the_emphasis_classes_agree_with_icu() {
-    let categories = CodePointMapData::<icu::GeneralCategory>::new();
+    let Some(versions) = versions() else {
+        return;
+    };
+    let categories = Map::<icu::GeneralCategory>::new(&versions, CATEGORY, 13007);
     for ch in chars() {
         assert_eq!(
             rare_props(ch).emphasis(),
@@ -502,19 +821,49 @@ fn the_emphasis_classes_agree_with_icu() {
 
 #[test]
 fn scripts_agree_with_icu() {
+    let Some(versions) = versions() else {
+        return;
+    };
     let scripts = ScriptWithExtensions::new();
+    // 13,007 changed code points are newly assigned: 11,328 Seal, 965
+    // Jurchen, 164 Proto_Cuneiform, 161 Latin, 159 Cuneiform, 153 Common and
+    // the rest. Three change their Script_Extensions: U+0B83 TAMIL SIGN
+    // VISARGA gains Kannada, Malayalam and Telugu, and U+1CF5 and U+1CF6
+    // lose Devanagari. The tables hold 18.0's values there.
+    let changes = script_changes(&versions);
+    assert_eq!(changes.len(), 13010);
+    let as_tag = |name: &String| -> [u8; 4] {
+        name.as_bytes()
+            .try_into()
+            .expect("script short names are tags")
+    };
     for ch in chars() {
         let word = core_props(ch);
         let cp = u32::from(ch);
+        if let Some((old, new)) = changes.get(&cp) {
+            let mut theirs: Vec<[u8; 4]> = scripts
+                .get_script_extensions_val(ch)
+                .iter()
+                .map(tag)
+                .collect();
+            theirs.sort_unstable();
+            let old: Vec<[u8; 4]> = old.iter().map(as_tag).collect();
+            assert_eq!(theirs, old, "U+{cp:04X}: ICU holds {ICU_VERSION}'s");
+            let mut ours: Vec<[u8; 4]> = word.script_extensions().iter().map(|s| s.tag()).collect();
+            ours.sort_unstable();
+            let new: Vec<[u8; 4]> = new.iter().map(as_tag).collect();
+            assert_eq!(ours, new, "U+{cp:04X}");
+            continue;
+        }
         let expected = scripts.get_script_val(ch);
         let extensions = scripts.get_script_extensions_val(ch);
 
-        assert_eq!(script_tag(word), tag(expected), "U+{cp:04X}");
+        assert_eq!(word.script().tag(), tag(expected), "U+{cp:04X}");
         #[allow(deprecated, reason = "checking the numbering is ICU4C's")]
         let value = expected.to_icu4c_value();
-        assert_eq!(script(word).get(), usize::from(value), "U+{cp:04X}");
+        assert_eq!(word.script().get(), value, "U+{cp:04X}");
 
-        let ours = script_extensions(word);
+        let ours = word.script_extensions();
         assert_eq!(ours.len(), extensions.iter().count(), "U+{cp:04X}");
         for (ours, theirs) in ours.iter().zip(extensions.iter()) {
             assert_eq!(ours.tag(), tag(theirs), "U+{cp:04X}");
@@ -528,12 +877,31 @@ fn scripts_agree_with_icu() {
 
 #[test]
 fn brackets_agree_with_icu() {
+    let Some(versions) = versions() else {
+        return;
+    };
+    // 18.0 adds one pair, U+2E62 and U+2E63, newly assigned.
+    let old = versions.icu.brackets();
+    let new = versions.tables.brackets();
+    let added: Vec<&usize> = new.keys().filter(|cp| !old.contains_key(cp)).collect();
+    assert_eq!(added, [&0x2E62, &0x2E63]);
+    assert!(old.iter().all(|(cp, bracket)| new.get(cp) == Some(bracket)));
     let mirroring = CodePointMapData::<icu::BidiMirroringGlyph>::new();
     for ch in chars() {
         let word = core_props(ch);
         let cp = u32::from(ch);
         let bracket = mirroring.get(ch);
         let expected = match bracket.paired_bracket_type {
+            _ if added.contains(&&(cp as usize)) => {
+                assert_eq!(bracket.paired_bracket_type, BidiPairedBracketType::None);
+                let (pair, kind) = &new[&(cp as usize)];
+                let pair = char::from_u32(*pair as u32).expect("a bracket");
+                Some(if kind == "o" {
+                    (pair, true)
+                } else {
+                    (ch, false)
+                })
+            }
             BidiPairedBracketType::Open => Some((
                 bracket
                     .mirroring_glyph
@@ -550,7 +918,7 @@ fn brackets_agree_with_icu() {
                 // Analysis reads brackets only for ON clusters.
                 assert_eq!(word.bidi_class(), BidiClass::OTHER_NEUTRAL, "U+{cp:04X}");
                 assert_eq!(
-                    closing_bracket(word),
+                    word.closing_bracket(),
                     Some(canonical_bracket(closing)),
                     "U+{cp:04X}"
                 );
@@ -558,7 +926,7 @@ fn brackets_agree_with_icu() {
             None => {
                 assert_eq!(word.bracket_pair(), None, "U+{cp:04X}");
                 assert!(!word.opens_bracket(), "U+{cp:04X}");
-                assert_eq!(closing_bracket(word), None, "U+{cp:04X}");
+                assert_eq!(word.closing_bracket(), None, "U+{cp:04X}");
             }
         }
     }
@@ -581,7 +949,7 @@ fn canonically_equivalent_brackets_share_a_pair() {
         angles.map(CoreProps::opens_bracket),
         [true, false, true, false]
     );
-    assert_eq!(closing_bracket(angles[0]), Some('\u{3009}'));
+    assert_eq!(angles[0].closing_bracket(), Some('\u{3009}'));
 
     assert_eq!(
         core_props('(').bracket_pair(),
@@ -591,8 +959,8 @@ fn canonically_equivalent_brackets_share_a_pair() {
         core_props('(').bracket_pair(),
         core_props('[').bracket_pair()
     );
-    assert_eq!(closing_bracket(core_props('(')), Some(')'));
-    assert_eq!(closing_bracket(core_props('a')), None);
+    assert_eq!(core_props('(').closing_bracket(), Some(')'));
+    assert_eq!(core_props('a').closing_bracket(), None);
 }
 
 #[test]
@@ -622,38 +990,38 @@ fn script_ids_name_their_scripts() {
     assert_eq!(ScriptId::UNKNOWN.tag(), *b"Zzzz");
     assert_eq!(ScriptId::HAN.tag(), *b"Hani");
     assert_eq!(ScriptId::HIRAGANA.tag(), *b"Hira");
-    assert_eq!(script_tag(core_props('a')), *b"Latn");
-    assert_eq!(script(core_props('.')), ScriptId::COMMON);
-    assert_eq!(script(core_props('\u{10FFFF}')), ScriptId::UNKNOWN);
+    assert_eq!(core_props('a').script().tag(), *b"Latn");
+    assert_eq!(core_props('.').script(), ScriptId::COMMON);
+    assert_eq!(core_props('\u{10FFFF}').script(), ScriptId::UNKNOWN);
 
     // A plain script is its own extensions.
     assert_eq!(
         core_props('a').scripts().single(),
-        Some(script(core_props('a')))
+        Some(core_props('a').script())
     );
     assert_eq!(
-        script_extensions(core_props('a')),
-        [script(core_props('a'))]
+        core_props('a').script_extensions(),
+        [core_props('a').script()]
     );
 
     // U+0BEB TAMIL DIGIT FIVE is Tamil, and Grantha uses it too.
     let five = core_props('\u{BEB}');
     assert_eq!(five.scripts().single(), None);
-    assert_eq!(script_tag(five), *b"Taml");
+    assert_eq!(five.script().tag(), *b"Taml");
     let tags: [[u8; 4]; 2] = [*b"Taml", *b"Gran"];
     assert!(
-        script_extensions(five)
+        five.script_extensions()
             .iter()
             .all(|s| tags.contains(&s.tag()))
     );
-    assert_eq!(script_extensions(five).len(), 2);
+    assert_eq!(five.script_extensions().len(), 2);
 
     // U+0951 DEVANAGARI STRESS SIGN UDATTA is Inherited, and its extensions
     // leave Inherited out.
     let udatta = core_props('\u{951}');
-    assert_eq!(script(udatta), ScriptId::INHERITED);
-    assert!(!script_extensions(udatta).contains(&ScriptId::INHERITED));
-    assert!(script_extensions(udatta).len() > 1);
+    assert_eq!(udatta.script(), ScriptId::INHERITED);
+    assert!(!udatta.script_extensions().contains(&ScriptId::INHERITED));
+    assert!(udatta.script_extensions().len() > 1);
 }
 
 #[test]
@@ -665,18 +1033,28 @@ fn the_script_tables_are_well_formed() {
 
     assert_eq!(tables::SCRIPT_TAGS.len(), count);
     assert!(count + sets <= 1 << 10, "the script field is ten bits");
-    assert!(runs[..count].iter().map(|id| id.get()).eq(0..count));
+    assert!(
+        runs[..count]
+            .iter()
+            .map(|id| usize::from(id.get()))
+            .eq(0..count)
+    );
     assert_eq!(usize::from(starts[0]), count);
     assert_eq!(usize::from(starts[sets]), runs.len());
     for pair in starts.windows(2) {
         // A Script and at least one extension.
         assert!(pair[1] >= pair[0] + 2);
     }
-    assert!(runs.iter().all(|id| id.get() < count));
+    assert!(runs.iter().all(|id| usize::from(id.get()) < count));
 
-    // Every tag is ICU's, including for values no character has.
+    // Every tag is ICU's, including for values no character has, but for
+    // the scripts 18.0 adds, which ICU4C 78 has not numbered: they take the
+    // next values.
     let names = PropertyNamesShort::<icu::Script>::new();
-    for (value, ours) in (0..tables::SCRIPT_COUNT).zip(&tables::SCRIPT_TAGS) {
+    let added = [*b"Pcun", *b"Seal"];
+    let (numbered, new) = tables::SCRIPT_TAGS.split_at(tables::SCRIPT_TAGS.len() - added.len());
+    assert_eq!(new, added);
+    for (value, ours) in (0..tables::SCRIPT_COUNT).zip(numbered) {
         #[allow(deprecated, reason = "checking the numbering is ICU4C's")]
         let script = icu::Script::from_icu4c_value(value);
         let theirs = names.get(script).map_or(*b"Zzzz", |name| {
@@ -687,91 +1065,3 @@ fn the_script_tables_are_well_formed() {
         assert_eq!(*ours, theirs, "script {value}");
     }
 }
-
-/// The characters whose runs word motion segments whole are exactly those
-/// ICU4X's word segmenter hands to its dictionaries or LSTM (the word data's
-/// complex property): Line_Break SA, plus Han and Hiragana with
-/// dictionaries; without them those are replaced and never reach ICU.
-/// Checked for every character against icu_properties and the word data, so
-/// an ICU that marks others fails here.
-#[test]
-fn a_complex_character_is_icus() {
-    use icu_segmenter::provider::Baked;
-    let line_break = CodePointMapData::<icu::LineBreak>::new();
-    let scripts = CodePointMapData::<icu::Script>::new();
-    let data = Baked::SINGLETON_SEGMENTER_BREAK_WORD_V1;
-    for ch in chars() {
-        let sa = line_break.get(ch) == icu::LineBreak::ComplexContext;
-        let han_or_hiragana = matches!(scripts.get(ch), icu::Script::Han | icu::Script::Hiragana);
-        let icus = data.property_table.get32(u32::from(ch)) == data.complex_property;
-        assert_eq!(icus, sa || han_or_hiragana, "{ch:?}: ICU's word data");
-        let expected = sa || (cfg!(feature = "dictionaries") && han_or_hiragana);
-        assert_eq!(segmenters::is_complex(ch), expected, "{ch:?}");
-        assert_eq!(
-            segmenters::segmenter_char(ch).is_some(),
-            !cfg!(feature = "dictionaries") && han_or_hiragana,
-            "{ch:?}: stood in for"
-        );
-    }
-}
-
-/// Without dictionaries, the stand-in for each ideograph and hiragana has its
-/// Word_Break, so UAX #29 segments it the same way. Checked for every Han,
-/// Hiragana and Katakana character against icu_properties. The stand-in:
-/// - is no pictograph where the character is none (WB3c);
-/// - is as long in UTF-8, so `capitalize` finds words at the same offsets;
-/// - is a letter or digit where the character is one, for Chrome's full
-///   stops (`word_boundaries`), except where it is Other, which UAX #29
-///   already separates from a full stop;
-/// - never reaches ICU's dictionaries itself.
-///
-/// With dictionaries nothing is replaced.
-#[test]
-fn a_stand_in_has_its_characters_word_break() {
-    use icu_segmenter::provider::Baked;
-    let word_break = CodePointMapData::<icu::WordBreak>::new();
-    let scripts = CodePointMapData::<icu::Script>::new();
-    let pictographic = CodePointSetData::new::<icu::ExtendedPictographic>();
-    let data = Baked::SINGLETON_SEGMENTER_BREAK_WORD_V1;
-    let mut asked = 0;
-    for ch in chars() {
-        if !matches!(
-            scripts.get(ch),
-            icu::Script::Han | icu::Script::Hiragana | icu::Script::Katakana
-        ) {
-            continue;
-        }
-        asked += 1;
-        let given = segmenters::segmenter_char(ch).unwrap_or(ch);
-        if cfg!(feature = "dictionaries") {
-            assert_eq!(given, ch, "{ch:?}: stood in for with dictionaries");
-            continue;
-        }
-        let wb = word_break.get(ch);
-        assert_eq!(word_break.get(given), wb, "{ch:?} as {given:?}");
-        assert_eq!(
-            pictographic.contains(given),
-            pictographic.contains(ch),
-            "{ch:?} as {given:?}"
-        );
-        assert_eq!(given.len_utf8(), ch.len_utf8(), "{ch:?} as {given:?}");
-        if wb != icu::WordBreak::Other {
-            assert_eq!(
-                given.is_alphanumeric(),
-                ch.is_alphanumeric(),
-                "{ch:?} as {given:?}"
-            );
-            assert_eq!(given.is_numeric(), ch.is_numeric(), "{ch:?} as {given:?}");
-        }
-        assert!(!segmenters::is_complex(given), "{ch:?} as {given:?}");
-        assert_ne!(
-            data.property_table.get32(u32::from(given)),
-            data.complex_property,
-            "{ch:?} as {given:?}: ICU's word data"
-        );
-    }
-    assert!(asked > 100_000, "{asked} characters");
-}
-
-mod case;
-mod normalize;

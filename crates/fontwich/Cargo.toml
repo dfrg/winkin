@@ -1,13 +1,32 @@
 [package]
 name = "fontwich"
-version = "0.0.1"
+version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Font enumeration, CSS font matching and platform font fallback."
+documentation = "https://docs.rs/fontwich"
+readme = "README.md"
+description = "Font enumeration, CSS font matching, @font-face and platform font fallback."
 keywords = ["font", "fallback", "css", "fontconfig", "directwrite"]
 categories = ["text-processing", "os", "no-std"]
+# The sources, the build script and the licenses. The tests read fixtures
+# and the examples time the platform's fonts; both stay in the repository.
+include = [
+    "/src/**/*.rs",
+    "!/src/**/tests.rs",
+    "!/src/**/tests/**",
+    "!/src/test_fonts.rs",
+    "/build.rs",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/LICENSE-APACHE",
+    "/LICENSE-MIT",
+    "/THIRD-PARTY",
+]
+
+[package.metadata.docs.rs]
+all-features = true
 
 [lints.clippy]
 # A module with children is `foo/mod.rs`, never `foo.rs` beside `foo/`.

@@ -75,9 +75,9 @@ pub struct Area {
     pub block_end: Option<f32>,
     /// The space above block-start that first-line annotations may use.
     ///
-    /// Ruby and emphasis marks fill it before the first line moves down. As in
-    /// Chrome, it includes the start padding and, where no border intervenes,
-    /// the collapsed start margin and the preceding block's
+    /// Ruby and emphasis marks fill it before the first line moves down. It
+    /// includes the start padding and, where no border intervenes, the
+    /// collapsed start margin and the preceding block's
     /// [`Layout::room_below`](crate::Layout::room_below). Defaults to zero;
     /// negative and NaN values count as zero.
     pub room_above: f32,
@@ -114,14 +114,13 @@ impl Area {
 ///
 /// An initial letter uses the key of the box with `initial-letter`. Its
 /// margin box runs from the line top, or above it for a raised letter, to the
-/// bottom of the fitted ink. To match Chrome:
+/// bottom of the fitted ink. A provider should:
 /// - place it at `block_start`, even above an earlier float;
 /// - place later same-side floats and clearing blocks below it, whatever
 ///   their `clear`;
 /// - place a block that begins with an initial letter below earlier initial
 ///   letters on either side.
 #[derive(Copy, Clone, PartialEq, Debug)]
-#[non_exhaustive]
 pub struct FloatRequest {
     /// The node key of the float.
     pub key: NodeKey,
@@ -173,7 +172,7 @@ pub struct ExclusionsCheckpoint(pub u64);
 /// Floats are placed in logical order, at the line top or below the line,
 /// and must stay put so that refitting converges. A rejected trial break
 /// restores them through [`checkpoint`](Self::checkpoint) and
-/// [`rewind`](Self::rewind), as Chrome does.
+/// [`rewind`](Self::rewind).
 pub trait Exclusions {
     /// Returns the inline space for line `line` over the block extents `block`.
     fn band(&self, line: usize, block: BlockExtents) -> InlineExtents;

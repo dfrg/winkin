@@ -47,7 +47,6 @@ const COLOR_TABLES: [&[u8; 4]; 4] = [b"COLR", b"CBDT", b"sbix", b"SVG "];
 
 /// The source of a font's bytes.
 #[derive(Clone, Debug)]
-#[non_exhaustive]
 pub enum Source {
     /// Shared font bytes in memory.
     Data(FontBytes),

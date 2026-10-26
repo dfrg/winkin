@@ -4,7 +4,7 @@
 //! Intrinsic sizing, the breaker and line layout all call
 //! [`tab_advance_reached`], so they agree.
 //!
-//! The rule is Chrome's `Font::TabWidth`:
+//! The rule follows Blink's `Font::TabWidth`:
 //! - Stops are multiples of `tab-size` from the block's content edge.
 //! - A `tab-size` in spaces counts the block's space: its primary font's
 //!   U+0020 (or the first listed font's that maps one) with the block's
@@ -68,13 +68,14 @@ impl TabStops {
 /// The shift of a tab after a ruby column under `ruby-overhang: spaces`.
 ///
 /// The prefix takes the column's whole end overhang off the column, but
-/// Chrome sizes the tab before taking it (`CommitPendingEndOverhang`), so
-/// the tab starts `shift` short of where Chrome sizes it.
+/// the tab is sized before the overhang comes off (Blink's
+/// `CommitPendingEndOverhang`), so the tab starts `shift` short of where it
+/// is sized.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub(crate) struct TabReach {
     /// The tab's cluster.
     pub(super) tab: ClusterId,
-    /// How far short of Chrome's position the tab starts.
+    /// How far short of its sized position the tab starts.
     pub(super) shift: LayoutUnit,
 }
 
@@ -109,9 +110,8 @@ pub(super) fn tab_advance(
         return stops.letter.to_layout();
     }
     let at = InlineLayoutUnit::from_layout(origin) + position;
-    // Floored remainder: Chrome 155 ends a tab starting 10 px before the
-    // content edge at the edge, and one starting 110 px before at 100 px
-    // before.
+    // Floored remainder: a tab starting 10 px before the content edge ends
+    // at the edge, and one starting 110 px before at 100 px before.
     let mut rem = at % interval;
     if rem < InlineLayoutUnit::ZERO {
         rem += interval;

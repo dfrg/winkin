@@ -78,9 +78,9 @@ impl ContentWriter<'_> {
             return None;
         }
         // A box setting `initial-letter` is the initial letter when no text
-        // precedes it, even after empty boxes, as in Chrome. After kept
-        // white space, or inside a box that already is one, it is `normal`
-        // and its `vertical-align` applies.
+        // precedes it, even after empty boxes. After kept white space, or
+        // inside a box that already is one, it is `normal` and its
+        // `vertical-align` applies.
         let first = self.content.text.is_empty() && !self.letters.initial_letter;
         let letter = match style.line.initial_letter.is_set() {
             false => InitialLetterUse::Unset,

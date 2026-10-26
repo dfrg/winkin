@@ -19,7 +19,6 @@ use crate::stages::lines::{BlockExtents, InlineExtents, LineFloat};
 /// Margin-box coordinates are relative to the [`Area`](crate::Area)
 /// used for line breaking.
 #[derive(Copy, Clone, PartialEq, Debug)]
-#[non_exhaustive]
 pub struct FloatPlacement {
     /// The node key of the float.
     pub key: NodeKey,

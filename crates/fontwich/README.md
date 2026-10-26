@@ -16,7 +16,7 @@ APIs on Windows, macOS and Linux, and reads Android's `fonts.xml`.
 - Name lookup and cached fallback traversal do not allocate.
 
 The crate provides font bytes but does not shape or render text.
-[winkin](../winkin) uses it for font selection during layout.
+[winkin](https://crates.io/crates/winkin) uses it for font selection during layout.
 
 ## Example
 
@@ -54,9 +54,8 @@ families for a few representative scripts.
 
 ## Status
 
-fontwich is at 0.0.1 and not yet published to crates.io. The API may
-change. On Android, fontwich reads `fonts.xml` but not yet its `variant`
-attribute.
+fontwich is at 0.1.0. The API may change between minor versions. On
+Android, fontwich reads `fonts.xml` but not yet its `variant` attribute.
 
 ## Features
 
@@ -73,6 +72,10 @@ bytes, and a `FallbackOverride` supplies fallback.
 On Linux and the BSDs, libfontconfig is linked by default. Set
 `RUST_FONTCONFIG_DLOPEN` at build time to load it at run time instead.
 
+## Minimum Rust version
+
+fontwich builds with Rust 1.88 and later.
+
 ## Read next
 
 - The crate docs: the public API, starting at `Collection`.
@@ -84,7 +87,15 @@ fontwich is a sandwich of font layers — system on the bottom, your app in
 the middle, the document's `@font-face` on top — and its whole job is
 answering *which font?* Hold the mayo.
 
-## Licence
+## License
 
-Licensed under either the Apache License, Version 2.0, or the MIT license,
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](LICENSE-MIT))
+
 at your option.
+
+Some tables record facts from Chromium's default font settings and font
+lists, and from the Unicode Character Database. Their notices are in
+[THIRD-PARTY](THIRD-PARTY).

@@ -8,9 +8,9 @@
 //! 1. A cluster that draws nothing takes the font of the cluster before it.
 //!    Tabs, separators, an atomic inline's U+FFFC and a lone
 //!    default-ignorable draw nothing.
-//! 2. A grapheme divided by a style boundary follows Chrome. Where the parts
-//!    shape alike (one [`ShapingFactsId`]), the first part chooses with the
-//!    whole grapheme's text and the later parts take its font. Otherwise each
+//! 2. A grapheme divided by a style boundary: where the parts shape alike
+//!    (one [`ShapingFactsId`]), the first part chooses with the whole
+//!    grapheme's text and the later parts take its font. Otherwise each
 //!    part chooses by its own style, and a mark may leave its base.
 //! 3. The cluster takes the first candidate, in CSS order, that the memo does
 //!    not rule out, that accepts the presentation and that covers the
@@ -23,12 +23,11 @@
 //!    installed family maps is noted on the context and never walked again.
 //!    Then it tries a forced presentation's base form, then the candidate
 //!    that draws most of the grapheme, and last the primary font, which
-//!    draws `.notdef` as Chrome does. A private-use character or a
-//!    noncharacter tries only the listed families and the Standard font.
+//!    draws `.notdef`. A private-use character or a noncharacter tries only
+//!    the listed families and the Standard font.
 //! 5. A grapheme with a variation sequence first searches the whole list,
 //!    fallback included, for a font that also has the sequence. If none has
-//!    it, the grapheme takes the first font that covers the base. Blink
-//!    matches clusters in the same two passes.
+//!    it, the grapheme takes the first font that covers the base.
 //! 6. The chosen font gives a used font: the instance for the style's
 //!    variations and features at its used size. Where the font lacks small
 //!    capitals the style asks for, the text splits where Blink's

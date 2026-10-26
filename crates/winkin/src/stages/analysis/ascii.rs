@@ -1,4 +1,4 @@
-//! Chrome's own line-break rules for ASCII, which it applies before it asks
+//! Blink's own line-break rules for ASCII, which it applies before it asks
 //! ICU.
 //!
 //! Blink decides a boundary by three rules before asking its ICU iterator
@@ -20,7 +20,7 @@
 //!   after `/` between letters or digits, where ICU breaks `example.com/a`
 //!   after its slash.
 //!
-//! Everything else is ICU's, as in Blink:
+//! Blink leaves everything else to ICU:
 //! - a pair with a character past ASCII. Blink's table reaches U+00FF, but
 //!   past ASCII it holds ICU's answers for the pair alone; the stream gives
 //!   them with their context;
@@ -28,17 +28,16 @@
 //! - a control character other than DEL, which the table holds. The
 //!   analysis decides a control's breaks by its own rules.
 //!
-//! Measured in Chrome 153 in 10 px Ahem, each string in a zero-width
-//! column: all 8,836 pairs of printable ASCII characters break as the table
-//! does; the 94 `?-1` strings break before the digit only after a letter or
-//! digit; and a space breaks before every printable character and before
-//! `»`, `«`, `、`, `」`, `）`, U+2060, U+00A0, `é`, U+0F0B, `—`, `°` and `¢`
-//! alike.
+//! Measured in 10 px Ahem, each string in a zero-width column: all 8,836 pairs
+//! of printable ASCII characters break as the table does; the 94 `?-1` strings
+//! break before the digit only after a letter or digit; and a space breaks
+//! before every printable character and before `»`, `«`, `、`, `」`, `）`,
+//! U+2060, U+00A0, `é`, U+0F0B, `—`, `°` and `¢` alike.
 //!
 //! Nothing here allocates or panics.
 
 /// Returns whether a line may break between `before` and `after` where
-/// Chrome's ASCII rules decide it, or `None` where Chrome asks ICU.
+/// Blink's ASCII rules decide it, or `None` where Blink asks ICU.
 ///
 /// `before_before` finds the character before `before`; only a hyphen
 /// before a digit reads it.
@@ -70,8 +69,8 @@ pub(super) fn breaks(
 }
 
 /// Returns whether a line may break between `before` and `after` under
-/// `word-break: break-all` where Chrome's ASCII rules decide it, or `None`
-/// where Chrome asks ICU.
+/// `word-break: break-all` where Blink's ASCII rules decide it, or `None`
+/// where Blink asks ICU.
 ///
 /// Blink's break-all table adds opportunities to the pair table and takes
 /// none away (`ShouldBreakAfterBreakAll`). Its ICU iterator is never asked
@@ -93,9 +92,9 @@ pub(super) fn breaks_all(
 /// printable ASCII characters.
 ///
 /// The table is indexed by line-break class, and Blink's data puts `+` with
-/// the letters rather than with `$` and `\`. Measured in Chrome 155 in 10 px
-/// Ahem, each pair alone in a zero-width column, it adds these (after each
-/// group, before the listed characters):
+/// the letters rather than with `$` and `\`. Measured in 10 px Ahem, each pair
+/// alone in a zero-width column, it adds these (after each group, before the
+/// listed characters):
 /// - a letter, a digit, `/`, `<`, `@`, `^`, `_` or `` ` ``: a letter or `#`,
 ///   `&`, `*`, `+`, `-`, `=`, `>`, `@`, `^`, `_`, `` ` ``, `|` or `~` (call
 ///   them letter-like), `$`, `\`, a digit, or an opening `(`, `<`, `[`, `{`;

@@ -7,7 +7,12 @@
 //! - small kana, the East Asian gate and the Latin-1 fast path;
 //! - what hangs.
 
+use alloc::sync::Arc;
+
 use super::*;
+use crate::segment::Dictionaries;
+#[cfg(feature = "dictionaries")]
+use crate::segment::DictionaryScript;
 
 #[test]
 fn opportunities_follow_uax_14() {
@@ -342,16 +347,15 @@ fn ascii_text_breaks_as_chrome_breaks_it() {
     assert_eq!(breaks(&anywhere), [1, 2]);
 }
 
-/// Thai breaks between its words where ICU's Southeast Asian dictionaries find
-/// them, with the `dictionaries` feature. The expected breaks are where Chrome
-/// 153 wraps a Thai paragraph in a column of no width, taking every
-/// opportunity. ICU4C's dictionary and ICU4X's agree on all nineteen. The text
+/// Thai breaks between its words where the Thai dictionary finds them, with
+/// the `dictionaries` feature. The expected breaks are where Chrome 153 wraps
+/// a Thai paragraph in a column of no width, taking every opportunity.
+/// ICU4C's dictionary and the longest match agree on all nineteen. The text
 /// says "Thailand has a long history and a diverse culture. Most people are
 /// Buddhist, and the capital is Bangkok."
 ///
-/// Without dictionaries the LSTM finds those and four more, inside words
-/// Chrome keeps whole: `ประเทศ|ไทย`, "Thailand", `ยาว|นาน`, "long", `ผู้|คน`,
-/// "people", and before the abbreviation mark of `กรุงเทพ|ฯ`, "Bangkok".
+/// Without dictionaries a Thai run does not break inside, as ICU breaks none
+/// with no dictionary: the line breaks only after the space.
 #[test]
 fn thai_breaks_where_chrome_wraps_it() {
     let text = "\u{E1B}\u{E23}\u{E30}\u{E40}\u{E17}\u{E28}\u{E44}\u{E17}\u{E22}\u{E21}\u{E35}\u{E1B}\u{E23}\u{E30}\u{E27}\u{E31}\u{E15}\u{E34}\u{E28}\u{E32}\u{E2A}\u{E15}\u{E23}\u{E4C}\u{E22}\u{E32}\u{E27}\u{E19}\u{E32}\u{E19}\u{E41}\u{E25}\u{E30}\u{E27}\u{E31}\u{E12}\u{E19}\u{E18}\u{E23}\u{E23}\u{E21}\u{E17}\u{E35}\u{E48}\u{E2B}\u{E25}\u{E32}\u{E01}\u{E2B}\u{E25}\u{E32}\u{E22} \u{E1C}\u{E39}\u{E49}\u{E04}\u{E19}\u{E2A}\u{E48}\u{E27}\u{E19}\u{E43}\u{E2B}\u{E0D}\u{E48}\u{E19}\u{E31}\u{E1A}\u{E16}\u{E37}\u{E2D}\u{E28}\u{E32}\u{E2A}\u{E19}\u{E32}\u{E1E}\u{E38}\u{E17}\u{E18}\u{E41}\u{E25}\u{E30}\u{E40}\u{E21}\u{E37}\u{E2D}\u{E07}\u{E2B}\u{E25}\u{E27}\u{E07}\u{E04}\u{E37}\u{E2D}\u{E01}\u{E23}\u{E38}\u{E07}\u{E40}\u{E17}\u{E1E}\u{E2F}";
@@ -369,12 +373,51 @@ fn thai_breaks_where_chrome_wraps_it() {
     assert_eq!(found, chrome);
     #[cfg(not(feature = "dictionaries"))]
     {
-        let lstm = [
-            6, 9, 11, 24, 27, 30, 33, 41, 44, 48, 53, 56, 58, 62, 66, 72, 77, 81, 84, 89, 93, 96,
-            103,
-        ];
-        assert_eq!(found, lstm);
-        assert!(chrome.iter().all(|at| lstm.contains(at)));
+        assert_eq!(found, [53]);
+        assert!(chrome.contains(&53));
+    }
+}
+
+/// Returns the breaks of `text` built in a context with `dictionaries`, and
+/// the layout.
+fn breaks_with(text: &str, dictionaries: &Arc<Dictionaries>) -> (Vec<usize>, Layout) {
+    let mut cx = no_fonts();
+    cx.set_dictionaries(Arc::clone(dictionaries));
+    let mut layout = Layout::new();
+    let style = language("th");
+    let block = ComputedBlockStyle::new(&style);
+    let mut builder = layout.builder(&mut cx, key(0), &block, BuildOptions::default());
+    builder.text(key(1), text);
+    builder.finish();
+    (breaks(&layout), layout)
+}
+
+/// A host's dictionaries break the scripts they hold and no other: with a
+/// Lao dictionary alone, Thai breaks only around its run, and with none,
+/// neither does Lao. A layout keeps the set it was built with.
+#[test]
+fn a_context_breaks_sa_runs_with_the_dictionaries_it_holds() {
+    // ภาษา ไทย, a space, ພາສາ ລາວ: Thai and Lao, each two words.
+    let text = "ภาษาไทย ພາສາລາວ";
+    let none = Arc::new(Dictionaries::new());
+    let (without, layout) = breaks_with(text, &none);
+    assert_eq!(without, [22]);
+    assert!(
+        layout
+            .dictionaries()
+            .is_some_and(|kept| Arc::ptr_eq(kept, &none))
+    );
+    #[cfg(feature = "dictionaries")]
+    {
+        let compiled = Dictionaries::with_compiled();
+        let lao = compiled.get(DictionaryScript::Lao).cloned();
+        let lao = lao.and_then(|lao| Dictionaries::new().with_lao(lao).ok());
+        let lao = Arc::new(lao.expect("the compiled Lao dictionary"));
+        let (with_lao, _) = breaks_with(text, &lao);
+        assert_eq!(with_lao, [22, 34]);
+        let all = Arc::new(compiled);
+        let (with_all, _) = breaks_with(text, &all);
+        assert_eq!(with_all, [12, 22, 34]);
     }
 }
 
@@ -1152,36 +1195,127 @@ fn a_quotation_mark_breaks_under_each_option_as_chrome_breaks_it() {
     }
 }
 
-/// The quotation marks and East Asian widths the tailoring reads match
-/// Unicode's: Line_Break QU with General_Category Pi or Pf, and
-/// East_Asian_Width F, W or H.
+/// Returns `text` in `style` with a `|` at each opportunity.
+fn marked(style: &ComputedStyle<'_>, text: &str) -> String {
+    pieces_between_breaks(&root_text(style, text)).join("|")
+}
+
+/// Under `keep-all`, Blink holds two letters or numbers (General_Category L
+/// or N) and asks ICU's `normal` rules about every other pair
+/// (`ShouldKeepAfterKeepAll`). Measured in Chrome 155 at `width: 0`:
+/// symbols beside ideographs break; Hebrew, `々`, Hangul and circled digits
+/// hold; Thai, Line_Break SA, does not; a mark reads the letter before it;
+/// and a character past the BMP, a surrogate pair to Blink, never holds.
 #[test]
-fn the_quotation_tailoring_reads_unicodes_classes() {
-    use icu_properties::CodePointMapData;
-    use icu_properties::props::{EastAsianWidth, GeneralCategory, LineBreak as Lb};
-    let lb = CodePointMapData::<Lb>::new();
-    let gc = CodePointMapData::<GeneralCategory>::new();
-    let ea = CodePointMapData::<EastAsianWidth>::new();
-    for ch in (0..=0x10_FFFF).filter_map(char::from_u32) {
-        let quote = lb.get(ch) == Lb::Quotation;
-        let (initial, final_, east_asian) = super::super::breaks::quotation_classes(ch);
+fn keep_all_holds_letters_and_numbers_as_chrome_does() {
+    let keep_all = word_break(WordBreak::KeepAll);
+    for expected in [
+        "漢漢|©|漢",
+        "漢漢|→|漢",
+        "漢漢|☺|漢",
+        "漢漢א漢",
+        "漢々a漢",
+        "漢漢①漢",
+        "漢가a漢",
+        "漢|กa漢",
+        "漢漢\u{301}a漢",
+        "漢|𠀀|𠀀|漢",
+        "漢|𠀀|a漢",
+    ] {
+        assert_eq!(marked(&keep_all, &expected.replace('|', "")), expected);
+    }
+}
+
+/// Under `break-all`, Blink adds opportunities by its table of Line_Break
+/// classes and keeps ICU's `normal` ones (`ShouldBreakAfterBreakAll`).
+/// Measured in Chrome 155 at `width: 0`: letters and digits of any script
+/// break apart and from AI and opening punctuation, but not after a prefix
+/// like `€` or before closing punctuation, and BA breaks only under `loose`.
+#[test]
+fn break_all_adds_blinks_opportunities() {
+    let break_all = word_break(WordBreak::BreakAll);
+    for expected in [
+        "漢|a|ä|漢",
+        "漢|1|١|漢",
+        "漢|α|а|漢",
+        "漢|ا|क|漢",
+        "漢|א|1|漢",
+        "漢|ก|§|漢",
+        "漢|§|ä|漢",
+        "漢|ä|-|漢",
+        "漢|a|€漢",
+        "漢|€a|漢",
+        "漢°|a|漢",
+        "漢」|a|漢",
+        "漢、|a|漢",
+        "漢‧|a|漢",
+        "漢……|漢",
+    ] {
+        assert_eq!(marked(&break_all, &expected.replace('|', "")), expected);
+    }
+}
+
+/// Chrome finds a line's break by searching back from where the line
+/// overflows, which reads only the character before each boundary and one
+/// UTF-16 code unit after it. So under `break-all` a combining mark adds no
+/// opportunity after it, and none is added before a character past the BMP.
+/// Measured in Chrome 155 in the middle of a line, in a box just wide enough
+/// for the text before the boundary: it holds `é|a` with a combining acute,
+/// `कि|क` and `a|𝐀`, and breaks `𝐀|a` and `a|a`.
+#[test]
+fn break_all_adds_nothing_after_a_mark_or_before_a_surrogate_pair() {
+    let break_all = word_break(WordBreak::BreakAll);
+    for expected in ["e\u{301}a", "a|a\u{301}b", "किकिक", "a𝐀|a", "a|a|a"] {
+        assert_eq!(marked(&break_all, &expected.replace('|', "")), expected);
+    }
+}
+
+/// Returns a layout of one text in `root`, analyzed under `hyphens`.
+fn text_with_hyphens(hyphens: LooseHyphens, root: &ComputedStyle<'_>, text: &str) -> Layout {
+    let mut cx = no_fonts();
+    let mut config = *cx.config();
+    config.loose_hyphens = hyphens;
+    cx.set_config(config);
+    let mut layout = Layout::new();
+    let mut builder = layout.builder(
+        &mut cx,
+        NodeKey(0),
+        &ComputedBlockStyle::new(root),
+        BuildOptions::default(),
+    );
+    builder.text(key(1), text);
+    builder.finish();
+    check(&layout);
+    layout
+}
+
+/// `line-break: loose` breaks before U+2010 HYPHEN and U+2013 EN DASH after
+/// an ideograph only in Japanese and Chinese, as Chrome 155 does: `文|文‐|文`
+/// in English, `文|文|‐|文` in Japanese. `LooseHyphens::AnyLanguage` breaks
+/// there in every language, as CSS Text 3 allows and WPT's
+/// `line-break-loose-hyphens-001` expects; after a letter it changes nothing
+/// (`-003`).
+#[test]
+fn loose_hyphens_break_where_the_config_says() {
+    use LooseHyphens::{AnyLanguage, JapaneseChinese};
+    for (language, hyphens, expected) in [
+        ("en", JapaneseChinese, "文|文‐|文"),
+        ("en", JapaneseChinese, "文|文–|文"),
+        ("ja", JapaneseChinese, "文|文|‐|文"),
+        ("en", AnyLanguage, "文|文|‐|文"),
+        ("en", AnyLanguage, "文|文|–|文"),
+        ("fr", AnyLanguage, "文|文|‐|文"),
+        ("ja", AnyLanguage, "文|文|‐|文"),
+        ("en", JapaneseChinese, "aa‐"),
+        ("en", AnyLanguage, "aa‐"),
+        ("en", AnyLanguage, "aa–"),
+    ] {
+        let style = language_line_break(language, LineBreak::Loose);
+        let layout = text_with_hyphens(hyphens, &style, &expected.replace('|', ""));
         assert_eq!(
-            initial,
-            quote && gc.get(ch) == GeneralCategory::InitialPunctuation,
-            "{ch:?}"
-        );
-        assert_eq!(
-            final_,
-            quote && gc.get(ch) == GeneralCategory::FinalPunctuation,
-            "{ch:?}"
-        );
-        assert_eq!(
-            east_asian,
-            matches!(
-                ea.get(ch),
-                EastAsianWidth::Fullwidth | EastAsianWidth::Wide | EastAsianWidth::Halfwidth
-            ),
-            "{ch:?}"
+            pieces_between_breaks(&layout).join("|"),
+            expected,
+            "{language} {hyphens:?}"
         );
     }
 }

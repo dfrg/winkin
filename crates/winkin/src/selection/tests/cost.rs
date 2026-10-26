@@ -118,9 +118,8 @@ fn a_word_motion_costs_the_distance_it_moves() {
     assert!(small > 0);
     assert!(large <= small * 5 / 2, "{small} steps, then {large}");
     // "Thai" and "Chinese characters" with nothing between them, and Tai
-    // Tham. ICU hands Tai Tham to its dictionaries and LSTM, and neither
-    // has it, so a run is one word however long. A motion crosses it a stop
-    // at a time.
+    // Tham. No dictionary has Tai Tham, so a run is one word however long.
+    // A motion crosses it a stop at a time.
     for word in [
         "\u{E44}\u{E17}\u{E22}",
         "\u{6F22}\u{5B57}",
@@ -151,8 +150,8 @@ fn a_word_motion_costs_the_distance_it_moves() {
         work::take()
     };
     // The Thai sentence's first clause, which ends in a space.
-    // Fewer copies of the Thai and the Japanese without dictionaries: the
-    // LSTM, slow in a debug build, segments their runs at each motion.
+    // Fewer copies of the Thai and the Japanese: the dictionaries, slow in
+    // a debug build, segment their runs at each motion.
     let clause = THAI.split_inclusive(' ').next().unwrap_or(THAI);
     for (text, copies) in [
         ("TWFuIGlz+ZGlzdGluZ3Vp/c2hlZA==", 300),

@@ -13,9 +13,9 @@
 //! - **Paired brackets** take their opener's script, so the closing
 //!   parenthesis after Japanese quoted in English is English.
 //!
-//! As in Blink, resolution runs across paragraphs: a paragraph of digits
-//! after one of Han is Han, the script font fallback then asks for. Runs
-//! never cross a paragraph.
+//! Resolution runs across paragraphs: a paragraph of digits after one of Han
+//! is Han, the script font fallback then asks for. Runs never cross a
+//! paragraph.
 
 use alloc::vec::Vec;
 
@@ -25,10 +25,10 @@ use super::{
     BidiLevel, ClusterId, ParagraphFlags, Paragraphs, RunOrientation, ScriptRun, ScriptRuns,
 };
 use crate::stages::content::LanguageId;
-use crate::unicode::{self, BracketPairId, CoreProps, ScriptId};
+use crate::unicode::{BracketPairId, CoreProps, ScriptId};
 
-/// The number of open brackets remembered, as in Blink. Deeper nesting
-/// forgets the outermost, which then closes as Common.
+/// The number of open brackets remembered. Deeper nesting forgets the
+/// outermost, which then closes as Common.
 const MAX_BRACKETS: usize = 32;
 
 /// A run the writer found, before its level and perhaps its script are
@@ -90,7 +90,7 @@ impl ScriptState {
 
     /// Returns what the cluster whose first character has `props` does.
     ///
-    /// Every paired bracket pairs, whatever its own script, as in Blink. A
+    /// Every paired bracket pairs, whatever its own script. A
     /// closing bracket that closes an opener takes the opener's script. An
     /// opener's own script steps the run first; the opener then takes the
     /// run's script.
@@ -104,10 +104,9 @@ impl ScriptState {
             (Some(script), _) => self.real(script),
             (None, Some(script)) if is_shared(script) => ScriptStep::Joins,
             (None, Some(script)) => self.real(script),
-            (None, None) => self.shared(
-                unicode::script_extensions(props),
-                kana_as_hiragana(unicode::script(props)),
-            ),
+            (None, None) => {
+                self.shared(props.script_extensions(), kana_as_hiragana(props.script()))
+            }
         };
         if let Some(pair) = bracket
             && props.opens_bracket()

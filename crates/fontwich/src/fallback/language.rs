@@ -68,7 +68,7 @@ const REGION_TO_HAN: &[(&str, Han)] = &[
 /// Languages written in a script other than Latin, by their usual script.
 ///
 /// This is what a language is written in when its tag does not say, from
-/// Chrome's `LocaleToScriptCodeForFontSelection`, for the languages whose
+/// Blink's `LocaleToScriptCodeForFontSelection`, for the languages whose
 /// script has fonts of its own. [`LANG_TO_HAN`] holds the Chinese, Japanese
 /// and Korean languages.
 const LANG_TO_SCRIPT: &[(&str, [u8; 4])] = &[
@@ -136,8 +136,8 @@ const LANG_TO_SCRIPT: &[(&str, [u8; 4])] = &[
     ("yi", *b"Hebr"),
 ];
 
-/// Returns the script `lang` is written in, as Chrome reads it to choose a
-/// generic family's font.
+/// Returns the script `lang` is written in, for choosing a generic family's
+/// font.
 ///
 /// Reads the tag's script subtag first. Chinese is Traditional where the
 /// region is Taiwan, Hong Kong or Macau. Otherwise the language's usual
@@ -185,7 +185,7 @@ fn script_han(script: Script) -> Option<Han> {
 ///
 /// Never returns [`Han::HantHK`]. An unambiguous script decides alone.
 /// Otherwise, for `Hani` or a script-less query, the tag decides: its script
-/// subtag, then its region, then its language. This follows Chrome's
+/// subtag, then its region, then its language. This follows Blink's
 /// `ScriptCodeForHan`, with script before region stated outright.
 ///
 /// Returns `None` for an unresolved `Hani`. The caller picks the default.

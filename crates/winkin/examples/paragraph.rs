@@ -15,7 +15,7 @@
 use std::borrow::Cow;
 
 use fontwich::{Collection, LayerBuilder, Role};
-use winkin::style::{ComputedStyle, FontFamilyName, FontGroup, FontWeight, TextAlign};
+use winkin::style::{ComputedStyle, FontFamilyName, FontWeight, TextAlign};
 use winkin::{
     Area, BuildOptions, ComputedBlockStyle, Context, Item, Layout, NoExclusions, NodeKey,
 };
@@ -43,21 +43,11 @@ fn main() {
 
     // The computed styles a host's cascade would hand in: the paragraph's,
     // and a bold span's that inherits from it.
-    let paragraph = ComputedStyle {
-        font: FontGroup {
-            families: &family,
-            size: 16.0,
-            ..FontGroup::INITIAL
-        },
-        ..ComputedStyle::initial()
-    };
-    let bold = ComputedStyle {
-        font: FontGroup {
-            weight: FontWeight::BOLD,
-            ..paragraph.font
-        },
-        ..paragraph
-    };
+    let mut paragraph = ComputedStyle::initial();
+    paragraph.font.families = &family;
+    paragraph.font.size = 16.0;
+    let mut bold = paragraph;
+    bold.font.weight = FontWeight::BOLD;
     let mut block = ComputedBlockStyle::new(&paragraph);
     block.text_align = TextAlign::Justify;
 

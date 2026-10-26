@@ -12,7 +12,7 @@
 //! - In a wrapping block, a line that floats squeeze into overflow moves down
 //!   to where the bands next change.
 //!
-//! A rejected trial rewinds through the host's checkpoint (Chrome's
+//! A rejected trial rewinds through the host's checkpoint (Blink's
 //! `RewindFloats`). Without `FLOATS`, set where the content has floats, the
 //! driver still avoids the host's floats but takes no checkpoint and places
 //! nothing. An initial letter is not a content float.
@@ -62,7 +62,7 @@ impl Placing {
         out.float_end() != self.kept
     }
 
-    /// Takes back every float placed since this state (Chrome's `RewindFloats`).
+    /// Takes back every float placed since this state (Blink's `RewindFloats`).
     pub(super) fn rewind(
         self,
         exclusions: &mut dyn Exclusions,
@@ -105,8 +105,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// line at `end`.
     ///
     /// The next line, or the block's end, starts where the band in `area` no
-    /// longer narrows on a cleared side, as Chrome applies a `<br>`'s clearance
-    /// after its line. Clearance runs from the line box's bottom; annotations
+    /// longer narrows on a cleared side: a `<br>`'s clearance applies after
+    /// its line. Clearance runs from the line box's bottom; annotations
     /// reaching further carry over only their reach past it
     /// (`AddAnyClearanceAfterLine`). Inlined, so content without clearing breaks
     /// makes no call.
@@ -171,7 +171,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// Keeps the block's end below the floats `clear` clears where
     /// `text-box-trim` pulls it up into them, `line_end` being the line's end.
     ///
-    /// Chrome adds the clearance after the trim: a 100 px float beside a 100 px
+    /// The clearance applies after the trim: a 100 px float beside a 100 px
     /// line trimmed to 80 at `alphabetic` leaves the block 100 px tall.
     #[cold]
     fn clear_past_trimmed_end(
@@ -396,7 +396,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// Places the initial letter's exclusion with the host once the first line
     /// is kept, the host's positions standing `trimmed` above the records.
     ///
-    /// The margin box follows Chrome's `CreateExclusionSpaceForInitialLetterBox`:
+    /// The margin box follows Blink's `CreateExclusionSpaceForInitialLetterBox`:
     /// down to the letter's ink, on the paragraph's start side, widened by a
     /// positive first-line `text-indent`. No line records it.
     pub(super) fn sink_initial_letter(

@@ -27,6 +27,8 @@ use alloc::vec::Vec;
 use core::cell::Cell;
 use core::ops::Range;
 
+use cleft::Dictionaries;
+
 use super::transform::{Transforms, align_counts};
 use crate::data::{TextOffset, heap_bytes};
 use crate::work;
@@ -199,7 +201,7 @@ impl FirstLineSource {
     ///
     /// The content wrote `written` for `src` at `at`; the two are aligned
     /// one source character at a time. `before` is the source character
-    /// before `src`, for capitalize; `scratch` is segmenter scratch.
+    /// before `src`, for capitalize, which finds words with `dictionaries`.
     pub(super) fn push_transformed(
         &mut self,
         at: TextOffset,
@@ -207,15 +209,15 @@ impl FirstLineSource {
         src: &str,
         before: char,
         transforms: Transforms,
-        scratch: &mut String,
+        dictionaries: &Dictionaries,
     ) {
         let from = TextOffset::new(self.text.len());
         match transforms.first_line() {
-            Some(transformer) => transformer.write(src, before, scratch, &mut self.text),
+            Some(transformer) => transformer.write(src, before, dictionaries, &mut self.text),
             None => self.text.push_str(src),
         }
         self.align(at, written, from, |each| {
-            transforms.counts(src, before, scratch, each);
+            transforms.counts(src, before, dictionaries, each);
         });
     }
 

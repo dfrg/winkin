@@ -1,4 +1,5 @@
-//! Generates `crates/winkin/src/unicode/tables.rs`.
+//! Generates `cleft`'s property and case tables from the Unicode
+//! Character Database.
 //!
 //! Run it from anywhere in the workspace, then format what it wrote:
 //!
@@ -7,19 +8,34 @@
 //! cargo fmt
 //! ```
 //!
-//! The file is committed. Running both again reproduces it byte for byte;
-//! winkin's sweep test (`unicode/tests.rs`) checks it against `icu_properties`
-//! for every character.
+//! It reads the UCD files of one version, pinned in `data/<version>/` and
+//! checked against the SHA-256 each has in `manifest.txt`, and writes
+//! `crates/cleft/src/props/tables.rs` and
+//! `crates/cleft/src/case/tables.rs`. Both are committed. Running it
+//! again reproduces them byte for byte. `cleft`'s sweep tests check
+//! them against icu_properties and icu_casemap for every character, and say
+//! where the two versions' data differ.
+//!
+//! A version other than the default is named as the one argument:
+//! `cargo run --release -p unicode_gen -- 17.0.0`.
+//!
+//! `cargo run --release -p unicode_gen -- dictionaries` writes the word
+//! dictionaries instead, from ICU's word lists (`dictionary`).
+//!
+//! The input files are not in the public repository.
+//! `cargo run -p unicode_gen -- fetch` downloads every file the manifest
+//! lists into `data/` and checks it (`pinned`). Without them the generator
+//! stops with an error that says so.
 //!
 //! # Why a packed table
 //!
 //! Analysis asks for a handful of properties of every character. Asking
 //! `icu_properties` means one trie or inversion list per property, and above
 //! U+0FFF an out-of-line call and four to six dependent loads for each trie:
-//! about ten times what one packed lookup costs (research `icu4x-text.md` §6).
-//! So everything is packed into two `u32` words per code point, each a
-//! three-level packtab lookup with no slow path: three dependent loads in
-//! every plane.
+//! about ten times what one packed lookup costs. So everything is packed into
+//! two `u32` words per code point, each a three-level packtab lookup with no
+//! slow path: three dependent loads in every plane. The line segmenter reads
+//! a byte of its own, the third lookup.
 //!
 //! # The core word
 //!
@@ -57,42 +73,88 @@
 //! | 7 | Default_Ignorable_Code_Point |
 //! | 8..12 | Grapheme_Cluster_Break, ICU4C's numbering with ZWJ moved to 13 |
 //! | 12..14 | Indic_Conjunct_Break, ICU4C's numbering |
-//! | 14..17 | East Asian spacing: 0 other, 1 narrow, 2 narrow digit, 3 conditional, 4 wide, 5 a mark |
-//! | 17..21 | the text-spacing class: Blink's `HanKerningCharType`, 0 to 10 |
-//! | 21..24 | the emphasis class: 0 marked, 1 a space, 2 punctuation, 3 a symbol, 4 never marked |
-//! | 24..26 | the first-letter class: 0 other, 1 a space, 2 opening punctuation or a dash, 3 other punctuation |
-//! | 26 | Cased |
-//! | 27 | Case_Ignorable |
-//! | 28..32 | zero |
+//! | 14 | Extended_Pictographic |
+//! | 15..18 | `css`: East Asian spacing: 0 other, 1 narrow, 2 narrow digit, 3 conditional, 4 wide, 5 a mark |
+//! | 18..22 | `css`: the text-spacing class: Blink's `HanKerningCharType`, 0 to 10 |
+//! | 22..25 | `css`: the emphasis class: 0 marked, 1 a space, 2 punctuation, 3 a symbol, 4 never marked |
+//! | 25..27 | `css`: the first-letter class: 0 other, 1 a space, 2 opening punctuation or a dash, 3 other punctuation |
+//! | 27 | Cased |
+//! | 28 | Case_Ignorable |
+//! | 29 | `css`: General_Category L or N: a letter or a number, which `word-break: keep-all` holds together |
+//! | 30..32 | zero |
+//!
+//! # The line byte
+//!
+//! What the line segmenter reads of every character, one byte from a lookup
+//! of its own, with a 256-entry table in front for Latin-1.
+//!
+//! | Bits | Field |
+//! |---:|---|
+//! | 0..6 | the line class: Line_Break, split where a rule or option reads more |
+//! | 6 | East_Asian_Width = Fullwidth, Wide or Halfwidth: UAX #14's `$EastAsian` |
+//! | 7 | Extended_Pictographic and unassigned, which LB30b holds before EM |
+//!
+//! The line class numbers Line_Break's values as `cleft`'s `line`
+//! module does, and splits nine of them by another property:
+//! - QU by General_Category: Pi and Pf have classes of their own, which LB15a,
+//!   LB15b and LB19 read;
+//! - OP by East_Asian_Width, since LB30 holds only an OP that is not East
+//!   Asian;
+//! - ID by being Extended_Pictographic and unassigned, which `keep-all`
+//!   leaves out of the ideographs;
+//! - SA by General_Category: Mn and Mc resolve to CM under LB1, the rest to
+//!   AL;
+//! - AL by being U+25CC DOTTED CIRCLE, which LB28a names;
+//! - PO and PR by East_Asian_Width Ambiguous, Fullwidth or Wide, which the
+//!   Japanese and Chinese `loose` tailoring breaks before and after. The
+//!   sets are those ICU4C's `line_loose_cj.txt` lists as `$POX` and `$PRX`;
+//!   the generator checks that;
+//! - NS by the strictness that lets a line break before it, as ICU4C's rules
+//!   list them: U+301C and U+30A0 under Japanese and Chinese `normal`, the
+//!   iteration marks under `loose`, and the centred punctuation under
+//!   Japanese and Chinese `loose`;
+//! - EX by being U+FF01 or U+FF1F, which Japanese and Chinese `loose` lets a
+//!   line break before.
+//!
+//! AI, XX and CJ keep classes of their own, since the `keep-all` and
+//! `break-all` options read them apart from AL and NS. SG has no scalar
+//! value, so no character has it. No CP is East Asian, so LB30's
+//! `[CP-$EastAsian]` needs no split; the generator checks that.
 //!
 //! Joining_Type, East_Asian_Width, Vertical_Orientation and the glue classes
-//! were each a field of their own until the simplification wave
-//! (2026-09-29), ten bits in all, where every stage reads each as the one
-//! question its bit now answers: a join-causing character that letter
-//! spacing sees through, a wide character `text-emphasis-skip: narrow`
-//! marks, an upright one under `text-orientation: mixed`, and a character
-//! that glues an atomic inline to its neighbour.
+//! are each stored as the one question every reader asks of them: a
+//! join-causing character that letter spacing sees through, a wide character
+//! `text-emphasis-skip: narrow` marks, an upright one under
+//! `text-orientation: mixed`, and a character that glues an atomic inline to
+//! its neighbour.
 //!
-//! Emoji_Modifier_Base, Emoji_Component and Indic_Conjunct_Break are
-//! reserved for an in-house grapheme segmenter, written only if measurement
-//! argues for one. They are filled now so that the table does
-//! not change shape when it is. Until a stage reads them only the sweep test
-//! does, so the constants of the three are compiled for the tests alone.
-//! Line_Break = SA is read by word motion, which
-//! segments a run of it whole, as ICU's word segmenter hands
-//! such a run to its dictionary or model. The mark bit is read by font
-//! coverage, which replays harfrust's normalizer against a font: a mark is
-//! what that normalizer clusters with the character before it, and what it
-//! composes onto a starter. The Emoji bit is read by font
-//! selection, which applies `font-variant-emoji` to an Emoji character as
-//! Chrome does (`Character::IsEmoji`), and to no other.
+//! Bits 8 to 15 are what the grapheme segmenter reads, one byte taken with
+//! one shift: Grapheme_Cluster_Break, Indic_Conjunct_Break and
+//! Extended_Pictographic, which the core word holds too. Emoji_Modifier_Base
+//! and Emoji_Component are reserved: only the sweep test reads them, so their
+//! constants are compiled for the tests alone. Line_Break = SA is read by word motion, which segments a run
+//! of it whole, as ICU's word segmenter hands such a run to its dictionary or
+//! model. The mark bit is read by font coverage, which replays harfrust's
+//! normalizer against a font: a mark is what that normalizer clusters with
+//! the character before it, and what it composes onto a starter. The Emoji
+//! bit is read by font selection, which applies `font-variant-emoji` to an
+//! Emoji character as Chrome does (`Character::IsEmoji`), and to no other.
+//!
+//! # The CSS classes
+//!
+//! Bits 15 to 27 hold classes CSS defines and Unicode does not, derived
+//! below, and bit 29 the letters and numbers `keep-all` reads. They are
+//! compiled only with `cleft`'s `css` feature. The
+//! rare word is packed twice: once with them, and once with them zero, which
+//! packs smaller. Each build reads one of the two, so it makes one lookup per
+//! character either way.
 //!
 //! # East Asian spacing
 //!
 //! What `text-autospace` reads: UTR #59's East_Asian_Spacing,
 //! derived here as Chrome 153 derives it for its own table
 //! (`character_property_data_generator.cc`, `SetEastAsianSpacing`), since
-//! ICU carries no such property yet. Wide: Script Bopomofo, Han, Hangul,
+//! the UCD carries no such property. Wide: Script Bopomofo, Han, Hangul,
 //! Hiragana, Katakana, Khitan Small Script, Nushu, Tangut or Yi, or a
 //! Script_Extensions naming one of them where East_Asian_Width is neither
 //! Neutral nor Narrow; less what is East_Asian_Width Halfwidth, punctuation,
@@ -134,8 +196,8 @@
 //!
 //! # First-letter classes
 //!
-//! What `::first-letter` reads to find where its text ends,
-//! CSS Pseudo-Elements 4 §2.2.1's categories as Blink's
+//! What `::first-letter` reads to find where its text ends, the categories
+//! of CSS Pseudo-Elements 4, section 2.2.1, as Blink's
 //! `FirstLetterPseudoElement` tests them: 1, a space separator (Zs) other
 //! than U+3000 IDEOGRAPHIC SPACE, which may come between the punctuation and
 //! the letter; 2, opening punctuation (Ps) or a dash (Pd), which may come
@@ -145,39 +207,48 @@
 //! # Numbering
 //!
 //! The numbers are ICU4C's, baked into the generated file, except where a
-//! field is too narrow for them. ICU4X is removing the conversions that read
-//! ICU4C's values, so each property is mapped here by a `match` on its named
-//! values instead. The match is also the check that winkin's enums agree:
-//! a value added to Unicode fails here, loudly, rather than being packed as
-//! something else. Script values are read from ICU's conversion while it
-//! exists; the generated file records the answer, so its removal costs a new
-//! mapping, never correctness.
+//! field is too narrow for them. Each property is mapped here by a `match`
+//! on its short value aliases. The match is also the check that the crate's
+//! enums agree: a value added to Unicode fails here, loudly, rather than
+//! being packed as something else.
 //!
 //! Grapheme_Cluster_Break is the one field that departs. ICU4C numbers ZWJ 17,
 //! after four values Unicode has assigned to no character since 11.0. Four
 //! bits hold 0 to 15, so ZWJ is 13 here and the four are refused.
 //!
+//! Scripts are numbered as ICU4C's `UScriptCode` numbers them, which the UCD
+//! does not give: [`ICU_SCRIPTS`] lists ICU4C's tags in value order. A script
+//! Unicode adds before ICU4C numbers it takes the next value, in the order of
+//! the list's tail.
+//!
 //! # Case mapping
 //!
-//! What `text-transform` maps case by (`unicode/case.rs`), read from
-//! icu_casemap: each character's full lowercase, uppercase and titlecase in
-//! the root language, alone. The conditional mappings and the language
-//! tailorings are code there, as ICU4C writes them.
+//! What `text-transform` maps case by (`cleft`'s `case` module),
+//! read from UnicodeData.txt and SpecialCasing.txt: each character's full
+//! lowercase, uppercase and titlecase in the root language, alone. The
+//! simple mappings come from UnicodeData.txt, where an empty titlecase is the
+//! uppercase, and SpecialCasing.txt's unconditional entries replace them.
+//! Its conditional entries and the language tailorings are code in the case
+//! module, as ICU4C writes them.
 //!
 //! - `CASE_RUNS` holds every run of neighbours that map alike, binary
 //!   searched: each the run's first character, its length less one and its
 //!   kind. A run of lowercase letters maps up by one delta, a run of capitals
 //!   down by one, and a run of pairs alternates capital and small letter.
-//!   338 runs hold every mapped character of Unicode 17.
 //! - `CASE_RUN_DATA` names each run's delta in `CASE_DELTAS`, or its first
 //!   exception.
 //! - An exception is a character one delta cannot map: a mapping longer than
 //!   one character (`ß`, `ﬁ`, `ŉ`), or a titlecase that is not the uppercase
 //!   (`ǆ`, `ǅ`). `CASE_EXCEPTIONS` spells its three mappings in
-//!   `CASE_STRINGS`.
+//!   `CASE_STRINGS`, which holds BMP characters only. A mapping spelled
+//!   empty is the character itself, which is how an exception past the BMP
+//!   (U+1DF95, from 18.0) keeps its own lowercase.
 //! - Uppercase leaves Georgian Mkhedruli as it is, as Chrome's
 //!   `DisableNewGeorgianCapitalLetters` does, so it needs no exception.
 //! - `SOFT_DOTTED` is the Soft_Dotted ranges, which Lithuanian reads.
+//! - `ACCENTS` is the ranges of nonzero Canonical_Combining_Class, each
+//!   marked where the class is 230 (Above). Lithuanian reads them as ICU4C's
+//!   dot types: an accent above, or another accent.
 //! - `GREEK_LETTERS` is what ICU4C's `GreekUpper` reads of each character of
 //!   U+0370 to U+03FF and U+1F00 to U+1FFF: the capital of its base letter,
 //!   from its canonical decomposition, and whether it is a vowel and carries
@@ -205,18 +276,20 @@
 //! - a value below `SCRIPT_COUNT` is a script, and the character's
 //!   Script_Extensions is that script alone;
 //! - a value at or above it names set `value - SCRIPT_COUNT`, whose run in
-//!   `SCRIPT_RUNS` is the character's Script and then its Script_Extensions.
-//!   ICU stores the script first in the same way for its "other" case; here
-//!   every set does, Common and Inherited included.
+//!   `SCRIPT_RUNS` is the character's Script and then its Script_Extensions,
+//!   in ICU4C's value order. ICU stores the script first in the same way for
+//!   its "other" case; here every set does, Common and Inherited included.
 //!
-//! One set exists per distinct pair of Script and Script_Extensions.
-//! `SCRIPT_RUNS` begins with every script alone, in value order, so that a
-//! plain script's extensions are a one-element slice of it.
+//! One set exists per distinct pair of Script and Script_Extensions, numbered
+//! in the order the sweep first meets it. `SCRIPT_RUNS` begins with every
+//! script alone, in value order, so that a plain script's extensions are a
+//! one-element slice of it. A code point ScriptExtensions.txt does not list
+//! has its Script alone.
 //!
 //! # Brackets
 //!
-//! A pair id and an "opens" bit rather than the closing character: Unicode 17
-//! has 64 bracket pairs, 63 once the equivalent ones below are merged, so
+//! A pair id and an "opens" bit rather than the closing character: Unicode 18
+//! has 65 bracket pairs, 64 once the equivalent ones below are merged, so
 //! seven bits hold an id plus one with room to double, where a character would
 //! need sixteen and a presence bit. `BRACKET_CLOSINGS` maps the id back.
 //!
@@ -229,29 +302,68 @@
 //! # The lookups
 //!
 //! packtab's three-lookup solution, rendered here rather than by packtab:
-//! packtab reads its arrays with `[]`, and winkin allows no panic that a
+//! packtab reads its arrays with `[]`, and the crate allows no panic that a
 //! caller's input could reach. Every read goes through `at`, which answers
 //! zero past the end of its array. No index the lookups compute is past the
 //! end; the sweep test visits every character to show it.
 
+mod dictionary;
+mod pinned;
+mod sha256;
+mod ucd;
+
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::path::Path;
+use std::process::ExitCode;
 
-use icu_properties::props::{
-    BidiClass, BidiMirroringGlyph, BidiPairedBracketType, CaseIgnorable, Cased,
-    DefaultIgnorableCodePoint, EastAsianWidth, Emoji, EmojiComponent, EmojiModifierBase,
-    EmojiPresentation, ExtendedPictographic, GeneralCategory, GraphemeClusterBreak,
-    IndicConjunctBreak, JoiningType, LineBreak, RegionalIndicator, Script, SoftDotted,
-    VerticalOrientation, WhiteSpace,
-};
-use icu_properties::script::ScriptWithExtensions;
-use icu_properties::{CodePointMapData, CodePointSetData, PropertyNamesShort};
+use ucd::{CODE_POINTS, Ucd, UnicodeData};
 
-/// Where the generated file goes, from this crate's manifest.
-const OUT: &str = concat!(
+/// The version generated when no argument names one.
+const DEFAULT_VERSION: &str = "18.0.0";
+
+/// The pinned data, from this crate's manifest.
+const DATA: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/data");
+
+/// Where the property tables go, from this crate's manifest.
+const PROPS_OUT: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../crates/winkin/src/unicode/tables.rs"
+    "/../../crates/cleft/src/props/tables.rs"
 );
+
+/// Where the case tables go, from this crate's manifest.
+const CASE_OUT: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../crates/cleft/src/case/tables.rs"
+);
+
+/// ICU4C's `UScriptCode` values, as ISO 15924 tags in value order, and then
+/// the scripts Unicode added that ICU4C has not numbered yet.
+///
+/// A value no character has keeps ICU4C's tag for it.
+#[rustfmt::skip]
+const ICU_SCRIPTS: [&str; 215] = [
+    "Zyyy", "Zinh", "Arab", "Armn", "Beng", "Bopo", "Cher", "Copt", "Cyrl", "Dsrt", "Deva", "Ethi",
+    "Geor", "Goth", "Grek", "Gujr", "Guru", "Hani", "Hang", "Hebr", "Hira", "Knda", "Kana", "Khmr",
+    "Laoo", "Latn", "Mlym", "Mong", "Mymr", "Ogam", "Ital", "Orya", "Runr", "Sinh", "Syrc", "Taml",
+    "Telu", "Thaa", "Thai", "Tibt", "Cans", "Yiii", "Tglg", "Hano", "Buhd", "Tagb", "Brai", "Cprt",
+    "Limb", "Linb", "Osma", "Shaw", "Tale", "Ugar", "Hrkt", "Bugi", "Glag", "Khar", "Sylo", "Talu",
+    "Tfng", "Xpeo", "Bali", "Batk", "Blis", "Brah", "Cham", "Cirt", "Cyrs", "Egyd", "Egyh", "Egyp",
+    "Geok", "Hans", "Hant", "Hmng", "Hung", "Inds", "Java", "Kali", "Latf", "Latg", "Lepc", "Lina",
+    "Mand", "Maya", "Mero", "Nkoo", "Orkh", "Perm", "Phag", "Phnx", "Plrd", "Roro", "Sara", "Syre",
+    "Syrj", "Syrn", "Teng", "Vaii", "Visp", "Xsux", "Zxxx", "Zzzz", "Cari", "Jpan", "Lana", "Lyci",
+    "Lydi", "Olck", "Rjng", "Saur", "Sgnw", "Sund", "Moon", "Mtei", "Armi", "Avst", "Cakm", "Kore",
+    "Kthi", "Mani", "Phli", "Phlp", "Phlv", "Prti", "Samr", "Tavt", "Zmth", "Zsym", "Bamu", "Lisu",
+    "Nkgb", "Sarb", "Bass", "Dupl", "Elba", "Gran", "Kpel", "Loma", "Mend", "Merc", "Narb", "Nbat",
+    "Palm", "Sind", "Wara", "Afak", "Jurc", "Mroo", "Nshu", "Shrd", "Sora", "Takr", "Tang", "Wole",
+    "Hluw", "Khoj", "Tirh", "Aghb", "Mahj", "Ahom", "Hatr", "Modi", "Mult", "Pauc", "Sidd", "Adlm",
+    "Bhks", "Marc", "Newa", "Osge", "Hanb", "Jamo", "Zsye", "Gonm", "Soyo", "Zanb", "Dogr", "Gong",
+    "Maka", "Medf", "Rohg", "Sogd", "Sogo", "Elym", "Hmnp", "Nand", "Wcho", "Chrs", "Diak", "Kits",
+    "Yezi", "Cpmn", "Ougr", "Tnsa", "Toto", "Vith", "Kawi", "Nagm", "Aran", "Gara", "Gukh", "Krai",
+    "Onao", "Sunu", "Todr", "Tutg", "Berf", "Sidt", "Tayo", "Tols", "Hntl",
+    // Unicode 18.0's, which ICU4C 78 has not numbered.
+    "Pcun", "Seal",
+];
 
 /// A field of one of the two words.
 struct Field {
@@ -259,9 +371,9 @@ struct Field {
     name: &'static str,
     shift: u32,
     bits: u32,
-    /// Filled so that the table keeps its shape, and read by the sweep test
-    /// alone until a stage asks for it: its constants are `#[cfg(test)]`.
-    reserved: bool,
+    /// The `cfg` the field's constants are compiled under, or `None` for
+    /// every build.
+    gate: Option<&'static str>,
 }
 
 impl Field {
@@ -270,16 +382,29 @@ impl Field {
             name,
             shift,
             bits,
-            reserved: false,
+            gate: None,
         }
     }
 
-    /// A field no stage reads yet (the module's documentation says which).
+    /// A field no reader asks for yet: its constants are for the sweep test.
     const fn reserved(name: &'static str, shift: u32, bits: u32) -> Self {
         Self {
-            reserved: true,
+            gate: Some("test"),
             ..Self::new(name, shift, bits)
         }
+    }
+
+    /// A class CSS defines, compiled with the `css` feature.
+    const fn css(name: &'static str, shift: u32, bits: u32) -> Self {
+        Self {
+            gate: Some("feature = \"css\""),
+            ..Self::new(name, shift, bits)
+        }
+    }
+
+    /// The field's bits in place.
+    const fn mask(&self) -> u32 {
+        ((1 << self.bits) - 1) << self.shift
     }
 
     /// Stores `value` in `word`, refusing a value too wide for the field.
@@ -294,9 +419,12 @@ impl Field {
     }
 
     /// The constants the reader uses: a mask in place for a flag, a shift and
-    /// a mask for anything wider; for the tests alone where it is reserved.
+    /// a mask for anything wider; under the field's gate.
     fn emit(&self, code: &mut String) {
-        let gate = if self.reserved { "#[cfg(test)]\n" } else { "" };
+        let gate = match self.gate {
+            Some(gate) => format!("#[cfg({gate})]\n"),
+            None => String::new(),
+        };
         if self.bits == 1 {
             writeln!(
                 code,
@@ -361,15 +489,17 @@ const EMOJI_MODIFIER_BASE: Field = Field::reserved("EMOJI_MODIFIER_BASE", 5, 1);
 const EMOJI_COMPONENT: Field = Field::reserved("EMOJI_COMPONENT", 6, 1);
 const DEFAULT_IGNORABLE: Field = Field::new("DEFAULT_IGNORABLE", 7, 1);
 const GRAPHEME_CLUSTER_BREAK: Field = Field::new("GRAPHEME_CLUSTER_BREAK", 8, 4);
-const INDIC_CONJUNCT_BREAK: Field = Field::reserved("INDIC_CONJUNCT_BREAK", 12, 2);
-const EAST_ASIAN_SPACING: Field = Field::new("EAST_ASIAN_SPACING", 14, 3);
-const TEXT_SPACING: Field = Field::new("TEXT_SPACING", 17, 4);
-const EMPHASIS: Field = Field::new("EMPHASIS", 21, 3);
-const FIRST_LETTER: Field = Field::new("FIRST_LETTER", 24, 2);
-const CASED: Field = Field::new("CASED", 26, 1);
-const CASE_IGNORABLE: Field = Field::new("CASE_IGNORABLE", 27, 1);
+const INDIC_CONJUNCT_BREAK: Field = Field::new("INDIC_CONJUNCT_BREAK", 12, 2);
+const GRAPHEME_PICTOGRAPHIC: Field = Field::new("GRAPHEME_PICTOGRAPHIC", 14, 1);
+const EAST_ASIAN_SPACING: Field = Field::css("EAST_ASIAN_SPACING", 15, 3);
+const TEXT_SPACING: Field = Field::css("TEXT_SPACING", 18, 4);
+const EMPHASIS: Field = Field::css("EMPHASIS", 22, 3);
+const FIRST_LETTER: Field = Field::css("FIRST_LETTER", 25, 2);
+const CASED: Field = Field::new("CASED", 27, 1);
+const CASE_IGNORABLE: Field = Field::new("CASE_IGNORABLE", 28, 1);
+const LETTER_OR_NUMBER: Field = Field::css("LETTER_OR_NUMBER", 29, 1);
 
-const RARE: [&Field; 16] = [
+const RARE: [&Field; 18] = [
     &JOIN_CAUSING,
     &WIDE,
     &UPRIGHT_IN_MIXED,
@@ -380,13 +510,34 @@ const RARE: [&Field; 16] = [
     &DEFAULT_IGNORABLE,
     &GRAPHEME_CLUSTER_BREAK,
     &INDIC_CONJUNCT_BREAK,
+    &GRAPHEME_PICTOGRAPHIC,
     &EAST_ASIAN_SPACING,
     &TEXT_SPACING,
     &EMPHASIS,
     &FIRST_LETTER,
     &CASED,
     &CASE_IGNORABLE,
+    &LETTER_OR_NUMBER,
 ];
+
+// The line byte.
+const LINE_CLASS: Field = Field::new("LINE_CLASS", 0, 6);
+const LINE_EAST_ASIAN: Field = Field::new("LINE_EAST_ASIAN", 6, 1);
+const LINE_UNASSIGNED_PICTOGRAPHIC: Field = Field::new("LINE_UNASSIGNED_PICTOGRAPHIC", 7, 1);
+
+// The word byte.
+const WORD_CLASS: Field = Field::new("WORD_CLASS", 0, 5);
+const WORD_PICTOGRAPHIC: Field = Field::new("WORD_PICTOGRAPHIC", 5, 1);
+const WORD_RUN: Field = Field::new("WORD_RUN", 6, 2);
+
+/// The word run of a character in no dictionary run.
+const WORD_RUN_NONE: u32 = 0;
+/// The word run of a Line_Break SA character, whose script's dictionary
+/// finds its words.
+const WORD_RUN_SOUTHEAST_ASIAN: u32 = 1;
+/// The word run of a Han, Hiragana or Katakana character, whose words the
+/// Chinese and Japanese dictionary finds where there is one.
+const WORD_RUN_CHINESE_JAPANESE: u32 = 2;
 
 // The kinds of case run, in a run's low bits.
 /// Each character's lowercase is itself, and its uppercase and titlecase
@@ -416,34 +567,39 @@ const GREEK_DIALYTIKA: u32 = 1 << 13;
 /// The Greek diacritics ICU's Greek uppercasing reads, and what each says
 /// (`GreekUpper::getDiacriticData`): an accent, a dialytika, both, an iota
 /// subscript, or another diacritic, which says nothing.
-fn greek_diacritic(ch: char) -> Option<u32> {
-    match ch {
-        '\u{300}' | '\u{301}' | '\u{342}' | '\u{302}' | '\u{303}' | '\u{311}' => Some(GREEK_ACCENT),
-        '\u{308}' => Some(GREEK_DIALYTIKA),
-        '\u{344}' => Some(GREEK_DIALYTIKA | GREEK_ACCENT),
-        '\u{345}' => Some(GREEK_YPOGEGRAMMENI),
-        '\u{304}' | '\u{306}' | '\u{313}' | '\u{314}' | '\u{343}' => Some(0),
+fn greek_diacritic(cp: u32) -> Option<u32> {
+    match cp {
+        0x300 | 0x301 | 0x342 | 0x302 | 0x303 | 0x311 => Some(GREEK_ACCENT),
+        0x308 => Some(GREEK_DIALYTIKA),
+        0x344 => Some(GREEK_DIALYTIKA | GREEK_ACCENT),
+        0x345 => Some(GREEK_YPOGEGRAMMENI),
+        0x304 | 0x306 | 0x313 | 0x314 | 0x343 => Some(0),
         _ => None,
+    }
+}
+
+/// Appends the full canonical decomposition of `cp` to `out`.
+fn decompose(cp: u32, data: &[UnicodeData], out: &mut Vec<u32>) {
+    let parts = &data[cp as usize].decomposition;
+    if parts.is_empty() {
+        out.push(cp);
+    } else {
+        for &part in parts {
+            decompose(part, data, out);
+        }
     }
 }
 
 /// The Greek uppercasing entry of `cp`: its base letter's capital and the
 /// flags its diacritics set, or zero for a character that is not a Greek
 /// letter, possibly with Greek diacritics.
-fn greek_letter(
-    cp: u32,
-    nfd: &icu_normalizer::DecomposingNormalizerBorrowed<'_>,
-    categories: &icu_properties::CodePointMapDataBorrowed<'_, GeneralCategory>,
-    case: &icu_casemap::CaseMapperBorrowed<'_>,
-) -> u32 {
-    let Some(ch) = char::from_u32(cp) else {
-        return 0;
-    };
-    let decomposed: Vec<char> = nfd.normalize_iter([ch].into_iter()).collect();
+fn greek_letter(cp: u32, data: &[UnicodeData]) -> u32 {
+    let mut decomposed = Vec::new();
+    decompose(cp, data, &mut decomposed);
     let (&base, marks) = decomposed
         .split_first()
         .expect("a decomposition is never empty");
-    if !(0x370..=0x3FF).contains(&u32::from(base)) || !is_letter(categories.get(base)) {
+    if !(0x370..=0x3FF).contains(&base) || !is_letter(&data[base as usize].general_category) {
         return 0;
     }
     let mut flags = 0;
@@ -453,7 +609,7 @@ fn greek_letter(
             None => return 0,
         }
     }
-    let upper = u32::from(case.simple_uppercase(base));
+    let upper = data[base as usize].upper.unwrap_or(base);
     assert!(
         upper <= GREEK_UPPER_MASK,
         "U+{cp:04X}'s capital is past U+03FF"
@@ -464,208 +620,288 @@ fn greek_letter(
     upper | flags
 }
 
-/// ICU4C's `UCharDirection` numbering, which is the bidi resolver's.
-fn bidi_class(class: BidiClass) -> u32 {
+/// ICU4C's `UCharDirection` numbering, which the bidi resolver's is.
+fn bidi_class(class: &str) -> u32 {
     match class {
-        BidiClass::LeftToRight => 0,
-        BidiClass::RightToLeft => 1,
-        BidiClass::EuropeanNumber => 2,
-        BidiClass::EuropeanSeparator => 3,
-        BidiClass::EuropeanTerminator => 4,
-        BidiClass::ArabicNumber => 5,
-        BidiClass::CommonSeparator => 6,
-        BidiClass::ParagraphSeparator => 7,
-        BidiClass::SegmentSeparator => 8,
-        BidiClass::WhiteSpace => 9,
-        BidiClass::OtherNeutral => 10,
-        BidiClass::LeftToRightEmbedding => 11,
-        BidiClass::LeftToRightOverride => 12,
-        BidiClass::ArabicLetter => 13,
-        BidiClass::RightToLeftEmbedding => 14,
-        BidiClass::RightToLeftOverride => 15,
-        BidiClass::PopDirectionalFormat => 16,
-        BidiClass::NonspacingMark => 17,
-        BidiClass::BoundaryNeutral => 18,
-        BidiClass::FirstStrongIsolate => 19,
-        BidiClass::LeftToRightIsolate => 20,
-        BidiClass::RightToLeftIsolate => 21,
-        BidiClass::PopDirectionalIsolate => 22,
-        other => panic!("bidi class {other:?} is new; the bidi resolver needs a value for it"),
+        "L" => 0,
+        "R" => 1,
+        "EN" => 2,
+        "ES" => 3,
+        "ET" => 4,
+        "AN" => 5,
+        "CS" => 6,
+        "B" => 7,
+        "S" => 8,
+        "WS" => 9,
+        "ON" => 10,
+        "LRE" => 11,
+        "LRO" => 12,
+        "AL" => 13,
+        "RLE" => 14,
+        "RLO" => 15,
+        "PDF" => 16,
+        "NSM" => 17,
+        "BN" => 18,
+        "FSI" => 19,
+        "LRI" => 20,
+        "RLI" => 21,
+        "PDI" => 22,
+        other => panic!("bidi class {other} is new; the bidi resolver needs a value for it"),
     }
 }
 
 /// Whether a character causes a join on both sides with no forms of its
 /// own: Joining_Type Join_Causing, the tatweel and U+200D.
-fn is_join_causing(joining: JoiningType) -> bool {
+fn is_join_causing(joining: &str) -> bool {
     match joining {
-        JoiningType::JoinCausing => true,
-        JoiningType::NonJoining
-        | JoiningType::DualJoining
-        | JoiningType::LeftJoining
-        | JoiningType::RightJoining
-        | JoiningType::Transparent => false,
-        other => panic!("joining type {other:?} is new; decide whether it causes a join"),
+        "C" => true,
+        "U" | "D" | "L" | "R" | "T" => false,
+        other => panic!("joining type {other} is new; decide whether it causes a join"),
     }
 }
 
 /// Whether a character is wide: East_Asian_Width Wide or Fullwidth.
-fn is_wide(width: EastAsianWidth) -> bool {
+fn is_wide(width: &str) -> bool {
     match width {
-        EastAsianWidth::Wide | EastAsianWidth::Fullwidth => true,
-        EastAsianWidth::Neutral
-        | EastAsianWidth::Ambiguous
-        | EastAsianWidth::Halfwidth
-        | EastAsianWidth::Narrow => false,
-        other => panic!("East_Asian_Width {other:?} is new; decide whether it is wide"),
+        "W" | "F" => true,
+        "N" | "A" | "H" | "Na" => false,
+        other => panic!("East_Asian_Width {other} is new; decide whether it is wide"),
     }
 }
 
 /// Whether a character stands upright in a vertical line under
 /// `text-orientation: mixed`: Vertical_Orientation U, Tu or Tr, as Blink's
 /// `Character::IsUprightInMixedVertical` takes them.
-fn is_mixed_upright(orientation: VerticalOrientation) -> bool {
+fn is_mixed_upright(orientation: &str) -> bool {
     match orientation {
-        VerticalOrientation::Rotated => false,
-        VerticalOrientation::TransformedRotated
-        | VerticalOrientation::TransformedUpright
-        | VerticalOrientation::Upright => true,
-        other => panic!("Vertical_Orientation {other:?} is new; decide whether it stands up"),
+        "R" => false,
+        "Tr" | "Tu" | "U" => true,
+        other => panic!("Vertical_Orientation {other} is new; decide whether it stands up"),
     }
 }
 
 /// Whether a character glues its neighbours together, which the object-edge
 /// rule reads: Line_Break GL, WJ or ZWJ.
-fn is_glue(line_break: LineBreak) -> bool {
-    matches!(
-        line_break,
-        LineBreak::Glue | LineBreak::WordJoiner | LineBreak::ZWJ
-    )
+fn is_glue(line_break: &str) -> bool {
+    matches!(line_break, "GL" | "WJ" | "ZWJ")
+}
+
+/// The line class of `cp`: its Line_Break, numbered as `cleft`'s
+/// `line` module numbers it, with the splits the module documentation lists.
+/// An OP is split by East_Asian_Width afterwards.
+fn line_class(cp: u32, line_break: &str, gc: &str, pictographic: bool) -> u32 {
+    match line_break {
+        "XX" | "SG" => 0,
+        "AL" if cp == 0x25CC => 3,
+        "AL" => 1,
+        "AI" => 2,
+        "SA" if matches!(gc, "Mn" | "Mc") => 5,
+        "SA" => 4,
+        "BK" => 6,
+        "CR" => 7,
+        "LF" => 8,
+        "NL" => 9,
+        "SP" => 10,
+        "ZW" => 11,
+        "WJ" => 12,
+        "GL" => 13,
+        "CM" => 14,
+        "ZWJ" => 15,
+        "CL" => 16,
+        "CP" => 17,
+        "EX" => 18,
+        "IS" => 19,
+        "SY" => 20,
+        "OP" => 21,
+        "QU" if gc == "Pi" => 24,
+        "QU" if gc == "Pf" => 25,
+        "QU" => 23,
+        "NS" => 26,
+        "CJ" => 27,
+        "B2" => 28,
+        "BA" => 29,
+        "BB" => 30,
+        "HY" => 31,
+        "HH" => 32,
+        "CB" => 33,
+        "IN" => 34,
+        "NU" => 35,
+        "PO" => 36,
+        "PR" => 37,
+        "HL" => 38,
+        "ID" if pictographic && gc == "Cn" => 40,
+        "ID" => 39,
+        "EB" => 41,
+        "EM" => 42,
+        "JL" => 43,
+        "JV" => 44,
+        "JT" => 45,
+        "H2" => 46,
+        "H3" => 47,
+        "RI" => 48,
+        "AK" => 49,
+        "AP" => 50,
+        "AS" => 51,
+        "VF" => 52,
+        "VI" => 53,
+        other => panic!("Line_Break {other} is new; give it a line class"),
+    }
+}
+
+/// The word class of `cp`: its Word_Break, numbered as `cleft`'s
+/// `word` module numbers it, with U+002E FULL STOP split from MidNumLet,
+/// since the POSIX tailoring reads it as MidNum, and the ALetter of Han and
+/// Hiragana split from ALetter, since a Chinese and Japanese dictionary
+/// reads them as no letter. `chinese_japanese` says whether `cp` is in a
+/// Chinese and Japanese run: Han, Hiragana or Word_Break Katakana.
+fn word_class(cp: u32, word_break: &str, chinese_japanese: bool) -> u32 {
+    match word_break {
+        "MB" if cp == 0x2E => 19,
+        "LE" if chinese_japanese => 20,
+        "XX" => 0,
+        "CR" => 1,
+        "LF" => 2,
+        "NL" => 3,
+        "Extend" => 4,
+        "ZWJ" => 5,
+        "RI" => 6,
+        "FO" => 7,
+        "KA" => 8,
+        "HL" => 9,
+        "LE" => 10,
+        "SQ" => 11,
+        "DQ" => 12,
+        "MB" => 13,
+        "ML" => 14,
+        "MN" => 15,
+        "NU" => 16,
+        "EX" => 17,
+        "WSegSpace" => 18,
+        other => panic!("Word_Break {other} is new; give it a word class"),
+    }
+}
+
+/// The line class of an OP that is East Asian.
+const LINE_OP_EAST_ASIAN: u32 = 22;
+/// The line class of a PO that is East_Asian_Width A, F or W.
+const LINE_PO_WIDE: u32 = 54;
+/// The line class of a PR that is East_Asian_Width A, F or W.
+const LINE_PR_WIDE: u32 = 55;
+
+/// The line class of U+301C and U+30A0, NS that Japanese and Chinese
+/// `normal` and `loose` let a line break before.
+const LINE_NS_DASH: u32 = 56;
+/// The line class of the iteration marks, NS that `loose` lets a line break
+/// before.
+const LINE_NS_ITERATION: u32 = 57;
+/// The line class of the centred punctuation, NS that Japanese and Chinese
+/// `loose` lets a line break before.
+const LINE_NS_CENTRED: u32 = 58;
+/// The line class of U+FF01 and U+FF1F, EX that Japanese and Chinese `loose`
+/// lets a line break before.
+const LINE_EX_WIDE: u32 = 59;
+
+/// The PO and PR that ICU4C's `line_loose_cj.txt` lists as `$POX` and
+/// `$PRX`, which the East_Asian_Width split must give.
+const LOOSE_AFFIXES: [u32; 19] = [
+    0x00B0, 0x2030, 0x2032, 0x2033, 0x2035, 0x2103, 0x2109, 0xFE6A, 0xFF05, 0xFFE0, 0x00A4, 0x00B1,
+    0x20AC, 0x2116, 0xFE69, 0xFF04, 0xFFE1, 0xFFE5, 0xFFE6,
+];
+
+/// Whether `width` is Ambiguous, Fullwidth or Wide, the PO and PR that the
+/// Japanese and Chinese `loose` tailoring reads.
+fn is_cjk_wide(width: &str) -> bool {
+    matches!(width, "A" | "F" | "W")
+}
+
+/// Whether `width` is UAX #14's `$EastAsian`: East_Asian_Width Fullwidth, Wide
+/// or Halfwidth.
+fn is_line_east_asian(width: &str) -> bool {
+    match width {
+        "F" | "W" | "H" => true,
+        "N" | "A" | "Na" => false,
+        other => panic!("East_Asian_Width {other} is new; decide whether UAX #14 reads it"),
+    }
 }
 
 /// ICU4C's numbering up to 12, and ZWJ at 13 rather than 17.
-fn grapheme_cluster_break(class: GraphemeClusterBreak) -> u32 {
+fn grapheme_cluster_break(class: &str) -> u32 {
     match class {
-        GraphemeClusterBreak::Other => 0,
-        GraphemeClusterBreak::Control => 1,
-        GraphemeClusterBreak::CR => 2,
-        GraphemeClusterBreak::Extend => 3,
-        GraphemeClusterBreak::L => 4,
-        GraphemeClusterBreak::LF => 5,
-        GraphemeClusterBreak::LV => 6,
-        GraphemeClusterBreak::LVT => 7,
-        GraphemeClusterBreak::T => 8,
-        GraphemeClusterBreak::V => 9,
-        GraphemeClusterBreak::SpacingMark => 10,
-        GraphemeClusterBreak::Prepend => 11,
-        GraphemeClusterBreak::RegionalIndicator => 12,
-        GraphemeClusterBreak::ZWJ => 13,
+        "XX" => 0,
+        "CN" => 1,
+        "CR" => 2,
+        "EX" => 3,
+        "L" => 4,
+        "LF" => 5,
+        "LV" => 6,
+        "LVT" => 7,
+        "T" => 8,
+        "V" => 9,
+        "SM" => 10,
+        "PP" => 11,
+        "RI" => 12,
+        "ZWJ" => 13,
         other => panic!(
-            "Grapheme_Cluster_Break {other:?} is assigned; four bits only hold it if an \
+            "Grapheme_Cluster_Break {other} is assigned; four bits only hold it if an \
              unused value makes room"
         ),
     }
 }
 
-/// ICU4C's numbering, which is `winkin::unicode::IndicConjunctBreak`'s.
-fn indic_conjunct_break(class: IndicConjunctBreak) -> u32 {
+/// ICU4C's numbering, which is `cleft`'s `IndicConjunctBreak`'s.
+fn indic_conjunct_break(class: &str) -> u32 {
     match class {
-        IndicConjunctBreak::None => 0,
-        IndicConjunctBreak::Consonant => 1,
-        IndicConjunctBreak::Extend => 2,
-        IndicConjunctBreak::Linker => 3,
-        other => panic!("Indic_Conjunct_Break {other:?} is new"),
+        "None" => 0,
+        "Consonant" => 1,
+        "Extend" => 2,
+        "Linker" => 3,
+        other => panic!("Indic_Conjunct_Break {other} is new"),
     }
 }
 
 /// The scripts UTR #59 calls ideographic for East_Asian_Spacing.
-const WIDE_SCRIPTS: [Script; 9] = [
-    Script::Bopomofo,
-    Script::Han,
-    Script::Hangul,
-    Script::Hiragana,
-    Script::Katakana,
-    Script::KhitanSmallScript,
-    Script::Nushu,
-    Script::Tangut,
-    Script::Yi,
+const WIDE_SCRIPTS: [&str; 9] = [
+    "Bopo", "Hani", "Hang", "Hira", "Kana", "Kits", "Nshu", "Tang", "Yiii",
 ];
 
 /// Whether `gc` is a mark: General_Category Mn, Mc or Me.
-fn is_mark(gc: GeneralCategory) -> bool {
-    matches!(
-        gc,
-        GeneralCategory::NonspacingMark
-            | GeneralCategory::SpacingMark
-            | GeneralCategory::EnclosingMark
-    )
+fn is_mark(gc: &str) -> bool {
+    matches!(gc, "Mn" | "Mc" | "Me")
 }
 
 /// Whether `gc` is a letter.
-fn is_letter(gc: GeneralCategory) -> bool {
-    matches!(
-        gc,
-        GeneralCategory::UppercaseLetter
-            | GeneralCategory::LowercaseLetter
-            | GeneralCategory::TitlecaseLetter
-            | GeneralCategory::ModifierLetter
-            | GeneralCategory::OtherLetter
-    )
+fn is_letter(gc: &str) -> bool {
+    matches!(gc, "Lu" | "Ll" | "Lt" | "Lm" | "Lo")
 }
 
 /// Whether `gc` is punctuation.
-fn is_punctuation(gc: GeneralCategory) -> bool {
-    matches!(
-        gc,
-        GeneralCategory::ConnectorPunctuation
-            | GeneralCategory::DashPunctuation
-            | GeneralCategory::OpenPunctuation
-            | GeneralCategory::ClosePunctuation
-            | GeneralCategory::InitialPunctuation
-            | GeneralCategory::FinalPunctuation
-            | GeneralCategory::OtherPunctuation
-    )
+fn is_punctuation(gc: &str) -> bool {
+    matches!(gc, "Pc" | "Pd" | "Ps" | "Pe" | "Pi" | "Pf" | "Po")
 }
 
 /// The East Asian spacing value of `cp` (see the module documentation): 0
 /// other, 1 narrow, 2 a narrow decimal digit, 3 conditional, 4 wide, 5 a
-/// mark. `in_scripts` says whether its Script_Extensions names a script.
-fn east_asian_spacing(
-    cp: u32,
-    gc: GeneralCategory,
-    width: EastAsianWidth,
-    script: Script,
-    in_scripts: impl Fn(Script) -> bool,
-) -> u32 {
+/// mark. `extensions` is its Script_Extensions.
+fn east_asian_spacing(cp: u32, gc: &str, width: &str, script: &str, extensions: &[&str]) -> u32 {
     if is_mark(gc) {
         return 5;
     }
-    if gc == GeneralCategory::Unassigned {
+    if gc == "Cn" {
         return 0;
     }
-    let wide_width = matches!(
-        width,
-        EastAsianWidth::Fullwidth | EastAsianWidth::Halfwidth | EastAsianWidth::Wide
-    );
+    let wide_width = matches!(width, "F" | "H" | "W");
     let mut wide = WIDE_SCRIPTS.contains(&script)
-        || (WIDE_SCRIPTS.iter().any(|&wide| in_scripts(wide))
-            && !matches!(width, EastAsianWidth::Neutral | EastAsianWidth::Narrow));
-    wide &= width != EastAsianWidth::Halfwidth
-        && !is_punctuation(gc)
-        && gc != GeneralCategory::OtherNumber
-        && !matches!(
-            gc,
-            GeneralCategory::MathSymbol
-                | GeneralCategory::CurrencySymbol
-                | GeneralCategory::OtherSymbol
-        );
+        || (WIDE_SCRIPTS.iter().any(|wide| extensions.contains(wide))
+            && !matches!(width, "N" | "Na"));
+    wide &= width != "H" && !is_punctuation(gc) && gc != "No" && !matches!(gc, "Sm" | "Sc" | "So");
     if wide || cp == 0x3013 {
         return 4;
     }
     let listed = [0x22, 0x27, 0x2A, 0x2F, 0xB7, 0x2020, 0x2021, 0x2026];
-    if gc == GeneralCategory::OtherPunctuation && !wide_width && !listed.contains(&cp) {
+    if gc == "Po" && !wide_width && !listed.contains(&cp) {
         return 3;
     }
-    if !wide_width && gc == GeneralCategory::DecimalNumber {
+    if !wide_width && gc == "Nd" {
         return 2;
     }
     if !wide_width && is_letter(gc) {
@@ -676,7 +912,7 @@ fn east_asian_spacing(
 
 /// The text-spacing class of `cp` (see the module documentation), Blink's
 /// `HanKerningCharType` numbering.
-fn text_spacing(cp: u32, gc: GeneralCategory, width: EastAsianWidth) -> u32 {
+fn text_spacing(cp: u32, gc: &str, width: &str) -> u32 {
     match cp {
         0x2018 | 0x201C => return 9,
         0x2019 | 0x201D => return 10,
@@ -686,12 +922,12 @@ fn text_spacing(cp: u32, gc: GeneralCategory, width: EastAsianWidth) -> u32 {
         0xFF1B => return 8,
         _ => {}
     }
-    let full = (0x3000..=0x303F).contains(&cp) || width == EastAsianWidth::Fullwidth;
+    let full = (0x3000..=0x303F).contains(&cp) || width == "F";
     match gc {
-        GeneralCategory::OpenPunctuation if full => 1,
-        GeneralCategory::ClosePunctuation if full => 2,
-        GeneralCategory::OpenPunctuation => 4,
-        GeneralCategory::ClosePunctuation => 5,
+        "Ps" if full => 1,
+        "Pe" if full => 2,
+        "Ps" => 4,
+        "Pe" => 5,
         _ => 0,
     }
 }
@@ -701,14 +937,10 @@ fn text_spacing(cp: u32, gc: GeneralCategory, width: EastAsianWidth) -> u32 {
 /// (`Character::CanReceiveTextEmphasis`): the categories never marked, the
 /// word separators, the punctuation CSS marks anyway, and then the rest of
 /// the punctuation.
-fn emphasis(cp: u32, gc: GeneralCategory) -> u32 {
+fn emphasis(cp: u32, gc: &str) -> u32 {
     match gc {
-        GeneralCategory::Control
-        | GeneralCategory::Format
-        | GeneralCategory::Unassigned
-        | GeneralCategory::LineSeparator
-        | GeneralCategory::ParagraphSeparator => return 4,
-        GeneralCategory::SpaceSeparator => return 1,
+        "Cc" | "Cf" | "Cn" | "Zl" | "Zp" => return 4,
+        "Zs" => return 1,
         _ => {}
     }
     if matches!(cp, 0x1361 | 0x10100 | 0x10101 | 0x1039F | 0x0F0B | 0x0F0C) {
@@ -724,13 +956,7 @@ fn emphasis(cp: u32, gc: GeneralCategory) -> u32 {
     if is_punctuation(gc) {
         return 2;
     }
-    if matches!(
-        gc,
-        GeneralCategory::MathSymbol
-            | GeneralCategory::CurrencySymbol
-            | GeneralCategory::ModifierSymbol
-            | GeneralCategory::OtherSymbol
-    ) {
+    if matches!(gc, "Sm" | "Sc" | "Sk" | "So") {
         return 3;
     }
     0
@@ -739,65 +965,36 @@ fn emphasis(cp: u32, gc: GeneralCategory) -> u32 {
 /// The first-letter class of `cp` (see the module documentation): 0 other,
 /// 1 a space separator other than U+3000, 2 opening punctuation or a dash, 3
 /// other punctuation.
-fn first_letter(cp: u32, gc: GeneralCategory) -> u32 {
+fn first_letter(cp: u32, gc: &str) -> u32 {
     match gc {
-        GeneralCategory::SpaceSeparator if cp != 0x3000 => 1,
-        GeneralCategory::OpenPunctuation | GeneralCategory::DashPunctuation => 2,
-        GeneralCategory::ConnectorPunctuation
-        | GeneralCategory::ClosePunctuation
-        | GeneralCategory::InitialPunctuation
-        | GeneralCategory::FinalPunctuation
-        | GeneralCategory::OtherPunctuation => 3,
+        "Zs" if cp != 0x3000 => 1,
+        "Ps" | "Pd" => 2,
+        "Pc" | "Pe" | "Pi" | "Pf" | "Po" => 3,
         _ => 0,
     }
 }
 
 /// Whether a character forces a line break, and so ends a bidi paragraph.
-fn is_paragraph_separator(line_break: LineBreak) -> bool {
-    matches!(
-        line_break,
-        LineBreak::MandatoryBreak
-            | LineBreak::CarriageReturn
-            | LineBreak::LineFeed
-            | LineBreak::NextLine
-    )
+fn is_paragraph_separator(line_break: &str) -> bool {
+    matches!(line_break, "BK" | "CR" | "LF" | "NL")
 }
 
-/// ICU4C's script value.
-#[allow(deprecated, reason = "the values are stable; baking them is the point")]
-fn script_value(script: Script) -> u16 {
-    script.to_icu4c_value()
-}
-
-/// The script ICU4C numbers `value`.
-#[allow(deprecated, reason = "the values are stable; baking them is the point")]
-fn script_from_value(value: u16) -> Script {
-    Script::from_icu4c_value(value)
+/// ICU4C's value of the script tagged `tag`.
+fn script_value(tag: &str) -> u16 {
+    let value = ICU_SCRIPTS
+        .iter()
+        .position(|known| *known == tag)
+        .unwrap_or_else(|| panic!("script {tag} is new; give it the next value in ICU_SCRIPTS"));
+    u16::try_from(value).expect("fewer than 2^16 scripts")
 }
 
 /// The one member of a canonical equivalence class of brackets that the table
 /// keeps (UAX #9 BD16).
-fn canonical_bracket(ch: char) -> char {
-    match ch {
-        '\u{2329}' => '\u{3008}',
-        '\u{232A}' => '\u{3009}',
+fn canonical_bracket(cp: u32) -> u32 {
+    match cp {
+        0x2329 => 0x3008,
+        0x232A => 0x3009,
         other => other,
-    }
-}
-
-/// A character's bracket pair, named by its canonical closing character, and
-/// whether it opens the pair.
-fn paired_bracket(cp: u32, mirroring: BidiMirroringGlyph) -> Option<(char, bool)> {
-    let ch = char::from_u32(cp)?;
-    match mirroring.paired_bracket_type {
-        BidiPairedBracketType::Open => {
-            let closing = mirroring
-                .mirroring_glyph
-                .unwrap_or_else(|| panic!("U+{cp:04X} opens a pair with no closing bracket"));
-            Some((canonical_bracket(closing), true))
-        }
-        BidiPairedBracketType::Close => Some((canonical_bracket(ch), false)),
-        _ => None,
     }
 }
 
@@ -818,8 +1015,10 @@ struct Lookup {
 }
 
 /// Packs `values` into packtab's three-lookup solution and renders it as
-/// `fn {name}(ch: char) -> u32`, reading every array through `at`.
-fn pack(name: &str, values: &[i64]) -> Lookup {
+/// `fn {name}_word(ch: char) -> {ty}`, reading every array through `at`, each
+/// item under `gate` where one is given. `ty` is the type of packtab's
+/// widest array: `u32` for a word, `u8` for a byte.
+fn pack(name: &str, values: &[i64], gate: Option<&str>, ty: &str) -> Lookup {
     let info = packtab::pack_table_all(values, Some(0));
     let mut three = info
         .solutions
@@ -860,6 +1059,10 @@ fn pack(name: &str, values: &[i64]) -> Lookup {
         "{name}: a read escaped `at`: {body}"
     );
 
+    let gate = match gate {
+        Some(gate) => format!("#[cfg({gate})]\n"),
+        None => String::new(),
+    };
     let mut code = String::new();
     let mut bytes = 0;
     for array in &ir.arrays {
@@ -871,7 +1074,7 @@ fn pack(name: &str, values: &[i64]) -> Lookup {
         bytes += array.values.len() * usize::from(array.typ.bits() / 8);
         writeln!(
             code,
-            "static {}: [{ty}; {}] = [",
+            "{gate}static {}: [{ty}; {}] = [",
             array.name.to_uppercase(),
             array.values.len()
         )
@@ -887,12 +1090,13 @@ fn pack(name: &str, values: &[i64]) -> Lookup {
     writeln!(
         code,
         "/// The {name} word of `ch`, from packtab's {shape} layout: three reads.\n\
+         {gate}\
          #[allow(\n\
              clippy::unnecessary_cast,\n\
              reason = \"packtab casts every index to usize, whatever its type\"\n\
          )]\n\
          #[inline]\n\
-         pub(super) fn {name}_word(ch: char) -> u32 {{\n\
+         pub(super) fn {name}_word(ch: char) -> {ty} {{\n\
              let u = ch as usize;\n\
              {body}\n\
          }}\n"
@@ -968,18 +1172,20 @@ fn guard_reads(body: &str, arrays: &[(String, String)]) -> String {
     out
 }
 
-const HEADER: &str = "\
-//! winkin's Unicode character properties, packed: two words per code point
-//! and the side tables they name.
-//!
-//! Generated from icu_properties 2.3 (Unicode 17.0) by
-//! `cargo run --release -p unicode_gen`, then `cargo fmt`. Do not edit: change
-//! the generator and run it again. The generator's documentation
-//! (`support/unicode_gen/src/main.rs`) says what each field holds and why, and
-//! `super` reads them.
-
-use super::ScriptId;
-";
+/// Writes the first lines of a generated file: what it holds and where from.
+fn header(code: &mut String, holds: &str, version: &str) {
+    writeln!(
+        code,
+        "//! {holds}\n\
+         //!\n\
+         //! Generated from the Unicode {version} character database files in\n\
+         //! `support/unicode_gen/data/{version}` by `cargo run --release -p unicode_gen`,\n\
+         //! then `cargo fmt`. Do not edit: change the generator and run it again. The\n\
+         //! generator's documentation (`support/unicode_gen/src/main.rs`) says what\n\
+         //! each field holds and why, and `super` reads them."
+    )
+    .unwrap();
+}
 
 const AT: &str = "\
 /// `table[i]`, or zero past the end of `table`.
@@ -995,46 +1201,88 @@ fn at<T: Copy + Default>(table: &[T], i: usize) -> T {
 }
 ";
 
-fn main() {
-    let bidi = CodePointMapData::<BidiClass>::new();
-    let line_break = CodePointMapData::<LineBreak>::new();
-    let mirroring = CodePointMapData::<BidiMirroringGlyph>::new();
-    let joining = CodePointMapData::<JoiningType>::new();
-    let width = CodePointMapData::<EastAsianWidth>::new();
-    let orientation = CodePointMapData::<VerticalOrientation>::new();
-    let grapheme = CodePointMapData::<GraphemeClusterBreak>::new();
-    let conjunct = CodePointMapData::<IndicConjunctBreak>::new();
-    let regional = CodePointSetData::new::<RegionalIndicator>();
-    let pictographic = CodePointSetData::new::<ExtendedPictographic>();
-    let presentation = CodePointSetData::new::<EmojiPresentation>();
-    let emoji = CodePointSetData::new::<Emoji>();
-    let white_space = CodePointSetData::new::<WhiteSpace>();
-    let modifier_base = CodePointSetData::new::<EmojiModifierBase>();
-    let component = CodePointSetData::new::<EmojiComponent>();
-    let ignorable = CodePointSetData::new::<DefaultIgnorableCodePoint>();
-    let cased = CodePointSetData::new::<Cased>();
-    let case_ignorable = CodePointSetData::new::<CaseIgnorable>();
-    let soft_dotted = CodePointSetData::new::<SoftDotted>();
-    let scripts = ScriptWithExtensions::new();
-    let script_names = PropertyNamesShort::<Script>::new();
-    let categories = CodePointMapData::<GeneralCategory>::new();
-    let script_map = CodePointMapData::<Script>::new();
+/// Every code point.
+fn code_points() -> std::ops::Range<u32> {
+    0..CODE_POINTS as u32
+}
+
+fn main() -> ExitCode {
+    let argument = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| DEFAULT_VERSION.to_owned());
+    let data = Path::new(DATA);
+    let done = match argument.as_str() {
+        "fetch" => pinned::fetch(data),
+        "dictionaries" => dictionary::generate(data),
+        version => generate(data, version),
+    };
+    match done {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("unicode_gen: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Writes the property and case tables of `version` from the files in
+/// `data`.
+fn generate(data: &Path, version: &str) -> Result<(), String> {
+    let parts: Option<Vec<u8>> = version.split('.').map(|part| part.parse().ok()).collect();
+    let Some([major, minor, update]) = parts
+        .as_deref()
+        .and_then(|parts| <[u8; 3]>::try_from(parts).ok())
+    else {
+        return Err(format!(
+            "{version:?} is neither a version of three numbers, `dictionaries` nor `fetch`"
+        ));
+    };
+    let ucd = Ucd::new(data, version)?;
+
+    let bidi = ucd.map("DerivedBidiClass.txt", "bc", "L");
+    let categories = ucd.map("DerivedGeneralCategory.txt", "gc", "Cn");
+    let line_break = ucd.map("LineBreak.txt", "lb", "XX");
+    let joining = ucd.map("DerivedJoiningType.txt", "jt", "U");
+    let width = ucd.map("EastAsianWidth.txt", "ea", "N");
+    let orientation = ucd.map("VerticalOrientation.txt", "vo", "R");
+    let grapheme = ucd.map("GraphemeBreakProperty.txt", "GCB", "XX");
+    let word_break = ucd.map("WordBreakProperty.txt", "WB", "XX");
+    let conjunct = ucd.named_map("DerivedCoreProperties.txt", "InCB", "None");
+    let regional = ucd.set("PropList.txt", "Regional_Indicator");
+    let white_space = ucd.set("PropList.txt", "White_Space");
+    let soft_dotted = ucd.set("PropList.txt", "Soft_Dotted");
+    let pictographic = ucd.set("emoji-data.txt", "Extended_Pictographic");
+    let presentation = ucd.set("emoji-data.txt", "Emoji_Presentation");
+    let emoji = ucd.set("emoji-data.txt", "Emoji");
+    let modifier_base = ucd.set("emoji-data.txt", "Emoji_Modifier_Base");
+    let component = ucd.set("emoji-data.txt", "Emoji_Component");
+    let ignorable = ucd.set("DerivedCoreProperties.txt", "Default_Ignorable_Code_Point");
+    let cased = ucd.set("DerivedCoreProperties.txt", "Cased");
+    let case_ignorable = ucd.set("DerivedCoreProperties.txt", "Case_Ignorable");
+    let script_map = ucd.scripts();
+    let listed_extensions = ucd.script_extensions();
+    let brackets = ucd.brackets();
+    let unicode_data = ucd.unicode_data();
+    let special_casing = ucd.special_casing();
 
     // --- scripts ---------------------------------------------------------
     // Every code point's Script, and its Script_Extensions where they are more
-    // than the script alone. A set is named by the pair, in the order the
-    // sweep first meets it.
+    // than the script alone, in ICU4C's value order. A set is named by the
+    // pair, in the order the sweep first meets it.
+    let extension_tags = |cp: u32| -> Vec<&str> {
+        match listed_extensions.get(&cp) {
+            Some(tags) => tags.iter().map(String::as_str).collect(),
+            None => vec![script_map.get(cp)],
+        }
+    };
     let mut script_count = 0;
     let mut sets: BTreeMap<Vec<u16>, u16> = BTreeMap::new();
     let mut set_runs: Vec<Vec<u16>> = Vec::new();
-    let mut script_fields = Vec::with_capacity(0x110000);
-    for cp in 0..=0x10FFFF_u32 {
-        let script = script_value(scripts.get_script_val32(cp));
-        let extensions: Vec<u16> = scripts
-            .get_script_extensions_val32(cp)
-            .iter()
-            .map(script_value)
-            .collect();
+    let mut script_fields = Vec::with_capacity(CODE_POINTS);
+    for cp in code_points() {
+        let script = script_value(script_map.get(cp));
+        let mut extensions: Vec<u16> = extension_tags(cp).into_iter().map(script_value).collect();
+        extensions.sort_unstable();
         for value in extensions.iter().chain([&script]) {
             script_count = script_count.max(value + 1);
         }
@@ -1057,25 +1305,18 @@ fn main() {
         "{script_count} scripts and {set_count} sets do not fit in {} bits",
         SCRIPT.bits
     );
-
-    let script_tags: Vec<[u8; 4]> = (0..script_count)
-        .map(|value| {
-            let script = script_from_value(value);
-            match script_names.get(script) {
-                Some(name) => name
-                    .as_bytes()
-                    .try_into()
-                    .unwrap_or_else(|_| panic!("script {value} is named {name:?}, not a tag")),
-                None => *b"Zzzz",
-            }
-        })
-        .collect();
+    let script_tags = &ICU_SCRIPTS[..usize::from(script_count)];
 
     // --- brackets --------------------------------------------------------
     // One id per canonical closing character, in code point order.
-    let mut closings: BTreeMap<char, u32> = BTreeMap::new();
-    for cp in 0..=0x10FFFF_u32 {
-        if let Some((closing, _)) = paired_bracket(cp, mirroring.get32(cp)) {
+    let paired_bracket = |cp: u32| -> Option<(u32, bool)> {
+        let &(paired, opens) = brackets.get(&cp)?;
+        let closing = if opens { paired } else { cp };
+        Some((canonical_bracket(closing), opens))
+    };
+    let mut closings: BTreeMap<u32, u32> = BTreeMap::new();
+    for cp in code_points() {
+        if let Some((closing, _)) = paired_bracket(cp) {
             closings.insert(closing, 0);
         }
     }
@@ -1085,63 +1326,127 @@ fn main() {
     let pair_count = closings.len();
 
     // --- the words -------------------------------------------------------
-    let mut core = Vec::with_capacity(0x110000);
-    let mut rare = Vec::with_capacity(0x110000);
-    for (cp, script_field) in (0..=0x10FFFF_u32).zip(&script_fields) {
-        let lb = line_break.get32(cp);
+    let css_mask = EAST_ASIAN_SPACING.mask()
+        | TEXT_SPACING.mask()
+        | EMPHASIS.mask()
+        | FIRST_LETTER.mask()
+        | LETTER_OR_NUMBER.mask();
+    let mut core = Vec::with_capacity(CODE_POINTS);
+    let mut rare = Vec::with_capacity(CODE_POINTS);
+    let mut rare_plain = Vec::with_capacity(CODE_POINTS);
+    let mut line = Vec::with_capacity(CODE_POINTS);
+    let mut words = Vec::with_capacity(CODE_POINTS);
+    for (cp, script_field) in code_points().zip(&script_fields) {
+        let lb = line_break.get(cp);
+        let gc = categories.get(cp);
 
         let mut word = 0;
-        BIDI_CLASS.put(&mut word, bidi_class(bidi.get32(cp)));
+        BIDI_CLASS.put(&mut word, bidi_class(bidi.get(cp)));
         let script = match *script_field {
             ScriptField::Script(script) => u32::from(script),
             ScriptField::Set(set) => u32::from(script_count) + u32::from(set),
         };
         SCRIPT.put(&mut word, script);
-        if let Some((closing, opens)) = paired_bracket(cp, mirroring.get32(cp)) {
+        if let Some((closing, opens)) = paired_bracket(cp) {
             BRACKET_PAIR.put(&mut word, closings[&closing] + 1);
             OPENS_BRACKET.put(&mut word, u32::from(opens));
         }
-        REGIONAL_INDICATOR.put(&mut word, u32::from(regional.contains32(cp)));
-        EXTENDED_PICTOGRAPHIC.put(&mut word, u32::from(pictographic.contains32(cp)));
-        EMOJI_PRESENTATION.put(&mut word, u32::from(presentation.contains32(cp)));
+        REGIONAL_INDICATOR.put(&mut word, u32::from(regional.contains(cp)));
+        EXTENDED_PICTOGRAPHIC.put(&mut word, u32::from(pictographic.contains(cp)));
+        EMOJI_PRESENTATION.put(&mut word, u32::from(presentation.contains(cp)));
         PARAGRAPH_SEPARATOR.put(&mut word, u32::from(is_paragraph_separator(lb)));
-        WHITE_SPACE.put(&mut word, u32::from(white_space.contains32(cp)));
-        COMPLEX_CONTEXT.put(&mut word, u32::from(lb == LineBreak::ComplexContext));
-        MARK.put(&mut word, u32::from(is_mark(categories.get32(cp))));
-        EMOJI.put(&mut word, u32::from(emoji.contains32(cp)));
+        WHITE_SPACE.put(&mut word, u32::from(white_space.contains(cp)));
+        COMPLEX_CONTEXT.put(&mut word, u32::from(lb == "SA"));
+        MARK.put(&mut word, u32::from(is_mark(gc)));
+        EMOJI.put(&mut word, u32::from(emoji.contains(cp)));
         core.push(i64::from(word));
 
         let mut word = 0;
-        JOIN_CAUSING.put(&mut word, u32::from(is_join_causing(joining.get32(cp))));
-        WIDE.put(&mut word, u32::from(is_wide(width.get32(cp))));
-        UPRIGHT_IN_MIXED.put(
-            &mut word,
-            u32::from(is_mixed_upright(orientation.get32(cp))),
-        );
-        CONDITIONAL_JAPANESE_STARTER.put(
-            &mut word,
-            u32::from(lb == LineBreak::ConditionalJapaneseStarter),
-        );
+        JOIN_CAUSING.put(&mut word, u32::from(is_join_causing(joining.get(cp))));
+        WIDE.put(&mut word, u32::from(is_wide(width.get(cp))));
+        UPRIGHT_IN_MIXED.put(&mut word, u32::from(is_mixed_upright(orientation.get(cp))));
+        CONDITIONAL_JAPANESE_STARTER.put(&mut word, u32::from(lb == "CJ"));
         GLUE.put(&mut word, u32::from(is_glue(lb)));
-        EMOJI_MODIFIER_BASE.put(&mut word, u32::from(modifier_base.contains32(cp)));
-        EMOJI_COMPONENT.put(&mut word, u32::from(component.contains32(cp)));
-        DEFAULT_IGNORABLE.put(&mut word, u32::from(ignorable.contains32(cp)));
-        GRAPHEME_CLUSTER_BREAK.put(&mut word, grapheme_cluster_break(grapheme.get32(cp)));
-        INDIC_CONJUNCT_BREAK.put(&mut word, indic_conjunct_break(conjunct.get32(cp)));
-        let gc = categories.get32(cp);
-        let eaw = width.get32(cp);
+        EMOJI_MODIFIER_BASE.put(&mut word, u32::from(modifier_base.contains(cp)));
+        EMOJI_COMPONENT.put(&mut word, u32::from(component.contains(cp)));
+        DEFAULT_IGNORABLE.put(&mut word, u32::from(ignorable.contains(cp)));
+        GRAPHEME_CLUSTER_BREAK.put(&mut word, grapheme_cluster_break(grapheme.get(cp)));
+        INDIC_CONJUNCT_BREAK.put(&mut word, indic_conjunct_break(conjunct.get(cp)));
+        GRAPHEME_PICTOGRAPHIC.put(&mut word, u32::from(pictographic.contains(cp)));
+        let eaw = width.get(cp);
         EAST_ASIAN_SPACING.put(
             &mut word,
-            east_asian_spacing(cp, gc, eaw, script_map.get32(cp), |wanted| {
-                scripts.has_script32(cp, wanted)
-            }),
+            east_asian_spacing(cp, gc, eaw, script_map.get(cp), &extension_tags(cp)),
         );
         TEXT_SPACING.put(&mut word, text_spacing(cp, gc, eaw));
         EMPHASIS.put(&mut word, emphasis(cp, gc));
         FIRST_LETTER.put(&mut word, first_letter(cp, gc));
-        CASED.put(&mut word, u32::from(cased.contains32(cp)));
-        CASE_IGNORABLE.put(&mut word, u32::from(case_ignorable.contains32(cp)));
+        CASED.put(&mut word, u32::from(cased.contains(cp)));
+        CASE_IGNORABLE.put(&mut word, u32::from(case_ignorable.contains(cp)));
+        LETTER_OR_NUMBER.put(
+            &mut word,
+            u32::from(is_letter(gc) || matches!(gc, "Nd" | "Nl" | "No")),
+        );
         rare.push(i64::from(word));
+        rare_plain.push(i64::from(word & !css_mask));
+
+        let mut word = 0;
+        let east_asian = is_line_east_asian(width.get(cp));
+        let class = match line_class(cp, lb, gc, pictographic.contains(cp)) {
+            21 if east_asian => LINE_OP_EAST_ASIAN,
+            36 if is_cjk_wide(width.get(cp)) => LINE_PO_WIDE,
+            37 if is_cjk_wide(width.get(cp)) => LINE_PR_WIDE,
+            26 => match cp {
+                0x301C | 0x30A0 => LINE_NS_DASH,
+                0x3005 | 0x303B | 0x309D | 0x309E | 0x30FD | 0x30FE => LINE_NS_ITERATION,
+                0x30FB | 0xFF1A | 0xFF1B | 0xFF65 | 0x203C | 0x2047..=0x2049 => LINE_NS_CENTRED,
+                _ => 26,
+            },
+            18 if matches!(cp, 0xFF01 | 0xFF1F) => LINE_EX_WIDE,
+            17 => {
+                assert!(
+                    !east_asian,
+                    "U+{cp:04X} is an East Asian CP; LB30 needs a class for it"
+                );
+                17
+            }
+            class => class,
+        };
+        assert_eq!(
+            matches!(class, LINE_PO_WIDE | LINE_PR_WIDE),
+            LOOSE_AFFIXES.contains(&cp),
+            "U+{cp:04X}: the East Asian PO and PR are not ICU4C's lists"
+        );
+        LINE_CLASS.put(&mut word, class);
+        LINE_EAST_ASIAN.put(&mut word, u32::from(east_asian));
+        LINE_UNASSIGNED_PICTOGRAPHIC.put(
+            &mut word,
+            u32::from(pictographic.contains(cp) && gc == "Cn"),
+        );
+        line.push(i64::from(word));
+
+        let mut word = 0;
+        // ICU4C's word rules hand Script Han and Hiragana and Word_Break
+        // Katakana to the dictionary (`$KanaKanji`), the prolonged sound mark
+        // included. The halfwidth katakana stay out: ICU4C finds their words
+        // through NFKC, which the matcher does not apply, so WB13 keeps a run
+        // of them whole.
+        let chinese_japanese = matches!(script_map.get(cp), "Hani" | "Hira")
+            || (word_break.get(cp) == "KA" && !(0xFF66..=0xFF9F).contains(&cp));
+        WORD_CLASS.put(
+            &mut word,
+            word_class(cp, word_break.get(cp), chinese_japanese),
+        );
+        WORD_PICTOGRAPHIC.put(&mut word, u32::from(pictographic.contains(cp)));
+        let run = if lb == "SA" {
+            WORD_RUN_SOUTHEAST_ASIAN
+        } else if chinese_japanese {
+            WORD_RUN_CHINESE_JAPANESE
+        } else {
+            WORD_RUN_NONE
+        };
+        WORD_RUN.put(&mut word, run);
+        words.push(i64::from(word));
     }
 
     // --- case --------------------------------------------------------------
@@ -1151,23 +1456,18 @@ fn main() {
     // delta cannot say, as where one is more than one character or its
     // titlecase is not its uppercase, is an exception: its three mappings are
     // spelled in `CASE_STRINGS`. Neighbours that map alike are a run.
-    let case = icu_casemap::CaseMapper::new();
-    let root = icu_locale_core::LanguageIdentifier::UNKNOWN;
-    let mut title_options = icu_casemap::options::TitlecaseOptions::default();
-    title_options.leading_adjustment = Some(icu_casemap::options::LeadingAdjustment::None);
-    title_options.trailing_case = Some(icu_casemap::options::TrailingCase::Unchanged);
     let mut exceptions: Vec<[u16; 3]> = Vec::new();
     let mut strings: Vec<u16> = Vec::new();
     // Appends `mapping` to the strings, or finds it there, and returns its
     // offset and length.
-    let mut spell = |mapping: &str| -> u16 {
+    let mut spell = |mapping: &[u32]| -> u16 {
         let units: Vec<u16> = mapping
-            .chars()
-            .map(|ch| u16::try_from(u32::from(ch)).expect("an exception's mapping is in the BMP"))
+            .iter()
+            .map(|&cp| u16::try_from(cp).expect("an exception's mapping is in the BMP"))
             .collect();
         assert!(
             (1..=3).contains(&units.len()),
-            "{mapping:?} is not one to three characters"
+            "{mapping:X?} is not one to three characters"
         );
         let at = strings
             .windows(units.len())
@@ -1182,30 +1482,31 @@ fn main() {
     };
     // Each mapped character's run kind and delta, or exception index.
     let mut mapped: Vec<(u32, u32, i64)> = Vec::new();
-    for ch in (0..=0x10FFFF_u32).filter_map(char::from_u32) {
-        let cp = u32::from(ch);
-        let one = ch.to_string();
-        let lower = case.lowercase_to_string(&one, &root).into_owned();
-        let mut upper = case.uppercase_to_string(&one, &root).into_owned();
-        let title = case
-            .titlecase_segment_with_only_case_data_to_string(&one, &root, title_options)
-            .into_owned();
-        if lower == one
-            && upper
-                .chars()
-                .all(|ch| ('\u{1C90}'..='\u{1CBF}').contains(&ch))
-        {
+    for cp in code_points().filter(|&cp| char::from_u32(cp).is_some()) {
+        let data = &unicode_data[cp as usize];
+        let one = vec![cp];
+        let simple_upper = data.upper.unwrap_or(cp);
+        let (lower, mut upper, title) = match special_casing.get(&cp) {
+            Some(special) => (
+                special.lower.clone(),
+                special.upper.clone(),
+                special.title.clone(),
+            ),
+            None => (
+                vec![data.lower.unwrap_or(cp)],
+                vec![simple_upper],
+                vec![data.title.unwrap_or(simple_upper)],
+            ),
+        };
+        if lower == one && upper.iter().all(|cp| (0x1C90..=0x1CBF).contains(cp)) {
             upper.clone_from(&one);
         }
         if lower == one && upper == one && title == one {
             continue;
         }
-        let single = |mapping: &str| {
-            let mut chars = mapping.chars();
-            match (chars.next(), chars.next()) {
-                (Some(ch), None) => Some(i64::from(u32::from(ch)) - i64::from(cp)),
-                _ => None,
-            }
+        let single = |mapping: &[u32]| match mapping {
+            [to] => Some(i64::from(*to) - i64::from(cp)),
+            _ => None,
         };
         let run = if lower == one && title == upper {
             single(&upper).map(|delta| (RUN_LOWER, delta))
@@ -1217,9 +1518,19 @@ fn main() {
         mapped.push(match run {
             Some((kind, delta)) => (cp, kind, delta),
             None => {
-                assert!(cp < 0x10000, "U+{cp:04X} is an exception past the BMP");
+                // A mapping to the character itself is spelled empty where
+                // the character is past the BMP, as U+1DF95's lowercase is;
+                // the strings hold BMP characters only.
+                let mut spell_mapping = |mapping: &[u32]| match mapping {
+                    [to] if *to == cp && cp > 0xFFFF => 0,
+                    _ => spell(mapping),
+                };
                 let index = exceptions.len();
-                exceptions.push([spell(&lower), spell(&upper), spell(&title)]);
+                exceptions.push([
+                    spell_mapping(&lower),
+                    spell_mapping(&upper),
+                    spell_mapping(&title),
+                ]);
                 (
                     cp,
                     RUN_EXCEPTIONS,
@@ -1296,21 +1607,54 @@ fn main() {
     // Soft_Dotted, each range its start shifted left by eight over its
     // length less one.
     let soft_dotted_runs: Vec<u32> = soft_dotted
-        .iter_ranges()
-        .map(|range| {
-            let (start, end) = (*range.start(), *range.end());
+        .ranges()
+        .into_iter()
+        .map(|(start, end)| {
             assert!(end - start < 1 << 8, "a Soft_Dotted range is long");
             start << 8 | (end - start)
         })
         .collect();
-    let nfd = icu_normalizer::DecomposingNormalizerBorrowed::new_nfd();
+    // The accents: each range of nonzero combining class, its start shifted
+    // left by eight over its length less one shifted left by one, over
+    // whether the class is 230.
+    let mut accents: Vec<(u32, u32, bool)> = Vec::new();
+    for cp in code_points() {
+        let class = unicode_data[cp as usize].combining_class;
+        if class == 0 {
+            continue;
+        }
+        let above = class == 230;
+        match accents.last_mut() {
+            Some(last) if last.1 + 1 == cp && last.2 == above && cp - last.0 < 1 << 7 => {
+                last.1 = cp;
+            }
+            _ => accents.push((cp, cp, above)),
+        }
+    }
+    let accent_runs: Vec<u32> = accents
+        .iter()
+        .map(|&(start, end, above)| start << 8 | (end - start) << 1 | u32::from(above))
+        .collect();
     let greek: Vec<u32> = (0x370..=0x3FF_u32)
         .chain(0x1F00..=0x1FFF)
-        .map(|cp| greek_letter(cp, &nfd, &categories, &case))
+        .map(|cp| greek_letter(cp, &unicode_data))
         .collect();
 
-    // --- emit ------------------------------------------------------------
-    let mut code = String::from(HEADER);
+    // --- emit the properties -------------------------------------------
+    let mut code = String::new();
+    header(
+        &mut code,
+        "The packed Unicode character properties: two words per code point\n\
+         //! and the side tables they name.",
+        version,
+    );
+    code.push_str("\nuse super::ScriptId;\n");
+    writeln!(
+        code,
+        "\n/// The version of Unicode the tables are generated from.\n\
+         pub(super) const UNICODE_VERSION: (u8, u8, u8) = ({major}, {minor}, {update});"
+    )
+    .unwrap();
 
     code.push_str("\n// The core word, read for every character.\n");
     for field in CORE {
@@ -1321,6 +1665,22 @@ fn main() {
         field.emit(&mut code);
     }
 
+    code.push_str("\n// The line byte, read by the line segmenter for every character.\n");
+    for field in [&LINE_CLASS, &LINE_EAST_ASIAN, &LINE_UNASSIGNED_PICTOGRAPHIC] {
+        field.emit(&mut code);
+    }
+
+    code.push_str("\n// The word byte, read by the word segmenter for every character.\n");
+    for field in [&WORD_CLASS, &WORD_PICTOGRAPHIC, &WORD_RUN] {
+        field.emit(&mut code);
+    }
+    writeln!(
+        code,
+        "pub(super) const WORD_RUN_SOUTHEAST_ASIAN: u32 = {WORD_RUN_SOUTHEAST_ASIAN};\n\
+         pub(super) const WORD_RUN_CHINESE_JAPANESE: u32 = {WORD_RUN_CHINESE_JAPANESE};"
+    )
+    .unwrap();
+
     writeln!(
         code,
         "\n/// The number of script values. A script field below this is a script; at\n\
@@ -1328,18 +1688,22 @@ fn main() {
          pub(super) const SCRIPT_COUNT: u16 = {script_count};"
     )
     .unwrap();
-    for (name, script) in [
-        ("SCRIPT_COMMON", Script::Common),
-        ("SCRIPT_INHERITED", Script::Inherited),
-        ("SCRIPT_UNKNOWN", Script::Unknown),
-        ("SCRIPT_HAN", Script::Han),
-        ("SCRIPT_HIRAGANA", Script::Hiragana),
-        ("SCRIPT_KATAKANA", Script::Katakana),
+    for (name, tag) in [
+        ("SCRIPT_COMMON", "Zyyy"),
+        ("SCRIPT_INHERITED", "Zinh"),
+        ("SCRIPT_UNKNOWN", "Zzzz"),
+        ("SCRIPT_HAN", "Hani"),
+        ("SCRIPT_HIRAGANA", "Hira"),
+        ("SCRIPT_KATAKANA", "Kana"),
+        ("SCRIPT_KHMER", "Khmr"),
+        ("SCRIPT_LAO", "Laoo"),
+        ("SCRIPT_MYANMAR", "Mymr"),
+        ("SCRIPT_THAI", "Thai"),
     ] {
         writeln!(
             code,
             "pub(super) const {name}: u16 = {};",
-            script_value(script)
+            script_value(tag)
         )
         .unwrap();
     }
@@ -1347,12 +1711,11 @@ fn main() {
     writeln!(
         code,
         "\n/// The ISO 15924 tag of each script, by value. A value no character has\n\
-         /// keeps ICU's name for it, or `Zzzz` where ICU has none.\n\
+         /// keeps ICU4C's tag for it.\n\
          pub(super) static SCRIPT_TAGS: [[u8; 4]; {script_count}] = ["
     )
     .unwrap();
-    for tag in &script_tags {
-        let tag = std::str::from_utf8(tag).expect("tags are ASCII");
+    for tag in script_tags {
         write!(code, "*b\"{tag}\",").unwrap();
     }
     code.push_str("];\n");
@@ -1379,7 +1742,7 @@ fn main() {
     writeln!(
         code,
         "\n/// Every script alone, in value order, and then each set's run: the\n\
-         /// character's Script, then its Script_Extensions in ICU's order.\n\
+         /// character's Script, then its Script_Extensions in ICU4C's value order.\n\
          pub(super) static SCRIPT_RUNS: [ScriptId; {}] = [",
         list.len()
     )
@@ -1397,13 +1760,48 @@ fn main() {
     )
     .unwrap();
     for closing in closings.keys() {
-        write!(code, "'\\u{{{:04X}}}',", u32::from(*closing)).unwrap();
+        write!(code, "'\\u{{{closing:04X}}}',").unwrap();
     }
     code.push_str("];\n\n");
 
+    let core = pack("core", &core, None, "u32");
+    let rare_css = pack("rare", &rare, Some("feature = \"css\""), "u32");
+    let rare_plain = pack("rare", &rare_plain, Some("not(feature = \"css\")"), "u32");
+    code.push_str(&core.code);
+    code.push_str(&rare_css.code);
+    code.push_str(&rare_plain.code);
+    emit_array(
+        &mut code,
+        "The line byte of U+0000 to U+00FF, read before the lookup.",
+        "LINE_LATIN_1",
+        "u8",
+        &line[..256],
+    );
+    let line = pack("line", &line, None, "u8");
+    code.push_str(&line.code);
+    emit_array(
+        &mut code,
+        "The word byte of U+0000 to U+00FF, read before the lookup.",
+        "WORD_LATIN_1",
+        "u8",
+        &words[..256],
+    );
+    let words = pack("word_break", &words, None, "u8");
+    code.push_str(&words.code);
+    code.push_str(AT);
+    std::fs::write(PROPS_OUT, code).expect("writing the property tables");
+
+    // --- emit the case tables ------------------------------------------
+    let mut code = String::new();
+    header(
+        &mut code,
+        "The case mapping tables: runs of characters that map alike, the\n\
+         //! exceptions, and what the conditional mappings read.",
+        version,
+    );
     writeln!(
         code,
-        "// The case runs: each its first character shifted left by {}, over its\n\
+        "\n// The case runs: each its first character shifted left by {}, over its\n\
          // length less one shifted left by {}, over its kind.\n\
          pub(super) const RUN_LENGTH_SHIFT: u32 = {RUN_KIND_BITS};\n\
          pub(super) const RUN_START_SHIFT: u32 = {};\n\
@@ -1467,6 +1865,15 @@ fn main() {
         "u32",
         &soft_dotted_runs,
     );
+    emit_array(
+        &mut code,
+        "The characters of nonzero Canonical_Combining_Class, each range its\n\
+         /// first character shifted left by eight, over its length less one\n\
+         /// shifted left by one, over whether the class is 230 (Above).",
+        "ACCENTS",
+        "u32",
+        &accent_runs,
+    );
 
     writeln!(
         code,
@@ -1490,25 +1897,31 @@ fn main() {
     for entry in &greek {
         write!(code, "0x{entry:X},").unwrap();
     }
-    code.push_str("];\n\n");
-
-    let core = pack("core", &core);
-    let rare = pack("rare", &rare);
-    code.push_str(&core.code);
-    code.push_str(&rare.code);
-    code.push_str(AT);
-
-    std::fs::write(OUT, code).expect("writing tables.rs");
+    code.push_str("];\n");
+    std::fs::write(CASE_OUT, code).expect("writing the case tables");
 
     let tags = script_tags.len() * 4;
     let set_bytes = starts.len() * 2 + list.len() * 2;
     let bracket_bytes = pair_count * 4;
-    println!("wrote {}", std::path::Path::new(OUT).display());
-    println!("core:  {} bytes, packtab {}", core.bytes, core.shape);
-    println!("rare: {} bytes, packtab {}", rare.bytes, rare.shape);
+    println!("Unicode {version}");
+    println!("wrote {}", Path::new(PROPS_OUT).display());
+    println!("wrote {}", Path::new(CASE_OUT).display());
+    println!("core: {} bytes, packtab {}", core.bytes, core.shape);
+    println!(
+        "rare: {} bytes with css, packtab {}; {} bytes without, packtab {}",
+        rare_css.bytes, rare_css.shape, rare_plain.bytes, rare_plain.shape
+    );
+    println!(
+        "line: {} bytes, packtab {}, and 256 for Latin-1",
+        line.bytes, line.shape
+    );
+    println!(
+        "word: {} bytes, packtab {}, and 256 for Latin-1",
+        words.bytes, words.shape
+    );
     println!(
         "case: {} runs {} B, {} deltas {} B, {} exceptions {} B, strings {} B, \
-         Soft_Dotted {} B, Greek {} B",
+         Soft_Dotted {} B, accents {} B, Greek {} B",
         runs.len(),
         runs.len() * 5,
         deltas.len(),
@@ -1517,6 +1930,7 @@ fn main() {
         exceptions.len() * 6,
         strings.len() * 2,
         soft_dotted_runs.len() * 4,
+        accent_runs.len() * 4,
         greek.len() * 2
     );
     println!(
@@ -1524,4 +1938,5 @@ fn main() {
         tags + set_bytes + bracket_bytes,
         list.len()
     );
+    Ok(())
 }

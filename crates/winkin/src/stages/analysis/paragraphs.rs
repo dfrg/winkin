@@ -124,7 +124,7 @@ impl Paragraphs {
     /// Returns whether the last paragraph holds no cluster but makes a line,
     /// because a box in it has an inline margin, border or padding.
     ///
-    /// Chrome makes a line box of the strut's height for it: per CSS 2,
+    /// It makes a line box of the strut's height: per CSS 2,
     /// section 9.4.2, a line with such a box is no phantom line.
     pub(crate) fn has_end_line(&self) -> bool {
         self.end_line

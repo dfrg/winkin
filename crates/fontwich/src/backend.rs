@@ -22,7 +22,6 @@ pub use crate::platform::{Android, ConfigError, FamilyNames, SystemFonts};
 /// [`Collection`](crate::Collection) resolves installed families and caches
 /// them by key.
 #[derive(Debug)]
-#[non_exhaustive]
 pub enum Backend {
     /// Windows fallback tables.
     #[cfg(any(windows, test))]
@@ -95,8 +94,8 @@ impl Backend {
     /// Returns what this backend's answers read of a request.
     pub(crate) fn facts(&self) -> BackendFacts {
         match *self {
-            // Chrome's monospace rule for Arabic and Hebrew is not in the
-            // tables yet, so the class is not read.
+            // The tables have no monospace rule for Arabic and Hebrew, so
+            // the class is not read.
             #[cfg(any(windows, test))]
             Self::Windows(_) => BackendFacts::default(),
             #[cfg(all(target_vendor = "apple", feature = "system"))]

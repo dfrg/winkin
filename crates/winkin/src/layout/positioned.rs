@@ -18,7 +18,6 @@ use crate::style::Direction;
 /// along the lines, and `block` runs from block-start across them, as in
 /// [`FloatPlacement`](crate::FloatPlacement).
 #[derive(Copy, Clone, PartialEq, Debug)]
-#[non_exhaustive]
 pub struct StaticPosition {
     /// The node key of the box.
     pub key: NodeKey,

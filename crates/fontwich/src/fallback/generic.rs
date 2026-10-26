@@ -1,6 +1,6 @@
-//! The CSS generic families, and Chrome's font settings they read.
+//! The CSS generic families, and the browser font settings they read.
 //!
-//! A `Generic(family, bucket)` key resolves, as in Chrome, to the first
+//! A `Generic(family, bucket)` key resolves to the first
 //! installed family of an ordered list. Each platform's backend holds its
 //! lists in a [`GenericTable`]. This module holds what every platform
 //! shares: which generics exist, the setting each reads, and how a bucket
@@ -26,7 +26,7 @@
 //! for the script of its UI locale (`prefs_tab_helper.cc:430–441`), and the
 //! Common values are translated per UI locale
 //! (`platform_locale_settings/locale_settings_*_<lang>.xtb`). The tables
-//! are an English UI's. A host whose users run Chrome in another language
+//! are an English UI's. A host whose users run another UI language
 //! supplies that difference itself.
 
 // A build with no backend reads no table: only the key's folding is left.
@@ -99,9 +99,8 @@ pub(crate) struct GenericTable {
 impl GenericTable {
     /// Returns the families `family` resolves to in `bucket`, best first.
     ///
-    /// Chrome takes the first installed one, and none means the generic
-    /// names no font. Names match case-insensitively, as Chrome's do
-    /// (`NSimsun` is `NSimSun`).
+    /// The first installed one applies, and none means the generic names no
+    /// font. Names match case-insensitively (`NSimsun` is `NSimSun`).
     pub(crate) fn families(
         &self,
         family: GenericFamily,
@@ -114,8 +113,8 @@ impl GenericTable {
         }
     }
 
-    /// Returns the Standard font's families in `bucket`, best first: what
-    /// Chrome tries after every `font-family` list, the first installed one.
+    /// Returns the Standard font's families in `bucket`, best first, tried
+    /// after every `font-family` list; the first installed one applies.
     pub(crate) fn standard(&self, bucket: GenericBucket) -> &'static [&'static str] {
         self.setting_families(Setting::Standard, bucket)
     }

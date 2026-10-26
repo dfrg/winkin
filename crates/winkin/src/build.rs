@@ -30,7 +30,6 @@ use crate::style::{ComputedStyle, RubyPosition};
 /// Returned by [`LayoutBuilder::finish`]. Exceeding a layout limit does not
 /// fail or panic; the layout contains the retained content.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
-#[non_exhaustive]
 pub struct BuildReport {
     /// The number of input text bytes dropped.
     ///
@@ -134,7 +133,7 @@ pub enum FloatSide {
 
 impl FloatSide {
     /// Returns the side an initial letter floats to in a paragraph at `level`:
-    /// the line's start, as Chrome places the letter's exclusion.
+    /// the line's start.
     pub(crate) fn from_level(level: BidiLevel) -> Self {
         if level.is_rtl() {
             Self::Right
@@ -187,10 +186,7 @@ impl Clear {
 }
 
 /// Options for a build: what to record, and the starting geometry.
-///
-/// Construct with [`Default::default`] and set the fields needed.
 #[derive(Copy, Clone, Debug, Default)]
-#[non_exhaustive]
 pub struct BuildOptions {
     /// Whether to record a map from layout text to source offsets.
     ///
@@ -318,8 +314,10 @@ impl<'a> LayoutBuilder<'a> {
     /// Appends an anchor for an absolutely positioned box.
     ///
     /// The anchor adds no text or width and makes no box fragment. White
-    /// space collapsing and break opportunities pass through it. Which line
-    /// it joins at a break is modelled on Chrome.
+    /// space collapsing and break opportunities pass through it. An anchor
+    /// at a line break stays on the line before the break, unless that line
+    /// overflows or balancing or `pretty` wrapping chose its end; then it
+    /// moves to the next line.
     ///
     /// `display` is the outer display before absolute positioning blockifies
     /// the box. After line breaking, [`Layout::static_positions`] reports
@@ -334,7 +332,7 @@ impl<'a> LayoutBuilder<'a> {
     ///
     /// The layout text holds `\n` for the break. It ends the paragraph and
     /// removes the collapsible white space beside it. Inside ruby it is a
-    /// space instead, as in Chrome.
+    /// space instead.
     pub fn line_break(&mut self, key: NodeKey) {
         self.writer.line_break(key, None);
     }
@@ -368,7 +366,7 @@ impl<'a> LayoutBuilder<'a> {
     /// returns its fragments.
     ///
     /// A container nested in a base or an annotation is an inline box there.
-    /// Its annotations add levels to the enclosing column, as in Chrome.
+    /// Its annotations add levels to the enclosing column.
     pub fn open_ruby(
         &mut self,
         key: NodeKey,
@@ -459,9 +457,9 @@ impl<'a> LayoutBuilder<'a> {
     ///   opening punctuation and dashes.
     ///
     /// Where a text node ends in punctuation, selection continues in the
-    /// next node. The box holds only the part in the first node, as in
-    /// Chrome. Each part keeps its own `text-transform`; the letter takes the
-    /// transform in `style`.
+    /// next node. The box holds only the part in the first node. Each part
+    /// keeps its own `text-transform`; the letter takes the transform in
+    /// `style`.
     ///
     /// Resolve `style` and `first_line` against the enclosing box. A call
     /// before a letter is found replaces the styles, so the method may be

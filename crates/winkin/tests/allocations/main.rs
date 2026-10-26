@@ -10,8 +10,8 @@
 //! full, hyphenation and phrases, shifts, CJK typography, ruby, the first
 //! line, cut lines, `text-wrap-style`, vertical text and text on paths.
 //!
-//! The one exception is ICU, which allocates for Thai and the other scripts
-//! whose line breaks and words need its dictionaries or LSTM, and, with the
+//! The one exception is ICU's word segmenter, which allocates for Thai and
+//! the other scripts whose words need its dictionaries, and, with the
 //! `dictionaries` feature, for Chinese and Japanese words. The tests pin
 //! this, so a change in ICU shows.
 

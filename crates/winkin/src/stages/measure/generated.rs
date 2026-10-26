@@ -88,7 +88,7 @@ impl GeneratedTexts {
             work::step();
             let said = text.string.text(strings);
             let runs = generated.runs(text);
-            // The orientation of the text it ends, as in Blink.
+            // The orientation of the text it ends.
             let orientation = content
                 .facts
                 .text(facts)
@@ -188,7 +188,7 @@ impl GeneratedTexts {
     }
 
     /// Returns the width of `text` rounded up to a 26.6 `LayoutUnit`, never
-    /// negative, as Chrome's `ShapeResult::SnappedWidth` snaps it.
+    /// negative, as Blink's `ShapeResult::SnappedWidth` snaps it.
     pub(crate) fn snapped(&self, text: GeneratedItems) -> LayoutUnit {
         self.advance(text)
             .ceil_to_grid()

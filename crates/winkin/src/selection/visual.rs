@@ -49,7 +49,7 @@
 //!   `LineEndMotion` sets its stops as in text order.
 //! - An arrow collapses a selection to the end drawn further that way, where
 //!   both ends are at two places on one line. Elsewhere it collapses to the
-//!   end the paragraph's direction maps the arrow to, as Chrome does.
+//!   end the paragraph's direction maps the arrow to.
 
 use core::cmp::Ordering;
 

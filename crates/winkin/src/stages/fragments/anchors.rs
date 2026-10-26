@@ -2,17 +2,16 @@
 //! box's anchor.
 //!
 //! An anchor is a piece that takes no room, at its own bidi level, so
-//! reordering places it as Chrome places an out-of-flow line item. Chrome's
-//! `PlaceOutOfFlowObjects` turns where it stands into the box's static
-//! position:
+//! reordering places it as an out-of-flow line item. Where it stands gives
+//! the box's static position, as Blink's `PlaceOutOfFlowObjects` reads it:
 //! - an inline-level box stands where its anchor is, at the line box's top;
 //! - a block-level box stands at the block's start edge, whatever the floats
 //!   and `text-indent`, and below the line where in-flow content comes before
 //!   it in the line's direction.
 //!
-//! An anchor no line holds stands on an empty line after the last, as an
-//! empty line box holds it in Chrome. That is an anchor after a final forced
-//! break, past a clamp, or in content with no line at all.
+//! An anchor no line holds stands on an empty line box after the last.
+//! That is an anchor after a final forced break, past a clamp, or in content
+//! with no line at all.
 
 use super::place::{LineOffset, LinePieces, PieceId, Side};
 use super::{Anchor, Fragments, Piece, PieceKind, Placer};
@@ -165,7 +164,7 @@ fn push(out: &mut Fragments, anchor: Anchor) {
 /// piece at logical place `at`, in the line's direction.
 ///
 /// In-flow content is text, an atomic inline, a hyphen, or a box that keeps
-/// its fragment and does not hold the anchor, as Chrome's
+/// its fragment and does not hold the anchor, as Blink's
 /// `HasInFlowFragment` counts a box's placeholder. The pieces are walked in
 /// visual order: from the left to the anchor, or from the right where the
 /// paragraph reads right to left.

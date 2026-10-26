@@ -214,7 +214,7 @@ impl RubyBoundaries {
 
     /// Returns how far a column starting at item `first` and running sum
     /// `start` may overhang the text before it without meeting the last
-    /// column's, as Chrome's `GetOverhang` bounds it. `None` where more than
+    /// column's, as Blink's `GetOverhang` bounds it. `None` where more than
     /// text and tags stand between.
     fn start_limit(
         &self,
@@ -313,7 +313,7 @@ impl<'a> Sizing<'_, 'a> {
     /// `out`, and moves `walk` past it. `before` is the text before it.
     ///
     /// The base is measured as the prefix will hold it. Each annotation is
-    /// measured at its max-content, as Chrome's `HandleRuby` does. The column
+    /// measured at its max-content, as Blink's `HandleRuby` does. The column
     /// ends with its container, or where base text follows its last
     /// annotation. Returns `None` where a table is full.
     fn column(
@@ -399,8 +399,8 @@ impl<'a> Sizing<'_, 'a> {
         )
         .map_or(0, |found| found.count_range(at..base_end));
         // The text after the column, which its end overhang may reach. A
-        // column followed by its container's next column has none: Chrome
-        // overhangs no ruby column (`CommitPendingEndOverhang`).
+        // column followed by its container's next column has none: no ruby
+        // column is overhung (Blink's `CommitPendingEndOverhang`).
         let after = match next {
             Some(_) => None,
             None => self.after_column(&state.look, end, close),
@@ -428,8 +428,7 @@ impl<'a> Sizing<'_, 'a> {
                 );
             }
         }
-        // A nested column, or one with an empty base, overhangs nothing, as
-        // in Chrome.
+        // A nested column, or one with an empty base, overhangs nothing.
         let overhang = if self.parent.is_some() || empty {
             (LayoutUnit::ZERO, LayoutUnit::ZERO)
         } else {
@@ -448,7 +447,7 @@ impl<'a> Sizing<'_, 'a> {
             self.overhang(column, state.widest, out)
         };
         let spread = match scan.input.ruby_overhang {
-            // Chrome insets the base as if nothing overhung.
+            // The base is inset as if nothing overhung.
             RubyOverhangRule::AdjacentText => {
                 RubySpread::from_base(ruby.align, space, opportunities)
             }
@@ -649,7 +648,7 @@ impl<'a> Sizing<'_, 'a> {
     }
 
     /// Returns whether column `record`, whose container's text facts are
-    /// `text`, may split across lines, as Chrome lets it.
+    /// `text`, may split across lines.
     ///
     /// Only a top-level column that wraps under `text-wrap-style: auto` or
     /// `stable` splits, at an opportunity inside a base of two or more
@@ -799,7 +798,7 @@ impl<'a> Sizing<'_, 'a> {
         let (nodes, facts) = (&content.nodes, &content.facts);
         let annotation = content.items.get(level.item);
         // The builder writes the container's `ruby-position` into the
-        // annotation's style, as Chrome reads it off the parent ruby.
+        // annotation's style, as it is read off the parent ruby.
         let node = annotation.map_or(self.container, |item| item.node);
         let boxes = facts.box_facts(nodes.box_facts(node, scan.variant));
         let side = RubySide::from_position(boxes.ruby.position, state.count);
@@ -808,7 +807,7 @@ impl<'a> Sizing<'_, 'a> {
         let clusters = level.start..at;
         let kept = self.kept_clusters(clusters.clone(), (level.item, close), true);
         let extent = self.em(level.item, close, true, kept, out);
-        // The levels stack by the margin box, as Chrome's annotation box.
+        // The levels stack by the margin box, the annotation's box.
         let extent = if extent.is_none() {
             extent
         } else {
@@ -849,10 +848,10 @@ impl<'a> Sizing<'_, 'a> {
 
     /// Returns the em box of a base or an annotation: the text and atomic
     /// inlines among items `from` to `to`, within clusters `within`, each
-    /// raised by the boxes around it as Chrome's `ComputeEmHeight` places
+    /// raised by the boxes around it as Blink's `ComputeEmHeight` places
     /// it. [`Extent::NONE`] where there are none.
     ///
-    /// An annotation's box includes its emphasis marks, as Chrome's
+    /// An annotation's box includes its emphasis marks, as Blink's
     /// `ComputeEmphasisHeights` adds them.
     fn em(
         &self,

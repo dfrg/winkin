@@ -28,7 +28,6 @@ use crate::layer::{FamilyId, Layer, Role};
 
 /// An error encountered while adding a font.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum AddError {
     /// The bytes are not a font or a font collection.
     NotAFont,

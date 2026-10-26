@@ -303,9 +303,9 @@ impl Map {
 
     /// Records that the space `run` owed is written where the run began.
     ///
-    /// Every later unit shifts by one byte, as the items do. As in Blink's
-    /// `AppendCollapseWhitespace`, the run's first character becomes the
-    /// space, written as given, and joins the unit before where both are
+    /// Every later unit shifts by one byte, as the items do. Following
+    /// Blink's `AppendCollapseWhitespace`, the run's first character becomes
+    /// the space, written as given, and joins the unit before where both are
     /// the node's. The rest of the run collapses after the space, so an
     /// input offset past the run's first character maps after the space.
     ///

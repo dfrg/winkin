@@ -17,7 +17,7 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use core::mem;
 
-use icu_segmenter::GraphemeClusterSegmenter;
+use cleft::Dictionaries;
 
 use super::{ContentWriter, FirstLetter, MathText, Mirror};
 use crate::data::{TextOffset, index_to_u32};
@@ -30,7 +30,7 @@ use crate::stages::content::{
     NodeKind, TextFlags,
 };
 use crate::style::{TextCombineUpright, WhiteSpaceCollapse};
-use crate::unicode::is_mark;
+use crate::unicode::{self, is_mark};
 use crate::work;
 
 impl ContentWriter<'_> {
@@ -137,7 +137,7 @@ impl ContentWriter<'_> {
                 self.text_node_text(key, text, single);
             }
             // The leading punctuation came from an earlier text; the box
-            // holds only that, as Chrome's does.
+            // holds only that.
             (FirstLetterScan::Text { found, .. }, None) => {
                 if found {
                     self.letters.first_letter = FirstLetter::Done;
@@ -254,7 +254,7 @@ impl ContentWriter<'_> {
     /// Pieces between collapsible white space are transformed separately.
     /// No transform makes or removes collapsible white space, and no case
     /// mapping reads context across it, so this equals transforming the
-    /// whole text and then collapsing, as Chrome does. Each piece gets the
+    /// whole text and then collapsing. Each piece gets the
     /// character before it, for capitalize.
     pub(super) fn collapse_text(
         &mut self,
@@ -315,8 +315,8 @@ impl ContentWriter<'_> {
                 }
                 // Inside ruby or a combined unit no segment break is kept,
                 // since no paragraph ends there. It collapses where only
-                // breaks are kept and is a space where spaces are kept, as
-                // in Blink (`should_not_preserve_newline` in ruby,
+                // breaks are kept and is a space where spaces are kept
+                // (Blink's `should_not_preserve_newline` in ruby,
                 // `is_text_combine_` in a combined unit).
                 '\n' => match (
                     mode,
@@ -428,7 +428,7 @@ impl ContentWriter<'_> {
                 transformer.write(
                     content,
                     before,
-                    &mut self.scratch.words,
+                    self.cx.dictionaries(),
                     &mut self.content.text,
                 );
                 self.extend(item);
@@ -449,7 +449,7 @@ impl ContentWriter<'_> {
                     transformer.write(
                         alone,
                         previous,
-                        &mut self.scratch.words,
+                        self.cx.dictionaries(),
                         &mut self.content.text,
                     );
                     if self.content.text.len() > self.room.limits.text {
@@ -485,11 +485,11 @@ impl ContentWriter<'_> {
     /// Writes `text` masked by `-webkit-text-security`: one `mask` per
     /// grapheme of the transformed text.
     ///
-    /// Chrome masks before white space processing (`LayoutText::SecureText`),
-    /// so spaces, tabs and segment breaks are masked too; none collapses or
-    /// breaks a line. Each source grapheme is one offset map unit, so a mask
-    /// is one caret stop. `before` is the character before `text`, for
-    /// capitalize.
+    /// Masking comes before white space processing, following Blink's
+    /// `LayoutText::SecureText`, so spaces, tabs and segment breaks are masked
+    /// too; none collapses or breaks a line. Each source grapheme is one offset
+    /// map unit, so a mask is one caret stop. `before` is the character before
+    /// `text`, for capitalize.
     fn write_masked(&mut self, mask: char, transforms: Transforms, mut before: char, text: &str) {
         self.content_arrives(mask, false);
         let mut buffer = [0; 4];
@@ -498,12 +498,8 @@ impl ContentWriter<'_> {
             self.room.report.drop_bytes(text.len());
             return;
         };
-        let mut boundaries = GraphemeClusterSegmenter::new().segment_str(text);
-        // The segmenter yields 0 first.
-        let mut start = boundaries.next().unwrap_or(0);
-        for end in boundaries {
+        for (start, grapheme) in unicode::graphemes(text) {
             work::step();
-            let grapheme = text.get(start..end).unwrap_or_default();
             let count = match transforms.own {
                 Some(transformer) => self.transformed_graphemes(transformer, grapheme, before),
                 None => 1,
@@ -530,7 +526,6 @@ impl ContentWriter<'_> {
                 self.text_node.source = end;
             }
             before = grapheme.chars().next_back().unwrap_or(before);
-            start = end;
         }
     }
 
@@ -551,15 +546,11 @@ impl ContentWriter<'_> {
         transformer.write(
             grapheme,
             before,
-            &mut self.scratch.words,
+            self.cx.dictionaries(),
             &mut self.content.text,
         );
         let written = self.content.text.get(mark..).unwrap_or_default();
-        // The segmenter yields 0 first, and only that for empty text.
-        let count = GraphemeClusterSegmenter::new()
-            .segment_str(written)
-            .count()
-            .saturating_sub(1);
+        let count = unicode::graphemes(written).count();
         self.content.text.truncate(mark);
         count
     }
@@ -725,12 +716,16 @@ impl ContentWriter<'_> {
         // Align each source character with its output alone; if that
         // doesn't add up to the output in context, undo these units.
         let own = Transforms::new(Some(transformer), None);
-        let words = &mut self.scratch.words;
+        let dictionaries = self.cx.dictionaries();
         let back = map.mark();
         let whole = align_counts(
             written,
             src,
-            |each| own.counts(src, before, words, &mut |ch, count, _| each(ch, count, 1)),
+            |each| {
+                own.counts(src, before, dictionaries, &mut |ch, count, _| {
+                    each(ch, count, 1)
+                })
+            },
             |made| {
                 let at = TextOffset::new(mark.get() + made.ours.start.get());
                 let from = source.saturating_add(index_to_u32(made.theirs.start.get()));
@@ -821,7 +816,7 @@ impl ContentWriter<'_> {
                 content,
                 before,
                 transforms,
-                &mut self.scratch.words,
+                self.cx.dictionaries(),
             );
         } else {
             first_line_source.push_same(mark, written);
@@ -1003,9 +998,9 @@ impl ContentWriter<'_> {
 ///
 /// It serves pieces whose context changed the mapping, as when a Greek
 /// capital drops an accent: `Ϊ́Ρ` uppercases to `ΪΡ`, and the first letter
-/// keeps its own unit, as Chrome maps a selection of it. Returns false if
-/// the clusters mapped alone don't make `written`, or the transform
-/// capitalizes; the caller then undoes the units and maps the piece whole.
+/// keeps its own unit for selection. Returns false if the clusters mapped
+/// alone don't make `written`, or the transform capitalizes; the caller then
+/// undoes the units and maps the piece whole.
 #[cold]
 #[inline(never)]
 fn transformed_clusters(
@@ -1019,7 +1014,7 @@ fn transformed_clusters(
     if transformer.capitalizes() {
         return false;
     }
-    let (mut made, mut scratch) = (String::new(), String::new());
+    let mut made = String::new();
     let mut rest = src;
     let mut at = 0;
     while let Some(first) = rest.chars().next() {
@@ -1032,7 +1027,8 @@ fn transformed_clusters(
                 .sum::<usize>();
         let (cluster, after) = rest.split_at(len);
         made.clear();
-        transformer.write(cluster, ' ', &mut scratch, &mut made);
+        // Capitalize maps the piece whole, so no word is asked for here.
+        transformer.write(cluster, ' ', &Dictionaries::new(), &mut made);
         let Some(tail) = written.get(at..) else {
             return false;
         };

@@ -1,7 +1,7 @@
 //! A line's kept boxes: their box parts in visual order, the room their
 //! edges take, and the links that chain them in box order.
 //!
-//! This follows Chrome's `InlineLayoutStateStack`. A box's parts are the
+//! This follows Blink's `InlineLayoutStateStack`. A box's parts are the
 //! runs of its pieces, its placeholder and its descendants', that
 //! reordering leaves side by side (`UpdateBoxDataFragmentRange`).
 //!
@@ -475,7 +475,7 @@ impl<'a> Placer<'a> {
     ///
     /// A box has its start edge where it opens and its end edge where it
     /// closes; a cloned box has both on every line. The start is on the left
-    /// for left-to-right and on the right otherwise, as Chrome's `AddBoxData`
+    /// for left-to-right and on the right otherwise, as Blink's `AddBoxData`
     /// swaps them.
     ///
     /// Each side's room is the box facts' room on that side
@@ -538,7 +538,7 @@ impl<'a> Placer<'a> {
     ///
     /// A side with the box's own edge reaches to the edge, inside its margin.
     /// An open side reaches to the pieces it holds, around inner boxes'
-    /// edges. This is how Chrome's `ComputeInlinePositions` places a box.
+    /// edges. This is how Blink's `ComputeInlinePositions` places a box.
     #[allow(clippy::too_many_arguments)]
     #[inline(never)]
     pub(super) fn emit_box_part(

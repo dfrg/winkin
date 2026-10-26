@@ -39,8 +39,7 @@ pub enum FallbackRequest {
     Generic(GenericFamily, Option<Language>),
     /// The default font for a language.
     ///
-    /// Corresponds to Chrome's Standard font, tried after the family list
-    /// and before system fallback.
+    /// Tried after the family list and before system fallback.
     Standard(Option<Language>),
     /// Emoji fallback for a presentation.
     Emoji(Presentation),
@@ -100,7 +99,7 @@ impl Han {
     }
 }
 
-/// A set of locales that share Chrome's defaults for the generic families.
+/// A set of locales that share default fonts for the generic families.
 ///
 /// Locales without a dedicated default use [`Common`](Self::Common).
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
@@ -135,7 +134,7 @@ pub(crate) struct BackendFacts {
     /// Some backend answers the serif class differently from the plain one.
     pub(crate) reads_serif: bool,
     /// Some backend answers monospace Arabic and Hebrew with a font of their
-    /// own, as Chrome's Windows fallback does.
+    /// own.
     pub(crate) reads_monospace: bool,
     /// Every backend orders its lists by language, so a script's key carries
     /// the language's Han tradition.
@@ -479,8 +478,8 @@ fn text(
         return KeyKind::Emoji(Presentation::Emoji);
     }
     let han = match script {
-        // An unresolved `Hani` still has to render. Chrome's final default
-        // is Simplified, and we follow it.
+        // An unresolved `Hani` still has to render. It resolves as
+        // Simplified, Blink's final default.
         sc::HANI => Some(tradition(script, language).unwrap_or(Han::Hans)),
         _ if cjk_script(script) => tradition(script, language),
         _ => None,
@@ -564,13 +563,13 @@ pub(crate) fn tradition(script: Script, language: Option<Language>) -> Option<Ha
 }
 
 /// Returns the bucket a generic resolves in for `language`: its script's,
-/// where Chrome's settings have a default for that script.
+/// where the generic-family settings have a default for that script.
 fn bucket(language: Option<Language>) -> GenericBucket {
     let Some(language) = language else {
         return GenericBucket::Common;
     };
-    // Hong Kong is already Traditional here: Chrome has no setting of its
-    // own for it.
+    // Hong Kong is already Traditional here: the generic-family settings
+    // have no bucket of its own for it.
     match lang::locale_script(language) {
         sc::HANS => GenericBucket::Hans,
         sc::HANT => GenericBucket::Hant,

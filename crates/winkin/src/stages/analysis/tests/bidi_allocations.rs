@@ -31,7 +31,7 @@ impl Paragraph {
         let units: Vec<_> = text
             .chars()
             .map(|ch| BidiUnit {
-                class: BidiClass(IcuBidiClass::for_char(ch).to_icu4c_value()),
+                class: BidiClass::new(IcuBidiClass::for_char(ch).to_icu4c_value()),
                 control: false,
             })
             .collect();

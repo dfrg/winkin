@@ -110,7 +110,7 @@ impl Collection {
     /// families with the same name and match only their declared names.
     /// Use [`fallback_family`](Self::fallback_family) for fallback lookup.
     ///
-    /// Installed families use Chrome aliases: `Times`/`Times New Roman`,
+    /// Installed families have aliases: `Times`/`Times New Roman`,
     /// `Courier`/`Courier New`, and `Helvetica`/`Arial` substitute for each
     /// other when absent. On Windows, `Times`, `Courier`, `MS Serif` and
     /// `MS Sans Serif` prefer TrueType substitutes over bitmap fonts;
@@ -240,8 +240,7 @@ impl Collection {
     /// fallback-layer order. Each family is returned once.
     ///
     /// A control character (`Cc`) stops after the platform character
-    /// fallback, since the fonts that map one draw it blank. Chrome draws
-    /// `.notdef` for it.
+    /// fallback, since the fonts that map one draw it blank.
     ///
     /// `presentation` selects text or emoji fallback. `request` supplies
     /// the language and generic class. Fallback lists are resolved when
@@ -320,8 +319,8 @@ impl Collection {
     }
 }
 
-/// The installed family Chrome looks up in place of `name` on Windows, where
-/// the families it names are bitmap fonts: Blink's
+/// The installed family looked up in place of `name` on Windows, where the
+/// families it names are bitmap fonts, as in Blink's
 /// `AdjustFamilyNameToAvoidUnsupportedFonts`.
 fn replacement(name: &str, windows: bool) -> Option<&'static str> {
     const REPLACEMENTS: [(&str, &str); 4] = [
@@ -339,7 +338,7 @@ fn replacement(name: &str, windows: bool) -> Option<&'static str> {
         .map(|&(_, to)| to)
 }
 
-/// The installed family Chrome tries when `name` is missing: Blink's
+/// The installed family tried when `name` is missing, as in Blink's
 /// `AlternateFamilyName`.
 ///
 /// Windows has no `Courier New` to `Courier` alias, since its `Courier` is a

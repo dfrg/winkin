@@ -46,7 +46,7 @@ pub(crate) fn miss_keys(
 ///    installed font maps goes undrawn.
 ///
 /// A control character skips the last stage. Fonts that map one draw it
-/// blank, and Chrome, which has no such stage, draws `.notdef` for it.
+/// blank.
 ///
 /// Allocates nothing.
 pub(crate) struct FallbackFor<'a> {

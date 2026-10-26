@@ -4,8 +4,8 @@
 //! [`resolve_bidi`] fills in a level for each unit [`input`](super::input)
 //! builds. [`reset_separators`] then applies L1's separator half and hands
 //! out each unit's final level in order. Line layout reorders (L2) with
-//! `unicode::reorder_bidi` and applies the rest of L1, as Chrome resets by
-//! the white space left at a line's end.
+//! `unicode::reorder_bidi` and applies the rest of L1, resetting by the
+//! white space left at a line's end.
 //!
 //! The input is trusted: every class is one UAX #9 defines, the brackets are
 //! in order and inside the paragraph, and `levels` has a slot per unit.

@@ -16,12 +16,12 @@
 //! [`TextRun::combine_scale`](crate::TextRun::combine_scale).
 //!
 //! Hyphens, ellipses, ruby, emphasis and atomic inlines follow the path.
-//! Decorations are split per character, matching SVG and Chrome.
+//! Decorations are split per character, as in SVG.
 //! Backgrounds and borders are omitted. The host places floats.
 //!
 //! [`PastEnds::Hidden`] omits characters with midpoints outside the path;
 //! [`PastEnds::Straight`] extends the endpoint tangents. Closed paths do not
-//! wrap back to the start, matching current browsers rather than SVG 2.
+//! wrap back to the start, although SVG 2 wraps text on a closed path.
 //!
 //! SVG `side="right"` maps to [`ReversedPath`], `startOffset` to [`PathRoom`],
 //! and `text-anchor` to line alignment. Placement uses `method="align"` and
@@ -38,7 +38,9 @@
 //! use winkin::{BuildOptions, ComputedBlockStyle, ComputedStyle, Context, Layout, NodeKey};
 //! # use fontwich::{Collection, LayerBuilder, Role};
 //! # let mut fonts = LayerBuilder::new(Role::Application);
-//! # fonts.add_data(include_bytes!("../../../../support/testing/fonts/Ahem.ttf").as_slice()).unwrap();
+//! # // Ahem, from the repository: a packaged crate does not ship it.
+//! # let Ok(ahem) = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../support/testing/fonts/Ahem.ttf")) else { return };
+//! # fonts.add_data(ahem).unwrap();
 //! # let fonts = Collection::new().with_layer(fonts.snapshot());
 //!
 //! let mut cx = Context::new(fonts);
@@ -94,7 +96,7 @@ use crate::paint::Decorates;
 use crate::{Line, NodeKey};
 use paint::PathWalk;
 
-/// Returns paint operations positioned along `path` in Chrome paint order.
+/// Returns paint operations positioned along `path`, in painting order.
 ///
 /// Maps [`Line::paints`], called with `decorates`, onto the path. Characters
 /// rotate at their advance midpoints; glyph offsets remain relative to
@@ -231,13 +233,13 @@ impl<P: TextPath> TextPath for ReversedPath<P> {
 pub enum PastEnds {
     /// Omits characters with midpoints outside the path.
     ///
-    /// Matches SVG 2, section 11.8.3, and Chrome.
+    /// Follows SVG 2, section 11.8.3.
     #[default]
     Hidden,
     /// Extends each endpoint tangent to draw out-of-range characters.
     ///
-    /// Allows the full line to be drawn beyond the path. SVG and Chrome
-    /// omit these characters instead.
+    /// Allows the full line to be drawn beyond the path. SVG omits these
+    /// characters instead.
     Straight,
 }
 

@@ -151,7 +151,7 @@ pub struct BoxFragment<'a> {
     /// left.
     left: InlineLayoutUnit,
     /// The border box's right: its left plus its width on the 26.6 grid,
-    /// rounded up as Chrome snaps it.
+    /// rounded up.
     right: InlineLayoutUnit,
     baseline: LayoutUnit,
     /// A culled box's top and bottom from the line box's top, found by the

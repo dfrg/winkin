@@ -23,8 +23,10 @@
 //!     Area, BuildOptions, ComputedBlockStyle, ComputedStyle, Context, Item, Layout, NoExclusions,
 //!     NodeKey,
 //! };
-//! # // Ahem: every glyph is an em square.
-//! # let font_bytes = include_bytes!("../../../support/testing/fonts/Ahem.ttf").as_slice();
+//! # // Ahem, from the repository, where every glyph is an em square. A
+//! # // packaged crate does not ship it.
+//! # let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../support/testing/fonts/Ahem.ttf");
+//! # let Ok(font_bytes) = std::fs::read(path) else { return Ok(()) };
 //!
 //! // Add a font from bytes. With the fontwich `system` feature,
 //! // `Collection::system()` provides installed fonts.
@@ -117,8 +119,9 @@
 //! in its block formatting context. [`NoExclusions`] serves a block with
 //! none.
 //!
-//! The host may also supply hyphenation for `hyphens: auto` and phrase
-//! segmentation for `word-break: auto-phrase` ([`segment`]).
+//! The host may also supply hyphenation for `hyphens: auto`, phrase
+//! segmentation for `word-break: auto-phrase`, and the word dictionaries of
+//! Thai, Lao, Khmer, Myanmar, and Chinese and Japanese ([`segment`]).
 //!
 //! # Fonts
 //!
@@ -134,10 +137,12 @@
 //! - `std` (default): passes `std` on to fontwich, read-fonts and harfrust.
 //!   Without it the crate is `no_std` with `alloc`, and [`SharedFonts`]
 //!   locks with a spin lock.
-//! - `dictionaries` (default): ICU dictionaries segment Thai, Lao, Khmer
-//!   and Myanmar lines, and Chinese and Japanese words. Without it, an LSTM
-//!   model segments the Southeast Asian scripts, Unicode word rules find
-//!   Chinese and Japanese words, and the binary is about 3.5 MB smaller.
+//! - `dictionaries` (default): word dictionaries break Thai, Lao, Khmer and
+//!   Myanmar lines and find their words and Chinese and Japanese words.
+//!   Without it, a run of those four scripts breaks only around it and is
+//!   one word, unless the host sets dictionaries
+//!   ([`Context::set_dictionaries`]), Unicode word rules find Chinese and
+//!   Japanese words, and the binary is several megabytes smaller.
 //!
 //! # Read next
 //!
@@ -148,7 +153,7 @@
 //! - The `advance_cache` and `paragraph` examples.
 
 #![no_std]
-#![warn(missing_docs)]
+#![deny(missing_docs)]
 // Code names an imported item or its module, never a full path.
 // `clippy.toml` sets the segment limit.
 #![warn(clippy::absolute_paths)]
@@ -218,3 +223,8 @@ mod work;
 // Helpers the crate's tests share: fonts, fixtures and styles.
 #[cfg(test)]
 mod tests;
+
+/// The examples of the README, run as doc tests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

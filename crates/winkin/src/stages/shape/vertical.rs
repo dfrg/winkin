@@ -1,4 +1,4 @@
-//! A font's vertical metrics as Chrome hands them to its shaper, for upright
+//! A font's vertical metrics as Blink hands them to its shaper, for upright
 //! text in a vertical line.
 //!
 //! Blink does not let HarfBuzz read vertical metrics itself. It answers the
@@ -17,8 +17,8 @@
 //!   whole pixel as Skia does, plus its top side bearing. Without `vmtx`
 //!   either, the font's ascent.
 //! - Every value is a float in pixels truncated to 16.16, as
-//!   `SkiaScalarToHarfBuzzPosition` does. Like Blink, this reads `hmtx`,
-//!   `vmtx` and `VORG` raw, without `HVAR` or `VVAR`.
+//!   `SkiaScalarToHarfBuzzPosition` does. This reads `hmtx`, `vmtx` and
+//!   `VORG` raw, without `HVAR` or `VVAR`.
 //!
 //! A host metric provider, where one is given, answers first, and these
 //! answer what it leaves out (see `provider`). Everything else harfrust asks
@@ -26,11 +26,11 @@
 //!
 //! A glyph's two answers depend only on its instance, the size and the
 //! fallback. So the context caches a [`VerticalFont`] per instance, size and
-//! fallback, and a [`VerticalGlyph`] per glyph asked ([`VerticalGlyphs`]),
-//! as Blink keeps vertical data with the font at its size. A call reads the
-//! tables ([`VerticalTables`]) only at the first glyph the cache lacks, so a
-//! warm call reads none. Without `VORG`, a `CFF` or `gvar` font draws the
-//! outline to find a glyph's bounds, which makes that reading costly.
+//! fallback, and a [`VerticalGlyph`] per glyph asked ([`VerticalGlyphs`]).
+//! A call reads the tables ([`VerticalTables`]) only at the first glyph the
+//! cache lacks, so a warm call reads none. Without `VORG`, a `CFF` or `gvar`
+//! font draws the outline to find a glyph's bounds, which makes that reading
+//! costly.
 
 use core::cell::{OnceCell, RefCell};
 
@@ -40,8 +40,7 @@ use hashbrown::HashTable;
 use read_fonts::TableProvider;
 use read_fonts::model::Font;
 use read_fonts::model::metrics::{ScaleF32, ScaledGlyphMetrics};
-use read_fonts::tables::hmtx::Hmtx;
-use read_fonts::tables::vmtx::Vmtx;
+use read_fonts::tables::hmtx::GlyphMetricRecords;
 use read_fonts::tables::vorg::Vorg;
 
 use super::context::is_instance;
@@ -207,11 +206,14 @@ heap_bytes! {
 /// A font's vertical metric tables at one size, read as Blink reads them.
 ///
 /// A glyph the cache lacks is measured with these.
+///
+/// A font of more than 65,535 glyphs states its metrics in `HMTX`, `VHEA`
+/// and `VMTX`, which are read before `hmtx`, `vhea` and `vmtx`.
 struct VerticalTables<'a> {
-    hmtx: Option<Hmtx<'a>>,
+    hmtx: Option<GlyphMetricRecords<'a>>,
     /// The font's `vmtx`, read only where it has `vhea`; `None` also where
     /// it is unreadable.
-    vmtx: Option<Vmtx<'a>>,
+    vmtx: Option<GlyphMetricRecords<'a>>,
     /// The font's `VORG`, read only where it has `vhea`, as Blink reads it.
     vorg: Option<Vorg<'a>>,
     /// The glyphs' bounds at the size and the instance's coordinates.
@@ -233,12 +235,14 @@ impl<'a> VerticalTables<'a> {
         // Blink finds `VORG` only where `vhea` is there to read, and `vmtx`
         // only where `vhea` says how many long metrics it holds.
         let has_vhea = tables
-            .vhea()
+            .selected_vhea()
             .is_ok_and(|vhea| vhea.number_of_long_ver_metrics() > 0);
-        let vmtx = has_vhea.then(|| tables.vmtx().ok()).flatten();
+        let vmtx = has_vhea
+            .then(|| tables.v_glyph_metric_records().ok())
+            .flatten();
         let vorg = has_vhea.then(|| tables.vorg().ok()).flatten();
         Self {
-            hmtx: tables.hmtx().ok(),
+            hmtx: tables.h_glyph_metric_records().ok(),
             vmtx,
             vorg,
             bounds: font.glyph_metrics().scaled(ScaleF32::from_ppem(px, upem)),
@@ -282,8 +286,12 @@ impl<'a> VerticalTables<'a> {
             // bounds a glyph, and is zero where it has no bounds.
             let bearing = vmtx
                 .side_bearing(glyph)
-                .or_else(|| vmtx.top_side_bearings().last().map(|tsb| tsb.get()))
-                .or_else(|| vmtx.v_metrics().last().map(|metric| metric.side_bearing()))
+                .or_else(|| vmtx.side_bearings().last().map(|tsb| tsb.get()))
+                .or_else(|| {
+                    vmtx.long_metrics()
+                        .last()
+                        .map(|metric| metric.side_bearing())
+                })
                 .unwrap_or(0);
             let top = self.bounds.extents(glyph).map_or(0.0, |bounds| {
                 LayoutUnit::from_px(bounds.y_bearing).ceil_px().to_px()

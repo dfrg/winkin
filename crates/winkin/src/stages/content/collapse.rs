@@ -5,7 +5,7 @@
 //! writer applies. The collapser holds no text, so it is tested on events
 //! alone.
 //!
-//! The rules follow Chrome's reading of CSS Text 3, section 4.1.1:
+//! The rules read CSS Text 3, section 4.1.1, as follows:
 //!
 //! - A run of collapsible white space becomes one space **where the run
 //!   began**, even across box edges and ruby marks. The space is written
@@ -21,15 +21,15 @@
 //!   breaks are `<br>`, a kept segment break, and VT, FF, NEL, U+2028 and
 //!   U+2029 (CSS Text 3, section 5.1).
 //! - **A segment break** becomes a space unless U+200B is next to the run
-//!   (Blink's `ShouldRemoveNewline`). Chrome compiles out the East Asian
-//!   Width rule of CSS Text 3, section 4.1.2, and so does this crate.
+//!   (Blink's `ShouldRemoveNewline`). The East Asian Width rule of CSS
+//!   Text 3, section 4.1.2, does not apply.
 //! - **Nothing collapsible is written at the block start** or after a forced
 //!   break.
-//! - **`white-space-trim`** acts on the pending run at box edges, which
-//!   Chrome does not support. The writer handles the block's own
-//!   `discard-inner`, since it also trims kept white space.
+//! - **`white-space-trim`** acts on the pending run at box edges. The writer
+//!   handles the block's own `discard-inner`, since it also trims kept white
+//!   space.
 //! - **A combined unit** (`text-combine-upright: all`) collapses on its own,
-//!   as Chrome's `LayoutTextCombine` is an inline block with its own text.
+//!   as Blink's `LayoutTextCombine` is an inline block with its own text.
 //!   Nothing collapsible is written at its start or end; the writer gives an
 //!   empty unit a U+200B, as Blink's box stays one em wide. Outside, the unit
 //!   is content.

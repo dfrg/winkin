@@ -15,14 +15,13 @@
 //! downstream; left and right land on the side they came from. A click lands
 //! upstream at the logical end of the text it hits and downstream elsewhere.
 //! At a boundary between nodes, [`Layout::node_position`] follows the side,
-//! so typed text goes into the node the caret came from. Chrome instead
-//! lands downstream after every motion.
+//! so typed text goes into the node the caret came from.
 //!
-//! An offset drawn at two places has a character stop at each; Chrome stops
-//! once. At a wrap the places are the end of the line before, upstream, and
-//! the start of the next, downstream. After white space the wrap removes,
-//! the line's end, and the end [`Granularity::LineBoundary`] reaches, are
-//! past the space, so typed text follows it. Where the text changes
+//! An offset drawn at two places has a character stop at each. At a wrap
+//! the places are the end of the line before, upstream, and the start of the
+//! next, downstream. After white space the wrap removes, the line's end,
+//! and the end [`Granularity::LineBoundary`] reaches, are past the space, so
+//! typed text follows it. Where the text changes
 //! direction, the places are the edges of the text on each side: upstream
 //! the text before, downstream the text after.
 //!
@@ -43,7 +42,9 @@
 //! };
 //! # use fontwich::{Collection, LayerBuilder, Role};
 //! # let mut fonts = LayerBuilder::new(Role::Application);
-//! # fonts.add_data(include_bytes!("../../../../support/testing/fonts/Ahem.ttf").as_slice()).unwrap();
+//! # // Ahem, from the repository: a packaged crate does not ship it.
+//! # let Ok(ahem) = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../support/testing/fonts/Ahem.ttf")) else { return };
+//! # fonts.add_data(ahem).unwrap();
 //! # let fonts = Collection::new().with_layer(fonts.snapshot());
 //!
 //! let mut cx = Context::new(fonts);
@@ -69,7 +70,8 @@
 //! assert_eq!(selection.range(), 3..6);
 //! assert_eq!(layout.selected_text(selection.range(), CopyKind::Text).to_string(), "lo ");
 //!
-//! // Right as Chrome's arrow key goes: forward in a left-to-right paragraph.
+//! // Right as an arrow key that follows the paragraph direction: forward in a
+//! // left-to-right paragraph.
 //! // Moving by a character collapses the selection.
 //! let right = match layout.paragraph_direction(selection.focus()) {
 //!     Direction::Ltr => MotionDirection::Forward,
@@ -163,7 +165,7 @@ pub enum Affinity {
 /// A selection from an anchor to a movable focus.
 ///
 /// Equal endpoints form a caret. [`modify`](Self::modify) retains the target
-/// column across line motion, including short lines, matching Chrome.
+/// column across line motion, including short lines.
 #[derive(Copy, Clone, PartialEq, Debug, Default)]
 pub struct Selection {
     anchor: Position,
@@ -267,8 +269,8 @@ pub enum MotionDirection {
     /// right-to-left one. In vertical lines, left is line-left.
     ///
     /// Line, paragraph and document motion have no screen side and follow the
-    /// paragraph direction, matching Chrome. Chrome arrow keys follow the
-    /// paragraph direction at every granularity; to match, map this to
+    /// paragraph direction. For arrow keys that follow the paragraph
+    /// direction at every granularity, map this to
     /// [`Forward`](Self::Forward) or [`Backward`](Self::Backward) according
     /// to [`Layout::paragraph_direction`].
     Left,
@@ -282,8 +284,8 @@ pub enum MotionDirection {
     /// right-to-left one. In vertical lines, right is line-right.
     ///
     /// Line, paragraph and document motion have no screen side and follow the
-    /// paragraph direction, matching Chrome. Chrome arrow keys follow the
-    /// paragraph direction at every granularity; to match, map this to
+    /// paragraph direction. For arrow keys that follow the paragraph
+    /// direction at every granularity, map this to
     /// [`Forward`](Self::Forward) or [`Backward`](Self::Backward) according
     /// to [`Layout::paragraph_direction`].
     Right,
@@ -402,7 +404,7 @@ impl Motion {
 ///
 /// Backward motion always stops at a word start. Visual left/right motion
 /// uses this rule when following a run direction and stops at word starts
-/// when moving against it, matching Chrome.
+/// when moving against it.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum WordMotion {
     /// Past the spaces after the word, at the next word's start: Windows.
@@ -466,16 +468,15 @@ pub enum LineEndMotion {
 ///
 /// Normally spans across the line at equal inline endpoints.
 /// Inside vertical combined text, spans along the unit em instead,
-/// with equal block endpoints, matching Chrome.
+/// with equal block endpoints.
 #[derive(Copy, Clone, PartialEq, Debug)]
-#[non_exhaustive]
 pub struct Caret {
     /// The zero-based line index.
     pub line: usize,
     /// Inline extents relative to line-box left.
     ///
     /// Normally a single position; combined text spans the unit em.
-    /// Chrome centers a one-pixel bar here. Beside atomic inlines, the
+    /// A one-pixel caret bar is centered here. Beside atomic inlines, the
     /// caret is inside the box edge.
     pub inline: InlineExtents,
     /// Cross-line extents relative to the line-over edge.
@@ -490,10 +491,9 @@ pub struct Caret {
 
 /// The primary caret and an optional alternate at a bidi boundary.
 ///
-/// At a bidi boundary the affinity selects the primary side. Chrome draws
-/// one caret, on the side of the paragraph direction.
+/// At a bidi boundary the affinity selects the primary side. A display with
+/// one caret draws it on the side of the paragraph direction.
 #[derive(Copy, Clone, PartialEq, Debug)]
-#[non_exhaustive]
 pub struct Carets {
     /// The primary caret, on the side of a bidi boundary the affinity selects.
     pub strong: Caret,
@@ -508,7 +508,6 @@ pub struct Carets {
 /// for that node. Atomic inlines and forced breaks use offsets 0 and 1
 /// for their preceding and following positions.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-#[non_exhaustive]
 pub struct NodePosition {
     /// The node's key.
     pub key: NodeKey,

@@ -1,7 +1,7 @@
 //! Cuts a line for an ellipsis, and writes generated text and divided
 //! pieces.
 //!
-//! Truncation keeps what fits before the ellipsis, as Chrome's
+//! Truncation keeps what fits before the ellipsis, as Blink's
 //! `LineTruncator` does. The rest keeps its place, hidden. This module also
 //! writes the items of a hyphen, of a piece the cut divides, and of the
 //! ellipsis.
@@ -20,7 +20,7 @@ use crate::unit::{InlineLayoutUnit, LayoutUnit};
 use crate::work;
 
 /// What truncation keeps of a piece that fits in whole or in part, as
-/// Chrome's `LineTruncator` keeps the part of its item that fits.
+/// Blink's `LineTruncator` keeps the part of its item that fits.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 enum PieceCut {
     /// The whole piece.
@@ -176,8 +176,7 @@ impl<'a> Placer<'a> {
     /// Writes `ellipsis` to `out` as the block's generated text, at the
     /// line's level, on `baseline`.
     ///
-    /// Chrome likewise sets an ellipsis on the line box's baseline in the
-    /// line's style.
+    /// The ellipsis sits on the line box's baseline in the line's style.
     #[inline(never)]
     pub(super) fn emit_ellipsis(
         &self,
@@ -197,7 +196,7 @@ impl<'a> Placer<'a> {
         self.emit_generated(out, ellipsis.text, at);
     }
 
-    /// Cuts a `line` flagged for an ellipsis, as Chrome's
+    /// Cuts a `line` flagged for an ellipsis, as Blink's
     /// `LineTruncator::TruncateLine` does, and returns where the ellipsis
     /// goes.
     ///
@@ -214,17 +213,15 @@ impl<'a> Placer<'a> {
     ///   it is not text. CSS asks this: "the first character or atomic
     ///   inline-level element on a line must be clipped rather than
     ///   ellipsed".
-    /// - The block's initial letter stays whole, as Chrome keeps its atomic
-    ///   initial letter box.
+    /// - The block's initial letter stays whole, as an atomic initial letter
+    ///   box.
     ///
-    /// A box is never cut. Its parts keep what they hold, as Chrome's box
-    /// fragments keep their laid-out size ("ellipsing only affects
-    /// rendering").
+    /// A box is never cut. Its parts keep what they hold, so box fragments
+    /// keep their laid-out size ("ellipsing only affects rendering").
     ///
-    /// The room runs from each item to the band's end edge as placed. Chrome
-    /// measures before `text-align` moves the line, so its centered or
-    /// end-aligned clamped lines put the ellipsis past the band. That is not
-    /// copied.
+    /// The room runs from each item to the band's end edge as placed, after
+    /// `text-align` moves the line, so a centered or end-aligned clamped
+    /// line keeps its ellipsis inside the band.
     #[inline(never)]
     pub(super) fn truncate(
         &self,
@@ -236,7 +233,7 @@ impl<'a> Placer<'a> {
     ) -> Option<LineCut> {
         let generated = self.input.stages.measured.generated();
         let facts = self.stages.text_facts(NodeId::BLOCK);
-        // The ellipsis is shaped in the line's direction, as Chrome's
+        // The ellipsis is shaped in the line's direction, as Blink's
         // `LineTruncator` shapes it.
         let rtl = self.line_state.level.is_rtl();
         let text = generated.ellipsis(facts, rtl)?;
@@ -285,9 +282,8 @@ impl<'a> Placer<'a> {
             };
             let mut kept = None;
             if self.within_initial_letter(piece.node) {
-                // The initial letter is one object, the line's first, as
-                // Chrome's initial letter box is an atomic item its truncator
-                // keeps whole. Once reached it stays whole, however far the
+                // The initial letter is one object, the line's first: an
+                // atomic item truncation keeps whole. Once reached it stays whole, however far the
                 // ellipsis after it overflows.
                 kept = Some(PieceCut::Whole);
             } else if room > InlineLayoutUnit::ZERO {
@@ -348,7 +344,7 @@ impl<'a> Placer<'a> {
     }
 
     /// Returns the part of `piece` that fits in `room` from its start-side
-    /// edge, as Chrome's `ShapeResult::OffsetToFit` finds it.
+    /// edge, as Blink's `ShapeResult::OffsetToFit` finds it.
     ///
     /// Keeps whole clusters from the line's start side, each as wide as
     /// drawn: reshaped edges and justification room included. Trailing white
@@ -408,7 +404,7 @@ impl<'a> Placer<'a> {
             fits += 1;
         }
         // White space the kept clusters end with goes with the hidden tail,
-        // where the config says. Chrome keeps it.
+        // where the config says; otherwise it is kept.
         if self.gates.ellipsis_space == EllipsisSpace::Hidden {
             while fits > 0 && self.clusters.is_breaking_space(nth(fits - 1)) {
                 work::step();

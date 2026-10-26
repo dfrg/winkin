@@ -90,9 +90,9 @@ impl MacOs {
             (None, None) => None,
         };
         if let Some(chrome) = chrome {
-            // Chrome's, but for PingFang, whose outlines only Core Text can
-            // draw: Heiti in its place unless the caller opted in, a
-            // recorded better-than-Chrome choice.
+            // The settings' families, but for PingFang, whose outlines only
+            // Core Text can draw: Heiti in its place unless the host opted
+            // in.
             for family in chrome {
                 match substitute(family) {
                     Some(substitute) if !self.allow_hvgl_only => name(substitute),

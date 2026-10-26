@@ -368,9 +368,13 @@ fn cluster_unit(
     // closing character, which N0 matches them by. Every paired bracket in
     // BidiBrackets.txt is ON.
     if class == BidiClass::OTHER_NEUTRAL
-        && let Some(bracket) = props.bidi_bracket(input.units.len() as u32)
+        && let Some(closing) = props.closing_bracket()
     {
-        input.brackets.push(bracket);
+        input.brackets.push(BidiBracket {
+            index: input.units.len() as u32,
+            closing,
+            is_open: props.opens_bracket(),
+        });
     }
     input.cluster(class)
 }
@@ -422,8 +426,7 @@ fn box_facts(content: &Content, node: NodeId) -> &BoxFacts {
     content.facts.box_facts(id)
 }
 
-/// Adds the controls that open `node`, as Blink injects them, and returns
-/// their class mask.
+/// Adds the controls that open `node` and returns their class mask.
 ///
 /// A box or ruby container adds its `unicode-bidi` controls. An annotation
 /// is a first-strong isolate with its own `unicode-bidi` controls inside,
@@ -475,8 +478,7 @@ fn enter_container(input: &mut BidiInput, facts: &BoxFacts) -> u32 {
             BidiClass::RIGHT_TO_LEFT_ISOLATE,
         )),
         UnicodeBidi::Plaintext => input.control(BidiClass::FIRST_STRONG_ISOLATE),
-        // A first-strong isolate outside and an override inside, as Blink
-        // injects them.
+        // A first-strong isolate outside and an override inside.
         UnicodeBidi::IsolateOverride => {
             input.control(BidiClass::FIRST_STRONG_ISOLATE)
                 | input.control(override_class(direction))

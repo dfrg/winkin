@@ -1,13 +1,13 @@
 //! Choosing a line's end in its band, as more of [`Breaker`]'s `impl`.
 //!
-//! - **Chrome's grid.** A line from `s` to `e` in paragraph `p` is
+//! - **The grid.** A line from `s` to `e` in paragraph `p` is
 //!   `⌈P[e] − P[p]⌉ − ⌈P[s] − P[p]⌉` wide, rounded up to 1/64. It fits a
 //!   band `W` wide when that is at most `W + 1/64` (`AvailableWidthToFit`).
 //!   Reshaped pieces add their exact difference.
 //! - **Search.** The furthest boundary that fits is the last whose prefix
 //!   sum is under a threshold, found by gallop and bisection in O(log n). A
 //!   paragraph with tabs or a prefix that goes back is walked a cluster at
-//!   a time, as Chrome walks every paragraph.
+//!   a time.
 //! - **Opportunity.** From there the fit steps forward over what hangs, then
 //!   back through the opportunities, measuring each until one fits. Failing
 //!   that, it takes an `overflow-wrap` break, then the first opportunity,
@@ -213,8 +213,8 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
             let end = self
                 .opportunity(hung..para.end, false, false)
                 .unwrap_or(para.end);
-            // So does a seam's room, as in Chrome's
-            // `AdjustOffsetForAutoSpacing`.
+            // So does a seam's room, as Blink's `AdjustOffsetForAutoSpacing`
+            // counts it.
             let flex =
                 para.costs && end_cost(para, &mut fitting.costs, end).flex > LayoutUnit::ZERO;
             let seam = para.seams && self.seam_before(para, end) > InlineLayoutUnit::ZERO;
@@ -287,7 +287,7 @@ impl<'a: 'c, 'c, 'm> Breaker<'a, 'c, 'm> {
     /// `first` that fits, where nothing up to `first` fits.
     ///
     /// Only a prefix that goes back, as under a negative inline margin, can
-    /// fit again past an overflow. Chrome's breaker goes on past such an
+    /// fit again past an overflow. The breaker goes on past such an
     /// overflow and ends the line before its next one (WPT
     /// `inline-negative-margin-001`). `None` where no later opportunity fits.
     #[cold]

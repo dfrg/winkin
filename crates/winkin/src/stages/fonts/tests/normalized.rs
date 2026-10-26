@@ -142,7 +142,7 @@ fn a_space_and_a_hyphen_are_faked() {
 
 /// A default-ignorable that harfrust hides does not keep a font from a
 /// cluster. One it draws, a Hangul filler, does. The fourth Mongolian free
-/// variation selector is hidden, as harfrust 0.14.0 hides it.
+/// variation selector is hidden, as harfrust 0.15.0 hides it.
 #[test]
 fn a_default_ignorable_harfrust_hides_keeps_no_font_from_a_cluster() {
     assert!(covers(&['a', 'b'], "a\u{200D}b"));

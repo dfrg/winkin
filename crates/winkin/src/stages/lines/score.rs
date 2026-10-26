@@ -5,14 +5,14 @@
 //! [`BreakPoint`] is measured once from the paragraph's prefix, so a line
 //! between two points is one subtraction, and the best way to a point
 //! extends the best way to an earlier one. The scored lines are few: six for
-//! `balance` and `Pretty::Even`, four for `pretty`, as in Chrome.
+//! `balance` and `Pretty::Even`, four for `pretty`.
 //!
 //! The rules differ on the last line:
 //! - `balance` counts its slack like any line's.
 //! - `pretty` counts none of its slack; only a line leaving the last word
 //!   alone pays (Blink's orphan penalty).
-//! - `Pretty::Even` (beyond Chrome) also makes a last line under a fifth of
-//!   its room cost more than any other choice.
+//! - `Pretty::Even` also makes a last line under a fifth of its room cost more
+//!   than any other choice.
 
 use crate::config::Pretty;
 use crate::data::IdRange;
@@ -33,7 +33,7 @@ define_id! {
     pub(super) struct WrapLineId(u32);
 }
 
-/// How many lines `balance` scores, as Chrome's `kMaxLinesForBalance`.
+/// How many lines `balance` scores, as Blink's `kMaxLinesForBalance`.
 ///
 /// A longer paragraph is balanced by bisecting the room.
 pub(super) const BALANCE_LINES: usize = 6;
@@ -76,9 +76,8 @@ impl LineChoice {
 
     /// Returns how many of a paragraph's last lines are scored.
     ///
-    /// Chrome's `pretty` scores four (`kMaxLinesForOptimal`). `Pretty::Even`
-    /// (beyond Chrome) scores six, so a short last line can take words from
-    /// more lines.
+    /// `pretty` scores four (Blink's `kMaxLinesForOptimal`). `Pretty::Even`
+    /// scores six, so a short last line can take words from more lines.
     pub(super) fn scored(self) -> usize {
         match self {
             Self::Pretty(Pretty::Limited) => 4,
@@ -240,7 +239,7 @@ impl Scoring {
 
     /// Returns the room of the paragraph's `line`, never negative.
     ///
-    /// A line past the scored ones has the last one's room, as Chrome's
+    /// A line past the scored ones has the last one's room, as Blink's
     /// `AvailableWidth` reads its `LineWidths`.
     fn room(&self, line: WrapLineId) -> LayoutUnit {
         let at = line.get().saturating_sub(self.first.get());
@@ -258,7 +257,7 @@ impl Scoring {
     ///
     /// `None` where the scored lines have fewer than three opportunities,
     /// or where the best has another line count than the greedy fit, which
-    /// Chrome then keeps.
+    /// then stays.
     pub(super) fn best_ends(&mut self, rule: &ScoreRule) -> Option<PlannedEnds> {
         // The start, the end, and at least three opportunities, as Blink's
         // `kMinCandidates`.
@@ -314,8 +313,8 @@ impl Scoring {
     /// loop of Blink's `ComputeScores`.
     ///
     /// It tries starts from `active`, the first whose line here is not
-    /// overfull, and moves `active` on. It prunes as Blink does, so ties go
-    /// the same way.
+    /// overfull, and moves `active` on. It prunes as Blink's `ComputeScores`
+    /// does, so ties go the same way.
     fn best_to(
         &self,
         rule: &ScoreRule,

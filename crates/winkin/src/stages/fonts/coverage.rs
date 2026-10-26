@@ -77,7 +77,7 @@ pub(super) fn draws_nothing(class: ClusterClass) -> bool {
 
 /// Returns the presentation a cluster asks for.
 ///
-/// Three kinds of cluster ask, as in Chrome; everything else is text:
+/// Three kinds of cluster ask; everything else is text:
 /// - an emoji cluster: an Emoji_Presentation character, a flag, or a
 ///   modifier, tag or ZWJ sequence;
 /// - a pictograph in text presentation;
@@ -91,12 +91,12 @@ pub(super) fn draws_nothing(class: ClusterClass) -> bool {
 /// `font-variant-emoji` forces a form on a cluster whose first character is
 /// Emoji=Yes, keycap bases included, unless the text has a selector. `text`
 /// forces the text form, `emoji` the emoji form, and `unicode` the form
-/// Emoji_Presentation gives. Chrome's glyph callback (`HarfBuzzGetGlyph`)
-/// does the same by supplying VS15 or VS16, so Chrome 155 sets a keycap
-/// sequence as text under `text` and `unicode`. Like Chrome, this covers
-/// every emoji, not only the spec's 371 participating bases. Any other
-/// pictograph only prefers the form asked for, as Chrome's fallback does
-/// (`ApplyFontVariantEmojiOnFallbackPriority`).
+/// Emoji_Presentation gives, as Blink's glyph callback (`HarfBuzzGetGlyph`)
+/// supplies VS15 or VS16, so a keycap sequence is text under `text` and
+/// `unicode`. This covers every emoji, not only the spec's 371
+/// participating bases. Any other pictograph only prefers the form asked
+/// for, as Blink's `ApplyFontVariantEmojiOnFallbackPriority` orders
+/// fallback.
 pub(super) fn presentation(
     class: ClusterClass,
     text: &str,

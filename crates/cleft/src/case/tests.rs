@@ -11,7 +11,8 @@ use icu_casemap::options::{LeadingAdjustment, TitlecaseOptions, TrailingCase};
 use icu_casemap::{CaseMapper, CaseMapperBorrowed};
 use icu_locale_core::{LanguageIdentifier, langid};
 
-use crate::unicode::{CaseLanguage, lowercase, titlecase, uppercase};
+use crate::tests::{ICU_VERSION, Versions, changes, root_mappings};
+use crate::{CaseLanguage, lowercase, titlecase, uppercase};
 
 const ICU: CaseMapperBorrowed<'static> = CaseMapper::new();
 
@@ -79,14 +80,64 @@ fn icu_upper(text: &str, langid: &LanguageIdentifier) -> String {
         .collect()
 }
 
+/// Lowers the Georgian capitals in `text`, as Chrome's
+/// `DisableNewGeorgianCapitalLetters` does after uppercasing.
+fn lowered_mtavruli(text: &str) -> String {
+    text.chars()
+        .map(|ch| match ch {
+            '\u{1C90}'..='\u{1CBF}' => char::from_u32(u32::from(ch) - 0xBC0).unwrap_or(ch),
+            _ => ch,
+        })
+        .collect()
+}
+
+/// Every character maps alone as ICU4X maps it, in each language, except
+/// where Unicode 18.0's case data differs from ICU's 17.0.
+///
+/// There, the mappings are 18.0's, read from the pinned UnicodeData.txt
+/// and SpecialCasing.txt, and ICU's must be 17.0's. 13,011 code points
+/// differ in what case mapping reads: the 13,007 newly assigned, among
+/// them U+1DF95, whose uppercase is `SS` and titlecase `Ss`; and four
+/// small letters that gain one of 18.0's new capitals: U+0277 uppercases to
+/// U+A7DD, U+027C to U+A7E2, U+AB4B to U+AB6C and U+AB4C to U+AB6D.
 #[test]
 fn every_character_alone_maps_as_icu_does() {
+    let Some(versions) = Versions::new() else {
+        return;
+    };
+    let old_fields = versions.icu.case_fields();
+    let new_fields = versions.tables.case_fields();
+    let changed = changes(old_fields.clone(), new_fields.clone());
+    assert_eq!(changed.len(), 13011);
     let options = title_options();
     for (language, langid) in languages() {
         for ch in (0..=0x10FFFF_u32).filter_map(char::from_u32) {
             let mut buffer = [0; 4];
             let one: &str = ch.encode_utf8(&mut buffer);
             let cp = u32::from(ch);
+            if changed.contains_key(&cp) {
+                let [lower_old, upper_old, title_old] = root_mappings(cp, &old_fields[cp as usize]);
+                let [lower_new, upper_new, title_new] = root_mappings(cp, &new_fields[cp as usize]);
+                let icu = [
+                    ICU.lowercase_to_string(one, &langid).into_owned(),
+                    ICU.uppercase_to_string(one, &langid).into_owned(),
+                    ICU.titlecase_segment_with_only_case_data_to_string(one, &langid, options)
+                        .into_owned(),
+                ];
+                assert_eq!(
+                    icu,
+                    [lower_old, upper_old, title_old],
+                    "U+{cp:04X} {language:?}: ICU holds {ICU_VERSION}'s"
+                );
+                assert_eq!(lower(one, language), lower_new, "U+{cp:04X} {language:?}");
+                assert_eq!(
+                    upper(one, language),
+                    lowered_mtavruli(&upper_new),
+                    "U+{cp:04X} {language:?}"
+                );
+                assert_eq!(title(one, language), title_new, "U+{cp:04X} {language:?}");
+                continue;
+            }
             assert_eq!(
                 upper(one, language),
                 icu_upper(one, &langid),

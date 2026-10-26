@@ -2,10 +2,11 @@
 //!
 //! Glyph geometry is 16.16 [`TextUnit`], layout geometry is 26.6
 //! [`LayoutUnit`], and running advances are 48.16 [`InlineLayoutUnit`].
-//! These are Chrome's three types, rounded where Chrome rounds.
+//! These follow Blink's `TextRunLayoutUnit`, `LayoutUnit` and
+//! `InlineLayoutUnit`, with Blink's rounding at each conversion.
 //!
 //! Lengths enter and leave as `f32`. Every float-to-integer conversion lives
-//! here, so each rounds as Chrome does at that point. Index casts live in
+//! here, each with the rounding its point of use takes. Index casts live in
 //! `data`.
 
 use core::fmt;
@@ -43,7 +44,7 @@ fn round(x: f32) -> i32 {
     }
 }
 
-/// Floors `px` to a hundredth of a pixel, as Chrome's
+/// Floors `px` to a hundredth of a pixel, as Blink's
 /// `FontDescription::EffectiveFontSize` does to key fonts by size.
 /// Saturates; NaN gives zero.
 #[inline]
@@ -52,7 +53,7 @@ pub(crate) fn floor_to_hundredth(px: f32) -> f32 {
 }
 
 /// Rounds `px` to a whole pixel, halves away from zero, as C's `lroundf`
-/// does. Chrome sizes synthesized small capitals and emphasis marks this way.
+/// does. Blink sizes synthesized small capitals and emphasis marks this way.
 /// Saturates; NaN gives zero.
 #[inline]
 pub(crate) fn round_to_whole(px: f32) -> f32 {
@@ -111,7 +112,7 @@ fn round_wide(x: f64) -> i64 {
 
 /// A layout length: 26.6 fixed point, in 1/64 px.
 ///
-/// Named and rounded as Chrome's `LayoutUnit`. It differs from `Fixed`,
+/// Named and rounded as Blink's `LayoutUnit`. It differs from `Fixed`,
 /// which in OpenType and read-fonts is 16.16.
 ///
 /// Box, line and fitting widths use it. Float inputs round onto the grid
@@ -124,18 +125,18 @@ impl LayoutUnit {
     /// Zero length.
     pub(crate) const ZERO: Self = Self(0);
 
-    /// The most negative length. Chrome's `FontHeight::Empty()` fills both
+    /// The most negative length. Blink's `FontHeight::Empty()` fills both
     /// sides of an extent with it, as the identity for a union.
     pub(crate) const MIN: Self = Self(i32::MIN);
 
     /// The longest length, about 33.5 million pixels. Wider widths saturate
-    /// here, as in Chrome.
+    /// here.
     #[cfg(test)]
     pub(crate) const MAX: Self = Self(i32::MAX);
 
     /// The smallest step, 1/64 px.
     ///
-    /// Chrome's `AddEpsilon` adds it to the available width
+    /// Blink's `AddEpsilon` adds it to the available width
     /// (`AvailableWidthToFit`), so a line that rounds up past its band by at
     /// most this much still fits.
     pub(crate) const EPSILON: Self = Self(1);
@@ -154,10 +155,10 @@ impl LayoutUnit {
         Self(floor(-(px * 64.0)).saturating_neg())
     }
 
-    /// Truncates `px` toward zero onto the grid, as Chrome's plain
+    /// Truncates `px` toward zero onto the grid, as Blink's plain
     /// `LayoutUnit(float)` does.
     ///
-    /// Chrome converts these lengths this way:
+    /// Blink converts these lengths this way:
     /// - a computed font size, as the length a numeric `line-height`
     ///   multiplies, and the product as a line height
     ///   (`MinimumValueForLength`);
@@ -172,14 +173,14 @@ impl LayoutUnit {
         Self((px * 64.0) as i32)
     }
 
-    /// Halves the length, truncating toward zero, as Chrome divides a
+    /// Halves the length, truncating toward zero, as Blink divides a
     /// `LayoutUnit` by two.
     #[inline]
     pub(crate) fn half(self) -> Self {
         Self(self.0 / 2)
     }
 
-    /// Divides the length by `by`, truncating toward zero, as Chrome divides
+    /// Divides the length by `by`, truncating toward zero, as Blink divides
     /// a `LayoutUnit` by an integer.
     ///
     /// Superscript and subscript shifts use it. Returns zero when `by` is
@@ -189,14 +190,14 @@ impl LayoutUnit {
         Self(self.0.checked_div(by).unwrap_or(0))
     }
 
-    /// Rounds down to a whole pixel, toward negative infinity, as Chrome's
+    /// Rounds down to a whole pixel, toward negative infinity, as Blink's
     /// `LayoutUnit::Floor()` does. A negative half pixel becomes −1 px.
     #[inline]
     pub(crate) fn floor_px(self) -> Self {
         Self((self.0 >> 6).saturating_mul(64))
     }
 
-    /// Rounds up to a whole pixel, toward positive infinity, as Chrome's
+    /// Rounds up to a whole pixel, toward positive infinity, as Blink's
     /// `LayoutUnit::Ceil()` does.
     #[inline]
     pub(crate) fn ceil_px(self) -> Self {
@@ -210,7 +211,7 @@ impl LayoutUnit {
         Self(floor(px + 0.5).saturating_mul(64))
     }
 
-    /// Multiplies the length by `count`, as Chrome multiplies a `LayoutUnit`
+    /// Multiplies the length by `count`, as Blink multiplies a `LayoutUnit`
     /// by an integer. Exact; saturates.
     #[inline]
     pub(crate) fn times_whole(self, count: u32) -> Self {
@@ -219,7 +220,7 @@ impl LayoutUnit {
     }
 
     /// Multiplies the length by `factor` and truncates onto the grid, as
-    /// Chrome's `LayoutUnit(length * factor)` does. Saturates; NaN gives zero.
+    /// Blink's `LayoutUnit(length * factor)` does. Saturates; NaN gives zero.
     #[inline]
     pub(crate) fn times_truncated(self, factor: f32) -> Self {
         Self::from_px_truncated(self.to_px() * factor)
@@ -244,7 +245,7 @@ impl Neg for LayoutUnit {
 impl Add for LayoutUnit {
     type Output = Self;
 
-    /// Adds, saturating as Chrome's `LayoutUnit` does. Input lengths can
+    /// Adds, saturating as Blink's `LayoutUnit` does. Input lengths can
     /// reach the ends, and must not panic.
     #[inline]
     fn add(self, other: Self) -> Self {
@@ -270,14 +271,14 @@ impl fmt::Debug for LayoutUnit {
 
 /// A glyph-geometry length: 16.16 fixed point, in 1/65536 px.
 ///
-/// Shaping runs at harfrust scale `size × 65536`, as Chrome sets up
+/// Shaping runs at harfrust scale `size × 65536`, as Blink sets up
 /// HarfBuzz. Font sizes, glyph advances and glyph offsets use it.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[repr(transparent)]
 pub(crate) struct TextUnit(i32);
 
 impl TextUnit {
-    /// Truncates `px` toward zero onto the grid, as Chrome turns a font size
+    /// Truncates `px` toward zero onto the grid, as Blink turns a font size
     /// into a HarfBuzz scale (`SkiaScalarToHarfBuzzPosition`, a clamped
     /// `static_cast`). Saturates; NaN gives zero.
     #[inline]
@@ -325,14 +326,14 @@ impl fmt::Debug for TextUnit {
 
 /// A running advance: 48.16 fixed point in an `i64`, in 1/65536 px.
 ///
-/// Chrome's `InlineLayoutUnit`, for run and line advances. Glyph advances are
+/// Blink's `InlineLayoutUnit`, for run and line advances. Glyph advances are
 /// [`TextUnit`]s, so sums of them are exact. Paragraph prefix advances use
 /// it, so a line's width is one exact subtraction.
 ///
 /// No paragraph reaches the 48-bit range, but sums still saturate because
 /// input lengths flow into them and must not panic.
 ///
-/// Line fitting reads positions rounded up to the 1/64 grid, as Chrome's
+/// Line fitting reads positions rounded up to the 1/64 grid, as Blink's
 /// cached character positions are (`ToCeil<LayoutUnit>`); see
 /// [`ceil_to_grid`](Self::ceil_to_grid).
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
@@ -386,7 +387,7 @@ impl InlineLayoutUnit {
         Self(self.0 / 2)
     }
 
-    /// Rounds up to the 1/64 grid, as Chrome rounds running sums into the
+    /// Rounds up to the 1/64 grid, as Blink rounds running sums into the
     /// character positions it fits lines with (`LayoutUnit::FromFloatCeil`,
     /// `ToCeil<LayoutUnit>`).
     ///
@@ -473,7 +474,7 @@ impl Rem for InlineLayoutUnit {
     /// Returns the remainder, truncated toward zero like C's `fmod`, so it
     /// takes the sign of `self`.
     ///
-    /// Chrome finds a position's distance past a tab stop this way. Returns
+    /// Blink finds a position's distance past a tab stop this way. Returns
     /// zero when `other` is zero or the division overflows.
     #[inline]
     fn rem(self, other: Self) -> Self {
@@ -491,7 +492,7 @@ impl fmt::Debug for InlineLayoutUnit {
 mod tests {
     use super::*;
 
-    /// Floats round onto each grid as Chrome's conversions do; NaN and
+    /// Floats round onto each grid as Blink's conversions do; NaN and
     /// infinities never panic.
     #[test]
     fn lengths_round_onto_their_grids() {
@@ -512,7 +513,7 @@ mod tests {
         }
         assert_eq!(LayoutUnit::from_px(f32::NAN), LayoutUnit::ZERO);
         assert_eq!(LayoutUnit::from_px(f32::INFINITY), LayoutUnit(i32::MAX));
-        // A font size truncates, as Chrome's HarfBuzz scale does.
+        // A font size truncates, as Blink's HarfBuzz scale does.
         assert_eq!(TextUnit::from_px_truncated(1.5), TextUnit(98_304));
         assert_eq!(TextUnit::from_px_truncated(-1.5), TextUnit(-98_304));
         assert_eq!(TextUnit::from_px_truncated(1.0 / 131_072.0), TextUnit(0));
@@ -520,7 +521,7 @@ mod tests {
     }
 
     /// Running advances stay exact at 16.16 beyond the 26.6 range, and round
-    /// up onto the 1/64 grid as Chrome's fitting positions do.
+    /// up onto the 1/64 grid as Blink's fitting positions do.
     #[test]
     fn running_advances_round_up_onto_the_grid() {
         let unit = InlineLayoutUnit::from_raw(1);
@@ -598,8 +599,8 @@ mod tests {
         assert_eq!(low % InlineLayoutUnit::from_raw(-1), InlineLayoutUnit::ZERO);
     }
 
-    /// Half-leading halves toward zero, then floors to a whole pixel, as in
-    /// Chrome.
+    /// Half-leading halves toward zero, then floors to a whole pixel, as Blink's
+    /// `LayoutUnit` does.
     #[test]
     fn a_length_halves_and_floors_as_chromes_does() {
         assert_eq!(LayoutUnit(-3).half(), LayoutUnit(-1));

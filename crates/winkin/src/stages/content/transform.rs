@@ -3,33 +3,30 @@
 //! **Case** uses the crate's full case mapping (`unicode::uppercase` and the
 //! like) with the language's tailoring, as CSS Text 3, section 2.1 asks. So
 //! `ß` uppercases to `SS`, a final sigma lowercases to `ς`, and Turkish,
-//! Lithuanian, Greek and Dutch get their own rules. Chrome maps case the same
-//! way, through ICU4C's `CaseMap` with the text's locale, and tailors no other
-//! language. Uppercase makes no Georgian Mtavruli, as in Chrome.
+//! Lithuanian, Greek and Dutch get their own rules; no other language is
+//! tailored. Uppercase makes no Georgian Mtavruli.
 //!
 //! **Capitalize** titlecases the first character of every word.
-//! - Words are UAX #29's, found by the build's word segmenter, the one word
-//!   motion uses. Chrome uses ICU's word break iterator.
-//! - Chrome's `en_US_POSIX` tailoring applies: a full stop joins only digits,
+//! - Words are UAX #29's, found with the context's dictionaries, as word
+//!   motion finds them.
+//! - The `en_US_POSIX` tailoring applies: a full stop joins only digits,
 //!   so `x.y` is two words and `3.14` one.
 //! - The character before the written text counts, so a word split by a span
 //!   stays one word. Across calls only the previous call's last character is
-//!   known, as in Chrome's `LayoutText::PreviousCharacter`.
+//!   known, as with Blink's `LayoutText::PreviousCharacter`.
 //! - The titlecase is the full mapping with the language's tailoring, as CSS
-//!   asks. Chrome titlecases one UTF-16 unit by the simple mapping, leaving
-//!   `ß` and `ﬁ` alone and giving `Ijsland` in Dutch; this crate does not.
+//!   asks, so `ß` and `ﬁ` titlecase in full and Dutch gives `IJsland`.
 //!
 //! **`full-width`** maps printable ASCII, half-width katakana and Hangul and
-//! a few signs to their full-width forms, as Blink's
-//! `Character::FullwidthVariant` does (behind Chrome's
-//! `CSSTextTransformFullWidth` flag). A space becomes U+3000 only where white
+//! a few signs to their full-width forms, by Blink's
+//! `Character::FullwidthVariant` table. A space becomes U+3000 only where white
 //! space is kept; a collapsible space is left for collapsing, as CSS Text 3
-//! and Blink's `ApplyFullwidthTransform` do. It applies after the case.
+//! says. It applies after the case.
 //!
 //! **`full-size-kana`** maps the 58 small kana of CSS Text 3's table
 //! (Appendix G, Blink's `Character::FullSizeKanaVariant`) to full size. It
-//! applies last, as in Blink's `ComputedStyle::ApplyTextTransform`, so a
-//! half-width small katakana becomes full-width and then full-size.
+//! applies last, so a half-width small katakana becomes full-width and then
+//! full-size.
 //!
 //! **`math-auto`** maps a single-character text node to mathematical italic
 //! by MathML Core's italic table. It excludes every other transform.
@@ -40,15 +37,15 @@
 //! those into offset map entries.
 
 use alloc::string::String;
+use core::iter;
 use core::ops::Range;
 use core::str::CharIndices;
 
 use crate::data::TextOffset;
 use crate::style::{TextCase, TextTransform};
-use crate::unicode::{
-    CaseLanguage, has_stand_ins, lowercase, segmenter_char, titlecase, uppercase, word_boundaries,
-    word_segmenter,
-};
+use cleft::{Dictionaries, Utf8Scalars, WordBreaks, WordOptions};
+
+use crate::unicode::{CaseLanguage, lowercase, titlecase, uppercase};
 use crate::work;
 
 /// The `text-transform` of one node, with its case language.
@@ -84,17 +81,23 @@ impl TextTransformer {
 
     /// Writes `src` transformed onto `out`.
     ///
-    /// `before` is the character before `src`; only capitalize reads it.
-    /// `scratch` is segmenter scratch. The output fits in
+    /// `before` is the character before `src`; only capitalize reads it,
+    /// finding words with `dictionaries`. The output fits in
     /// [`max_growth`](Self::max_growth) times the length of `src`.
-    pub(super) fn write(&self, src: &str, before: char, scratch: &mut String, out: &mut String) {
+    pub(super) fn write(
+        &self,
+        src: &str,
+        before: char,
+        dictionaries: &Dictionaries,
+        out: &mut String,
+    ) {
         let TextTransform {
             full_width,
             full_size_kana,
             ..
         } = self.transform;
         if full_width || full_size_kana {
-            self.write_case(src, before, scratch, &mut |mut ch| {
+            self.write_case(src, before, dictionaries, &mut |mut ch| {
                 if full_width {
                     ch = self::full_width(ch, self.keeps_spaces);
                 }
@@ -108,7 +111,7 @@ impl TextTransformer {
         } else if matches!(self.transform.case, TextCase::None | TextCase::MathAuto) {
             out.push_str(src);
         } else {
-            self.write_case(src, before, scratch, &mut |ch| out.push(ch));
+            self.write_case(src, before, dictionaries, &mut |ch| out.push(ch));
         }
     }
 
@@ -141,7 +144,7 @@ impl TextTransformer {
         &self,
         src: &str,
         before: char,
-        scratch: &mut String,
+        dictionaries: &Dictionaries,
         push: &mut dyn FnMut(char),
     ) {
         let language = self.language;
@@ -149,7 +152,7 @@ impl TextTransformer {
             TextCase::None | TextCase::MathAuto => src.chars().for_each(push),
             TextCase::Uppercase => uppercase(src, language, push),
             TextCase::Lowercase => lowercase(src, language, push),
-            TextCase::Capitalize => words(src, before, scratch, |segment, starts| {
+            TextCase::Capitalize => words(src, before, dictionaries, |segment, starts| {
                 if starts {
                     titlecase(segment, language, push);
                 } else {
@@ -271,15 +274,15 @@ impl Transforms {
     /// Calls `each` with every character of `src` and the number of
     /// characters the own and first-line transforms make of it alone.
     ///
-    /// `before` is the character before `src`, for capitalize; `scratch` is
-    /// segmenter scratch. The offset map aligns by the own count, and the
+    /// `before` is the character before `src`, for capitalize, which finds
+    /// words with `dictionaries`. The offset map aligns by the own count, and the
     /// first-line text by both. The first-line count equals the own count
     /// unless [`first_line_differs`](Self::first_line_differs).
     pub(super) fn counts(
         &self,
         src: &str,
         before: char,
-        scratch: &mut String,
+        dictionaries: &Dictionaries,
         each: &mut dyn FnMut(char, usize, usize),
     ) {
         let (ours, theirs) = (self.own, self.first_line());
@@ -301,7 +304,7 @@ impl Transforms {
             src.chars().for_each(|ch| counted(ch, false));
             return;
         }
-        words(src, before, scratch, |segment, starts| {
+        words(src, before, dictionaries, |segment, starts| {
             for (at, ch) in segment.chars().enumerate() {
                 counted(ch, starts && at == 0);
             }
@@ -412,16 +415,11 @@ fn math_italic(ch: char) -> Option<char> {
 /// Calls `each` with the UAX #29 word segments of `src` and whether each
 /// starts a word (rather than continuing the word `before` is in).
 ///
-/// - Segmenting uses the build's word segmenter (`unicode::word_segmenter`)
-///   and Chrome's `en_US_POSIX` tailoring (`unicode::word_boundaries`), as
-///   word motion does.
-/// - With the `dictionaries` feature, dictionaries split Thai, ideographs
-///   and kana into words, as ICU4C does for Chrome.
-/// - Without it, ideographs and hiragana are copied into `scratch` as
-///   same-length stand-ins (`unicode::segmenter_char`) that segment the
-///   same way, and segments are read from `src` at the copy's offsets.
-fn words(src: &str, before: char, scratch: &mut String, mut each: impl FnMut(&str, bool)) {
-    let segmenter = word_segmenter();
+/// - Words are found with `dictionaries` and the `en_US_POSIX` full
+///   stop, as word motion finds them, so `x.y` is three words and `3.14`
+///   one.
+/// - The dictionaries split Thai, ideographs and kana into words.
+fn words(src: &str, before: char, dictionaries: &Dictionaries, mut each: impl FnMut(&str, bool)) {
     // A word never continues past white space or a line end, so `before`
     // joins the text only when it could be inside a word.
     let joined = !matches!(
@@ -429,24 +427,21 @@ fn words(src: &str, before: char, scratch: &mut String, mut each: impl FnMut(&st
         ' ' | '\t' | '\n' | '\r' | '\x0C' | '\u{200B}' | '\u{FFFC}'
     );
     let skip = if joined { before.len_utf8() } else { 0 };
-    let text = if joined || has_stand_ins(src) {
-        scratch.clear();
-        let mut push = |ch: char| scratch.push(segmenter_char(ch).unwrap_or(ch));
-        if joined {
-            push(before);
-        }
-        src.chars().for_each(push);
-        scratch.as_str()
-    } else {
-        src
+    let scalars = joined
+        .then_some((0, before))
+        .into_iter()
+        .chain(Utf8Scalars::new(src).map(move |(at, ch)| (at + skip, ch)));
+    let options = WordOptions {
+        posix_full_stop: true,
     };
+    let breaks = WordBreaks::new(scalars, options).with_dictionaries(dictionaries);
     let mut start = 0;
-    for end in word_boundaries(segmenter, text, skip) {
+    for end in breaks.chain(iter::once(skip + src.len())) {
         work::step();
         if end > skip && end > start {
             // The segment's part in `src`, past `before`.
             let from = start.max(skip);
-            if let Some(segment) = src.get(from.saturating_sub(skip)..end.saturating_sub(skip)) {
+            if let Some(segment) = src.get(from - skip..end - skip) {
                 each(segment, start >= skip);
             }
         }
@@ -456,8 +451,7 @@ fn words(src: &str, before: char, scratch: &mut String, mut each: impl FnMut(&st
 
 /// Returns the full-size form of a small kana, or `ch` unchanged.
 ///
-/// The table is CSS Text 3's (Appendix G), as in Blink's
-/// `Character::FullSizeKanaVariant`.
+/// The table is CSS Text 3's (Appendix G).
 pub(super) fn full_size_kana(ch: char) -> char {
     match ch {
         // Hiragana.

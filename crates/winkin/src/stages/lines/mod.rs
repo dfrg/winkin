@@ -158,7 +158,7 @@ impl Default for BreakScratch {
 /// starts empty.
 ///
 /// Reshapes unsafe line edges with the shaping caches in `cx`.
-/// [`Breaker::line`] fits every line. `line-clamp: auto` works as Chrome's
+/// [`Breaker::line`] fits every line. `line-clamp: auto` works as Blink's
 /// `CSSLineClamp`:
 /// - The lines are laid out greedily until one would take the block past the
 ///   host's end, `text-box-trim` included.
@@ -415,13 +415,13 @@ define_flags! {
         /// Its trailing white space, preserved before a forced break or at
         /// the text's end, hangs only where it overflows.
         pub(super) const CONDITIONAL_HANG = 1 << 4;
-        /// Ends at an `overflow-wrap` emergency break, which Chrome's breaker
-        /// takes only on retrying a line that overflowed.
+        /// Ends at an `overflow-wrap` emergency break, which is taken only on
+        /// retrying a line that overflowed.
         const EMERGENCY = 1 << 5;
-        /// Ends where the scorer planned, as Chrome's `break_at_` ends a line.
+        /// Ends where the scorer planned, as Blink's `break_at_` ends a line.
         ///
-        /// Chrome stops there before an absolutely positioned box's anchor,
-        /// so the anchor goes to the next line.
+        /// The line stops there before an absolutely positioned box's
+        /// anchor, so the anchor goes to the next line.
         pub(crate) const SCORED = 1 << 6;
     }
 }
@@ -429,8 +429,8 @@ define_flags! {
 impl LineFlags {
     /// Returns whether the line overflows or ends at an emergency break.
     ///
-    /// Balancing and `pretty` decline such a line, as Chrome's breaker
-    /// disables its bisection and scoring on overflow.
+    /// Balancing and `pretty` decline such a line: overflow disables
+    /// bisection and scoring.
     fn overflowed(self) -> bool {
         self.contains(Self::OVERFLOWS) || self.contains(Self::EMERGENCY)
     }
@@ -1031,7 +1031,7 @@ impl Lines {
     ///
     /// Content with annotations or marks returns the carry stored at
     /// breaking. Otherwise this measures the last line's em boxes against
-    /// its line box, as Chrome's `InlineLayoutAlgorithm::CreateLine` does
+    /// its line box, as Blink's `InlineLayoutAlgorithm::CreateLine` does
     /// for the last line. Measuring on demand saves a sixth of a one-line
     /// label's relayout.
     pub(crate) fn room_below(&self, stages: Stages<'_>) -> LayoutUnit {
@@ -1122,8 +1122,8 @@ struct Cursor {
     /// How far the host's block positions stand above the records': the
     /// `text-box-trim` of the kept first line.
     ///
-    /// The host is asked about trimmed positions, as Chrome lays each later
-    /// line below the trimmed first.
+    /// The host is asked about trimmed positions, as each later line lies
+    /// below the trimmed first.
     trimmed: LayoutUnit,
     /// The first item that may be on the next line.
     items: ItemId,
@@ -1390,7 +1390,7 @@ struct Breaker<'a, 'c, 'm> {
     /// `text-indent`'s length in the area.
     indent: LayoutUnit,
     /// The block wraps, so a line the floats narrow until it overflows
-    /// moves down past them, as Chrome's `ShouldWrapLine` decides.
+    /// moves down past them, as Blink's `ShouldWrapLine` decides.
     wraps: bool,
     /// `text-overflow: ellipsis`, which cuts an overflowing line.
     ellipsis: bool,
