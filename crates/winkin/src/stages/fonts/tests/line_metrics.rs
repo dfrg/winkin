@@ -177,6 +177,9 @@ fn edge_and_middle_baselines_sit_on_the_line_metrics() {
     let font = metrics_font(false);
     let family = font.family.clone();
     let mut fixture = fixture_with(&[font]);
+    let mut config = Config::chrome_windows();
+    config.line_metrics = LineMetricsSource::Win;
+    fixture.cx.set_config(config);
     let mut layout = Layout::new();
     let listed = [FontFamilyName::named(&family)];
     fixture.span(&mut layout, &sized(&listed, 10.0), "x");
