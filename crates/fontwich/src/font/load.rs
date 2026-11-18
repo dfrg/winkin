@@ -7,9 +7,10 @@
 //! life, made when the layer takes in the first font from the file. A font
 //! holds its file's cell, so it knows the id its bytes will have — its
 //! [`key`](super::Font::key) — before anything reads them, and loading takes
-//! the cell's lock and nothing else. That lock is `std`'s: a thread loading
-//! a file another thread is reading sleeps until the bytes are in, then
-//! shares them. Threads loading other files never wait.
+//! the cell's lock and nothing else. That lock is `std`'s read-write lock:
+//! loads of bytes someone still holds share it, and a thread loading a file
+//! another thread is reading sleeps until the bytes are in, then shares them.
+//! Threads loading other files never wait.
 //!
 //! Nothing is read until a font is loaded, and most never are. Collections holding the same layer hold the same
 //! table, so memory is shared across them with nothing for a caller to hold
@@ -17,7 +18,7 @@
 //! share the operating system's pages anyway.
 
 use std::path::Path;
-use std::sync::{Arc, Mutex, PoisonError, Weak};
+use std::sync::{Arc, PoisonError, RwLock, Weak};
 
 use super::FontBytes;
 
@@ -26,7 +27,7 @@ type WeakBytes = Weak<dyn AsRef<[u8]> + Send + Sync>;
 /// One font file: its bytes while anyone holds them, and its id.
 #[derive(Debug)]
 pub(crate) struct FontFile {
-    bytes: Mutex<Option<WeakBytes>>,
+    bytes: RwLock<Option<WeakBytes>>,
     /// Fixed when the file is first named, so the bytes keep their id however
     /// many times they are freed and loaded again.
     id: u64,
@@ -38,7 +39,7 @@ pub(crate) struct FontFile {
 impl FontFile {
     pub(crate) fn new() -> Self {
         Self {
-            bytes: Mutex::new(None),
+            bytes: RwLock::new(None),
             id: super::bytes::next_id(),
             #[cfg(test)]
             opens: core::sync::atomic::AtomicU32::new(0),
@@ -53,10 +54,22 @@ impl FontFile {
     /// The bytes of the file at `path`: those already handed out if someone
     /// still holds them, and otherwise the file, mapped or read.
     pub(crate) fn load(&self, path: &Path) -> Option<FontBytes> {
-        // Held across the read or mapping, so two threads loading one file
-        // load it once. It is this file's lock alone, and a waiter sleeps.
-        // A panic cannot leave the slot half written.
-        let mut slot = self.bytes.lock().unwrap_or_else(PoisonError::into_inner);
+        // Bytes someone still holds are shared under the read lock, so warm
+        // loads of one file from many threads don't wait on each other.
+        let held = self
+            .bytes
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .and_then(Weak::upgrade);
+        if let Some(bytes) = held {
+            return Some(FontBytes::from_raw_parts(bytes, self.id));
+        }
+        // The write lock is held across the read or mapping, so two threads
+        // loading one file load it once: the second finds the first's bytes.
+        // It is this file's lock alone, and a waiter sleeps. A panic cannot
+        // leave the slot half written.
+        let mut slot = self.bytes.write().unwrap_or_else(PoisonError::into_inner);
         if let Some(bytes) = slot.as_ref().and_then(Weak::upgrade) {
             return Some(FontBytes::from_raw_parts(bytes, self.id));
         }
