@@ -5,7 +5,7 @@
 //! on, so both spin. A `no_std` build reads no files, so the only slow work a
 //! waiter can spin through is a caller's `LoadFamily`.
 //!
-//! [`SpinMutex`] spins in every build, for the fallback cache's lookups,
+//! [`SpinRwLock`] spins in every build, for the fallback cache's lookups,
 //! which are too short and too hot to pay for a blocking lock.
 
 use core::fmt;
@@ -35,12 +35,12 @@ impl<T> Mutex<T> {
     }
 }
 
-/// A spin lock in every build, for a hot critical section of a few hundred
-/// nanoseconds at most that never waits on anything.
+/// A spin read-write lock in every build, for a hot critical section of a
+/// few hundred nanoseconds at most that never waits on anything.
 ///
-/// A warm fallback lookup takes about 65 ns with it and 78 ns with `std`'s
-/// lock on Windows.
-pub(crate) type SpinMutex<T> = spin::Mutex<T>;
+/// Readers share it, so lookups from many threads don't queue behind one
+/// another; only a writer waits for them, and they for it.
+pub(crate) type SpinRwLock<T> = spin::RwLock<T>;
 
 // Shows no value, since reading it would take the lock.
 impl<T> fmt::Debug for Mutex<T> {

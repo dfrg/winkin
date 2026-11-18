@@ -50,9 +50,8 @@ std::thread_local! {
 #[inline(always)]
 pub(crate) fn fast_paths() -> bool {
     #[cfg(test)]
-    if GENERAL_ONLY.with(Cell::get) {
-        return false;
-    }
+    return !GENERAL_ONLY.with(Cell::get);
+    #[cfg(not(test))]
     true
 }
 

@@ -97,7 +97,7 @@ read-fonts = { workspace = true, features = ["libm"] }
 # the crate uses `Mutex` and `OnceLock`, so a thread waiting for a family's
 # fonts or a file's bytes sleeps; without std there is nothing to sleep on.
 # The fallback cache spins in every build: its lookups are a hash probe.
-spin = { version = "0.12.3", default-features = false, features = ["once", "mutex", "spin_mutex"] }
+spin = { version = "0.12.3", default-features = false, features = ["once", "mutex", "spin_mutex", "rwlock"] }
 
 # Mapping font files, with the `mmap` feature.
 memmap2 = { version = "0.9.11", optional = true }

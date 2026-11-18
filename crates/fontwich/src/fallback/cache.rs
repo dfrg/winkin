@@ -4,7 +4,7 @@ use super::key::FallbackKey;
 use crate::Family;
 use crate::hash::HashMap;
 use crate::layer::Layer;
-use crate::sync::SpinMutex;
+use crate::sync::SpinRwLock;
 use alloc::sync::Arc;
 
 /// A collection's fallback answers: the installed families for each key it
@@ -14,8 +14,9 @@ use alloc::sync::Arc;
 /// only to look an answer up or put one in, never while a backend is asked
 /// or names are resolved, so two threads missing one key both work it out
 /// and the first answer stands: a backend's answer is the same either way.
+/// Lookups share it, so only putting an answer in waits.
 #[derive(Default)]
-pub(crate) struct FallbackCache(SpinMutex<Answers>);
+pub(crate) struct FallbackCache(SpinRwLock<Answers>);
 
 #[derive(Default)]
 struct Answers {
@@ -27,9 +28,14 @@ struct Answers {
 
 impl FallbackCache {
     /// The answer for `key`, if there is one for the layers `stamp` names.
+    ///
+    /// Answers read from other layers are left for [`insert`](Self::insert)
+    /// to drop, so a lookup only reads.
     pub(crate) fn get(&self, stamp: u64, key: &FallbackKey) -> Option<Arc<[Family]>> {
-        let mut answers = self.0.lock();
-        answers.restamp(stamp);
+        let answers = self.0.read();
+        if answers.stamp != stamp {
+            return None;
+        }
         answers.by_key.get(key).cloned()
     }
 
@@ -41,7 +47,7 @@ impl FallbackCache {
         key: FallbackKey,
         families: Arc<[Family]>,
     ) -> Arc<[Family]> {
-        let mut answers = self.0.lock();
+        let mut answers = self.0.write();
         answers.restamp(stamp);
         answers.by_key.entry(key).or_insert(families).clone()
     }
@@ -50,7 +56,7 @@ impl FallbackCache {
     pub(crate) fn heap(&self) -> usize {
         use crate::heap::ARC;
         use core::mem::{size_of, size_of_val};
-        let answers = self.0.lock();
+        let answers = self.0.read();
         answers.by_key.capacity() * (size_of::<(FallbackKey, Arc<[Family]>)>() + 1)
             + answers
                 .by_key
@@ -74,7 +80,7 @@ impl Answers {
 impl core::fmt::Debug for FallbackCache {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("FallbackCache")
-            .field("keys", &self.0.lock().by_key.len())
+            .field("keys", &self.0.read().by_key.len())
             .finish()
     }
 }
